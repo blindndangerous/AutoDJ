@@ -1,3 +1,4 @@
+import { settingsHaveChanges, confirmSettingsNavigation } from "./settings-drafts.js";
 // Settings subtabs: a second tablist inside the Settings view, one panel
 // per group of settings, so a new user meets one short group at a time.
 //
@@ -38,6 +39,7 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
   const panels = new Map(tabs.map((tab) => [tab, doc.getElementById(tab.dataset.panel)]));
   const view = tablist.closest("section");
   let selected = null;
+  let pending = false;
 
   function notify() {
     for (const panel of panels.values()) {
@@ -49,7 +51,17 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
     }
   }
 
-  function select(tab, { focusPanel = false, remember = true } = {}) {
+  function select(tab, { focusPanel = false, remember = true, confirmed = false, focusTab = false } = {}) {
+    if (!confirmed && selected && selected !== tab && settingsHaveChanges(doc)) {
+      if (!pending) {
+        pending = true;
+        void confirmSettingsNavigation(doc).then((allowed) => {
+          pending = false;
+          if (allowed) select(tab, { focusPanel, remember, focusTab, confirmed: true });
+        });
+      }
+      return;
+    }
     selected = tab;
     markSelected(tabs, tab);
     for (const [each, panel] of panels) {
@@ -58,6 +70,7 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
     if (remember) writeStored(storage, tab.dataset.subview);
     notify();
     if (focusPanel) focusHeading(panels.get(tab));
+    else if (focusTab) tab.focus();
   }
 
   for (const tab of tabs) {
@@ -67,8 +80,7 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
       if (!next) return;
       event.preventDefault();
       // Select first, then focus, so focus lands on a selected tab.
-      select(next);
-      next.focus();
+      select(next, { focusTab: true });
     });
   }
 

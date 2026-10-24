@@ -1739,6 +1739,12 @@ describe("static accessibility contracts", () => {
       .toBe("token-secret-warning");
   });
 
+  it("never hides an empty status region with display: none", () => {
+    // A region shown only once its words arrive is a new region, and NVDA
+    // in Firefox did not say the Settings save result.
+    expect(cssSource).not.toMatch(/:empty\s*\{[^}]*display:\s*none/);
+  });
+
   it("gives the status message a Dismiss button that is never announced with it", () => {
     installDocument();
     const toast = document.querySelector("#status-toast");
@@ -1910,8 +1916,8 @@ describe("static accessibility contracts", () => {
     expect(listen.querySelector('[aria-hidden="true"]')).not.toBeNull();
     // Browser mode renders no Listen here button until stream mode shows it.
     expect(listen.hidden).toBe(true);
-    // Sits in the transport group straight after Play / Pause.
-    expect(listen.previousElementSibling.id).toBe("btn-pause");
+    // Listening comes before station transport in reading and keyboard order.
+    expect(listen.nextElementSibling.id).toBe("btn-pause");
     expect(listen.closest('[role="group"]').getAttribute("aria-label"))
       .toBe("Playback controls");
 
@@ -2056,7 +2062,7 @@ describe("static accessibility contracts", () => {
     // heading: the summary's name is the heading text, and the browser
     // says expanded or collapsed, so no ARIA state is added.
     const folded = [
-      ["#repeat-save", "#spanel-picking", "H4", "Repeats"],
+      ["#repeat-daypart-hours", "#spanel-picking", "H4", "Repeats"],
       ["#rotation-test", "#spanel-picking", "H4", "Test rotation"],
       ["#stream-relay-add", "#spanel-stream", "H4", "Relays"],
       ["#stream-formats", "#spanel-stream", "H4", "More formats"],
@@ -2336,9 +2342,7 @@ describe("static accessibility contracts", () => {
       expect(describedBy(input)).toHaveLength(1);
       expect(describedBy(input).every(Boolean)).toBe(true);
     }
-    const save = document.querySelector("#recording-save");
-    expect(save.getAttribute("type")).toBe("button");
-    expect(save.textContent.trim()).toBe("Save recording settings");
+    expect(document.querySelector("#recording-save")).toBeNull();
     // Nothing on the page names or edits the recordings folder.
     expect(group.querySelector("input[type=text], input[type=file]")).toBeNull();
   });
@@ -2679,7 +2683,7 @@ describe("static accessibility contracts", () => {
 
   it("gives the daypart and quarter-hour repeat rules labelled native fields and silent help", () => {
     installDocument({ html: htmlSource });
-    const repeats = document.querySelector("#repeat-save").closest("fieldset");
+    const repeats = document.querySelector('fieldset[aria-labelledby="repeat-heading"]');
     expect(repeats.closest("#spanel-picking")).not.toBeNull();
     for (const [id, label, type, legend] of [
       ["repeat-daypart-days", "Days", "number", "Prevent a song from playing in the same daypart"],
@@ -3134,8 +3138,7 @@ describe("static accessibility contracts", () => {
     const help = document.getElementById("preview-device-desc");
     expect(help.hidden).toBe(false);
     expect(help.textContent).toMatch(/previews/);
-    // The unsupported or permission note starts hidden and unlinked: the
-    // script links it only while it is shown.
+    // Device status stays available through normal browsing.
     const note = document.getElementById("preview-device-note");
     expect(note.hidden).toBe(true);
     expect(note.classList.contains("setting-desc")).toBe(true);
@@ -3291,9 +3294,9 @@ describe("static accessibility contracts", () => {
     // The shortcut is listed with the others, in words.
     const keys = [...document.querySelectorAll("#hotkey-help-modal dt kbd")].map((kbd) => kbd.textContent);
     expect(keys).toContain("Alt+M");
-    // Settings > Live DJ: its own tab and panel, hidden until the station can go live.
+    // Settings > Live DJ remains available independently of station playout.
     const tab = document.getElementById("stab-live");
-    expect(tab.hidden).toBe(true);
+    expect(tab.hidden).toBe(false);
     expect(tab.textContent).toBe("Live DJ");
     const panel = document.getElementById(tab.dataset.panel);
     expect(panel.getAttribute("aria-labelledby")).toBe("stab-live");

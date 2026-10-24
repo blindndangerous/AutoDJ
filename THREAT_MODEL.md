@@ -417,21 +417,166 @@ What a worker can do with a valid token:
   of a `manual_path` folder; never the branch name, which two machines can resolve to different
   weights), the analysis version and the vector size equal its own, the vector is exactly 1040 finite float32 values
   of unit length, the analysed fields are in range, and the record and the file on disk still have
-  the claimed size and fingerprint. A result for a changed file is refused as stale. A result can
-  change only a song's energy, key, mode, BPM estimate (when the song has no BPM tag), tempo
-  confidence, stale-check time and vector; it cannot touch paths, tags, cues, plays or settings.
-- Report a song it could not analyse (held back for six hours) and give unanalysed claims back.
+  the claimed size and fingerprint. For scan results, the pending row supplies this identity;
+  an existing playable catalog row may still describe older bytes. Claims validate the pending
+  identity, and storage checks it within the catalog transaction as well as checking the file
+  on disk. A result for old bytes or a second rewrite is refused as stale. A result can
+  change a song's energy, key, mode, BPM estimate (when the song has no BPM tag), tempo
+  confidence, stale-check time and vector. A negotiated `scan_decode_v1` result with a matching scan algorithm version for pending work can
+  also set decoded length, automatic cue suggestions, intro lift, loudness, and DJ analysis.
+  Without a vector, same-byte results change only scan measurements, including scan energy;
+  key, mode, BPM, tempo confidence and embedding time remain unchanged. Changed-byte results
+  refresh tags locally and reset stale analysis metadata. An existing vector survives same-byte
+  scan results; changed bytes invalidate it atomically with measurement replacement. Until then,
+  the existing playable row and vector remain available to selection unless a known new tag
+  duration differs by more than the larger of two seconds or two percent of the old duration.
+  That replacement becomes a silent tag-only listing until measured; unknown durations preserve
+  the playable record. Tag edits during a pending replacement preserve the record's analysis
+  identity and update pending identity in the same transaction. Tag-only listings update both
+  identities while retaining the pending row's new-listing provenance.
+  Deferred completion compares current user/imported points and manual key/BPM with a durable
+  deferral snapshot when pending and catalog byte identities differ. Only changed choices
+  override replacement results, including explicit point clears; rows without snapshots
+  preserve none for changed bytes. Matching identities retain all current manual choices,
+  including legacy rows without snapshots. Old-byte edits follow ordinary replacement rules.
+  Saved bounds clamp to measured duration; impossible bounds revert to analysis provenance.
+  Mix points clamp inside those bounds, never becoming user clears solely because the new
+  recording is shorter. Automatic trim expands to include valid saved mix points. DJ storage
+  aligns user/imported markers with catalog points; with external cue import on, it drops
+  cached markers without retained user/imported provenance before re-merging the external
+  libraries, merges duplicates by source priority and drops cues beyond measured
+  length with debug logging. Editing an unmeasured listing does not establish measured duration.
+  A confirmed unique pending move transfers pending identity, edit snapshot, provenance and
+  retry state in the catalog rekey transaction. Present catalog and pending identities both
+  block ambiguous matches. Claimed path-bound leases are cancelled, so old submissions cannot
+  write to either path. Failed and stale holds move with unchanged expiry; colliding holds keep
+  the later expiry in the same transaction. A failed move restores both holds and the original
+  catalog and pending paths. Destination claims respect the retained hold and retry state.
+  Scan numbers require numeric types and finite values. Length is positive, at most 24 hours,
+  and within the larger of two seconds or two percent of the known catalog duration when that
+  duration describes measured, claimed bytes. Silent tag-only listings (zero energy and no
+  points) supply estimates, allowing half to twice the positive tag duration with three seconds
+  of slack at each end. Replacements use the new bytes' tags; unknown tag durations add no cross-check.
+  Older catalog durations do not constrain replacements. Automatic
+  basic points use the same normalization as local scans: invalid Start/End become the whole
+  song and suggestions outside that range become null. Intro may follow Outro. DJ times stay
+  within the song, beats strictly increase, and cues are ordered. Beat grids are capped at
+  20,000 entries and DJ cues at 4,096, with bounded text and automatic provenance only.
+  Loudness must have the current version, music kind and consistent finite LUFS/gain fields;
+  the server supplies its own file timestamp and size. Intro lift is bounded to 0–6 dB.
+  Catalog measurements and vectors are stored together after the existing file identity checks.
+  DJ metadata commits separately afterward; a cache failure leaves the catalog measurements and
+  pending scan recovery intact. External DJ libraries refresh off the request path; result storage
+  merges a cached snapshot and preserves saved user and imported DJ cues. Results arriving
+  before snapshot loading are retained and merged with imported cues when loading completes.
+  A vector-only claim issued before scan deferral can finish without
+  clearing pending scan work. Result validation failures, including malformed measurements,
+  immediately fail the submitting token's owned lease. Pending scans pass to local recovery;
+  advanced-only invalid content receives the existing failure hold. Vector-only model-identity
+  conflicts remain releasable immediately without a failed hold. Other holders' leases are untouched.
+  Loudness failure may return null and does not prevent storing other measurements.
+  User/imported cue points retain precedence. Worker results cannot set paths, tags, plays or
+  settings. Lyrics and external DJ cue imports remain server-owned.
+  - Report a song it could not analyse (held back for six hours for advanced analysis) and give
+    unanalysed claims back. Remote scan failures release their analysis lease and reserve local recovery without imposing
+    a vector hold. Scan retry state is separate from CPU vector holds. Local scan
+    automatic failures wait six hours and stop after three attempts. Changed-byte refreshes reset the
+    budget except during settling or after local handoff, which retain attempts and backoff for
+    the same pending lifetime; all clear old failure evidence. A later scan without a capable worker can retry unchanged
+    pending bytes despite backoff or exhaustion, but cannot steal a live remote claim.
+    Deferred local decoding checks identity before and after decoding. A rewrite discards the
+    measurements and refreshes readable pending bytes for retry instead of completing the row.
+    This retains the attempt already counted and waits 60 seconds for the new bytes to settle,
+    allowing other eligible rows to proceed. Repeated mid-decode rewrites exhaust the same budget.
+    Decoder rejection removes only the unchanged tag-only listing created by that pending scan,
+    after rechecking that the same bytes remain readable. Older catalog records are preserved.
+    Missing or unreadable files retain their stored identity and receive backoff; they remain
+    subject to the confirmed missing-file cleanup flow. Other decoder and analysis exceptions
+    consume a local attempt with backoff. On exhaustion, any non-access failure permits removal
+    of the pending scan's unchanged, still-readable new tag-only listing and pending row.
+    Missing FFmpeg, decode timeouts, unsupported decoders and analysis errors follow this rule.
+    Access-only exhaustion preserves the listing and reopens the retry budget on the next scan,
+    whether a capable worker is available or decoding stays local. Every local failure is recorded
+    in import errors. Older records and history are preserved; source files are never deleted.
+    Recent successful claims preserve a connected capable worker's unclaimed scan backlog.
+    Recovery decoding runs on the library scan thread, including between scan files; queue
+    errors are rate-limited warnings and do not terminate the ticker. The tick checks for an
+    eligible candidate outside the library lock, at most every 30 seconds, before taking scan
+    ownership or starting a thread. Once admitted, the same thread takes candidates serially,
+    without an interval between songs, until none remain, shutdown is requested, a scan is queued,
+    or a capable worker resumes claiming. During active worker progress, indexed handoff and failed,
+    stale or expired lease lookups exclude the ordinary pending backlog. Exhausted attempts,
+    backoff and live remote claims do not trigger recovery threads. Due automatic rescans have
+    priority. Remote claims filter pending paths in SQL with a batch limit before file work.
+    Identity mismatches skipped during a claim request immediate local scan recovery.
+    Pending membership checks use indexed candidate-path lookups instead of loading every pending
+    row. Missing or unreadable pending files receive backoff so later claims can reach live files.
+    Claims leave pending rows without catalog records untouched until their deadline passes,
+    then hand them to local recovery. Only recovery under the scan lock cancels rows whose
+    catalog records are still absent, so a concurrent tag read cannot lose deferred work.
+    Recovery reloads the catalog at most every 30 seconds and once on exit. External cue
+    libraries load lazily once per scan pass or recovery run. Between scans, remote DJ results
+    can request a snapshot refresh on the same background slot, at most once a minute;
+    request handling only merges the cached snapshot and never parses external libraries.
+
+Use one token per worker process. Negotiated capability and heartbeat renewal belong to the
+token, so sharing a token between processes is unsupported. Scan version mismatch disables
+remote scan work and logs once per retained token. Warning history holds at most 1,024 token IDs,
+with one entry per token, evicts the oldest on overflow, and removes revoked tokens. Version
+strings cannot grow that history. Vector analysis retains its own negotiation. Transient network
+errors and server failures preserve scan capability; actual refusal or incompatible server
+responses change it.
+
+Compatible workers negotiate `lease_tracking` through a legacy-shaped heartbeat, then send
+`connect=true` at process startup to release that token's claimed leases. Failed/stale holds
+and other tokens' leases remain intact. Subsequent heartbeats carry at most 64 lease IDs and
+renew only matching claimed leases owned by that token; an empty list renews none. Older
+workers that omit the list retain holder-wide renewal. Sharing a token lets one process
+release another's claims at startup, so tokens must not be shared between worker processes.
 
 Limits: each token may make 600 requests a minute (429 with `Retry-After` past that); a result
-body may be 64 KiB and the other worker bodies 8 KiB (413 past that). A worker's failure reason is
+body may be 1 MiB and the other worker bodies 8 KiB (413 past that). A worker's failure reason is
 cut to 300 printable characters before it is logged. A malicious worker holding a valid token can
-still post wrong but well-formed vectors for the songs it claims, which would make those songs
-match badly in search; revoke the token and re-analyse them with `autodj index --force`. Give
+still post wrong but well-formed measurements or vectors for the songs it claims, affecting
+playback or search; revoke the token and re-analyse affected songs locally. Give
 tokens only to machines you trust with that.
 
 `autodj worker --before-command` and `--after-command` run a program the operator typed, split
 like a shell would but without a shell, with a two-minute limit. They come from the worker's own
 command line, never from the server.
+
+Settings managed by the server (#554). A paired browser can pause a worker or set its batch
+(1 to 16) and idle release (1 to 10,080 minutes) through
+`PUT /api/analysis/workers/<token id>/settings`, an ordinary paired-browser route that a machine
+token cannot open. Heartbeat and claim replies carry only those three values and a revision. The
+server never sends a worker a command, a path or any other setting, so a compromised server, or
+anyone who can change Settings, can make a worker idle, claim smaller or larger batches, or
+release its model, but cannot run code on the worker machine. Options typed on the worker's
+command line win over the server's values. A paused worker is handed no songs; it still sends
+heartbeats, which keep the server's own analysis paused.
+
+Refusal notices. The token database keeps, for each known worker token, only the latest refusal:
+its kind (model identity, scan analysis version, revoked, wrong secret or missing scope), its time
+and server-made text cut to 600 characters, which can quote the model name and commit a worker
+reported. It never holds a secret. Unknown token ids record nothing; the same refusal again writes
+at most once a minute. Noting a wrong secret for an existing id adds a write that an unknown id
+does not; ids are 128 random bits, so the difference tells a guesser nothing useful. A successful
+connect clears the row and Dismiss hides it. Paired browsers read the notices through
+`/api/analysis/workers`.
+
+Worker pairing codes. A paired browser can ask `POST /api/machine-tokens/pairing-code` for an
+8-digit code, kept only in the server's memory, that works once for ten minutes; a new code
+replaces it. `POST /api/worker-pair` trades it for a new analysis-worker token. That route needs no
+session or token, so the middleware refuses it to any request with an `Origin` header (a browser
+page) and to plain HTTP from another machine, as for machine routes; host allowlists still apply.
+Ten wrong codes from one client address lock it out until the code ends, and fifty wrong codes in
+all burn the code, the same limits as browser pairing; nothing counts while no code is open.
+Anyone who reads the code on screen before the worker uses it could take the token instead: it is
+shown only to a paired browser, and the operator sees the token in the list and can revoke it.
+The code and the token are never logged. The worker keeps the token in
+`%APPDATA%\autodj\worker-tokens.json` on Windows or `~/.config/autodj/worker-tokens.json`
+(`$XDG_CONFIG_HOME`) elsewhere, written atomically with mode 0600 or an access list for the current
+user alone, and refuses to read the file when others can.
 
 ### Announcer breaks
 
@@ -693,14 +838,15 @@ What a listener can and cannot do:
 - Every other check in `SecurityMiddleware` still applies to them, including the Host allowlist,
   so the name typed into the player must be one this AutoDJ instance is configured to accept.
 - `/stream.` followed by anything else, and any path under `/stream/`, is not public: it needs
-  a session like any other path, and then returns 404. `/stream.aac` and `/stream.opus` (and
-  their `/stations/` forms) are public stream paths too, for the other formats below. Optional
+  a session like any other path, and then returns 404. `/stream.aac` and `/stream.opus` are
+  public stream paths too, for the other formats below. Optional
   HTTP Basic credentials protect only these stream paths and `/stream.m3u` (and the
-  `/stations/` stream paths below); the playlist never includes them.
-- Each station's stream is also public at `/stations/<slug>.mp3` and `/stations/<slug>.m3u`,
-  but only for a configured slug (`[stations.<slug>]`). The default station's is
-  `/stations/default.mp3`, public with the same credentials as `/stream.mp3` even on a server
-  with one station. Any other `/stations/...` path needs a session and then returns 404. A
+  station stream paths below); the playlist never includes them.
+- Each station's stream is also public at `/<slug>.mp3` and `/<slug>.m3u` (and `.aac` and
+  `.opus`), but only for a configured station's slug. The default station's is
+  `/default.mp3`, public with the same credentials as `/stream.mp3` even on a server
+  with one station. A station cannot be named `stream`. Any other `/<name>.mp3` path needs a
+  session. Any other `/stations/...` path needs a session and then returns 404. A
   stopped station answers 503, which shows that the slug exists; this is accepted. Each
   station's listener credentials, bans and listener limits are its own: a ban on one station
   does not cover another, and the listener slots of all stations add up. Starting and stopping
@@ -894,9 +1040,12 @@ status. They do not include tokens, request bodies, query strings, client-suppli
 music paths.
 
 Rejected requests are audited. Successful or rejected unsafe HTTP actions are audited after
-response status is known. The WebSocket only pushes state; frames a browser sends on it are
-ignored. WebSocket connection, error, and disconnect events are audited. These records support
-single-user incident review but do not provide per-user attribution.
+response status is known. A worker's routine polls are audited at DEBUG, so they stay out of the
+default log: a successful heartbeat that is not a connect, and a successful claim that hands out
+no songs. Refusals and failures stay at WARNING or ERROR. The WebSocket only pushes state; frames
+a browser sends on it are ignored. WebSocket connection, error, and disconnect events are
+audited. These records support single-user incident review but do not provide per-user
+attribution.
 
 ### Live DJ source mounts and talkover (#48)
 
@@ -1182,6 +1331,57 @@ file in the index folder it serves, and restore refuses while it is held; an `au
 trusted through operating-system ACLs. AutoDJ does not defend against an attacker who already
 controls them and can race filesystem operations.
 
+## Updates and restart from the web
+
+Settings, Updates checks for a newer AutoDJ and restarts it
+([ADR 16](docs/adr/0016-update-and-restart-from-the-web.md)). Its routes are
+`GET /api/updates`, `POST /api/updates/check`, `PUT /api/updates/settings` and
+`POST /api/server/restart`. They follow the same session, Host and Origin policy as every other
+settings route: when pairing is on, only a paired browser reaches them, and a page on another site
+cannot press Restart. There are no user roles, so every paired browser may restart AutoDJ; pairing
+already grants control of playback. Machine tokens and live DJ credentials never reach these
+routes. Each takes at most 8 KiB of JSON and no free text: the settings are a boolean and one of
+three channel names.
+
+**The check.** It contacts only the checkout's own `origin` remote (`git ls-remote`, which writes
+nothing) or GitHub's REST API at an address fixed in the code; no request or setting can point it
+anywhere else. git runs from an argument list with `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`
+and, unless the operator set `GIT_SSH_COMMAND` or `GIT_SSH`, a `GIT_SSH_COMMAND` that is the
+checkout's own `core.sshCommand` (or `ssh`) with `-o BatchMode=yes` added, so it never waits for a
+password or a host key. It has a 15-second timeout that ends git's whole process tree: its own
+session on POSIX, and on Windows its own job object, so only the processes git started are
+killed, never one that reuses an old parent's process ID. git runs without a console window.
+git's transport (`git-remote-https`, `ssh`) would otherwise keep the output pipes open and hold
+the check well past the timeout, so after a timeout nothing waits for those pipes. Only
+one check runs at a time; page loads during a slow one wait for it rather than starting more. The
+API call has a 10-second timeout and reads at most 1 MiB. A tag is offered only when it is `vX.Y.Z`. A failure is reported by kind (timed out, exit
+status) without git's own messages or the remote's address, which may hold credentials. Answers
+are cached, so opening the page does not ask the network every time, and Check now is limited to
+one in 10 seconds. With **Check for updates** off, or `doctor --offline`, nothing is asked. A
+remote that lies can only make the page say an update exists; the check changes nothing.
+AutoDJ does not update itself: the notice links the release notes on GitHub (a URL built from
+the fixed repository address and a validated tag) and lists commands for the operator to run.
+For a container those name the image from `AUTODJ_IMAGE`, which Compose sets and AutoDJ shows only
+when it is a plain image name (letters, digits and `._/:@-`).
+Updating from the web page is a later decision in
+[#552](https://github.com/blindndangerous/AutoDJ/issues/552); nothing gets the Docker socket.
+
+**Restart.** The server stops through uvicorn's own shutdown and exits with status 75. It is
+offered only when the checkout's launcher, a systemd service with `Restart=always` or
+`on-failure` whose main process is AutoDJ (or AutoDJ's own launcher, which marks its child), or a
+container that declares its restart
+policy in `AUTODJ_RESTART_POLICY` will start it again. A container file alone does not count.
+Reading the systemd policy runs `systemctl show` with a 3-second timeout and the unit name taken
+from `/proc/self/cgroup`, checked against a strict pattern. Restart is limited to one a minute and
+six an hour, counted in `<index_dir>/logs/restart-requests.json` so a restart does not reset the
+count; a time in that file ahead of the clock counts as now, and when the file is damaged,
+unreadable or cannot be written the restart is refused (503, naming the file). The launcher stops after five restarts in a minute. A stop signal (Ctrl+C, a closed terminal,
+SIGTERM) during a restart's shutdown stops AutoDJ instead of restarting it; the launcher keeps the
+server in its own process group so terminal signals reach both, and shutting down stops a
+running Library tools job, so no job is left running beside the next server. Restart takes every station off the air for a moment, which
+is the remaining risk of a stolen browser session. Check, restart and their refusals are audited
+as `update-check` and `server-restart` with the usual closed-schema fields.
+
 ## Container and dependency controls
 
 The container image runs as UID/GID 10001 by default with all capabilities dropped and
@@ -1191,6 +1391,14 @@ folder read-only for `config.toml`. Base images and the copied `uv` binary use i
 CI builds and smoke-tests the image. It verifies the host network, pairing before any API access,
 folder ownership, and the health check, generates a CycloneDX SBOM, and blocks on Trivy HIGH or
 CRITICAL findings with fixes available.
+
+The published image on GitHub Container Registry is built by `.github/workflows/image.yml`
+only from a push to `master` or, through the release workflow, a verified `vX.Y.Z` tag whose
+commit is on `master`. A read-only job runs the same smoke test, SBOM and Trivy scan and saves the
+image it checked. A separate job, the only one holding `packages: write`, `id-token: write` and
+`attestations: write`, runs none of the downloaded scanners: it loads that saved image, pushes it
+and attests its digest with Sigstore. The GitHub release waits for the image. Pull requests build
+and check without registry credentials. Operators can check an image with `gh attestation verify`.
 
 `uv.lock` and `package-lock.json` are committed. CI uses frozen installs, runs `pip-audit` and
 `npm audit`, scans source tree with Trivy and OSV-Scanner, checks secrets with Gitleaks, and produces

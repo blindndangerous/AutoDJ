@@ -6,6 +6,7 @@
 // through the status live region.
 import { requestJson, withDisabled } from "./api-client.js";
 import { announceStatus } from "./live-region.js";
+import { registerSettingsGroup } from "./settings-drafts.js";
 
 function formatSize(bytes) {
   const megabytes = (Number(bytes) || 0) / (1024 * 1024);
@@ -22,7 +23,6 @@ export function createRecordingControls(doc, liveRegion) {
   const split = doc.getElementById("recording-split");
   const retention = doc.getElementById("recording-retention-days");
   const freeSpace = doc.getElementById("recording-free-space-mb");
-  const save = doc.getElementById("recording-save");
   let current = null;
   let lastError = null;
 
@@ -35,9 +35,11 @@ export function createRecordingControls(doc, liveRegion) {
     group.hidden = false;
     const wasRunning = Boolean(current?.running);
     current = value;
+    const available = value.available !== false;
     // A fixed name: the pressed state alone says whether it records.
     toggle.setAttribute("aria-pressed", String(Boolean(value.running)));
-    splitNow.setAttribute("aria-disabled", String(!value.running));
+    toggle.setAttribute("aria-disabled", String(!available));
+    splitNow.setAttribute("aria-disabled", String(!available || !value.running));
     if (value.file) {
       status.textContent = `Recording to ${value.file}, ${formatSize(value.bytes)} so far.`;
     } else if (value.running) {
@@ -50,18 +52,50 @@ export function createRecordingControls(doc, liveRegion) {
     if (value.error && value.error !== lastError) say(error.textContent, "error");
     else if (!value.error && lastError && value.running && wasRunning) say("Recording resumed.");
     lastError = value.error || null;
-    if (doc.activeElement !== split) split.value = value.split;
-    if (doc.activeElement !== retention) {
-      retention.value = String(value.retention_days);
-      retention.removeAttribute("aria-invalid");
-    }
-    if (doc.activeElement !== freeSpace) {
-      freeSpace.value = String(value.free_space_mb);
-      freeSpace.removeAttribute("aria-invalid");
-    }
+    draft.accept({ split: value.split, retention_days: value.retention_days,
+      free_space_mb: value.free_space_mb });
   }
 
+  function write(value) {
+    group.hidden = false;
+    if (value.split != null) split.value = value.split;
+    if (value.retention_days != null) retention.value = String(value.retention_days);
+    if (value.free_space_mb != null) freeSpace.value = String(value.free_space_mb);
+    for (const input of [retention, freeSpace]) input.removeAttribute("aria-invalid");
+  }
+  function readWholeNumber(input) {
+    const text = input.value.trim();
+    const number = Number(text);
+    return text !== "" && Number.isInteger(number) && number >= 0 ? number : null;
+  }
+  function wholeNumber(input) {
+    const number = readWholeNumber(input);
+    const valid = number !== null;
+    if (valid) input.removeAttribute("aria-invalid");
+    else input.setAttribute("aria-invalid", "true");
+    return valid ? number : null;
+  }
+  const draft = registerSettingsGroup({
+    panel: doc.getElementById("spanel-stream"), group: "recording",
+    controls: [split, retention, freeSpace],
+    read: () => ({ split: split.value, retention_days: readWholeNumber(retention),
+      free_space_mb: readWholeNumber(freeSpace) }),
+    write,
+    validate() {
+      const days = wholeNumber(retention);
+      const floor = wholeNumber(freeSpace);
+      if (days !== null && floor !== null) return true;
+      say("Days to keep recordings and minimum free space must be whole numbers, 0 or more.", "error");
+      (days === null ? retention : freeSpace).focus();
+      return false;
+    },
+  });
+
   toggle.addEventListener("click", () => withDisabled(toggle, async () => {
+    if (current?.available === false) {
+      say("Recording is available only while stream mode is active.");
+      return;
+    }
     try {
       const value = await requestJson(
         current?.running ? "/api/recording/stop" : "/api/recording/start",
@@ -76,6 +110,10 @@ export function createRecordingControls(doc, liveRegion) {
 
   splitNow.addEventListener("click", () => withDisabled(splitNow, async () => {
     // aria-disabled keeps the button focusable, so the press is answered.
+    if (current?.available === false) {
+      say("Recording is available only while stream mode is active.");
+      return;
+    }
     if (!current?.running) {
       say("Recording is stopped; start it first.");
       return;
@@ -85,36 +123,6 @@ export function createRecordingControls(doc, liveRegion) {
       say("Recording split. The next audio starts a new file.");
     } catch (failure) {
       say(`Could not split recording: ${failure.message}`, "error");
-    }
-  }));
-
-  function wholeNumber(input) {
-    const text = input.value.trim();
-    const number = Number(text);
-    const valid = text !== "" && Number.isInteger(number) && number >= 0;
-    if (valid) input.removeAttribute("aria-invalid");
-    else input.setAttribute("aria-invalid", "true");
-    return valid ? number : null;
-  }
-
-  save.addEventListener("click", () => withDisabled(save, async () => {
-    const days = wholeNumber(retention);
-    const floor = wholeNumber(freeSpace);
-    if (days === null || floor === null) {
-      say("Days to keep recordings and minimum free space must be whole numbers, 0 or more.",
-        "error");
-      (days === null ? retention : freeSpace).focus();
-      return;
-    }
-    try {
-      apply(await requestJson("/api/recording/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ split: split.value, retention_days: days, free_space_mb: floor }),
-      }));
-      say("Recording settings saved.");
-    } catch (failure) {
-      say(`Could not save recording settings: ${failure.message}`, "error");
     }
   }));
 

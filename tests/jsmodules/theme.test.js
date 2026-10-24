@@ -4,7 +4,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { groups } = vi.hoisted(() => ({ groups: [] }));
+vi.mock("../../src/autodj/static/modules/settings-drafts.js", () => ({
+  registerSettingsGroup: (spec) => { groups.push(spec); return { accept: spec.write, dirty: () => false }; },
+}));
 
 import { memoryStorage } from "./helpers.js";
 
@@ -45,6 +50,7 @@ function choose(value) {
 }
 
 beforeEach(() => {
+  groups.length = 0;
   root().removeAttribute("data-theme");
   document.body.innerHTML = `<fieldset>${RADIOS}</fieldset>`;
 });
@@ -93,11 +99,13 @@ describe("installThemeSetting", () => {
     expect(root().getAttribute("data-theme")).toBe("dark");
   });
 
-  it("applies a change at once and keeps it for the next visit", () => {
+  it("previews a change and keeps it for the next visit only after Save", () => {
     const storage = memoryStorage();
     installThemeSetting(document, storage);
     choose("light");
     expect(root().getAttribute("data-theme")).toBe("light");
+    expect(storage.data.has(THEME_STORAGE_KEY)).toBe(false);
+    groups.at(-1).commit(groups.at(-1).read());
     expect(storage.data.get(THEME_STORAGE_KEY)).toBe("light");
 
     // A reload: a fresh page reads it back.
@@ -109,14 +117,16 @@ describe("installThemeSetting", () => {
 
     choose("system");
     expect(root().hasAttribute("data-theme")).toBe(false);
+    groups.at(-1).commit(groups.at(-1).read());
     expect(storage.data.get(THEME_STORAGE_KEY)).toBe("system");
   });
 
-  it("still applies a change when storage is blocked, starting from System", () => {
+  it("previews a change when storage is blocked but refuses its commit", () => {
     installThemeSetting(document, blockedStorage);
     expect(checked()).toBe("system");
     expect(() => choose("dark")).not.toThrow();
     expect(root().getAttribute("data-theme")).toBe("dark");
+    expect(() => groups.at(-1).commit(groups.at(-1).read())).toThrow("SecurityError");
   });
 
   it("follows a change made in another tab", () => {

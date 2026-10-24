@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installRelaySettings } from "../../src/autodj/static/modules/relay-settings.js";
+import { applySettingsDrafts } from "../../src/autodj/static/modules/settings-drafts.js";
 
 function markup() {
   document.body.innerHTML = `
-    <details class="card" id="relay-card" open><summary><h4>Relays</h4></summary>
+    <div id="spanel-stream"><details class="card" id="relay-card" open><summary><h4>Relays</h4></summary>
     <button id="stream-relay-add"></button><form id="stream-relay-form" hidden>
       <h5 id="stream-relay-form-title"></h5>
       <input id="stream-relay-name"><select id="stream-relay-type"><option value="icecast">Icecast</option><option value="shoutcast2">Shoutcast 2</option></select>
@@ -14,16 +15,36 @@ function markup() {
       <input id="stream-relay-public" type="checkbox"><input id="stream-relay-enabled" type="checkbox">
       <p id="stream-relay-form-error" class="field-error" hidden></p>
       <button type="submit"></button><button type="button" id="stream-relay-cancel"></button>
-    </form><button id="stream-metadata-save"></button>
+    </form>
     <input id="stream-station-name"><input id="stream-station-genre"><input id="stream-station-description"><input id="stream-station-url">
     <table role="grid"><tbody id="stream-relay-rows"></tbody></table>
-    </details>
+    </details></div>
     <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
       <button id="confirm-accept"></button><button id="confirm-cancel"></button></dialog>`;
 }
 
 describe("relay settings", () => {
   beforeEach(markup);
+
+  it("stages station metadata without using relay CRUD", () => {
+    const post = vi.fn(async () => true);
+    installRelaySettings({
+      doc: document, request: vi.fn(async () => ({ relays: [] })), post,
+      remove: vi.fn(), announce: vi.fn(),
+    });
+    applySettingsDrafts({
+      revision: "test-revision",
+      values: { stream: {
+        station_name: "AutoDJ", genre: "", description: "", url: "",
+      } },
+    });
+    const name = document.getElementById("stream-station-name");
+    name.value = "Night Radio";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(document.querySelector("#spanel-stream .settings-save-bar").textContent)
+      .toContain("Unsaved changes");
+    expect(post).not.toHaveBeenCalled();
+  });
 
   it("saves a relay without putting its password in a returned row", async () => {
     const post = vi.fn(async () => true);

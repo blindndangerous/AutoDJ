@@ -7,6 +7,10 @@ and posts the vector and measured fields back.  The server checks the
 result was made with its own model and analysis version and that the song
 has not changed, then stores it in its live catalog.
 
+When both ends support ``scan_decode_v1``, the same download also supplies
+pending scan measurements. Songs excluded from embedding receive only those
+measurements. The server supplies scan settings and owns tags and cue imports.
+
 Network trouble is retried with a growing pause, so a worker left running
 rides out a server restart.  Ctrl+C finishes the song in hand, gives the
 rest of the batch back and exits; a second Ctrl+C quits at once.  A heartbeat
@@ -25,6 +29,21 @@ and restart another program that shares the GPU.
 songs are claimed. After that long with an empty queue, it frees the model
 and runs the after-command, but keeps polling and sending heartbeats.
 New songs load the model again. If both idle timers expire, exit wins.
+
+A server that says ``worker_manage_v1`` sends settings from its Settings,
+Analysis workers page in each heartbeat and claim reply (#554): paused,
+batch size and idle release, with a revision, so each change is applied
+once.  A paused worker claims nothing, gives back the rest of its batch
+after the song in hand, keeps its heartbeats, and frees the model at once,
+running the after-command; paused counts as an empty queue for ``--once``
+and ``--idle-exit``.  ``--batch`` and ``--idle-release`` given on the command line win over
+the server's values.  The server never sends a command to run: the hooks
+come only from this machine's command line.  The worker also tells such a
+server what it analyses with, so the server can show why it refused it.
+
+``--pair CODE`` trades a code from that page for a token
+(:func:`pair_with_server`), which is kept in a file only this user can read
+(:func:`worker_token_file`) and used when no token is given.
 """
 
 from __future__ import annotations
@@ -38,6 +57,7 @@ import logging
 import os
 import re
 import shlex
+import socket
 import ssl
 import subprocess  # nosec B404 -- runs only the operator's own --before/--after commands
 import tempfile
@@ -54,6 +74,8 @@ from urllib.parse import urlencode, urlsplit
 import numpy as np
 
 from autodj.indexer import TrackAnalysis, file_fingerprint
+from autodj.scan_analysis import SCAN_ANALYSIS_VERSION
+from autodj.secret_files import read_private_json, update_private_json
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +88,15 @@ HOOK_TIMEOUT_SECONDS = 120.0
 _CHUNK = 1 << 16
 _MAX_REPLY_BYTES = 1 << 20
 _SUFFIX = re.compile(r"\.[a-z0-9]{1,8}\Z")
+#: Where ``autodj worker --pair`` trades a pairing code for a token.  It takes
+#: no token and no session, and the server's middleware lets only a program
+#: reach it, over HTTPS or from that machine.
+WORKER_PAIR_PATH = "/api/worker-pair"
+_TOKEN_TEXT = re.compile(r"adj1\.[0-9a-f]{32}\.[A-Za-z0-9_-]{43}\Z")
+#: The settings a server may set, and the command-line option that wins over each.
+MANAGED_OPTIONS = {"batch": "--batch", "idle_release": "--idle-release"}
+_MAX_BATCH = 16
+_MAX_IDLE_RELEASE_MINUTES = 7 * 24 * 60
 
 
 class WorkerError(RuntimeError):
@@ -142,6 +173,7 @@ class HttpTransport:
                 f"machine).  Use https:// for {parts.hostname}."
             )
         self._base = f"{parts.scheme}://{parts.netloc}{parts.path}"
+        # Empty only while pairing, which has no token yet.
         self._token = token
         self._timeout = timeout
         handlers: list[urllib.request.BaseHandler] = [_NoRedirect()]
@@ -159,10 +191,11 @@ class HttpTransport:
     ) -> tuple[int, dict[str, str], bytes]:
         data = None if body is None else json.dumps(body, allow_nan=False).encode("utf-8")
         headers = {
-            "Authorization": f"Bearer {self._token}",
             "Accept": "application/json",
             "User-Agent": "autodj-worker",
         }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
         if data is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(  # nosec B310 -- scheme checked in __init__
@@ -202,6 +235,18 @@ class ServerApi:
 
     def __init__(self, transport: Transport) -> None:
         self._transport = transport
+        self._scan_envelope = False
+        self._scan_decode = False
+        self._lease_tracking = False
+        self._leases: set[str] = set()
+        self._leases_lock = threading.Lock()
+        #: Whether the server takes ``worker_manage_v1`` fields: settings from
+        #: the server, and this worker's identity for its refusal notice.
+        self.manages = False
+        #: The settings revision this worker has applied, reported to the server.
+        self.settings_revision: int | None = None
+        #: What this worker analyses with, as far as it knows; ``None`` values are left out.
+        self.identity: dict[str, object] = {}
 
     def _call(
         self, method: str, path: str, body: dict[str, Any] | None = None, sink: Any = None
@@ -215,11 +260,70 @@ class ServerApi:
         retry = {k.lower(): v for k, v in headers.items()}.get("retry-after")
         raise ApiError(status, detail, float(retry) if retry and retry.isdigit() else None)
 
-    def heartbeat(self, device: str = "") -> dict[str, Any]:
-        return self._call("POST", "/api/worker/heartbeat", {"device": device})
+    def _work_request(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Negotiate support while preserving it through transient request failures."""
+        if self._scan_envelope:
+            body = {
+                **body,
+                "scan_decode_v1": self._scan_decode,
+                "scan_analysis_version": SCAN_ANALYSIS_VERSION,
+            }
+        if self.manages:
+            body = {**body, "worker_manage_v1": True}
+            if self.settings_revision is not None:
+                body["settings_revision"] = self.settings_revision
+            known = {key: value for key, value in self.identity.items() if value is not None}
+            if known:
+                body["identity"] = known
+        try:
+            reply = self._call("POST", path, body)
+        except ApiError as exc:
+            optional = {
+                "scan_decode_v1",
+                "scan_analysis_version",
+                "leases",
+                "connect",
+                "worker_manage_v1",
+                "settings_revision",
+                "identity",
+            }
+            if exc.status != 422 or not optional.intersection(body):
+                raise
+            if "scan_decode_v1" in body:
+                self._scan_envelope = False
+                self._scan_decode = False
+            if "leases" in body or "connect" in body:
+                self._lease_tracking = False
+            if "worker_manage_v1" in body:
+                self.manages = False
+            body = {key: value for key, value in body.items() if key not in optional}
+            reply = self._call("POST", path, body)
+        self.manages = reply.get("worker_manage_v1") is True
+        version = reply.get("scan_analysis_version")
+        self._scan_envelope = (
+            reply.get("scan_decode_v1") is True and isinstance(version, str) and bool(version)
+        )
+        self._scan_decode = self._scan_envelope and version == SCAN_ANALYSIS_VERSION
+        return reply
+
+    def heartbeat(self, device: str = "", *, connect: bool = False) -> dict[str, Any]:
+        body: dict[str, Any] = {"device": device}
+        if self._lease_tracking:
+            with self._leases_lock:
+                body["leases"] = sorted(self._leases)
+            body["connect"] = connect
+        reply = self._work_request("/api/worker/heartbeat", body)
+        self._lease_tracking = reply.get("lease_tracking") is True
+        if connect and self._lease_tracking and "connect" not in body:
+            # The first legacy-shaped request discovers support before resetting claims.
+            return self.heartbeat(device, connect=True)
+        return reply
 
     def claim(self, batch: int, device: str = "") -> dict[str, Any]:
-        return self._call("POST", "/api/worker/claim", {"batch": batch, "device": device})
+        reply = self._work_request("/api/worker/claim", {"batch": batch, "device": device})
+        with self._leases_lock:
+            self._leases.update(str(song["lease"]) for song in reply.get("songs", []))
+        return reply
 
     def download(self, lease: str, dest: Path, size: int) -> None:
         with dest.open("wb") as handle:
@@ -229,14 +333,23 @@ class ServerApi:
                 sink=_CappedFile(handle, size),
             )
 
-    def submit(self, result: dict[str, Any]) -> None:
-        self._call("POST", "/api/worker/result", result)
+    def submit(self, result: dict[str, Any]) -> bool:
+        stored = self._call("POST", "/api/worker/result", result).get("stored") is True
+        with self._leases_lock:
+            self._leases.discard(str(result["lease"]))
+        return stored
 
     def fail(self, lease: str, reason: str) -> None:
         self._call("POST", "/api/worker/failed", {"lease": lease, "reason": reason[:300]})
+        with self._leases_lock:
+            self._leases.discard(lease)
 
     def release(self, leases: list[str]) -> None:
-        self._call("POST", "/api/worker/release", {"leases": leases})
+        try:
+            self._call("POST", "/api/worker/release", {"leases": leases})
+        finally:
+            with self._leases_lock:
+                self._leases.difference_update(leases)
 
 
 def identity_mismatch(server: dict[str, object], worker: dict[str, object]) -> str:
@@ -260,6 +373,101 @@ def identity_mismatch(server: dict[str, object], worker: dict[str, object]) -> s
         f"{server.get('dimension')} values, the worker {worker.get('analysis_version')} with "
         f"{worker.get('dimension')}.  Update AutoDJ on both machines to the same release."
     )
+
+
+def worker_token_file() -> Path:
+    """This user's file of tokens from ``autodj worker --pair``, one per server.
+
+    ``%APPDATA%\\autodj\\worker-tokens.json`` on Windows, otherwise
+    ``$XDG_CONFIG_HOME/autodj/worker-tokens.json`` (``~/.config`` by default).
+    """
+    if os.name == "nt":
+        base = os.environ.get("APPDATA")
+        root = Path(base) if base else Path.home() / "AppData" / "Roaming"
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME")
+        root = Path(base) if base else Path.home() / ".config"
+    return root / "autodj" / "worker-tokens.json"
+
+
+def server_key(server: str) -> str:
+    """*server* as the token file names it: scheme, lower-case host, port and path."""
+    parts = urlsplit(server.strip().rstrip("/"))
+    host = (parts.hostname or "").lower()
+    if ":" in host:
+        host = f"[{host}]"
+    port = f":{parts.port}" if parts.port is not None else ""
+    return f"{parts.scheme.lower()}://{host}{port}{parts.path}"
+
+
+def save_worker_token(server: str, token: str, name: str, path: Path | None = None) -> Path:
+    """Keep *token* for *server* in the token file, readable only by this user.
+
+    Returns the file.  Other servers' tokens in it are kept.
+
+    Raises:
+        OSError: The file cannot be written.
+        ValueError: The file is there but is not a token file; it is left as it is.
+    """
+    path = path or worker_token_file()
+
+    def change(document: dict[str, Any]) -> bool:
+        servers = document.setdefault("servers", {})
+        if not isinstance(servers, dict):
+            raise ValueError(f"{path.name} is not a worker token file")
+        servers[server_key(server)] = {"token": token, "name": name, "paired_at": int(time.time())}
+        return True
+
+    update_private_json(path, change)
+    return path
+
+
+def load_worker_token(server: str, path: Path | None = None) -> str | None:
+    """The token saved for *server* by ``--pair``, or ``None``.
+
+    Raises:
+        OSError: The file cannot be read, or (``PermissionError``) others may read it.
+        ValueError: The file is not a token file.
+    """
+    document = read_private_json(path or worker_token_file(), require_private=True)
+    servers = document.get("servers")
+    entry = servers.get(server_key(server)) if isinstance(servers, dict) else None
+    token = entry.get("token") if isinstance(entry, dict) else None
+    return token if isinstance(token, str) and _TOKEN_TEXT.fullmatch(token) else None
+
+
+def pair_with_server(
+    server: str, code: str, *, ca_cert: Path | None = None, name: str | None = None
+) -> tuple[str, str]:
+    """Trade a pairing code from Settings, Analysis workers for a new token.
+
+    The code goes only over HTTPS, or plain HTTP to this machine, like a
+    token.  *name* (this computer's host name by default) names the token
+    unless Settings named it.
+
+    Returns:
+        ``(token, the name the server gave it)``.
+
+    Raises:
+        WorkerError: The code was refused, or the server could not be reached.
+    """
+    api = ServerApi(HttpTransport(server, "", ca_cert=ca_cert))
+    host = socket.gethostname() if name is None else name
+    try:
+        reply = api._call("POST", WORKER_PAIR_PATH, {"code": code, "name": host[:200]})
+    except ApiError as exc:
+        if exc.status == 404:
+            raise WorkerError(
+                "This server cannot pair workers; it is older than this worker.  Create a token "
+                "in Settings, Analysis workers instead."
+            ) from exc
+        raise WorkerError(f"The server refused the pairing code ({exc.detail}).") from exc
+    except NetworkError as exc:
+        raise WorkerError(f"Could not reach the server to pair: {exc}") from exc
+    token, given = reply.get("token"), reply.get("name")
+    if not isinstance(token, str) or _TOKEN_TEXT.fullmatch(token) is None:
+        raise WorkerError("The server's pairing reply held no usable token.")
+    return token, given if isinstance(given, str) else host
 
 
 def encode_vector(vector: np.ndarray) -> str:
@@ -324,6 +532,26 @@ def _minutes(seconds: float) -> str:
     return f"{minutes:g} minute" + ("" if minutes == 1 else "s")
 
 
+def _whole(value: object, maximum: int) -> int | None:
+    """*value* if it is a whole number from 1 to *maximum*, else ``None``."""
+    if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= maximum:
+        return value
+    return None
+
+
+def _setting_words(name: str, value: float | None) -> str:
+    if name == "batch":
+        return f"a batch of {value:g} songs" if value is not None else "the default batch"
+    return f"an idle release of {_minutes(value)}" if value is not None else "no idle release"
+
+
+def _option_words(name: str, value: float | None) -> str:
+    if value is None:
+        return f"no {MANAGED_OPTIONS[name]}"
+    shown = value if name == "batch" else value / 60
+    return f"{MANAGED_OPTIONS[name]} {shown:g}"
+
+
 class Worker:
     """Claim, download, analyse and submit until stopped, or until the queue stays empty.
 
@@ -347,6 +575,10 @@ class Worker:
             and again after an idle release. Heartbeats renew leases during preparation.
         release: Free prepared resources on idle release. The caller owns exit cleanup,
             including cleanup after a failed preparation.
+        fixed: The settings given on the command line (keys of
+            :data:`MANAGED_OPTIONS`): the server's values for them are ignored.
+
+    Set :attr:`prepared` when the caller has already prepared the resources.
     """
 
     def __init__(
@@ -364,6 +596,7 @@ class Worker:
         idle_release: float | None = None,
         prepare: Callable[[], None] | None = None,
         release: Callable[[], None] | None = None,
+        fixed: frozenset[str] = frozenset(),
     ) -> None:
         self.api = api
         self.analyse = analyse
@@ -380,6 +613,71 @@ class Worker:
         self._backoff = 0.0
         self._heartbeat_every = 30.0
         self.server_identity: dict[str, object] | None = None
+        self.prepared = False
+        # Settings from the server (#554), applied by the heartbeat thread and the loop.
+        self.fixed = fixed
+        self.paused = False
+        self.settings_revision: int | None = None
+        self._own: dict[str, float | None] = {"batch": batch, "idle_release": idle_release}
+        self._overridden: set[str] = set()
+        self._settings_lock = threading.Lock()
+
+    @property
+    def identity(self) -> dict[str, object]:
+        """What this worker analyses with; the server is told too, once it manages workers."""
+        return self._identity
+
+    @identity.setter
+    def identity(self, value: dict[str, object]) -> None:
+        self._identity = value
+        self.api.identity = dict(value)
+
+    # -- settings from the server ---------------------------------------
+
+    def apply_settings(self, settings: object) -> None:
+        """Apply the server's settings for this worker once per revision.
+
+        A value given on the command line wins, and that is logged once.  A
+        value the server leaves unset goes back to this worker's own.
+        """
+        if not isinstance(settings, dict):
+            return
+        revision = settings.get("revision")
+        if not isinstance(revision, int) or isinstance(revision, bool):
+            return
+        with self._settings_lock:
+            # An older reply, such as a slow claim's, never undoes a newer one.
+            if self.settings_revision is not None and revision <= self.settings_revision:
+                return
+            minutes = _whole(settings.get("idle_release_minutes"), _MAX_IDLE_RELEASE_MINUTES)
+            wanted = {
+                "batch": _whole(settings.get("batch"), _MAX_BATCH),
+                "idle_release": None if minutes is None else minutes * 60.0,
+            }
+            for name, value in wanted.items():
+                own = self._own[name]
+                if name in self.fixed:
+                    if value is not None and value != own and name not in self._overridden:
+                        self._overridden.add(name)
+                        logger.info(
+                            "The server asks for %s; %s on the command line wins.",
+                            _setting_words(name, value),
+                            _option_words(name, own),
+                        )
+                    continue
+                chosen = own if value is None else value
+                if chosen != getattr(self, name):
+                    setattr(self, name, chosen)
+                    logger.info("The server set %s.", _setting_words(name, chosen))
+            paused = settings.get("paused") is True
+            if paused != self.paused:
+                self.paused = paused
+                if paused:
+                    logger.info("Paused by the server: no more songs until it resumes this worker.")
+                else:
+                    logger.info("Resumed by the server.")
+            self.settings_revision = revision
+            self.api.settings_revision = revision
 
     # -- helpers --------------------------------------------------------
 
@@ -461,23 +759,47 @@ class Worker:
         Returns the server's identity; the model's weights are compared once
         this worker has its copy of the model (:meth:`check_identity`).
         """
-        try:
-            reply = self._call(lambda: self.api.heartbeat(self.device))
-        except (ApiError, NetworkError) as exc:
-            raise WorkerError(f"Could not start work with the server: {exc}") from exc
+        reply = self._start_heartbeat(connect=True)
         self.server_identity = dict(reply.get("identity", {}))
         self.check_identity(self.server_identity, ("model", "analysis_version", "dimension"))
         self._heartbeat_every = float(reply.get("heartbeat_seconds", 30))
+        self.apply_settings(reply.get("settings"))
         return self.server_identity
+
+    def report_identity(self) -> None:
+        """Tell a server that manages workers this worker's full identity, weights included.
+
+        That server refuses a mismatch and shows why in Settings.  An older
+        server is not asked; :meth:`check_identity` decides either way.
+
+        Raises:
+            WorkerError: The server refused the identity, or could not be reached.
+        """
+        if getattr(self.api, "manages", False) is not True:
+            return
+        self.apply_settings(self._start_heartbeat().get("settings"))
+
+    def _start_heartbeat(self, *, connect: bool = False) -> dict[str, Any]:
+        try:
+            return self._call(lambda: self.api.heartbeat(self.device, connect=connect))
+        except ApiError as exc:
+            if exc.status == 409:
+                # The server's own words: what differs and what to change.
+                raise WorkerError(exc.detail) from exc
+            raise WorkerError(f"Could not start work with the server: {exc}") from exc
+        except NetworkError as exc:
+            raise WorkerError(f"Could not start work with the server: {exc}") from exc
 
     # -- heartbeat ------------------------------------------------------
 
     def _beat(self, finished: threading.Event) -> None:
         while not finished.wait(self._heartbeat_every):
             try:
-                self.api.heartbeat(self.device)
+                reply = self.api.heartbeat(self.device)
             except (ApiError, NetworkError) as exc:
                 logger.debug("Heartbeat failed: %s", exc)
+                continue
+            self.apply_settings(reply.get("settings"))
 
     # -- work ----------------------------------------------------------
 
@@ -497,6 +819,7 @@ class Worker:
             except ApiError as exc:
                 logger.warning("%s %s skipped: %s", number, name, exc.detail)
                 self.stats.stale += 1
+                self._release([lease], retry=True)
                 return
             except ValueError as exc:
                 self._report_failure(lease, name, number, str(exc))
@@ -505,7 +828,22 @@ class Worker:
                 self._report_failure(lease, name, number, "the download did not match the song")
                 return
             try:
-                analysis = self.analyse(path)
+                scan = None
+                if song.get("scan") is not None:
+                    from autodj.scan_analysis import analyse_scan
+
+                    scan = analyse_scan(path, song["scan"])
+                embed = song.get("embed", True)
+                maximum = song.get("advanced_max_seconds", 0)
+                if scan is not None and maximum and scan["length"] > maximum:
+                    embed = False
+                analysis = self.analyse(path) if embed else None
+                if analysis is not None:
+                    energy = analysis.energy
+                elif scan is not None:
+                    energy = scan["energy"]
+                else:
+                    raise ValueError("claim has no analysis task")
             except Exception as exc:
                 self._report_failure(lease, name, number, str(exc) or type(exc).__name__)
                 return
@@ -519,18 +857,29 @@ class Worker:
             "dimension": self.identity["dimension"],
             "size": size,
             "fingerprint": fingerprint,
-            "vector": encode_vector(analysis.vector),
-            "energy": analysis.energy,
-            "key": analysis.key,
-            "mode": analysis.mode,
-            "bpm": analysis.bpm,
-            "tempo_confidence": analysis.tempo_confidence,
+            "vector": encode_vector(analysis.vector) if analysis is not None else None,
+            "energy": energy,
+            "key": analysis.key if analysis is not None else -1,
+            "mode": analysis.mode if analysis is not None else -1,
+            "bpm": analysis.bpm if analysis is not None else 0.0,
+            "tempo_confidence": analysis.tempo_confidence if analysis is not None else 0.0,
         }
+        if scan is not None:
+            result["scan"] = scan
         try:
-            self._call(lambda: self.api.submit(result), give_up_on_stop=False)
+            stored = self._call(lambda: self.api.submit(result), give_up_on_stop=False)
         except ApiError as exc:
             logger.warning("%s %s not stored: %s", number, name, exc.detail)
+            if scan is not None and exc.status in {409, 413, 422}:
+                self._report_failure(lease, name, number, "server rejected scan measurements")
+                return
             self.stats.stale += 1
+            self._release([lease], retry=True)
+            return
+        if stored is False:
+            logger.warning("%s %s not stored by the server.", number, name)
+            self.stats.stale += 1
+            self._release([lease], retry=True)
             return
         self.stats.done += 1
         logger.info("%s %s analysed in %.1f s.", number, name, time.monotonic() - started)
@@ -540,14 +889,20 @@ class Worker:
         self.stats.failed += 1
         with contextlib.suppress(ApiError, NetworkError):
             self._call(lambda: self.api.fail(lease, reason), give_up_on_stop=False)
+        self._release([lease], retry=True)
 
-    def _release(self, leases: list[str]) -> None:
+    def _release(self, leases: list[str], *, retry: bool = False) -> None:
         if not leases:
             return
         try:
-            self.api.release(leases)
+            if retry:
+                self._call(lambda: self.api.release(leases))
+            else:
+                self.api.release(leases)
             logger.info("Gave %d unanalysed songs back to the server.", len(leases))
         except (ApiError, NetworkError) as exc:
+            if retry and not self.stop.is_set():
+                raise WorkerError(f"Could not release rejected songs: {exc}") from exc
             logger.warning(
                 "Could not give %d songs back (%s); the server takes them back by itself "
                 "in a few minutes.",
@@ -555,8 +910,31 @@ class Worker:
                 exc,
             )
 
+    def _release_when_idle(
+        self, prepared: bool, empty_since: float, now: float, pause: float, why: str
+    ) -> tuple[bool, float]:
+        """Free the prepared resources once *idle_release* has passed since *empty_since*.
+
+        Returns whether they are still prepared, and how long to wait.
+        """
+        if not prepared or self.idle_release is None:
+            return prepared, pause
+        left = empty_since + self.idle_release - now
+        if left > 0:
+            return prepared, min(pause, left)
+        if self.release is not None:
+            self.release()
+        logger.info("%s for %s; released analysis resources.", why, _minutes(self.idle_release))
+        return False, pause
+
     def run(self) -> WorkerStats:
         """Work until stopped, or until the queue has been empty for *idle_exit*.
+
+        While the server has this worker paused, it claims nothing and waits
+        for a heartbeat to resume it.  Pausing frees the prepared resources
+        at once, idle release or not, so the after-command runs; resuming
+        prepares again only when songs arrive.  Paused counts as an empty
+        queue for *idle_exit*, so ``--once`` never waits on a pause.
 
         Raises:
             WorkerError: The token was refused or the model does not match.
@@ -569,52 +947,72 @@ class Worker:
         beat.start()
         held: list[str] = []
         empty_since: float | None = None
-        prepared = False
+        paused_since: float | None = None
+        prepared = self.prepared
         try:
             with tempfile.TemporaryDirectory(prefix="autodj-worker-") as folder:
                 while not self.stop.is_set():
+                    if self.paused:
+                        now = self._now()
+                        if paused_since is None:
+                            paused_since = now
+                            if prepared:
+                                if self.release is not None:
+                                    self.release()
+                                prepared = False
+                                logger.info("Paused; released analysis resources.")
+                        # Paused is an empty queue for --once and --idle-exit.
+                        empty_since = now if empty_since is None else empty_since
+                        paused_wait = self._idle_pause(empty_since, now)
+                        if paused_wait is None:
+                            break
+                        self._wait(paused_wait)
+                        continue
+                    if paused_since is not None:
+                        paused_since = None
+                        empty_since = None
                     try:
                         claim = self._call(lambda: self.api.claim(self.batch, self.device))
                     except (ApiError, NetworkError) as exc:
                         if self.stop.is_set():
                             break
                         raise WorkerError(f"The server refused to hand out songs: {exc}") from exc
+                    self.apply_settings(claim.get("settings"))
                     self.check_identity(claim.get("identity", {}))
                     songs = list(claim.get("songs", []))
                     if not songs:
+                        if self.paused:
+                            continue
                         now = self._now()
                         empty_since = now if empty_since is None else empty_since
                         pause = self._idle_pause(empty_since, now)
                         if pause is None:
                             break
-                        if prepared and self.idle_release is not None:
-                            left = empty_since + self.idle_release - now
-                            if left <= 0:
-                                if self.release is not None:
-                                    self.release()
-                                prepared = False
-                                logger.info(
-                                    "Queue empty for %s; released analysis resources.",
-                                    _minutes(self.idle_release),
-                                )
-                            else:
-                                pause = min(pause, left)
+                        prepared, pause = self._release_when_idle(
+                            prepared, empty_since, now, pause, "Queue empty"
+                        )
                         self._wait(pause)
                         continue
                     empty_since = None
                     held = [str(song["lease"]) for song in songs]
+                    if self.paused:
+                        # Paused by a heartbeat since the claim: nothing to prepare for.
+                        self._release(held)
+                        held = []
+                        continue
                     if not prepared:
                         if self.prepare is not None:
                             self.prepare()
                         prepared = True
                     waiting = int(claim.get("waiting", 0))
                     for position, song in enumerate(songs, 1):
-                        if self.stop.is_set():
+                        # Paused: the rest of the batch goes back after the song in hand.
+                        if self.stop.is_set() or self.paused:
                             break
-                        held.remove(str(song["lease"]))
                         self._process(
                             song, Path(folder), f"[{position}/{len(songs)}, {waiting} waiting]"
                         )
+                        held.remove(str(song["lease"]))
                     self._release(held)
                     held = []
         finally:
@@ -674,6 +1072,11 @@ __all__ = [
     "WorkerError",
     "choose_device",
     "encode_vector",
+    "load_worker_token",
+    "pair_with_server",
     "release_gpu",
     "run_hook",
+    "save_worker_token",
+    "server_key",
+    "worker_token_file",
 ]

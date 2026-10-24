@@ -1571,7 +1571,7 @@ class PlayerBridge(LibraryAccess):
         return getattr(self.player, "bus", None) is not None
 
     def _refresh_bus_queue(self) -> None:
-        """Hand a queue edit to the mix bus's render-ahead worker.
+        """Hand a queue edit to the mix bus's playout worker.
 
         Call while holding ``queue_lock``, *after* editing the queue.  The
         rendered next track only peeked at the queue, so nothing needs
@@ -2514,9 +2514,9 @@ class PlayerBridge(LibraryAccess):
         except Exception:
             logger.exception("Could not load earlier plays into the repeat rules")
 
-    def save_persistent_state(self) -> None:
+    def save_persistent_state(self, *, strict: bool = False) -> None:
         """Write the settings owner's web_state.json atomically."""
-        self.settings.save()
+        self.settings.save(strict=strict)
 
     def get_settings(self) -> dict:
         """Return a snapshot of every adjustable setting and available presets."""

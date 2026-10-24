@@ -6,7 +6,9 @@ Retain a backup, move a clean source checkout to the desired release, validate m
 
 ## Upgrade checklist
 
-These steps apply to a native installation from a source checkout.
+These steps apply to a native installation from a source checkout. For Docker or Podman, see
+[Update the container](containers-and-windows.md#update-the-container); its backup, release-note
+and Doctor advice is the same.
 
 1. Stop AutoDJ, then create and retain a backup before changing the checkout or its dependencies.
 2. Run `git status --short`. If it prints any paths, stop. Commit the changes on a branch or copy
@@ -40,6 +42,11 @@ These steps apply to a native installation from a source checkout.
 
 Restore the backup you made before the upgrade. A newer AutoDJ writes some settings that an older
 one reads differently:
+
+- AutoDJ 0.22.0 moves the index folder into `libraries/`, `stations/`, `shared/` and `logs/`,
+  copies station settings into each `station.json` and moves play history into each station's
+  `station.db`. AutoDJ 0.21.0 and older do not read that layout. To go back, restore a backup
+  that the older release made.
 
 - An every-N-minutes schedule event that keeps to chosen days: AutoDJ 0.20.0 and older ignore its
   days and run it every day. Edit the event, or delete it, before going back.

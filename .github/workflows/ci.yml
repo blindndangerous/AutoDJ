@@ -51,29 +51,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Builds, smoke-tests and scans only; image.yml publishes from master and
+    # release.yml from a release tag, after the same checks.
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - name: Build and smoke-test unprivileged image
-        run: bash scripts/container_smoke.sh
-      - name: Generate image SBOM
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
-        with:
-          image: autodj:local
-          format: cyclonedx-json
-          output-file: container-sbom.cdx.json
-      - name: Scan built image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: autodj:local
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-          timeout: 15m0s
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: container-sbom
-          path: container-sbom.cdx.json
+      # The smoke test runs the image through compose.yaml alone; check that the
+      # local-build override still resolves with it.
+      - name: Check the local-build Compose files
+        run: |
+          set -euo pipefail
+          docker compose -f compose.yaml -f compose.build.yaml config -q
+          test "$(docker compose -f compose.yaml -f compose.build.yaml config --images)" = autodj:local
+      - uses: ./.github/actions/build-image
 
   frontend:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
@@ -164,9 +153,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
-      - name: Install FFmpeg (Linux)
+      # From GitHub's cache after the first run, so a slow Ubuntu mirror cannot
+      # use up the job's time.
+      - name: Install FFmpeg (Linux, cached)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        timeout-minutes: 15
+        with:
+          packages: ffmpeg
+          version: v1
+          execute_install_scripts: true
 
       - name: Install FFmpeg (Windows)
         if: runner.os == 'Windows'
@@ -198,7 +194,25 @@ jobs:
           cache: npm
       - run: uv sync --frozen --all-extras
       - run: npm ci --ignore-scripts
-      - run: npx --no-install playwright install --with-deps chromium firefox
+      # Playwright's missing system packages come from GitHub's cache after the
+      # first run, so a slow Ubuntu mirror cannot use up the job's time.
+      - name: List missing browser packages
+        id: browser-packages
+        shell: bash
+        run: |
+          set -uo pipefail
+          report=$(npx --no-install playwright install-deps --dry-run chromium firefox 2>&1) || true
+          packages=$(printf '%s\n' "$report" | sed -n 's/^  \([a-z0-9][a-z0-9.+-]*\)$/\1/p' | tr '\n' ' ')
+          printf 'packages=%s\n' "$packages" >>"$GITHUB_OUTPUT"
+      - name: Install browser packages (cached)
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        timeout-minutes: 15
+        with:
+          packages: ${{ steps.browser-packages.outputs.packages }}
+          version: v1
+          execute_install_scripts: true
+          empty_packages_behavior: ignore
+      - run: npx --no-install playwright install chromium firefox
       - name: Check rendered documentation
         shell: bash
         env:
@@ -286,14 +300,29 @@ jobs:
           cache: npm
       - run: uv sync --frozen --all-extras
       - run: npm ci --ignore-scripts
-      - run: npx --no-install playwright install --with-deps chromium
+      # Playwright's missing system packages and ffmpeg come from GitHub's cache
+      # after the first run, so a slow Ubuntu mirror cannot use up the job's time.
+      - name: List missing browser packages
+        id: browser-packages
+        shell: bash
+        run: |
+          set -uo pipefail
+          report=$(npx --no-install playwright install-deps --dry-run chromium 2>&1) || true
+          packages=$(printf '%s\n' "$report" | sed -n 's/^  \([a-z0-9][a-z0-9.+-]*\)$/\1/p' | tr '\n' ' ')
+          printf 'packages=%s\n' "${packages}ffmpeg" >>"$GITHUB_OUTPUT"
+      - name: Install browser packages and ffmpeg (cached)
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        timeout-minutes: 15
+        with:
+          packages: ${{ steps.browser-packages.outputs.packages }}
+          version: v1
+          execute_install_scripts: true
+      - run: npx --no-install playwright install chromium
       - name: Start stream-mode server
         shell: bash
         run: |
           set -euo pipefail
-          # Stream mode encodes with ffmpeg and refuses to start without it.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null
+          # Stream mode encodes with ffmpeg (installed above) and refuses to start without it.
           mkdir -p "$RUNNER_TEMP/stream/music" "$RUNNER_TEMP/stream/index" "$RUNNER_TEMP/stream/models"
           printf '[server]\nport = 8081\n' >"$RUNNER_TEMP/stream/config.toml"
           AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/stream/music" \

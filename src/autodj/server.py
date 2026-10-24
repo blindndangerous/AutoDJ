@@ -31,7 +31,7 @@ name.
 
 Stream mode (``serve --stream``) adds ``GET /stream.mp3`` and
 ``GET /stream.m3u`` (no login required) and the authenticated
-``GET /api/stream`` and ``POST /api/stream/settings``.
+``GET /api/stream`` and persistent stream configuration through ``PATCH /api/settings``.
 """
 
 from __future__ import annotations
@@ -49,6 +49,7 @@ import re
 import shutil
 import ssl
 import stat
+import sys
 import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
@@ -99,7 +100,7 @@ from autodj.breaks_api import (
 )
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
 from autodj.catalog import ADVANCED_MAX_MINUTES_LIMIT
-from autodj.config import MAX_EMBED_ORIGINS, AdsConfig, BreaksConfig
+from autodj.config import AdsConfig, BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
 from autodj.lan import (
@@ -165,6 +166,7 @@ from autodj.stations import (
     public_feed_path,
     quiesce_cache_writers,
     tick_stream_workers,
+    timed_shutdown_step,
 )
 from autodj.status_page import STATUS_PAGE_CSP, render_off_air_page, render_status_page
 from autodj.stereo import SAFE_FFMPEG_INPUT
@@ -181,6 +183,7 @@ from autodj.worker_api import (
     MACHINE_SCOPES,
     RESULT_BODY_MAX_BYTES,
     SMALL_BODY_MAX_BYTES,
+    WORKER_PAIR_PATH,
     WORKER_PREFIX,
     install_worker_api,
 )
@@ -643,14 +646,6 @@ class LibraryRescanBody(BaseModel):
     override_tags: StrictBool = False
 
 
-class TimeSettingsBody(BaseModel):
-    """The station time zone and time format, shared by every station (#282, #286)."""
-
-    model_config = ConfigDict(extra="forbid")
-    timezone: StrictStr
-    time_format: Literal["12", "24"]
-
-
 class LibraryAutoRescanBody(BaseModel):
     """Shared library automatic rescan interval."""
 
@@ -994,6 +989,7 @@ def _header_text(value: str) -> str:
 
 # A schedule event is a few hundred bytes; this leaves ample room.
 _SCHEDULE_BODY_MAX_BYTES = 16 * 1024
+_SETTINGS_BODY_MAX_BYTES = 64 * 1024
 # A show's list (#106): 500 paths, each well under 2 KiB in practice.
 SHOWS_SONGS_BODY_MAX_BYTES = 1024 * 1024
 
@@ -1049,59 +1045,80 @@ def create_app(
             yield
         finally:
             logger.info("Shutting down...")
-            speech = getattr(app.state, "speech", None)
-            if speech is not None and not await asyncio.to_thread(
-                speech.shutdown, _SHUTDOWN_TIMEOUT_S
-            ):
+            # The scan winds down while the rest stops; the library waits for
+            # it before the DJ-meta cache closes.
+            library.stop_scan(_SHUTDOWN_TIMEOUT_S)
+            from autodj.jobs import get_manager
+
+            async def stopped(name: str, worker: Any) -> bool:
+                """Shut *worker* down in a thread; whether it stopped in time (or is absent)."""
+                if worker is None:
+                    return True
+                return bool(
+                    await timed_shutdown_step(
+                        name, asyncio.to_thread(worker.shutdown, _SHUTDOWN_TIMEOUT_S)
+                    )
+                )
+
+            # These are independent, so they stop together: one after another,
+            # their timeouts would add up.
+            (
+                job_was_running,
+                speech_stopped,
+                rotation_stopped,
+                shows_stopped,
+                previews_stopped,
+                rescan_stopped,
+                reviews_stopped,
+            ) = await asyncio.gather(
+                # A Library tools job is a child process: stop it as its Stop
+                # button does, so a restart does not leave it beside the next server.
+                timed_shutdown_step(
+                    "stopping the library job",
+                    asyncio.to_thread(get_manager().shutdown, _SHUTDOWN_TIMEOUT_S),
+                ),
+                stopped("stopping speech", getattr(app.state, "speech", None)),
+                # A rotation test reads the library: stop it before the library closes.
+                stopped("stopping rotation tests", getattr(app.state, "rotation_tests", None)),
+                # So does a show's generation (#106): it is cancelled and ends at
+                # its next pick.
+                stopped("stopping show generations", getattr(app.state, "show_generations", None)),
+                # So does an hour preview (#126): it ends within its own time limit,
+                # and a worker that has not stopped keeps the library open.
+                stopped("stopping hour previews", getattr(app.state, "hour_previews", None)),
+                stopped("stopping the cue rescan", getattr(app.state, "cue_rescan", None)),
+                stopped("stopping review jobs", getattr(app.state, "review_jobs", None)),
+            )
+            if job_was_running:
+                logger.info("Stopped the running library job")
+            if not speech_stopped:
                 logger.warning(
                     "Speech worker is still stopping; pending requests will not be retried"
                 )
-            # A rotation test reads the library: stop it before the library closes.
-            rotation_tests = getattr(app.state, "rotation_tests", None)
-            if rotation_tests is not None and not await asyncio.to_thread(
-                rotation_tests.shutdown, _SHUTDOWN_TIMEOUT_S
-            ):
+            if not rotation_stopped:
                 logger.warning(
                     "A rotation test was still running %.2f seconds after it was cancelled",
                     _SHUTDOWN_TIMEOUT_S,
                 )
-            # So does a show's generation (#106): it is cancelled and ends at
-            # its next pick.
-            show_generations = getattr(app.state, "show_generations", None)
-            if show_generations is not None and not await asyncio.to_thread(
-                show_generations.shutdown, _SHUTDOWN_TIMEOUT_S
-            ):
+            if not shows_stopped:
                 logger.warning(
                     "A show's list was still being generated %.2f seconds after it was cancelled",
                     _SHUTDOWN_TIMEOUT_S,
                 )
-            # So does an hour preview (#126): it ends within its own time limit,
-            # and a worker that has not stopped keeps the library open.
-            hour_previews = getattr(app.state, "hour_previews", None)
-            readers_stopped = True
-            if hour_previews is not None and not await asyncio.to_thread(
-                hour_previews.shutdown, _SHUTDOWN_TIMEOUT_S
-            ):
-                readers_stopped = False
+            if not previews_stopped:
                 logger.error(
                     "An hour preview was still reading the library %.2f seconds after "
                     "shutdown began; the library is left open rather than closed under it",
                     _SHUTDOWN_TIMEOUT_S,
                 )
-            cue_rescan = getattr(app.state, "cue_rescan", None)
-            if cue_rescan is not None and not await asyncio.to_thread(
-                cue_rescan.shutdown, _SHUTDOWN_TIMEOUT_S
-            ):
-                readers_stopped = False
+            if not rescan_stopped:
                 logger.error("A cue rescan is still reading; the library remains open")
-            review_jobs = getattr(app.state, "review_jobs", None)
-            if review_jobs is not None and not await asyncio.to_thread(
-                review_jobs.shutdown, _SHUTDOWN_TIMEOUT_S
-            ):
-                readers_stopped = False
+            if not reviews_stopped:
                 logger.error("A review renderer is still reading; the library remains open")
-            writers_quiesced, cache_closed = await stations.shutdown(
-                library, _SHUTDOWN_TIMEOUT_S, readers_stopped=readers_stopped
+            readers_stopped = previews_stopped and rescan_stopped and reviews_stopped
+            writers_quiesced, cache_closed = await timed_shutdown_step(
+                "stopping the stations and the library",
+                stations.shutdown(library, _SHUTDOWN_TIMEOUT_S, readers_stopped=readers_stopped),
             )
             from autodj.mastering import kill_leftover_processes
 
@@ -1109,7 +1126,10 @@ def create_app(
             # Stereo Tool may outlive the server.  In a worker thread: it
             # waits up to 2 seconds for each process it kills.
             loop = asyncio.get_running_loop()
-            if killed := await loop.run_in_executor(None, kill_leftover_processes):
+            if killed := await timed_shutdown_step(
+                "stopping leftover mastering processes",
+                loop.run_in_executor(None, kill_leftover_processes),
+            ):
                 logger.warning("Stopped %d mastering process(es) left running", killed)
             if writers_quiesced and cache_closed:
                 logger.info("Server stopped cleanly.")
@@ -1123,7 +1143,8 @@ def create_app(
                     "Server shutdown completed in degraded mode: active cache writers "
                     "remain; DJ-meta cache left open."
                 )
-            else:  # pragma: no cover -- close failure is defensive-only
+            else:
+                # A scan that would not stop, or a close that failed.
                 logger.warning(
                     "Server shutdown completed in degraded mode: DJ-meta cache could not be closed."
                 )
@@ -1229,6 +1250,7 @@ def create_app(
     app.state.request_pairing_code = request_pairing_code
     # Request bodies the middleware caps before any route parses them.
     from autodj.prepared_editions import MAX_UPLOAD_BYTES as EDITION_UPLOAD_BYTES
+    from autodj.updates_api import ROUTES as UPDATE_ROUTES
 
     body_limits: dict[str, Callable[[], int]] = {
         **{path: (lambda: SPEECH_BODY_LIMIT) for path in WRITE_ROUTES},
@@ -1245,19 +1267,20 @@ def create_app(
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/stereo-tool/license": lambda: SMALL_BODY_MAX_BYTES,
         "/api/stereo-tool/download": lambda: SMALL_BODY_MAX_BYTES,
+        **{path: (lambda: SMALL_BODY_MAX_BYTES) for path in UPDATE_ROUTES},
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/machine-tokens/pairing-code": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/analysis/workers/{token_id}/settings": lambda: SMALL_BODY_MAX_BYTES,
+        WORKER_PAIR_PATH: lambda: SMALL_BODY_MAX_BYTES,
         "/api/live/djs": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/live/settings": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/time-settings": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/station-settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/points/rescan": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/points/rescan/apply": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/music-fade": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/public-settings": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/stations/{slug}/time-settings": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/stations/{slug}/station-settings": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/stations/{slug}/public-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/settings": lambda: _SETTINGS_BODY_MAX_BYTES,
+        "/api/stations/{slug}/settings": lambda: _SETTINGS_BODY_MAX_BYTES,
+        "/api/stream/relays": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stations/{slug}/stream/relays": lambda: SMALL_BODY_MAX_BYTES,
         # The largest break any station takes; each station checks its own.
         UPLOAD_PATH: lambda: _break_upload_cap(stations),
         VOICE_UPLOAD_PATH: lambda: _voice_upload_cap(stations),
@@ -1303,6 +1326,7 @@ def create_app(
         body_limits=body_limits,
         machine_scopes={**MACHINE_SCOPES, **ANNOUNCER_SCOPES},
         machine_auth=lambda token, scope: machine_tokens().authenticate(token, scope),
+        program_paths=frozenset({WORKER_PAIR_PATH}),
         station_slugs=stations.slugs,
     )
     model_commit = CachedModelCommit(lambda: (cfg.model, cfg.index))
@@ -2180,6 +2204,11 @@ def create_app(
     # Settings, Sound, Download Stereo Tool: shared, into the index folder.
     install_stereo_tool_download(app, lambda: cfg.index.index_dir)
 
+    from autodj.updates_api import install_updates
+
+    # Settings, Updates: the update check and Restart, shared by every station.
+    install_updates(app, lambda: cfg.index.index_dir)
+
     @app.delete("/api/stereo-tool-presets/{name}")
     async def api_stereo_tool_preset_delete(name: str) -> dict:
         """Delete an uploaded preset other than the one currently selected."""
@@ -2350,62 +2379,15 @@ def create_app(
     async def api_time_settings(request: Request) -> dict[str, Any]:
         return await asyncio.to_thread(_time_settings, _settings_slug(request))
 
-    @station_router.put("/time-settings")
-    async def api_set_time_settings(request: Request, body: TimeSettingsBody) -> dict[str, Any]:
-        from autodj import timefmt
-
-        slug = _settings_slug(request)
-        try:
-            await asyncio.to_thread(stations.save_options, slug, {"timezone": body.timezone})
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        catalog = _catalog_library().catalog
-        await asyncio.to_thread(catalog.set_setting, "time_format", body.time_format)
-        timefmt.time_format = body.time_format
-        return await asyncio.to_thread(_time_settings, slug)
-
     @station_router.get("/station-settings")
     async def api_station_settings(request: Request) -> dict[str, Any]:
         from dataclasses import asdict
 
         return asdict(stations.configuration(_settings_slug(request)).station)
 
-    @station_router.put("/station-settings")
-    async def api_set_station_settings(request: Request, body: dict[str, Any]) -> dict[str, Any]:
-        try:
-            return await asyncio.to_thread(stations.save_options, _settings_slug(request), body)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
     @station_router.get("/public-settings")
     async def api_public_settings(request: Request) -> dict[str, Any]:
         return await asyncio.to_thread(stations.public_settings, _settings_slug(request))
-
-    @station_router.put("/public-settings")
-    async def api_set_public_settings(request: Request, body: dict[str, Any]) -> Any:
-        try:
-            return await asyncio.to_thread(
-                stations.save_public_settings, _settings_slug(request), body
-            )
-        except (TypeError, ValueError) as exc:
-            detail = str(exc)
-            if detail.startswith("player_page.embed_origins"):
-                if detail.startswith("player_page.embed_origins entry "):
-                    site = detail.removeprefix("player_page.embed_origins entry ").rsplit(
-                        " must be an HTTP(S) origin", 1
-                    )[0]
-                    detail = (
-                        f"Sites allowed to embed: {site} is not an http:// or https:// site "
-                        "address, such as https://radio.example.net."
-                    )
-                elif "allows at most" in detail:
-                    detail = f"Sites allowed to embed: use at most {MAX_EMBED_ORIGINS} sites."
-                else:
-                    detail = "Sites allowed to embed: enter one site per line."
-                return JSONResponse(
-                    status_code=400, content={"detail": detail, "field": "embed_origins"}
-                )
-            raise HTTPException(status_code=400, detail=detail) from exc
 
     @app.put("/api/library/auto-rescan")
     async def api_library_set_auto_rescan(body: LibraryAutoRescanBody) -> dict[str, int]:
@@ -2997,11 +2979,11 @@ def _extra_station(
         )
         if speakers and _missing_audio_modules():
             raise RuntimeError("Server audio requires soundfile and sounddevice.")
-        if streams:
+        if streams or speakers:
             import shutil
 
             if shutil.which("ffmpeg") is None:
-                raise RuntimeError("Streaming requires ffmpeg on PATH.")
+                raise RuntimeError("Server-mixed audio requires ffmpeg on PATH.")
         first_track = seed_entry
         paths = StationPaths.for_station(cfg, slug)
         paths.state_dir.mkdir(parents=True, exist_ok=True)
@@ -3167,10 +3149,11 @@ def serve(
     stream: bool | None = None,
     lan_configured_hosts: list[str] | None = None,
     library: LibraryManager | None = None,
-) -> None:
+) -> bool:
     """Start the Player thread and the FastAPI/uvicorn web server.
 
-    This function blocks until uvicorn is stopped (Ctrl+C).
+    This function blocks until uvicorn is stopped (Ctrl+C), and returns
+    whether it stopped because Settings, Updates asked for a restart.
 
     Args:
         cfg: Full :class:`~autodj.config.AutoDJConfig` instance.
@@ -3333,6 +3316,11 @@ def serve(
         "host": host,
         "port": port,
         "log_level": "warning",
+        # No handlers of uvicorn's own: its warnings and errors go through the
+        # root logger, so they reach the log file once, in AutoDJ's format.
+        # Access lines are not logged at all.
+        "log_config": None,
+        "access_log": False,
     }
     # Uvicorn rewrites request.client and scheme only for configured proxy
     # peers, in every mode: the listener limits, the pairing lockout and the
@@ -3377,9 +3365,29 @@ def serve(
     # mid-asyncio-teardown on Windows) can re-raise.  Suppress so the
     # CLI sees a clean return; the lifespan already logged
     # "Server stopped cleanly."
+    #
+    # uvicorn.Server rather than uvicorn.run: Settings, Updates' Restart
+    # (autodj.updates_api) stops this server through app.state.server_exit.
+    server = uvicorn.Server(uvicorn.Config(app, **uvicorn_kwargs))
+
+    def _server_exit() -> None:
+        server.should_exit = True
+
+    app.state.server_exit = _server_exit
+    interrupted = False
     try:
-        with contextlib.suppress(KeyboardInterrupt):
-            uvicorn.run(app, **uvicorn_kwargs)
+        server.run()
+    except KeyboardInterrupt:
+        interrupted = True
     finally:
         for reloader in reloaders:
             reloader.stop()
+    # uvicorn records each stop signal it handled; Ctrl+C or SIGTERM during a
+    # restart's shutdown means stop, not restart.
+    captured = getattr(server, "_captured_signals", None)
+    if isinstance(captured, list) and captured:
+        interrupted = True
+    if not server.started:
+        # What uvicorn.run does when the server could not start (port in use).
+        sys.exit(3)
+    return bool(getattr(app.state, "restart_requested", False)) and not interrupted

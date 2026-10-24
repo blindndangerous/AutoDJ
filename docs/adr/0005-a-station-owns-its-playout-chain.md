@@ -143,6 +143,14 @@ record remain estimates requiring load evidence, not admission guarantees.
 The new storage/access records are Proposed, not silently accepted replacements.
 Record actual checks and their limits in the relevant PR.
 
+## Amendment, 2026-10-23: shared live playout for server outputs
+
+[Issue #538](https://github.com/blindndangerous/AutoDJ/issues/538) gives local
+sound-card and streaming stations the same live mixing engine. Station ownership
+and start/stop remain unchanged: choosing only the sound card does not create
+stream encoders, public listener endpoints or listener-driven sets. The output
+and dependency change is recorded in [ADR 4](0004-server-mix-bus-and-stream-mode.md).
+
 ## Current contracts
 
 IDs are stable and are never recycled. Automated means an existing regression
@@ -153,7 +161,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | ID | Constraint | Method | Evidence |
 | --- | --- | --- | --- |
 | `ADR-0005-01` | Each runtime receives independent station configuration and default station paths use the same ownership model. | automated | `tests/unit/test_station_runtime.py::test_each_run_gets_a_fresh_copy_of_the_station_config`; `tests/unit/test_station_runtime.py::test_default_paths_use_the_same_station_factory_path` |
-| `ADR-0005-02` | Station histories, last-played values, and clock state remain separate after persistence. | automated | `tests/unit/test_station_ledger.py::test_two_ledgers_on_one_catalog_keep_history_last_played_and_clock_apart` |
+| `ADR-0005-02` | Station histories, last-played values, and clock state remain separate after persistence. | automated | `tests/unit/test_station_ledger.py::test_two_ledgers_on_one_catalog_keep_history_last_played_and_clock_apart`; `tests/integration/test_stopped_station_editing.py::test_history_export_uses_selected_station_store_even_when_stopped` |
 | `ADR-0005-03` | Stopped settings load/edit/save without a Player and retain running-setter validation. | automated | `tests/unit/test_station_settings.py::test_offline_settings_load_edit_save_without_player`; `tests/unit/test_station_settings.py::test_offline_settings_use_running_setter_validation` |
 | `ADR-0005-04` | Every route declares shared/station ownership and named station operations target that station. | automated | `tests/integration/test_station_routes.py::test_every_route_is_classified_as_shared_or_station`; `tests/integration/test_station_routes.py::test_a_named_station_route_acts_on_that_station` |
 | `ADR-0005-05` | A station whose Player will not stop retains ownership of its mastering process and licence. | automated | `tests/unit/test_station_runtime.py::test_a_station_whose_player_will_not_stop_keeps_its_master_and_licence` |

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from autodj import player as player_module
-from tests.integration._helpers import wav_bytes
+from tests.integration._helpers import patch_station_settings, wav_bytes
 from tests.integration.test_multi_station import rig  # noqa: F401
 
 OWL = "/api/stations/nightowl"
@@ -23,27 +24,29 @@ def test_stopped_station_playback_schedule_and_clock_settings_are_saved(rig) -> 
     assert client.get("/api/stations").json()["stations"][1]["state"] == "stopped"
 
     with patch.object(player_module, "Player", wraps=player_module.Player) as make_player:
-        invalid = client.post(
-            f"{OWL}/playback-settings",
-            json={"transition_mode": "not-a-mode"},
-            headers=ORIGIN,
+        invalid = patch_station_settings(
+            client, {"playback": {"transition_mode": "not-a-mode"}}, base=OWL, headers=ORIGIN
         )
         assert invalid.status_code == 422
 
-        playback = client.post(
-            f"{OWL}/playback-settings",
-            json={
-                "hour_fit": True,
-                "hour_fit_window_minutes": 12,
-                "liners_enabled": True,
-                "liners_every_n_songs": 1,
+        playback = patch_station_settings(
+            client,
+            {
+                "playback": {
+                    "hour_fit": True,
+                    "hour_fit_window_minutes": 12,
+                    "liners_enabled": True,
+                    "liners_every_n_songs": 1,
+                }
             },
+            base=OWL,
             headers=ORIGIN,
         )
         assert playback.status_code == 200, playback.text
-        assert playback.json()["playback"]["hour_fit"] is True
-        assert playback.json()["playback"]["hour_fit_window_minutes"] == 12
-        assert playback.json()["playback"]["liners_enabled"] is True
+        values = playback.json()["settings"]["values"]["playback"]
+        assert values["hour_fit"] is True
+        assert values["hour_fit_window_minutes"] == 12
+        assert values["liners_enabled"] is True
 
         schedule = client.post(
             f"{OWL}/schedule",
@@ -96,6 +99,140 @@ def test_stopped_station_playback_schedule_and_clock_settings_are_saved(rig) -> 
     )
     assert upload.status_code == 200, upload.text
     assert client.get(f"{OWL}/liners").json()["files"] == ["offline.wav"]
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_stopped_station_settings_batch_validates_and_detects_conflicts(rig) -> None:  # noqa: F811
+    """ADR-0017-03: stopped validation and stale revisions are enforced."""
+    client, _library, _cfg, _song, _closes = rig
+    url = f"{OWL}/settings"
+    current = client.get(url, headers=ORIGIN)
+    assert current.status_code == 200, current.text
+    revision = current.json()["revision"]
+    initial_values = current.json()["values"]
+
+    rejected = client.patch(
+        url,
+        json={
+            "revision": revision,
+            "changes": {
+                "djmix": {"beatmatch": False},
+                "transition": {"effect": "not-a-transition"},
+            },
+        },
+        headers=ORIGIN,
+    )
+    assert rejected.status_code == 400
+    unchanged = client.get(url, headers=ORIGIN).json()
+    assert unchanged["values"] == initial_values
+    assert unchanged["revision"] == revision
+
+    field_error = client.patch(
+        url,
+        json={
+            "revision": revision,
+            "changes": {
+                "djmix": {"beatmatch": False},
+                "playback": {"transition_mode": "not-a-mode"},
+            },
+        },
+        headers=ORIGIN,
+    )
+    assert field_error.status_code == 422
+    assert field_error.json()["field"] == "transition_mode"
+    assert "transition_mode" in field_error.json()["detail"]
+    assert client.get(url, headers=ORIGIN).json()["values"] == initial_values
+
+    unknown_field = client.patch(
+        url,
+        json={
+            "revision": revision,
+            "changes": {
+                "djmix": {"beatmatch": False, "obsolete_toggle": True},
+                "playback": {"hour_fit": True},
+            },
+        },
+        headers=ORIGIN,
+    )
+    assert unknown_field.status_code == 422
+    assert unknown_field.json()["field"] == "obsolete_toggle"
+    assert client.get(url, headers=ORIGIN).json()["values"] == initial_values
+
+    saved = client.patch(
+        url,
+        json={
+            "revision": revision,
+            "changes": {
+                "djmix": {"beatmatch": False},
+                "playback": {"hour_fit": True},
+            },
+        },
+        headers=ORIGIN,
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["applied"] == ["djmix", "playback"]
+    assert saved.json()["settings"]["djmix"]["beatmatch"] is False
+    assert saved.json()["settings"]["playback"]["hour_fit"] is True
+
+    conflict = client.patch(
+        url,
+        json={"revision": revision, "changes": {"djmix": {"beatmatch": True}}},
+        headers=ORIGIN,
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["revision"] == saved.json()["revision"]
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_break_settings_write_failure_keeps_live_config_and_waiting_breaks(rig, monkeypatch):  # noqa: F811
+    client, *_ = rig
+    station = client.app.state.stations.editable("nightowl")
+    station.cfg.breaks.enabled = True
+    drop_waiting = MagicMock()
+    station.breaks = SimpleNamespace(drop_waiting_breaks=drop_waiting)
+    monkeypatch.setattr(
+        station.bridge,
+        "save_persistent_state",
+        MagicMock(side_effect=OSError("disk full")),
+    )
+
+    response = patch_station_settings(
+        client, {"breaks": {"enabled": False}}, base=OWL, headers=ORIGIN
+    )
+
+    assert response.status_code == 207
+    assert response.json()["failed"]["breaks"] == "disk full"
+    assert station.cfg.breaks.enabled is True
+    assert "breaks" not in station.bridge.page_saved
+    drop_waiting.assert_not_called()
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_core_settings_write_failure_is_reported_as_unsaved(rig, monkeypatch):  # noqa: F811
+    from autodj import runtime_state
+
+    client, *_ = rig
+    station = client.app.state.stations.editable("nightowl")
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        runtime_state,
+        "atomic_write",
+        fail_write,
+    )
+
+    response = patch_station_settings(
+        client, {"playback": {"hour_fit": True}}, base=OWL, headers=ORIGIN
+    )
+
+    assert response.status_code == 207
+    assert "playback" not in response.json()["applied"]
+    assert "playback" in response.json()["failed"]
+    assert "active in memory but could not be saved" in response.json()["failed"]["playback"]
+    assert response.json()["settings"]["values"]["playback"]["hour_fit"] is True
+    assert station.cfg.playback.hour_fit is True
 
 
 @pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
@@ -185,7 +322,7 @@ def test_stopped_station_saved_library_and_content_settings_are_editable(rig, mo
     )
 
     relay = {
-        "name": "offline",
+        "name": "Streammadness relay",
         "type": "icecast",
         "host": "8.8.8.8",
         "port": 8000,
@@ -194,33 +331,70 @@ def test_stopped_station_saved_library_and_content_settings_are_editable(rig, mo
         "enabled": False,
         "public": False,
     }
+    missing_password = client.post(
+        f"{station_base}/stream/relays",
+        json={**relay, "password": None},
+        headers=ORIGIN,
+    )
+    assert missing_password.status_code == 422
+    assert missing_password.json()["detail"] == "Enter a source password."
+    invalid_name = client.post(
+        f"{station_base}/stream/relays",
+        json={**relay, "name": " Streammadness relay"},
+        headers=ORIGIN,
+    )
+    assert invalid_name.status_code == 422
+    assert invalid_name.json()["field"] == "name"
+    assert "internal spaces" in invalid_name.json()["detail"]
+    assert "secret" not in invalid_name.text
     saved_relay = client.post(f"{station_base}/stream/relays", json=relay, headers=ORIGIN)
     assert saved_relay.status_code == 200, saved_relay.text
     relays = client.get(f"{station_base}/stream/relays")
     assert relays.status_code == 200, relays.text
-    assert relays.json()["relays"][0]["name"] == "offline"
+    assert relays.json()["relays"][0]["name"] == "Streammadness relay"
 
-    stream = client.post(
-        f"{station_base}/stream/settings",
-        json={"station_name": "Saved Night Owl", "continuous": True},
+    edited_relay = client.post(
+        f"{station_base}/stream/relays",
+        json={**relay, "password": None, "is_edit": True, "enabled": True},
+        headers=ORIGIN,
+    )
+    assert edited_relay.status_code == 200, edited_relay.text
+    assert client.get(f"{station_base}/stream/relays").json()["relays"][0]["enabled"] is True
+    removed_relay = client.delete(
+        f"{station_base}/stream/relays/Streammadness%20relay", headers=ORIGIN
+    )
+    assert removed_relay.status_code == 200, removed_relay.text
+    assert client.get(f"{station_base}/stream/relays").json()["relays"] == []
+
+    current = client.get(f"{station_base}/settings", headers=ORIGIN).json()
+    stream = client.patch(
+        f"{station_base}/settings",
+        json={
+            "revision": current["revision"],
+            "changes": {"stream": {"station_name": "Saved Night Owl", "continuous": True}},
+        },
         headers=ORIGIN,
     )
     assert stream.status_code == 200, stream.text
-    assert stream.json()["station_name"] == "Saved Night Owl"
-    assert stream.json()["continuous"] is True
+    assert stream.json()["settings"]["values"]["stream"]["station_name"] == "Saved Night Owl"
+    assert stream.json()["settings"]["values"]["stream"]["continuous"] is True
     stored_settings = client.get(f"{station_base}/settings")
     assert stored_settings.status_code == 200, stored_settings.text
     assert stored_settings.json()["playback"]["stream_station_name"] == "Saved Night Owl"
     assert client.get(f"{station_base}/history").status_code == 200
 
-    recording = client.post(
-        f"{station_base}/recording/settings",
-        json={"split": "show", "retention_days": 3, "free_space_mb": 10},
+    current = client.get(f"{station_base}/settings", headers=ORIGIN).json()
+    recording = client.patch(
+        f"{station_base}/settings",
+        json={
+            "revision": current["revision"],
+            "changes": {"recording": {"split": "show", "retention_days": 3, "free_space_mb": 10}},
+        },
         headers=ORIGIN,
     )
     assert recording.status_code == 200, recording.text
-    assert recording.json()["split"] == "show"
-    assert recording.json()["retention_days"] == 3
+    assert recording.json()["settings"]["values"]["recording"]["split"] == "show"
+    assert recording.json()["settings"]["values"]["recording"]["retention_days"] == 3
 
 
 @pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
@@ -262,14 +436,17 @@ def test_stopped_live_dj_settings_and_rotation_are_saved_without_a_player(rig, m
         lambda *_args, **_kwargs: pytest.fail("Stopped edits must not construct a Player"),
     )
 
-    settings = client.put(
-        f"{OWL}/live/settings",
-        json={"mic_return_seconds": 2, "mic_duck_db": 6},
+    settings = patch_station_settings(
+        client,
+        {"live": {"mic_return_seconds": 2, "mic_duck_db": 6}},
+        base=OWL,
         headers=ORIGIN,
     )
     assert settings.status_code == 200, settings.text
-    assert settings.json()["mic_return_seconds"] == 2
-    assert settings.json()["mic_duck_db"] == 6
+    assert settings.json()["settings"]["values"]["live"] == {
+        "mic_return_seconds": 2.0,
+        "mic_duck_db": 6.0,
+    }
     dj = client.post(
         f"{OWL}/live/djs",
         json={"username": "alice", "password": "correct horse battery", "display_name": "DJ Alice"},
@@ -300,13 +477,14 @@ def test_default_station_can_be_stopped_edited_and_restarted(rig) -> None:  # no
     assert stopped.status_code == 200, stopped.text
     assert client.get("/api/stations").json()["stations"][0]["state"] == "stopped"
 
-    changed = client.post(
-        "/api/stations/default/playback-settings",
-        json={"hour_fit": True, "hour_fit_window_minutes": 9},
+    changed = patch_station_settings(
+        client,
+        {"playback": {"hour_fit": True, "hour_fit_window_minutes": 9}},
+        base="/api/stations/default",
         headers=ORIGIN,
     )
     assert changed.status_code == 200, changed.text
-    assert changed.json()["playback"]["hour_fit"] is True
+    assert changed.json()["settings"]["values"]["playback"]["hour_fit"] is True
     restarted = client.post("/api/stations/default/start", headers=ORIGIN)
     assert restarted.status_code == 200, restarted.text
     assert stations.default.cfg.playback.hour_fit is True
@@ -326,3 +504,36 @@ def test_saved_edits_refused_during_station_start(rig) -> None:  # noqa: F811
             assert "nightowl" not in registry._content
 
     asyncio.run(during_start())
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_history_export_uses_selected_station_store_even_when_stopped(rig):  # noqa: F811
+    """ADR-0005-02: exports use station histories even while stopped."""
+    from datetime import datetime
+
+    client, library, _cfg, song, _closes = rig
+    moment = datetime(2026, 9, 1, 12).astimezone().isoformat()
+    for slug, title in [("default", "Main current"), ("nightowl", "Owl current")]:
+        row = {
+            "event_id": slug,
+            "path": song.path,
+            "title": title,
+            "artist": "Artist",
+            "duration": 180.0,
+            "played_at": moment,
+        }
+        library.station_ledger(slug).store.write_history([row], [])
+        library.catalog.write_history(
+            [{**row, "event_id": "legacy-" + slug, "title": "Stale legacy"}], station=slug
+        )
+    for prefix, title, other in [
+        ("/api", "Main current", "Owl current"),
+        (OWL, "Owl current", "Main current"),
+    ]:
+        response = client.get(prefix + "/history/export?from=2026-09-01&to=2026-09-01")
+        assert response.status_code == 200, response.text
+        assert title in response.text
+        assert other not in response.text
+        assert "Stale legacy" not in response.text
+        assert response.headers["x-play-count"] == "1"
+    assert client.app.state.stations.editable("nightowl").stopped

@@ -118,6 +118,21 @@ model-storage requirement. Supporting fresh servers without cached weights is
 outside this change. The worker guide documents the prerequisite; worker API
 diagnostics distinguish restoring the cache from using model-capable indexing.
 
+## Amendment 2026-10-23: the launcher restarts `serve`
+
+Settings, Updates gains a Restart button
+([ADR 16](0016-update-and-restart-from-the-web.md)). The server asks to be started again by
+exiting with status 75. The source checkout's launcher (`autodj`, `autodj.cmd`, which set
+`AUTODJ_BOOTSTRAP`) now runs `serve` as a child process in the selected runtime, also when the
+launcher already runs in that runtime, and starts it again when it exits with 75. It sets
+`AUTODJ_SUPERVISOR=1` on the child, so the server knows it can restart and a nested launcher does
+not loop again. Other commands, and the installed `autodj` command of a wheel, keep running as
+before. The server stays in the launcher's process group; the launcher passes SIGTERM on to the
+server (and SIGINT, SIGHUP or SIGQUIT only when they came to it alone), keeps waiting through Ctrl+C while the
+server shuts down, and on Windows ends the server with itself through a job object. The runtime
+selection, unattended-setup behaviour and model boundaries above are unchanged; ADR-0012-01
+still holds. The launcher's restart contracts are in ADR 16 (ADR-0016-04).
+
 ## Verification
 
 Run the following checks for affected changes and record results and platform

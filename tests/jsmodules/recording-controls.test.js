@@ -11,6 +11,22 @@ vi.mock("../../src/autodj/static/modules/api-client.js", async (importOriginal) 
   return { ...original, requestJson: vi.fn() };
 });
 
+const { groups } = vi.hoisted(() => ({ groups: [] }));
+vi.mock("../../src/autodj/static/modules/settings-drafts.js", () => ({
+  registerSettingsGroup: (spec) => {
+    const part = { ...spec, baseline: null };
+    groups.push(part);
+    return {
+      accept(body) {
+        if (part.baseline !== null && JSON.stringify(part.read()) !== JSON.stringify(part.baseline)) return;
+        part.write(body);
+        part.baseline = JSON.parse(JSON.stringify(part.read()));
+      },
+      dirty: () => part.baseline !== null && JSON.stringify(part.read()) !== JSON.stringify(part.baseline),
+    };
+  },
+}));
+
 const htmlSource = readFileSync(
   join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8",
 );
@@ -36,10 +52,10 @@ const STOPPED = {
   split: "hour", retention_days: 0, free_space_mb: 100,
 };
 const FILE = "Station-2026-01-01_00-00-00.mp3";
-const INVALID = "Days to keep recordings and minimum free space must be whole numbers, 0 or more.";
 
 describe("recording controls", () => {
   beforeEach(() => {
+    groups.length = 0;
     vi.clearAllMocks();
     document.body.innerHTML = "";
   });
@@ -133,6 +149,35 @@ describe("recording controls", () => {
     expect(document.activeElement).toBe(split);
   });
 
+  it("keeps saved settings editable off air and answers unavailable runtime actions", async () => {
+    const controls = setup();
+    const offAir = { ...STOPPED, available: false };
+    controls.apply(offAir);
+
+    const fieldset = byId("recording-controls");
+    const toggle = byId("recording-toggle");
+    const splitNow = byId("recording-split-now");
+    expect(fieldset.hidden).toBe(false);
+    expect(byId("recording-split").disabled).toBe(false);
+    expect(byId("recording-retention-days").disabled).toBe(false);
+    expect(byId("recording-free-space-mb").disabled).toBe(false);
+    expect(toggle.getAttribute("aria-disabled")).toBe("true");
+    expect(splitNow.getAttribute("aria-disabled")).toBe("true");
+
+    byId("recording-split").value = "show";
+    byId("recording-retention-days").value = "8";
+    controls.apply(offAir);
+    expect(byId("recording-split").value).toBe("show");
+    expect(byId("recording-retention-days").value).toBe("8");
+
+    toggle.click();
+    await said("Recording is available only while stream mode is active.");
+    byId("sr-status").textContent = "";
+    splitNow.click();
+    await said("Recording is available only while stream mode is active.");
+    expect(requestJson).not.toHaveBeenCalled();
+  });
+
   it("speaks a failed request", async () => {
     const controls = setup();
     controls.apply(STOPPED);
@@ -145,52 +190,43 @@ describe("recording controls", () => {
     await said("Could not split recording: Recording is stopped");
   });
 
-  it("saves whole-number settings and never sends a folder", async () => {
+  it("reads whole-number settings into the draft without sending a folder or saving", async () => {
     const controls = setup();
     controls.apply(STOPPED);
     byId("recording-split").value = "show";
     byId("recording-retention-days").value = "7";
     byId("recording-free-space-mb").value = "200";
-    requestJson.mockResolvedValueOnce(
-      { ...STOPPED, split: "show", retention_days: 7, free_space_mb: 200 },
-    );
-    byId("recording-save").click();
-    await said("Recording settings saved.");
-    const [url, options] = requestJson.mock.calls[0];
-    expect(url).toBe("/api/recording/settings");
-    expect(JSON.parse(options.body)).toEqual(
+    expect(groups.find((group) => group.group === "recording").read()).toEqual(
       { split: "show", retention_days: 7, free_space_mb: 200 },
     );
-    requestJson.mockRejectedValueOnce(new Error("Disk is unavailable"));
-    byId("recording-save").click();
-    await said("Could not save recording settings: Disk is unavailable");
+    expect(byId("recording-save")).toBeNull();
+    expect(requestJson).not.toHaveBeenCalled();
   });
 
-  it("marks and focuses a field that is not a whole number", async () => {
+  it("validates and focuses a field that is not a whole number", async () => {
     const controls = setup();
     controls.apply(STOPPED);
     const days = byId("recording-retention-days");
     const floor = byId("recording-free-space-mb");
     days.value = "1.5";
-    byId("recording-save").click();
-    await said(INVALID);
+    expect(groups.find((group) => group.group === "recording").validate()).toBe(false);
     expect(requestJson).not.toHaveBeenCalled();
     expect(days.getAttribute("aria-invalid")).toBe("true");
     expect(document.activeElement).toBe(days);
     days.value = "3";
     floor.value = "";
     byId("sr-status").textContent = "";
-    byId("recording-save").click();
-    await said(INVALID);
+    expect(groups.find((group) => group.group === "recording").validate()).toBe(false);
     expect(days.hasAttribute("aria-invalid")).toBe(false);
     expect(floor.getAttribute("aria-invalid")).toBe("true");
     expect(document.activeElement).toBe(floor);
-    // A state push does not overwrite the field being corrected.
+    // An invalid edit remains until Discard; background state does not erase it.
     controls.apply(STOPPED);
     expect(floor.value).toBe("");
+    expect(floor.getAttribute("aria-invalid")).toBe("true");
     floor.blur();
     controls.apply(STOPPED);
-    expect(floor.value).toBe("100");
-    expect(floor.hasAttribute("aria-invalid")).toBe(false);
+    expect(floor.value).toBe("");
+    expect(floor.getAttribute("aria-invalid")).toBe("true");
   });
 });

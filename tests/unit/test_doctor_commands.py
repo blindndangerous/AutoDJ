@@ -66,7 +66,7 @@ def test_rebuild_supersedes_index_and_rechecks_before_analyse(tmp_path: Path) ->
     assert final is healthy
     assert not failed
     assert confirm.call_count == 1
-    recheck.assert_called_once_with(cfg, station=None)
+    recheck.assert_called_once_with(cfg, station=None, check_updates=False)
     run.assert_called_once_with(
         [
             sys.executable,

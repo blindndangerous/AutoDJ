@@ -188,23 +188,21 @@ class FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test_
         return stdout.read1(n)
 
     def close(self) -> None:
-        """Terminate ffmpeg, then release its pipes once it is dead.
+        """Kill ffmpeg, then release its pipes once it is dead.
 
         Closing stdin *before* the process is dead can hang: a writer
         thread blocked inside ``stdin.write()`` on a stalled pipe holds
         the ``BufferedWriter``'s internal lock, and ``stdin.close()``
-        waits on that same lock. Terminating (or killing) the process
-        first unblocks any such write with a broken pipe, so the pipes
-        can be closed safely afterwards.
+        waits on that same lock. Killing the process first unblocks any
+        such write with a broken pipe, so the pipes can be closed safely
+        afterwards.  It is killed rather than terminated: ffmpeg ignores
+        SIGTERM while it waits for input, so terminating only added five
+        seconds before the kill, and a closing stream needs none of its last frames.
         """
-        try:
-            self._proc.terminate()
+        with contextlib.suppress(Exception):
+            self._proc.kill()
+        with contextlib.suppress(Exception):
             self._proc.wait(timeout=5)
-        except Exception:
-            with contextlib.suppress(Exception):
-                self._proc.kill()
-            with contextlib.suppress(Exception):
-                self._proc.wait(timeout=5)
         for pipe in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
             if pipe is not None:
                 with contextlib.suppress(Exception):

@@ -1,4 +1,4 @@
-"""Player in stream mode: the bus exists up front and the station starts sets."""
+"""Live server playout uses the bus; streaming alone owns listener lifecycle."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from autodj.live_playout import LivePlayout
 from autodj.mixbus import MixBus, RenderedTrack
 from autodj.player import Player
 from autodj.similarity import SimilarityIndex
@@ -28,6 +29,15 @@ def test_stream_mode_builds_the_bus_up_front() -> None:
     assert events.on_need_track == player._take_render
     assert events.on_track_start == player._on_track_start
     assert events.on_position == player._on_position
+
+
+def test_local_soundcard_uses_live_playout_without_stream_lifecycle() -> None:
+    """ADR-0004-14: local server audio shares live playout without stream lifecycle."""
+    player = _player()
+    assert player.live_mixing is True
+    assert player._stream_mode is False
+    assert player._server_audio_too is False
+    assert isinstance(player._playout, LivePlayout)
 
 
 def test_server_audio_builds_the_bus_up_front_and_browser_mode_has_none() -> None:

@@ -1,3 +1,4 @@
+import { registerSettingsGroup, settingsDraftHolds } from "./settings-drafts.js";
 // Settings > Sound > Browser playback: "Preview output device".
 //
 // Previews are the cue point player in Track info, which Queue, Search,
@@ -31,7 +32,7 @@
 // Every change of device runs in order on one queue, so a slow refresh
 // can never land after the user's newer choice.  Nothing here moves focus.
 
-import { defaultStorage, readStorage, removeStorage, writeStorage } from "./safe-storage.js";
+import { defaultStorage, readStorage } from "./safe-storage.js";
 
 export const PREVIEW_SINK_KEY = "autodj.previewSinkId";
 export const PREVIEW_LABEL_KEY = "autodj.previewSinkLabel";
@@ -82,10 +83,22 @@ function readSaved(storage) {
 }
 
 function writeSaved(storage, id, label = "") {
-  if (id) writeStorage(storage, PREVIEW_SINK_KEY, id);
-  else removeStorage(storage, PREVIEW_SINK_KEY);
-  if (id && label) writeStorage(storage, PREVIEW_LABEL_KEY, label);
-  else removeStorage(storage, PREVIEW_LABEL_KEY);
+  if (!storage) throw new Error("Browser storage is unavailable.");
+  const previous = readSaved(storage);
+  try {
+    if (id) storage.setItem(PREVIEW_SINK_KEY, id);
+    else storage.removeItem(PREVIEW_SINK_KEY);
+    if (id && label) storage.setItem(PREVIEW_LABEL_KEY, label);
+    else storage.removeItem(PREVIEW_LABEL_KEY);
+  } catch (error) {
+    try {
+      if (previous.id) storage.setItem(PREVIEW_SINK_KEY, previous.id);
+      else storage.removeItem(PREVIEW_SINK_KEY);
+      if (previous.label) storage.setItem(PREVIEW_LABEL_KEY, previous.label);
+      else storage.removeItem(PREVIEW_LABEL_KEY);
+    } catch { /* Keep the original storage failure. */ }
+    throw error;
+  }
 }
 
 export function previewOutputSupport({ mediaDevices, mediaElementPrototype }) {
@@ -166,8 +179,8 @@ export function installPreviewOutput({
   let saved = readSaved(storage);
   const current = () => ({ ...saved });
   function setSaved(id, label = "") {
-    saved = { id, label: id ? label : "" };
     writeSaved(storage, id, label);
+    saved = { id, label: id ? label : "" };
   }
 
   const connected = () => [...listed,
@@ -179,14 +192,10 @@ export function installPreviewOutput({
     return run;
   }
 
-  // A hidden description is still read, so the note is linked only while
-  // it is shown.
   function showNote(text) {
     if (!note) return;
     note.textContent = text || "";
     note.hidden = !text;
-    if (text) select.setAttribute("aria-describedby", note.id);
-    else select.removeAttribute("aria-describedby");
   }
 
   function clearFallbackNote() {
@@ -219,6 +228,7 @@ export function installPreviewOutput({
   // The saved device that is not in the list keeps an option of its own,
   // so the select says what is saved and System default can clear it.
   function renderOptions(choice, suffix = "") {
+    const draftValue = settingsDraftHolds(select) ? select.value : null;
     const choices = [{ id: "", label: "System default" }, ...connected()];
     if (choice.id && !choices.some((item) => item.id === choice.id)) {
       const name = choice.label || "Saved device";
@@ -235,8 +245,8 @@ export function installPreviewOutput({
         return option;
       }));
     }
-    select.value = choice.id;
-    if (select.value !== choice.id) select.value = "";
+    select.value = draftValue ?? choice.id;
+    if (select.value !== (draftValue ?? choice.id)) select.value = "";
   }
 
   // Resolves once the page has focus again (or after focusWaitMs, if it
@@ -329,41 +339,33 @@ export function installPreviewOutput({
     }
   }
 
-  async function doUse(id, gate = null) {
-    if (saved.id !== id) return false;
+  async function doUse(id) {
     const choice = current();
+    const device = connected().find((item) => item.id === id);
+    const label = device?.named ? device.label : (choice.id === id ? choice.label : "");
     if (id && known && !connected().some((item) => item.id === id)) {
       await route("");
-      if (saved.id !== id) return false;
       fallBack(MISSING_TEXT, choice, { quiet: true });
-      await say(gate, MISSING_TEXT, { dwellMs: 8000, force: true });
-      return false;
+      throw new Error(MISSING_TEXT);
     }
+    // Persist the requested choice before routing. A failed route restores the
+    // previous saved choice and leaves the draft available for correction.
+    setSaved(id, label);
     const failure = await route(id);
-    if (saved.id !== id) return false;
     if (failure) {
-      const label = labelFor(id);
-      setSaved("");
+      const words = errorWords(failure);
+      setSaved(choice.id, choice.label);
       settle(current());
-      await say(gate, `Could not use ${label} for previews: ${errorWords(failure)}.  `
-        + `Previews play on ${DEFAULT_LABEL}.`, { dwellMs: 8000, force: true, tone: "error" });
-      return false;
+      showNote(`Could not use ${label || "the chosen device"} for previews: ${words}.`);
+      throw new Error(`Could not use ${label || "the chosen device"} for previews: ${words}.`);
     }
-    settle(choice);
-    await say(gate, `Previews play on ${labelFor(id)}.`, { dwellMs: 4000, force: true });
+    settle(current());
+    showNote("");
     return true;
   }
 
-  function save(id) {
-    const device = connected().find((item) => item.id === id);
-    setSaved(id, device?.named ? device.label : (saved.id === id ? saved.label : ""));
-  }
-
   const refresh = () => serial(doRefresh);
-  const use = (id, { gate = null } = {}) => {
-    save(id);
-    return serial(() => doUse(id, gate));
-  };
+  const use = (id) => serial(() => doUse(id));
 
   async function chooseInPicker() {
     let device = null;
@@ -385,7 +387,10 @@ export function installPreviewOutput({
     picked.set(device.deviceId, {
       id: device.deviceId, label: device.label || "the chosen device", named: true,
     });
-    await use(device.deviceId, { gate });
+    renderOptions({ id: device.deviceId, label: device.label });
+    select.value = device.deviceId;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await say(gate, "Preview device selected. Save sound settings to apply it.", { force: true });
   }
 
   async function showNames() {
@@ -428,7 +433,11 @@ export function installPreviewOutput({
   }
 
   renderButton();
-  select.addEventListener("change", () => { void use(select.value); });
+  renderOptions(current());
+  registerSettingsGroup({ panel: select.closest('[id^="spanel-"]'), controls: [select],
+    read: () => ({ device: select.value }), write: (value) => { select.value = value.device; },
+    async commit(value) { await use(value.device); },
+  });
   button?.addEventListener("click", () => { void choose(); });
   mediaDevices.addEventListener?.("devicechange", () => { void refresh(); });
   void refresh();

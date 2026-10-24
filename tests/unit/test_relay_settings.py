@@ -64,6 +64,26 @@ def test_station_password_environment_name_is_isolated(tmp_path, monkeypatch):
     assert load_relays(path, {}, "nightowl")["main"].password == "station-secret"
 
 
+def test_spaced_relay_name_uses_a_distinct_environment_segment(tmp_path, monkeypatch):
+    config = relay("Stream madness")
+    variable = relay_password_variable("Stream madness")
+    assert variable == (
+        "AUTODJ_STATION_DEFAULT_RELAY_NAME_SHA256_"
+        "16DDB67590CA8DD1B551666647C75FEDC901ECD7A718195DCF3D6D96984604D1_PASSWORD"
+    )
+    assert relay_password_variable("stream madness") != variable
+    legacy_candidate = "NAME_SHA256_" + variable.split("NAME_SHA256_", 1)[1].removesuffix(
+        "_PASSWORD"
+    )
+    assert len(legacy_candidate) > 32
+    with pytest.raises(ValueError, match="names may use"):
+        relay(legacy_candidate)
+    monkeypatch.setenv(variable, "environment-secret")
+    path = tmp_path / "relays.json"
+    save_relays(path, {config.name: config}, "default")
+    assert load_relays(path, {}, "default")["Stream madness"].password == "environment-secret"
+
+
 def _station(tmp_path):
     import threading
     from types import SimpleNamespace

@@ -16,6 +16,47 @@ otherwise. Each station's private `relays.json` holds its relays and passwords. 
 
 Each entry gives possible values, the default, and what the setting does. A page label appears in **bold**. Blank means unset unless its entry says otherwise.
 
+## Saving changes in Settings
+
+Persistent controls share one **Save changes / Discard changes** bar per Settings
+tab. Edits remain drafts until saved, including when a station is off air.
+The bar identifies station, browser and shared scope. Theme changes preview
+immediately; Discard restores the saved theme. Transport, volume, mute, private
+audition and test buttons remain immediate actions.
+
+Leaving Settings, changing its tab or switching stations with edits offers Save,
+Discard or Stay. Failed saves keep the edits. If another browser changed server
+settings, Discard reloads the current values before another edit. Separate storage
+owners can fail independently: a partial-save message names what failed, and those
+edits remain pending. Output-mode changes take effect after restarting the station.
+
+| Tab | Persistent configuration and owner |
+| --- | --- |
+| Transitions, DJ mixing, Song picking | Selected station's playback settings, including repeat rules |
+| Sound | Station processing and browser output-device preferences |
+| Display and keys | Browser theme, shortcuts and track announcements; station display preferences |
+| Voice liners, Time checks, Breaks | Selected station's playback and feature settings |
+| Stream | Station stream formats, metadata, listener limits, retention, public player and recording configuration |
+| Live DJ | Station talkover configuration; available while stopped |
+| Stations | Selected station's output, scheduling timezone and upload limit; shared server time display |
+
+Relay, scheduled-event, profile and DJ-account forms submit individual records.
+Uploads, credentials, pairing and destructive actions also retain their explicit
+actions; they are not part of a tab's configuration save. Operational recording
+Start/Stop remains separate from recording configuration.
+The **Start with the server** checkbox edits one station record in **Stations**;
+Save and Discard appear on that row while its value differs from the server.
+
+Existing station JSON, private credentials, profiles and browser preference keys
+retain their storage owners and values. The former browser key
+`autodj.announceTrackChangesEverywhere` migrates once to
+`autodj.announceTrackChanges`: an existing canonical value wins; otherwise `on`
+becomes `all` and other values become `now`. The old key is removed only after
+the new value is stored. A failed write preserves the old value for retry.
+
+The update API and concurrency policy are described in
+[ADR 17](adr/0017-save-settings-through-one-draft-boundary.md).
+
 
 ## Programme review
 
@@ -327,7 +368,7 @@ In **Settings**, **Song picking**, each Tracks value counts intervening songs an
 
 ### Relays
 
-Each entry in the station's private `relays.json` names one relay. Names use 1 to 32 letters, digits, hyphens, or underscores. Change relays in **Settings**, **Stream**, **Relays**. Old TOML relay tables are migrated once at startup, then ignored.
+Each entry in the station's private `relays.json` names one relay. Names use 1 to 32 letters, digits, internal spaces, hyphens, or underscores; they cannot start or end with a space. Change relays in **Settings**, **Stream**, **Relays**. Old TOML relay tables are migrated once at startup, then ignored.
 
 - `type`. Values: `icecast` (Icecast), `shoutcast1` (Shoutcast 1), or `shoutcast2` (Shoutcast 2). Default: required in `relays.json`; the form starts with Icecast. Chooses the host server protocol. **Server type**.
 - `host`. Values: host name or IP address without a scheme or port. Default: required. Names the relay server. **Host**.
@@ -370,6 +411,7 @@ These values are saved for the selected station or browser rather than in the co
 - **Return time (seconds)**: 0.1 to 10; default 0.5. Raises the music after browser talkover. **Duck amount (dB)**: 0 to 30; default 12. Lowers music while someone talks.
 - **Record broadcast** in **Stream**: on or off; default off. Saves the server mix as MP3 files.
 - **Station name**, **Quality**, and other stream page controls map to the `stream` entries above.
+- **Check for updates** in **Settings**, **Updates**: on or off; default on. When off, AutoDJ never asks GitHub or the git remote about updates. **Update channel**: Automatic, Stable or Development; default Automatic, which follows what the installation runs (a release tag is Stable, `master` is Development). Saved for every station in `shared/updates.json`. See [Check for updates and restart](guides/backups-and-updates.md#check-for-updates-and-restart).
 
 ### Transition effect choices
 

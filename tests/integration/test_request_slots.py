@@ -20,6 +20,7 @@ from autodj.indexer import IndexEntry
 from autodj.player import Player
 from autodj.repeat_rules import PlayRecord, RepeatRules, TrackKeyCache
 from autodj.similarity import SimilarityIndex
+from tests.unit._catalog_vectors import build_faiss_index
 
 from ._helpers import _make_entry
 
@@ -120,7 +121,7 @@ def test_similarity_is_the_cosine_of_two_embeddings() -> None:
     entries = [_song(n) for n in range(3)]
     vectors = np.array([[1.0, 0.0], [0.6, 0.8], [0.0, 1.0]], dtype=np.float32)
     index = SimilarityIndex.empty()
-    index.replace_catalog_index(entries, vectors)
+    index.replace_catalog_faiss(entries, build_faiss_index(vectors))
     assert index.similarity(entries[0].path, entries[1].path) == np.float32(0.6)
     assert index.similarity(entries[0].path, entries[2].path) == 0.0
     assert index.similarity(entries[0].path, "missing") is None

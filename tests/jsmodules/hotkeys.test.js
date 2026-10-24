@@ -2,6 +2,11 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 
 import { installHotkeys } from "../../src/autodj/static/modules/hotkeys.js";
 
+const { groups } = vi.hoisted(() => ({ groups: [] }));
+vi.mock("../../src/autodj/static/modules/settings-drafts.js", () => ({
+  registerSettingsGroup: (spec) => { groups.push(spec); return { accept: spec.write, dirty: () => false }; },
+}));
+
 function keyEvent(target, key, options = {}) {
   const event = new window.KeyboardEvent("keydown", {
     key,
@@ -581,7 +586,7 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
       setItem: vi.fn((key, value) => values.set(key, String(value))),
     };
   }
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { groups.length = 0; vi.unstubAllGlobals(); });
 
   it("turns every page shortcut off and back on, and saves the choice", async () => {
     document.body.innerHTML = `
@@ -606,6 +611,9 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
 
     toggle.checked = false;
     toggle.dispatchEvent(new Event("change"));
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(hotkeys.shortcutsEnabled()).toBe(true);
+    groups.find((group) => group.controls[0] === toggle).commit({ enabled: false });
     expect(storage.setItem).toHaveBeenLastCalledWith(STORAGE_KEY, "off");
     press("k");
     expect(click).not.toHaveBeenCalled();
@@ -619,6 +627,7 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
 
     toggle.checked = true;
     toggle.dispatchEvent(new Event("change"));
+    groups.find((group) => group.controls[0] === toggle).commit({ enabled: true });
     expect(storage.setItem).toHaveBeenLastCalledWith(STORAGE_KEY, "on");
     press("k");
     expect(click).toHaveBeenCalledOnce();
@@ -638,6 +647,8 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
     expect(hotkeys.bracketSeekEnabled()).toBe(false);
     box.checked = true;
     box.dispatchEvent(new Event("change"));
+    expect(hotkeys.bracketSeekEnabled()).toBe(false);
+    groups.find((group) => group.controls[0] === box).commit({ enabled: true });
     expect(hotkeys.bracketSeekEnabled()).toBe(true);
     expect(storage.setItem).toHaveBeenLastCalledWith("autodj.bracketSeek", "on");
 
@@ -657,8 +668,11 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
     blocked.installHotkeys({ bracketSeekToggle: offBox });
     expect(offBox.checked).toBe(false);
     offBox.checked = true;
-    expect(() => offBox.dispatchEvent(new Event("change"))).not.toThrow();
-    expect(blocked.bracketSeekEnabled()).toBe(true);
+    offBox.dispatchEvent(new Event("change"));
+    expect(blocked.bracketSeekEnabled()).toBe(false);
+    expect(() => groups.find((group) => group.controls[0] === offBox).commit({ enabled: true }))
+      .toThrow("blocked");
+    expect(blocked.bracketSeekEnabled()).toBe(false);
   });
 
   it("starts with the saved choice and defaults on when storage throws", async () => {
@@ -681,7 +695,11 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
     blocked.installHotkeys({ shortcutToggle: onToggle });
     expect(onToggle.checked).toBe(true);
     onToggle.checked = false;
-    expect(() => onToggle.dispatchEvent(new Event("change"))).not.toThrow();
+    onToggle.dispatchEvent(new Event("change"));
+    expect(blocked.shortcutsEnabled()).toBe(true);
+    expect(() => groups.find((group) => group.controls[0] === onToggle).commit({ enabled: false }))
+      .toThrow("blocked");
+    expect(blocked.shortcutsEnabled()).toBe(true);
   });
 });
 

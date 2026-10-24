@@ -432,10 +432,14 @@ def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
     # level takes effect regardless of import order.
     logging.getLogger().setLevel(level)
     # At INFO these read as errors or noise: faiss logs a ModuleNotFoundError
-    # each time it picks its CPU build, and httpx logs every model-download
-    # request.  -v shows them again.
-    for name in ("faiss.loader", "httpx"):
+    # each time it picks its CPU build, and httpx (httpx2 under the Hugging
+    # Face hub) logs every model-download request.  -v shows them again.
+    for name in ("faiss.loader", "httpx", "httpx2"):
         logging.getLogger(name).setLevel(logging.NOTSET if verbose else logging.WARNING)
+    # Without a terminal, the hub's download progress bars only add control
+    # characters to the journal or log.  A value the user set is kept.
+    if not verbose and not sys.stderr.isatty():
+        os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 
 def _file_log_record(record: logging.LogRecord) -> logging.LogRecord:
@@ -499,12 +503,18 @@ def cmd_setup(arguments: tuple[str, ...]) -> None:
     metavar="SLUG",
     help="Check only this station besides the server: default, or a [stations.<slug>] name.",
 )
+@click.option(
+    "--offline",
+    is_flag=True,
+    help="Do not ask the network whether a newer AutoDJ is available.",
+)
 @click.pass_context
 def cmd_doctor(
     ctx: click.Context,
     as_json: bool,
     fix: bool | None,
     station: str | None,
+    offline: bool,
 ) -> None:
     """Check configuration, storage, dependencies, model, network, and stream health.
 
@@ -542,21 +552,21 @@ def cmd_doctor(
         raise click.exceptions.Exit(1) from None
     if station is not None and station not in {"default", *(s.slug for s in cfg.stations)}:
         raise click.BadParameter(f"no station is named {station!r}", param_hint="--station")
-    report = run_doctor(cfg, station=station)
+    report = run_doctor(cfg, station=station, check_updates=not offline)
     click.echo(report.to_json() if as_json else render_text(report))
     if offer_repairs and _doctor_repair_saved_settings(cfg, report, fix is True):
         click.echo("Rechecking after repairs...")
-        report = run_doctor(cfg, station=station)
+        report = run_doctor(cfg, station=station, check_updates=False)
         click.echo(render_text(report))
     if offer_repairs and _doctor_create_directories(
         cfg, report, fix is True, server=server_repairs
     ):
         click.echo("Rechecking after repairs...")
-        report = run_doctor(cfg, station=station)
+        report = run_doctor(cfg, station=station, check_updates=False)
         click.echo(render_text(report))
     if server_repairs and _doctor_recover_restore(cfg, report):
         click.echo("Rechecking after repairs...")
-        report = run_doctor(cfg, station=station)
+        report = run_doctor(cfg, station=station, check_updates=False)
         click.echo(render_text(report))
     recovery_failed = False
     if server_repairs:
@@ -567,6 +577,48 @@ def cmd_doctor(
         )
     if report.exit_code or recovery_failed:
         raise click.exceptions.Exit(1)
+
+
+@cli.command("check-update")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+@click.option(
+    "--channel",
+    type=click.Choice(["stable", "development"]),
+    default=None,
+    help="Check this channel instead of the saved or inferred one.",
+)
+@click.pass_context
+def cmd_check_update(ctx: click.Context, as_json: bool, channel: str | None) -> None:
+    """Say whether a newer AutoDJ is available on this installation's channel.
+
+    Stable follows release tags, development follows master.  A failed or
+    offline check is reported, never an error; with the check turned off in
+    Settings, Updates, nothing is asked.
+    """
+    import dataclasses
+
+    from autodj.updates import (
+        check_for_update,
+        describe_check,
+        detect_installation,
+        load_settings,
+    )
+
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    settings = load_settings(cfg.index.index_dir)
+    if channel is not None:
+        settings = dataclasses.replace(settings, channel=channel)
+    installation = detect_installation()
+    result = check_for_update(installation, settings)
+    if as_json:
+        click.echo(
+            json.dumps(
+                {"installation": installation.to_dict(), "check": result.to_dict()}, indent=2
+            )
+        )
+        return
+    for line in describe_check(installation, result):
+        click.echo(line)
 
 
 def _doctor_load_config(
@@ -976,7 +1028,8 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     click.echo(f"Restored {restored} files.")
     for warning in warnings:
         click.echo(f"Warning: {warning}")
-    report = run_doctor(cfg)
+    # Restore is offline: it reports on the restored files, not on updates.
+    report = run_doctor(cfg, check_updates=False)
     click.echo(render_text(report))
     if report.exit_code:
         raise click.ClickException(
@@ -1299,11 +1352,22 @@ def cmd_analyse_library(ctx: click.Context) -> None:
 )
 @click.option(
     "--token",
-    required=True,
+    default=None,
     envvar="AUTODJ_WORKER_TOKEN",
     help=(
         "Machine token from the server's Settings, Analysis workers.  Or set "
-        "AUTODJ_WORKER_TOKEN, which keeps it out of the shell history."
+        "AUTODJ_WORKER_TOKEN, which keeps it out of the shell history.  Without either, "
+        "the token saved by --pair for this server is used."
+    ),
+)
+@click.option(
+    "--pair",
+    "pair_code",
+    default=None,
+    metavar="CODE",
+    help=(
+        "Pairing code from the server's Settings, Analysis workers, Pair a worker.  Trades "
+        "it for a token, saves that for this server in a file only you can read, then works."
     ),
 )
 @click.option(
@@ -1372,7 +1436,8 @@ def cmd_analyse_library(ctx: click.Context) -> None:
 def cmd_worker(
     ctx: click.Context,
     server: str,
-    token: str,
+    token: str | None,
+    pair_code: str | None,
     once: bool,
     idle_exit: int | None,
     idle_release: int | None,
@@ -1389,9 +1454,12 @@ def cmd_worker(
     folder is never read directly.  Ctrl+C stops after the current song.
     Without --once or --idle-exit it keeps running and waits for new songs.
     With --idle-release, it loads the model on demand and frees it between batches.
+    Settings, Analysis workers on the server can pause the worker and set its
+    batch and idle release; --batch and --idle-release given here win.
 
     
     Examples:
+      autodj worker --pair 12345678 --server https://nas.local:8765
       autodj worker --server https://nas.local:8765 --token adj1.…
       autodj worker --server https://nas.local:8765 --idle-exit 10 \
         --before-command "podman stop tts-service" --after-command "podman start tts-service"
@@ -1405,17 +1473,67 @@ def cmd_worker(
     from autodj.indexer import TrackAnalysis, analyse_file, analysis_identity
     from autodj.model import ModelLoadError, MuqWrapper
     from autodj.worker import (
+        MANAGED_OPTIONS,
         HttpTransport,
         ServerApi,
         Worker,
         WorkerError,
         choose_device,
+        load_worker_token,
+        pair_with_server,
         release_gpu,
         run_hook,
+        save_worker_token,
+        worker_token_file,
     )
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     stop = threading.Event()
+    if pair_code is not None:
+        if token:
+            raise click.UsageError(
+                "--pair gets a new token: leave out --token and unset AUTODJ_WORKER_TOKEN."
+            )
+        code = "".join(pair_code.split()).replace("-", "")
+        if not (len(code) == 8 and code.isascii() and code.isdecimal()):
+            raise click.BadParameter("a pairing code is 8 digits", param_hint="--pair")
+        try:
+            token, name = pair_with_server(server, code, ca_cert=ca_cert)
+            saved = save_worker_token(server, token, name)
+        except WorkerError as exc:
+            raise click.ClickException(str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise click.ClickException(
+                f"Paired as {name}, but the token could not be saved: {exc}.  Revoke {name} in "
+                "Settings, Analysis workers, then pair again."
+            ) from exc
+        console.print(
+            f"Paired with the server as {escape(name)}.  The token is saved in {escape(str(saved))}"
+            ", readable only by you, and later runs with this --server use it.  To remove it, "
+            f"delete that file (or its entry for {escape(server)}) and revoke {escape(name)} in "
+            "Settings, Analysis workers."
+        )
+    elif not token:
+        try:
+            token = load_worker_token(server)
+        except (OSError, ValueError) as exc:
+            raise click.ClickException(
+                f"Could not read the saved worker token in {worker_token_file()}: {exc}"
+            ) from exc
+        if token is None:
+            raise click.UsageError(
+                "No token for this server.  Pair with --pair CODE (Settings, Analysis workers, "
+                "Pair a worker), or give a token with --token or AUTODJ_WORKER_TOKEN."
+            )
+        console.print(
+            f"Using the token saved for this server in {escape(str(worker_token_file()))}."
+        )
+    # A value typed on the command line wins over the server's.
+    fixed = frozenset(
+        name
+        for name in MANAGED_OPTIONS
+        if ctx.get_parameter_source(name) is click.core.ParameterSource.COMMANDLINE
+    )
 
     def interrupted(_signum: int, _frame: object) -> None:
         stop.set()
@@ -1442,6 +1560,8 @@ def cmd_worker(
 
     def prepare() -> None:
         nonlocal wrapper, prepared
+        if prepared:
+            return
         prepared = True
         run_hook(before_command, "Before-command")
         console.print(f"Analysing on {escape(label)}.")
@@ -1469,8 +1589,10 @@ def cmd_worker(
         stop=stop,
         idle_exit=idle_seconds,
         idle_release=idle_release * 60.0 if idle_release is not None else None,
-        prepare=prepare if idle_release is not None else None,
-        release=release if idle_release is not None else None,
+        # The server may set an idle release later, so the worker always gets both.
+        prepare=prepare,
+        release=release,
+        fixed=fixed,
     )
     previous = signal.signal(signal.SIGINT, interrupted)
     try:
@@ -1482,10 +1604,14 @@ def cmd_worker(
 
         model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
         worker.identity = analysis_identity(cfg.model.name, folder_commit(model_path))
+        worker.report_identity()
         worker.check_identity(server_identity)
         try:
-            if idle_release is None:
+            # Without an idle release, here or from the server, the model loads
+            # once now; a worker the server has paused waits for songs instead.
+            if worker.idle_release is None and not worker.paused:
                 prepare()
+                worker.prepared = True
             worker.run()
         finally:
             release()
@@ -1632,9 +1758,12 @@ class _ServeCommand(click.Command):
         except click.Abort:
             raise
         except (Exception, SystemExit) as exc:
-            clean_exit = (isinstance(exc, click.exceptions.Exit) and exc.exit_code == 0) or (
-                isinstance(exc, SystemExit) and exc.code in (None, 0)
-            )
+            from autodj.updates import RESTART_EXIT_CODE
+
+            # A restart asked for from the web page is not a failure either.
+            clean_exit = (
+                isinstance(exc, click.exceptions.Exit) and exc.exit_code in (0, RESTART_EXIT_CODE)
+            ) or (isinstance(exc, SystemExit) and exc.code in (None, 0))
             if not clean_exit:
                 hint = "Run `autodj doctor` to troubleshoot."
                 if ctx.obj and ctx.obj.get("config_path"):
@@ -1897,7 +2026,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
 
     try:
-        serve(
+        restart = serve(
             cfg=cfg,
             sim=sim,
             library=library,
@@ -1910,6 +2039,13 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")
+        return
+    if restart is True:
+        from autodj.updates import RESTART_EXIT_CODE
+
+        # The launcher, a systemd service or the container starts it again.
+        console.print("[yellow]Restarting AutoDJ...[/]")
+        raise click.exceptions.Exit(RESTART_EXIT_CODE)
 
 
 # ---------------------------------------------------------------------------

@@ -101,12 +101,16 @@ def test_live_edit_preserves_heard_prefix_and_bus_cursor(player):
     np.testing.assert_allclose(outgoing_block, 0.4)
 
 
-def test_after_incoming_is_audible_edit_targets_render_ahead_handoff(player):
-    """ADR-0004-09: an audible incoming track delegates editing to the next handoff."""
+def test_after_incoming_is_audible_queue_edit_waits_for_continuation_promotion(player):
+    """ADR-0004-09: A ready body has no successor to replan until it becomes current."""
     player, (current, old_next, chosen, later) = player
     block = MixBus.BLOCK
     current_track = _render(current, old_next, _audio(block * 12, 0.1), overlap=block * 4)
-    following = _render(old_next, chosen, _audio(block * 8, 0.2), overlap=block * 2)
+    following = replace(
+        _render(old_next, chosen, _audio(block * 8, 0.2), overlap=block * 2),
+        handoff_pending=True,
+        next_entry=None,
+    )
     _install_bus(player, current_track)
     player.bus.start_set()
     for _ in range(9):
@@ -116,11 +120,10 @@ def test_after_incoming_is_audible_edit_targets_render_ahead_handoff(player):
 
     assert player.live_editable_handoff() is following
     decision = plan_queue_edit(player, later, [])
-    assert decision is not None and decision.track is following
+    assert decision is None
     with player._state.queue_lock:
         player._state.queued_next = later
         player.refresh_playout()
-    player.accept_live_queue_edit(decision)
     player._rewind_render_cursor = MagicMock()
     player._next_rendered_serial = MagicMock(
         side_effect=AssertionError("current handoff is audible")
@@ -213,27 +216,32 @@ def test_take_render_does_not_pop_or_commit_queue_while_live_audio_pending(playe
     player._commit_queue_pick.assert_not_called()
 
 
-def test_ready_only_replan_preserves_current_audio_and_cursor(player):
+def test_ready_only_queue_edit_waits_for_later_selection_and_preserves_current_audio(player):
+    """ADR-0004-09: future cursor edits preserve current audio until promotion."""
     player, (a, b, c, e) = player
     block = MixBus.BLOCK
     current = _render(a, b, _audio(block * 12, 0.25), overlap=block * 4)
-    ready = _render(b, c, _audio(block * 8, 0.5), overlap=block * 2)
+    ready = replace(
+        _render(b, c, _audio(block * 8, 0.5), overlap=block * 2),
+        handoff_pending=True,
+        next_entry=None,
+    )
     _install_bus(player, current)
     player.bus.start_set()
-    heard = player.bus.render_block()
+    heard = np.concatenate([player.bus.render_block() for _ in range(9)])
     position = player.bus.live_position(current)
+    assert player.bus.incoming_started(current)
     player._playout.ready = lambda: ready
     player._state.queued_next = b
     player._state.queue = [c]
 
-    # A->B remains selected; only the prepared B->C successor changes.
+    # B's future successor is selected from the changed queue after promotion.
     decision = plan_queue_edit(player, b, [e])
-    assert decision is not None and decision.track is ready
+    assert decision is None
     with player._state.queue_lock:
         player._state.queued_next = b
         player._state.queue = [e]
         player.refresh_playout()
-    player.accept_live_queue_edit(decision)
     rewound = []
     player._rewind_render_cursor = lambda track: rewound.append(track)
     player._playout.reset = MagicMock(side_effect=lambda prepare: prepare())
@@ -243,11 +251,11 @@ def test_ready_only_replan_preserves_current_audio_and_cursor(player):
     assert player._playing_render is current
     assert player.bus._current is current
     assert player.bus.live_position(current) == position
-    np.testing.assert_array_equal(current.audio.read(0, block), heard)
+    np.testing.assert_array_equal(current.audio.read(0, len(heard)), heard)
     assert rewound == [ready]
 
 
-def test_accept_live_queue_edit_maps_following_context_by_explicit_outgoing(player):
+def test_accept_live_queue_edit_maps_only_the_current_handoff(player):
     player, (a, b, x, e) = player
     current = _render(a, b, _audio(100, 0.1), overlap=0)
     ready = _render(b, e, _audio(100, 0.2), overlap=0)
@@ -258,26 +266,30 @@ def test_accept_live_queue_edit_maps_following_context_by_explicit_outgoing(play
         None,
         (),
         None,
-        following=(QueueEdit(ready, e, None, (), None, outgoing=x),),
     )
 
     player.accept_live_queue_edit(decision)
 
-    assert player._live_queue_edits[id(x)] is decision.following[0]
+    assert player._live_queue_edits[id(a)] is decision
+    assert id(x) not in player._live_queue_edits
+    assert id(ready.entry) not in player._live_queue_edits
 
 
 def test_later_ready_edit_does_not_override_pending_current_target(player):
     player, (a, b, c, e) = player
     current = _render(a, b, _audio(100, 0.1), overlap=0)
-    ready = _render(b, c, _audio(100, 0.2), overlap=0)
+    ready = replace(
+        _render(b, c, _audio(100, 0.2), overlap=0),
+        handoff_pending=True,
+        next_entry=None,
+    )
     player._playing_render = current
     current_decision = QueueEdit(current, c, None, (), None)
     player.accept_live_queue_edit(current_decision)
     player.live_editable_handoff = lambda: ready
     ready_decision = plan_queue_edit(player, e, [])
 
-    assert ready_decision is not None and ready_decision.track is ready
-    player.accept_live_queue_edit(ready_decision)
+    assert ready_decision is None
 
     assert player._live_queue_target is current
-    assert player._live_queue_edits[id(ready.entry)] is ready_decision
+    assert id(ready.entry) not in player._live_queue_edits

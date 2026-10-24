@@ -1,5 +1,5 @@
-// Settings panel: the controls that save one server setting each, the
-// state sync from the websocket push, and the postSettings helper.
+import { registerSettingsGroup, settingsDraftHolds } from "./settings-drafts.js";
+// Settings controls register their groups with the shared tab draft controller.
 //
 // FIELDS lists the plain controls once: where each saves and how it reads
 // the pushed settings.  Pick mode, the BPM range and discovery carry
@@ -15,70 +15,9 @@ import {
 } from "./api-client.js";
 
 let _lastPresetOptionsKey = "";
-// The value the server last confirmed for each control, so a failed save
-// can put the control straight back instead of leaving the user's choice
-// on screen until the next websocket push flips it silently.
-const _confirmed = new WeakMap();
-
+const drafts = new WeakMap();
 function isToggle(control) {
   return control.type === "checkbox" || control.type === "radio";
-}
-
-function confirmValue(control) {
-  _confirmed.set(control, isToggle(control) ? control.checked : control.value);
-}
-
-function controlValue(control) {
-  return isToggle(control) ? control.checked : control.value;
-}
-
-// The save in flight for each control, and then the value it saved until
-// a push carries it.  A push that left the server before the save holds
-// the old value, and writing it back unticked a checkbox the listener had
-// just ticked (and spoke nothing).  So a pushed value is not written to a
-// control while its save is out, nor after the reply until a push agrees
-// with it; a failed save ends the hold at once (revertAfterFailure).
-// ECHO_WAIT_MS only backstops an echo that never comes, for instance a
-// value the server stores in another form.
-const _saves = new WeakMap();   // control -> { value, answeredAt }
-const ECHO_WAIT_MS = 5000;
-
-function sameValue(pushed, saved) {
-  if (typeof saved === "boolean") return Boolean(pushed) === saved;
-  if (pushed == null) return saved === "";
-  if (String(pushed) === saved) return true;
-  return saved !== "" && Number(pushed) === Number(saved);
-}
-
-// True while a pushed value must be kept off *control*.
-export function saveHolds(control, pushed) {
-  const save = control && _saves.get(control);
-  if (!save) return false;
-  if (save.answeredAt === 0) return true;
-  if (sameValue(pushed, save.value) || Date.now() - save.answeredAt > ECHO_WAIT_MS) {
-    _saves.delete(control);
-    return false;
-  }
-  return true;
-}
-
-function spokenValue(control) {
-  if (isToggle(control)) return control.checked ? "on" : "off";
-  if (control.tagName === "SELECT") {
-    return control.selectedOptions?.[0]?.textContent.trim() || "unset";
-  }
-  return control.value === "" ? "blank" : control.value;
-}
-
-// "Could not save Beatmatch; it is still on."  The label is the name the
-// user just heard on the control.
-function revertAfterFailure(control) {
-  if (!control || !_confirmed.has(control)) return "";
-  const value = _confirmed.get(control);
-  if (isToggle(control)) control.checked = value;
-  else control.value = value;
-  const name = (control.labels?.[0]?.textContent || "").replace(/\s+/g, " ").trim();
-  return name ? `Could not save ${name}; it is still ${spokenValue(control)}.` : "";
 }
 
 export function resetSettingsState(els) {
@@ -101,67 +40,46 @@ export function resetSettingsState(els) {
   _lastPresetOptionsKey = "";
 }
 
-// onError(err) replaces the revert and the spoken failure, for a caller
-// that keeps the user's edits and reports the failure itself.
+// Individual record editors keep their explicit submission and field errors.
 export async function postSettings(url, body, { settingsStatus, control, onError } = {}) {
   const epoch = captureAuthenticatedRequestEpoch();
-  const save = control ? { value: controlValue(control), answeredAt: 0 } : null;
-  if (save) _saves.set(control, save);
-  const ownSave = () => save !== null && _saves.get(control) === save;
   try {
     await withDisabled(control, () => requestJson(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }));
-    if (!isAuthenticatedRequestCurrent(epoch)) {
-      if (ownSave()) _saves.delete(control);
-      return false;
-    }
-    if (ownSave()) save.answeredAt = Date.now();
-    if (control) confirmValue(control);
-    return true;
+    return isAuthenticatedRequestCurrent(epoch);
   } catch (err) {
-    if (ownSave()) _saves.delete(control);
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
-    if (onError) {
-      onError(err);
-      return false;
-    }
-    const reverted = revertAfterFailure(control);
-    // The settings card is several screens tall, so the failure has to
-    // travel to the visible toast as well as the live region.
-    announceStatus(settingsStatus,
-      reverted ? `${reverted} ${err.message}` : `Could not save. ${err.message}`,
+    if (onError) onError(err);
+    else announceStatus(settingsStatus, `Could not save. ${err.message}`,
       { dwellMs: 6000, force: true, tone: "error" });
     return false;
   }
 }
 
-const PLAYBACK = "/api/playback-settings";
-const DJMIX = "/api/djmix";
-
-// key: the control in els.  url: where it saves (playback settings when
-// absent) and field: the body key.  A checkbox saves its checked state;
+// key: the control in els. group: playback when absent; field: the body key.
+// A checkbox saves its checked state;
 // any other control saves send(value), its value when there is no send,
 // and nothing when send gives undefined.  read gives the pushed value, a
 // playback field of the same name when absent; null or undefined leaves
 // the control alone.
 const FIELDS = [
-  { key: "presetSelect", url: "/api/preset", field: "name",
+  { key: "presetSelect", group: "preset", field: "name",
     read: (st) => st.preset || "", send: (v) => v || null },
-  { key: "transitionSelect", url: "/api/transition", field: "effect",
+  { key: "transitionSelect", group: "transition", field: "effect",
     read: (st) => st.transition || "none" },
-  { key: "harmonicMode", url: DJMIX, field: "harmonic_mode", read: (st) => st.djmix?.harmonic_mode },
-  { key: "djBeatmatch", url: DJMIX, field: "beatmatch", read: (st) => Boolean(st.djmix?.beatmatch) },
-  { key: "djDropMix", url: DJMIX, field: "drop_mix", read: (st) => Boolean(st.djmix?.drop_mix) },
-  { key: "djKeyShift", url: DJMIX, field: "key_shift", read: (st) => Boolean(st.djmix?.key_shift) },
-  { key: "djPhraseAlign", url: DJMIX, field: "phrase_align",
+  { key: "harmonicMode", group: "djmix", field: "harmonic_mode", read: (st) => st.djmix?.harmonic_mode },
+  { key: "djBeatmatch", group: "djmix", field: "beatmatch", read: (st) => Boolean(st.djmix?.beatmatch) },
+  { key: "djDropMix", group: "djmix", field: "drop_mix", read: (st) => Boolean(st.djmix?.drop_mix) },
+  { key: "djKeyShift", group: "djmix", field: "key_shift", read: (st) => Boolean(st.djmix?.key_shift) },
+  { key: "djPhraseAlign", group: "djmix", field: "phrase_align",
     read: (st) => Boolean(st.djmix?.phrase_align) },
-  { key: "djOutroIntro", url: DJMIX, field: "outro_intro_align",
+  { key: "djOutroIntro", group: "djmix", field: "outro_intro_align",
     read: (st) => Boolean(st.djmix?.outro_intro_align) },
   // On unless the server says otherwise.
-  { key: "djVocalGuard", url: DJMIX, field: "vocal_guard",
+  { key: "djVocalGuard", group: "djmix", field: "vocal_guard",
     read: (st) => Boolean(st.djmix) && st.djmix.vocal_guard !== false },
   { key: "pbEqDuck", field: "crossfade_eq_duck" },
   { key: "pbShowLyrics", field: "show_lyrics",
@@ -213,6 +131,15 @@ function setControlVisible(control, visible) {
   }
 }
 
+export function applySoundModeVisibility(els, st = {}, doc = Object.values(els).find(Boolean)?.ownerDocument || globalThis.document) {
+  const loudness = els.pbLoudness?.value || doc.getElementById("pb-replaygain")?.value
+    || st.playback?.loudness_processing || (st.playback?.replaygain_enabled ? "replaygain" : "off");
+  setControlVisible(els.pbRgTarget || doc.getElementById("pb-rg-target"),
+    loudness === "replaygain");
+  setControlVisible(els.pbQuietBoost || doc.getElementById("pb-quiet-boost"),
+    loudness === "smooth" || loudness === "stereotool");
+}
+
 function applyModeVisibility(st, els, doc) {
   const savedPoints = (els.pbTransitionMode?.value || st.playback?.transition_mode)
     === "saved_points";
@@ -238,50 +165,46 @@ function applyModeVisibility(st, els, doc) {
   for (const note of doc.querySelectorAll('[data-saved-points="note"]')) {
     note.hidden = !savedPoints;
   }
-  const loudness = els.pbLoudness?.value || st.playback?.loudness_processing ||
-    (st.playback?.replaygain_enabled ? "replaygain" : "off");
-  setControlVisible(els.pbRgTarget || doc.getElementById("pb-rg-target"),
-    loudness === "replaygain");
-  setControlVisible(els.pbQuietBoost || doc.getElementById("pb-quiet-boost"),
-    loudness === "smooth" || loudness === "stereotool");
+  applySoundModeVisibility(els, st, doc);
   const note = els.pbSavedPointsNote || doc.getElementById("pb-saved-points-note");
   if (note) note.hidden = !savedPoints;
 }
 
-// save(url, body, control) is postSettings with the page's status region.
-export function installSettingsControls(els, save) {
+export function installSettingsControls(els) {
+  const bind = (group, controls, read, write) => {
+    const draft = registerSettingsGroup({ panel: controls.find(Boolean)?.closest('[id^="spanel-"]'), group,
+      controls: controls.filter(Boolean), read, write });
+    for (const control of controls.filter(Boolean)) drafts.set(control, draft);
+    return draft;
+  };
   for (const spec of FIELDS) {
     const control = els[spec.key];
     if (!control) continue;
-    control.addEventListener("change", () => {
-      let value = control.checked;
-      if (!isToggle(control)) value = spec.send ? spec.send(control.value) : control.value;
-      if (value !== undefined) void save(spec.url || PLAYBACK, { [spec.field]: value }, control);
+    const group = spec.group || "playback";
+    bind(group, [control], () => ({ [spec.field]: isToggle(control) ? control.checked
+      : spec.send ? spec.send(control.value) : control.value }), (value) => {
+      if (!(spec.field in value)) return;
+      if (isToggle(control)) control.checked = Boolean(value[spec.field]);
+      else control.value = value[spec.field] ?? "";
+      applyModeVisibility({}, els, control.ownerDocument);
     });
+    control.addEventListener("change", () => applyModeVisibility({}, els, control.ownerDocument));
   }
   const { pbPickMode, bpmLo, bpmHi, discEnabled, discEvery } = els;
-  pbPickMode?.addEventListener("change", () => {
-    const mode = pbPickMode.value === "pure" ? "random" : pbPickMode.value;
-    void save(PLAYBACK, { pick_mode: mode }, pbPickMode);
-  });
-  const saveBpmRange = (control) => {
-    const lo = parseFloat(bpmLo.value);
-    const hi = parseFloat(bpmHi.value);
-    void save("/api/bpm-range", { lo: isNaN(lo) ? null : lo, hi: isNaN(hi) ? null : hi }, control);
-  };
-  bpmLo?.addEventListener("change", () => saveBpmRange(bpmLo));
-  bpmHi?.addEventListener("change", () => saveBpmRange(bpmHi));
-  const saveDiscovery = (control) => {
-    const v = parseInt(discEvery.value, 10);
-    void save("/api/discovery", { every: discEnabled.checked && v > 0 ? v : null }, control);
-  };
-  discEnabled?.addEventListener("change", () => {
-    discEvery.disabled = !discEnabled.checked;
-    saveDiscovery(discEnabled);
-  });
-  discEvery?.addEventListener("change", () => {
-    if (discEnabled.checked) saveDiscovery(discEvery);
-  });
+  if (pbPickMode) bind("playback", [pbPickMode], () => ({ pick_mode: pbPickMode.value }),
+    (value) => { if (value.pick_mode != null) pbPickMode.value = value.pick_mode; });
+  if (bpmLo && bpmHi) bind("bpm_range", [bpmLo, bpmHi],
+    () => ({ lo: bpmLo.value === "" ? null : Number(bpmLo.value), hi: bpmHi.value === "" ? null : Number(bpmHi.value) }),
+    (value) => { bpmLo.value = value.lo ?? ""; bpmHi.value = value.hi ?? ""; });
+  if (discEnabled && discEvery) {
+    bind("discovery", [discEnabled, discEvery], () => ({ every: discEnabled.checked ? Number(discEvery.value) : null }),
+      (value) => {
+        discEnabled.checked = value.every != null;
+        if (value.every != null) discEvery.value = value.every;
+        discEvery.disabled = !discEnabled.checked;
+      });
+    discEnabled.addEventListener("change", () => { discEvery.disabled = !discEnabled.checked; });
+  }
 }
 
 export function applySettingsState(st, els) {
@@ -291,11 +214,13 @@ export function applySettingsState(st, els) {
   // Populate preset dropdown only when the option list changes.
   const optsKey = (st.available_presets || []).join("|");
   if (presetSelect && optsKey !== _lastPresetOptionsKey) {
+    const selected = presetSelect.value;
     _lastPresetOptionsKey = optsKey;
     presetSelect.innerHTML = '<option value="">(none)</option>' +
       (st.available_presets || []).map((n) =>
         `<option value="${escHtml(n)}">${escHtml(n)}</option>`
       ).join("");
+    presetSelect.value = selected;
   }
   // A checkbox follows every push.  A select or field the user is on is
   // left alone: reassigning .value on each ~1 Hz echo closed an open
@@ -304,39 +229,33 @@ export function applySettingsState(st, els) {
     const control = els[spec.key];
     if (!control) continue;
     const value = pushedValue(spec, control, st);
-    if (value == null || saveHolds(control, value)) continue;
+    if (value != null) drafts.get(control)?.accept({ [spec.field]: value });
+    if (value == null || settingsDraftHolds(control)) continue;
     if (isToggle(control)) control.checked = value;
     else if (doc.activeElement !== control && control.value !== String(value)) control.value = value;
   }
   const pickMode = st.playback?.pick_mode ?? "similarity";
-  const pickModeOption = Array.from(pbPickMode?.options || []).some((option) => option.value === pickMode)
-    ? pickMode
-    : pickMode === "random" && Array.from(pbPickMode?.options || []).some((option) => option.value === "pure")
-      ? "pure"
-      : pickMode;
-  if (pbPickMode && doc.activeElement !== pbPickMode && !saveHolds(pbPickMode, pickMode)) {
-    pbPickMode.value = pickModeOption;
+  drafts.get(pbPickMode)?.accept({ pick_mode: pickMode });
+  if (st.bpm_range) drafts.get(bpmLo)?.accept(st.bpm_range);
+  if (st.discovery_every !== undefined) drafts.get(discEnabled)?.accept({ every: st.discovery_enabled ? st.discovery_every : null });
+  if (pbPickMode && doc.activeElement !== pbPickMode && !settingsDraftHolds(pbPickMode)) {
+    pbPickMode.value = pickMode;
   }
   for (const [input, bound] of [[bpmLo, "lo"], [bpmHi, "hi"]]) {
     if (!st.bpm_range || !input || doc.activeElement === input) continue;
     const value = st.bpm_range[bound] ?? "";
-    if (!saveHolds(input, value)) input.value = value;
+    if (!settingsDraftHolds(input)) input.value = value;
   }
   // One concept, one answer: the checkbox tracks the same runtime flag
   // the Now Playing Discovery button toggles, so the two controls can no
   // longer disagree.
   const discOn = st.discovery_every != null && Boolean(st.discovery_enabled);
-  if (!saveHolds(discEnabled, discOn)) {
+  if (!settingsDraftHolds(discEnabled)) {
     discEnabled.checked = discOn;
     discEvery.disabled = !discOn;
   }
-  if (doc.activeElement !== discEvery && discOn && !saveHolds(discEvery, st.discovery_every)) {
+  if (doc.activeElement !== discEvery && discOn && !settingsDraftHolds(discEvery)) {
     discEvery.value = st.discovery_every;
   }
   applyModeVisibility(st, els, doc);
-  // A focused control may hold a change still being saved, and so may
-  // one whose save is out: neither shows a confirmed value.
-  for (const control of Object.values(els)) {
-    if (control && control !== doc.activeElement && !_saves.has(control)) confirmValue(control);
-  }
 }

@@ -31,6 +31,16 @@ def _no_hook_git_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_update_check_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep Doctor's and the web page's update check off the network.
+
+    Tests of the check itself remove this variable and pass stand-ins for
+    git and GitHub.
+    """
+    monkeypatch.setenv("AUTODJ_UPDATE_CHECK", "0")
+
+
+@pytest.fixture(autouse=True)
 def _close_global_dj_cache_between_tests():
     from autodj.dj_meta import close_cache
 

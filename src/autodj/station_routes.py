@@ -16,16 +16,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import hashlib
+import json
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import fields
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import (
     BaseModel,
@@ -56,7 +59,14 @@ from autodj.clockwheel_store import (
     validate_clockwheel,
     validate_name,
 )
-from autodj.config import MAX_RELAYS, MAX_STATS_DAYS, RecordingConfig, RelayConfig, _relay_target
+from autodj.config import (
+    MAX_EMBED_ORIGINS,
+    MAX_RELAYS,
+    MAX_STATS_DAYS,
+    RecordingConfig,
+    RelayConfig,
+    _relay_target,
+)
 from autodj.live_queue import VoiceQueueConflict
 from autodj.playlog import (
     missing_fields,
@@ -74,18 +84,15 @@ from autodj.relay_settings import (
     public_relay,
     save_relays,
 )
-from autodj.scheduler import Action, ActionField
+from autodj.scheduler import Action, ActionField, system_timezone
 from autodj.settings_bodies import (
     BpmRangeBody,
-    DiscoveryBody,
-    DjMixBody,
     EqBody,
     FadeSeconds,
     FiniteFloat,
     PlaybackSettingsBody,
-    PresetBody,
+    StationSettingsPatchBody,
     StreamSettingsBody,
-    TransitionBody,
     VolumeBody,
     validate_playback_choices,
 )
@@ -93,7 +100,6 @@ from autodj.station_log import CURRENT_STATION
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
 from autodj.stream_formats import FORMATS
-from autodj.stream_mounts import MountsClosedError
 
 if TYPE_CHECKING:
     from autodj.listener_access import ListenerAccess
@@ -278,7 +284,11 @@ class RelaySettingsBody(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = PydanticField(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = PydanticField(
+        min_length=1,
+        max_length=32,
+        pattern=r"^[A-Za-z0-9_-](?:[A-Za-z0-9 _-]{0,30}[A-Za-z0-9_-])?$",
+    )
     type: Literal["icecast", "shoutcast1", "shoutcast2"]
     host: str = PydanticField(min_length=1, max_length=253)
     port: int = PydanticField(ge=1, le=65535, strict=True)
@@ -493,15 +503,75 @@ def _recording_saved_status(station: Any) -> dict[str, object]:
     }
 
 
+def _station_settings_values(station: Any, request: Request) -> dict[str, dict[str, Any]]:
+    """Collect the editable bodies from each station-owned settings store."""
+    from autodj import timefmt
+    from autodj.breaks_api import break_settings_view
+
+    registry = request.app.state.stations
+    slug = station.slug
+    configuration = registry.configuration(slug)
+    bridge = station.bridge
+    settings_owner = getattr(bridge, "settings", bridge)
+    values = settings_owner.editable_values()
+    breaks = break_settings_view(station)
+    stream = station.cfg.stream
+    values.update(
+        {
+            "stream": {
+                "bitrate": int(stream.bitrate),
+                "aac_bitrate": int(stream.aac_bitrate),
+                "opus_bitrate": int(stream.opus_bitrate),
+                "stats_days": int(stream.stats_days),
+                "continuous": bool(stream.continuous),
+                "station_name": stream.station_name,
+                "genre": stream.genre,
+                "description": stream.description,
+                "url": stream.url,
+                "max_listeners_per_address": stream.max_listeners_per_address,
+            },
+            "public": registry.public_settings(slug),
+            "station": {
+                "output": configuration.station.output,
+                "server_audio_too": configuration.station.server_audio_too,
+                "liner_upload_max_mib": configuration.station.liner_upload_max_mib,
+            },
+            "time": {
+                "timezone": configuration.station.timezone or system_timezone(),
+                "time_format": timefmt.time_format,
+            },
+            "time_checks": station.time_checks.settings.model_dump(),
+            "breaks": {
+                key: breaks[key]
+                for key in ("enabled", "dj_placement", "min_intro_seconds", "duck_db")
+            },
+            "live": station.live.settings.as_dict(),
+        }
+    )
+    _running, recording = _recording_values(station)
+    values["recording"] = {
+        "split": recording.split,
+        "retention_days": recording.retention_days,
+        "free_space_mb": recording.free_space_mb,
+    }
+    values["stream"]["show_next"] = configuration.nowplaying.show_next
+    return values
+
+
+def _settings_revision(values: dict[str, Any]) -> str:
+    encoded = json.dumps(values, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _save_recording_settings(station: Any, body: RecordingSettingsBody) -> dict[str, object]:
     was_running, _old = _recording_values(station)
     cfg = RecordingConfig(
         station.cfg.recording.folder, body.split, body.retention_days, body.free_space_mb
     )
+    save_state(station.paths.recording, was_running, cfg)
     station.cfg.recording.split = cfg.split
     station.cfg.recording.retention_days = cfg.retention_days
     station.cfg.recording.free_space_mb = cfg.free_space_mb
-    save_state(station.paths.recording, was_running, cfg)
     return _recording_saved_status(station)
 
 
@@ -1367,6 +1437,10 @@ class StationRouter:
         """Register a PUT route."""
         return self.api_route(path, methods=["PUT"], **options)
 
+    def patch(self, path: str, **options: Any) -> Callable[[_Endpoint], _Endpoint]:
+        """Register a PATCH route."""
+        return self.api_route(path, methods=["PATCH"], **options)
+
     def delete(self, path: str, **options: Any) -> Callable[[_Endpoint], _Endpoint]:
         """Register a DELETE route."""
         return self.api_route(path, methods=["DELETE"], **options)
@@ -1390,8 +1464,444 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.time_checks import install_time_checks
 
     @router.get("/settings")
-    async def api_settings(station: SavedStationDep) -> dict:
-        return await asyncio.to_thread(station.bridge.get_settings)
+    async def api_settings(station: SavedStationDep, request: Request) -> dict:
+        settings = await asyncio.to_thread(station.bridge.get_settings)
+        values = await asyncio.to_thread(_station_settings_values, station, request)
+        settings["values"] = values
+        settings["revision"] = _settings_revision(values)
+        return settings
+
+    @router.patch("/settings")
+    async def api_settings_patch(
+        station: SavedStationDep, body: StationSettingsPatchBody, request: Request
+    ) -> Any:
+        registry = request.app.state.stations
+        slug = station.slug
+        lock = getattr(request.app.state, "station_settings_lock", None)
+        if lock is None:
+            lock = request.app.state.station_settings_lock = asyncio.Lock()
+        async with lock:
+            values = await asyncio.to_thread(_station_settings_values, station, request)
+            revision = _settings_revision(values)
+            if body.revision != revision:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Station settings changed in another session.",
+                        "revision": revision,
+                        "values": values,
+                    },
+                )
+
+            from autodj.settings_bodies import StationSettingsChangesBody
+
+            try:
+                changes = StationSettingsChangesBody.model_validate(body.changes)
+            except ValidationError as exc:
+                issue = exc.errors()[0]
+                field = str(issue["loc"][-1]) if issue["loc"] else "changes"
+                nested = re.search(rf"\b{re.escape(field)}\.([A-Za-z_]\w*)", issue["msg"])
+                if nested:
+                    field = nested.group(1)
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": f"{field}: {issue['msg']}", "field": field},
+                )
+            parsed: dict[str, Any] = {}
+            from autodj.breaks_api import BreakSettingsBody
+            from autodj.config import DmcaConfig, PlayerPageConfig
+            from autodj.live import TalkoverSettings
+            from autodj.time_checks import SettingsBody as TimeChecksSettingsBody
+
+            def validated(model: Any, data: Any) -> Any:
+                try:
+                    return model.model_validate(data)
+                except ValidationError as exc:
+                    issue = exc.errors()[0]
+                    field = str(issue["loc"][-1]) if issue["loc"] else "settings"
+                    raise HTTPException(status_code=422, detail=f"{field}: {issue['msg']}") from exc
+
+            for name in changes.model_fields_set:
+                value = getattr(changes, name)
+                if value is None:
+                    continue
+                if name == "time_checks":
+                    proposed = validated(
+                        TimeChecksSettingsBody,
+                        {**station.time_checks.settings.model_dump(), **value},
+                    )
+                    for pack in proposed.enabled_packs:
+                        from autodj.time_checks import _known_pack
+
+                        _known_pack(station.time_checks, pack)
+                    refusal = await asyncio.to_thread(station.time_checks.check_choices, proposed)
+                    if refusal:
+                        raise HTTPException(status_code=400, detail=refusal)
+                    parsed[name] = proposed
+                elif name == "breaks":
+                    parsed[name] = validated(BreakSettingsBody, value)
+                elif name == "stream":
+                    proposed = validated(StreamSettingsBody, value)
+                    if proposed.show_next and station.cfg.dmca.enabled:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="DMCA mode is on, so the next song is never shown publicly.",
+                        )
+                    parsed[name] = proposed
+                elif name == "public":
+                    allowed = {
+                        "dmca_enabled",
+                        "player_page_enabled",
+                        "embed_enabled",
+                        "embed_origins",
+                    }
+                    if not value or value.keys() - allowed:
+                        raise HTTPException(
+                            status_code=400, detail="Choose a public setting to change"
+                        )
+                    try:
+                        DmcaConfig(value.get("dmca_enabled", station.cfg.dmca.enabled))
+                        PlayerPageConfig(
+                            enabled=value.get(
+                                "player_page_enabled", station.cfg.player_page.enabled
+                            ),
+                            embed=value.get("embed_enabled", station.cfg.player_page.embed),
+                            embed_origins=value.get(
+                                "embed_origins", station.cfg.player_page.embed_origins
+                            ),
+                        )
+                    except (TypeError, ValueError) as exc:
+                        detail = str(exc)
+                        if detail.startswith("player_page.embed_origins"):
+                            if detail.startswith("player_page.embed_origins entry "):
+                                site = detail.removeprefix(
+                                    "player_page.embed_origins entry "
+                                ).rsplit(" must be an HTTP(S) origin", 1)[0]
+                                detail = (
+                                    f"Sites allowed to embed: {site} is not an http:// or https:// "
+                                    "site address, such as https://radio.example.net."
+                                )
+                            elif "allows at most" in detail:
+                                detail = f"Sites allowed to embed: use at most {MAX_EMBED_ORIGINS} sites."
+                            else:
+                                detail = "Sites allowed to embed: enter one site per line."
+                            return JSONResponse(
+                                status_code=400,
+                                content={"detail": detail, "field": "embed_origins"},
+                            )
+                        raise HTTPException(status_code=400, detail=detail) from exc
+                    parsed[name] = value
+                elif name == "station":
+                    allowed = {"output", "server_audio_too", "liner_upload_max_mib"}
+                    if not value or value.keys() - allowed:
+                        raise HTTPException(
+                            status_code=400, detail="Choose a station option to change"
+                        )
+                    from dataclasses import replace
+
+                    try:
+                        replace(station.cfg.station, **value)
+                    except (TypeError, ValueError) as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+                    parsed[name] = value
+                elif name == "time":
+                    if not value or value.keys() - {"timezone", "time_format"}:
+                        raise HTTPException(status_code=400, detail="Invalid time settings")
+                    from autodj import timefmt
+
+                    value = {
+                        "timezone": station.cfg.station.timezone or system_timezone(),
+                        "time_format": timefmt.time_format,
+                        **value,
+                    }
+                    if value["time_format"] not in {"12", "24"}:
+                        raise HTTPException(status_code=400, detail="Invalid time settings")
+                    try:
+                        ZoneInfo(value["timezone"])
+                    except (TypeError, ValueError, ZoneInfoNotFoundError) as exc:
+                        raise HTTPException(
+                            status_code=400, detail="Invalid station time zone"
+                        ) from exc
+                    parsed[name] = value
+                elif name == "live":
+                    try:
+                        parsed[name] = TalkoverSettings.parse(
+                            {**station.live.settings.as_dict(), **value}
+                        )
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+                elif name == "recording":
+                    current_recording = values["recording"]
+                    parsed[name] = validated(RecordingSettingsBody, {**current_recording, **value})
+                else:
+                    parsed[name] = value
+
+            if not parsed:
+                raise HTTPException(
+                    status_code=422, detail="At least one settings group is required"
+                )
+
+            # Validate all core groups and owner-specific inputs before the first write.
+            core_names = {
+                "preset",
+                "transition",
+                "djmix",
+                "playback",
+                "bpm_range",
+                "discovery",
+                "eq",
+            }
+            core_changes = {
+                key: getattr(changes, key)
+                for key in core_names
+                if getattr(changes, key) is not None
+            }
+            if core_changes:
+                from autodj.settings_bodies import StationSettingsChangesBody as ChangesModel
+
+                validated_core = ChangesModel.model_validate(core_changes)
+                if validated_core.preset and validated_core.preset.name:
+                    from autodj.presets import get_preset
+
+                    try:
+                        get_preset(validated_core.preset.name, station.cfg.presets)
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+                if validated_core.transition:
+                    from autodj.transitions import TRANSITION_EFFECT_NAMES
+
+                    if validated_core.transition.effect.lower() not in TRANSITION_EFFECT_NAMES:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Unknown transition effect: {validated_core.transition.effect}",
+                        )
+                if validated_core.playback:
+                    try:
+                        playback = validated_core.playback
+                        if playback.stereotool_preset:
+                            from autodj.stereotool_presets import preset_path
+
+                            preset_path(station.cfg.index.shared_dir, playback.stereotool_preset)
+                        settings_owner = getattr(station.bridge, "settings", station.bridge)
+                        settings_owner._read_related_artists(playback, restoring=False)
+                        settings_owner._read_related_tracks(playback, restoring=False)
+                    except (OSError, ValueError) as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+            applied: list[str] = []
+            failed: dict[str, str] = {}
+
+            async def apply_group(name: str, callback: Callable[[], Any]) -> None:
+                try:
+                    result = callback()
+                    if asyncio.iscoroutine(result):
+                        await result
+                    applied.append(name)
+                except Exception as exc:
+                    logger.exception("Could not save station settings group %s", name)
+                    failure = str(exc) or "The settings could not be saved."
+                    if name == "core":
+                        failure = f"Settings are active in memory but could not be saved: {failure}"
+                    failed[name] = failure
+
+            if core_changes:
+                settings_owner = getattr(station.bridge, "settings", station.bridge)
+                await apply_group("core", lambda: settings_owner.apply_settings_patch(core_changes))
+                if "core" in applied:
+                    applied.remove("core")
+                    applied.extend(sorted(core_changes))
+                if "core" in failed:
+                    failure = failed.pop("core")
+                    failed.update(dict.fromkeys(core_changes, failure))
+
+            for name in (
+                "time_checks",
+                "breaks",
+                "public",
+                "station",
+                "time",
+                "live",
+                "recording",
+                "stream",
+            ):
+                if name not in parsed:
+                    continue
+                value = parsed[name]
+                if name == "time_checks":
+
+                    def save_time_checks(value: Any = value) -> Any:
+                        return station.time_checks.save(value)
+
+                    await apply_group(name, save_time_checks)
+                elif name == "breaks":
+
+                    def save_breaks(value: Any = value) -> None:
+                        from autodj.breaks_api import TURNED_OFF
+
+                        config = station.cfg.breaks
+                        was_on = config.enabled is True
+                        before = {field: getattr(config, field) for field in value.model_fields_set}
+                        page_was_saved = "breaks" in station.bridge.page_saved
+                        try:
+                            for field in value.model_fields_set:
+                                item = getattr(value, field)
+                                if item is not None or field == "duck_db":
+                                    setattr(config, field, item)
+                            station.bridge.page_saved.add("breaks")
+                            station.bridge.save_persistent_state(strict=True)
+                        except Exception:
+                            for field, item in before.items():
+                                setattr(config, field, item)
+                            if not page_was_saved:
+                                station.bridge.page_saved.discard("breaks")
+                            raise
+                        if was_on and config.enabled is not True and station.breaks is not None:
+                            station.breaks.drop_waiting_breaks(TURNED_OFF)
+
+                    await apply_group(name, save_breaks)
+                elif name == "public":
+
+                    def save_public(value: Any = value) -> Any:
+                        return registry.save_public_settings(slug, value)
+
+                    await apply_group(name, save_public)
+                elif name == "station":
+
+                    def save_station(value: Any = value) -> Any:
+                        return registry.save_options(slug, value)
+
+                    await apply_group(name, save_station)
+                elif name == "time":
+
+                    def save_time(value: Any = value) -> None:
+                        from autodj import timefmt
+
+                        registry.save_options(slug, {"timezone": value["timezone"]})
+                        try:
+                            _catalog_library(station).catalog.set_setting(
+                                "time_format", value["time_format"]
+                            )
+                        except Exception as exc:
+                            raise RuntimeError(
+                                f"The station time zone was saved, but time format was not: {exc}"
+                            ) from exc
+                        timefmt.time_format = value["time_format"]
+
+                    await apply_group(name, save_time)
+                elif name == "live":
+
+                    def save_live(value: Any = value) -> None:
+                        station.live.credentials.save_settings(value)
+                        station.live.settings = value
+
+                    await apply_group(name, save_live)
+                elif name == "recording":
+                    if station.recorder is None:
+
+                        def save_recording_settings(value: Any = value) -> Any:
+                            return _save_recording_settings(station, value)
+
+                        await apply_group(name, save_recording_settings)
+                    else:
+
+                        def configure_recording(value: Any = value) -> Any:
+                            return station.recorder.configure(
+                                value.split, value.retention_days, value.free_space_mb
+                            )
+
+                        await apply_group(name, configure_recording)
+                elif name == "stream":
+
+                    async def save_stream(value: Any = value) -> None:
+                        cfg = station.cfg
+                        changed_formats: list[str] = []
+                        if station.bridge.stream_mode:
+                            formats = {
+                                label: bitrate
+                                for label, bitrate in (
+                                    ("aac", value.aac_bitrate),
+                                    ("opus", value.opus_bitrate),
+                                )
+                                if bitrate is not None
+                            }
+                            if formats:
+                                changed_formats = await asyncio.to_thread(
+                                    station.bridge.set_stream_formats, formats
+                                )
+                            if value.bitrate is not None:
+                                try:
+                                    await asyncio.to_thread(
+                                        station.bridge.set_stream_bitrate, value.bitrate
+                                    )
+                                except EncoderUnavailableError as exc:
+                                    if changed_formats:
+                                        await asyncio.to_thread(
+                                            station.bridge.save_persistent_state, strict=True
+                                        )
+                                        labels = " and ".join(
+                                            FORMATS[name].label for name in changed_formats
+                                        )
+                                        raise RuntimeError(
+                                            f"The MP3 encoder failed; the {labels} change was saved, "
+                                            "and MP3 quality is unchanged."
+                                        ) from exc
+                                    raise
+                        metadata_changed = any(
+                            getattr(cfg.stream, field) != getattr(value, field)
+                            for field in ("station_name", "genre", "description", "url")
+                            if getattr(value, field) is not None
+                        )
+                        for field in (
+                            "bitrate",
+                            "aac_bitrate",
+                            "opus_bitrate",
+                            "stats_days",
+                            "continuous",
+                            "station_name",
+                            "genre",
+                            "description",
+                            "url",
+                            "max_listeners_per_address",
+                        ):
+                            item = getattr(value, field)
+                            if item is not None:
+                                setattr(cfg.stream, field, item)
+                        if value.stats_days is not None and station.listener_stats is not None:
+                            await asyncio.to_thread(station.listener_stats.tick)
+                            await asyncio.to_thread(station.listener_stats.flush)
+                        if value.show_next is not None:
+                            cfg.nowplaying.show_next = value.show_next
+                        if (
+                            value.max_listeners_per_address is not None
+                            and station.listener_access is not None
+                        ):
+                            station.listener_access.max_per_address = (
+                                value.max_listeners_per_address
+                            )
+                        await asyncio.to_thread(station.bridge.save_persistent_state, strict=True)
+                        if station.bridge.stream_mode:
+                            station.nowplaying.refresh()
+                        if (
+                            station.bridge.stream_mode
+                            and metadata_changed
+                            and station.bridge.relays is not None
+                        ):
+                            await asyncio.to_thread(
+                                _refresh_relay_metadata, station, request.app.state.stations
+                            )
+
+                    await apply_group(name, save_stream)
+
+            values = await asyncio.to_thread(_station_settings_values, station, request)
+            document = await asyncio.to_thread(station.bridge.get_settings)
+            document.update({"values": values, "revision": _settings_revision(values)})
+            response = {
+                "revision": document["revision"],
+                "applied": sorted(applied),
+                "settings": document,
+            }
+            if failed:
+                return JSONResponse(status_code=207, content={**response, "failed": failed})
+            return response
 
     @router.get("/stereo-tool-presets")
     async def api_stereo_tool_presets(station: SavedStationDep) -> dict:
@@ -1470,7 +1980,9 @@ def install_station_routes(router: StationRouter) -> None:
             start = parse_bound(from_text)
             end = parse_bound(to_text, end=True)
             plays = await asyncio.to_thread(
-                functools.partial(plays_between, station=station.slug),
+                functools.partial(
+                    plays_between, station=station.slug, station_store=station.ledger.store
+                ),
                 library.catalog,
                 start,
                 end,
@@ -1525,7 +2037,7 @@ def install_station_routes(router: StationRouter) -> None:
         return {"elapsed": round(new_pos, 2)}
 
     # ------------------------------------------------------------------
-    # Stream, recording and webhooks (stream mode only; 404 otherwise)
+    # Stream configuration remains editable while the station is stopped.
     # ------------------------------------------------------------------
 
     @router.get("/stream")
@@ -1544,10 +2056,25 @@ def install_station_routes(router: StationRouter) -> None:
         }
 
     @router.post("/stream/relays")
-    async def api_stream_relay_save(
-        station: SavedStationDep, body: RelaySettingsBody, request: Request
-    ) -> dict:
+    async def api_stream_relay_save(station: SavedStationDep, request: Request) -> Any:
         registry = request.app.state.stations
+        try:
+            data = await request.json()
+            if not isinstance(data, dict):
+                raise ValueError("Expected a relay settings object.")
+            body = RelaySettingsBody.model_validate(data)
+        except (TypeError, ValueError, ValidationError) as exc:
+            if isinstance(exc, ValidationError):
+                issue = exc.errors()[0]
+                field = str(issue["loc"][-1]) if issue["loc"] else "name"
+                detail = (
+                    "Name may use letters, numbers, internal spaces, hyphens, and underscores (1 to 32 characters)."
+                    if field == "name"
+                    else f"{field}: {issue['msg']}"
+                )
+            else:
+                field, detail = "name", str(exc)
+            return JSONResponse(status_code=422, content={"detail": detail, "field": field})
         return await asyncio.to_thread(_save_stream_relay, station, body, registry)
 
     @router.delete("/stream/relays/{name}")
@@ -1574,23 +2101,6 @@ def install_station_routes(router: StationRouter) -> None:
     @router.post("/recording/split")
     async def api_recording_split(station: StationDep) -> dict[str, object]:
         return await _recording_route(station, Recorder.split)
-
-    @router.post("/recording/settings")
-    async def api_recording_settings(
-        station: SavedStationDep, body: RecordingSettingsBody
-    ) -> dict[str, object]:
-        if station.recorder is None:
-            try:
-                return await asyncio.to_thread(_save_recording_settings, station, body)
-            except OSError as exc:
-                logger.error("Could not save recording settings", exc_info=True)
-                raise HTTPException(
-                    status_code=503, detail="Could not save recording settings"
-                ) from exc
-        return await _recording_route(
-            station,
-            lambda target: target.configure(body.split, body.retention_days, body.free_space_mb),
-        )
 
     @router.get("/webhooks")
     async def api_webhooks(station: SavedStationDep) -> list[dict[str, str | int]]:
@@ -1697,85 +2207,6 @@ def install_station_routes(router: StationRouter) -> None:
                 "Content-Disposition": f'attachment; filename="autodj-listeners-{station.slug}.csv"',
             },
         )
-
-    @router.post("/stream/settings")
-    async def api_stream_settings(
-        station: SavedStationDep, body: StreamSettingsBody, request: Request
-    ) -> dict:
-        """Change the stream bitrates (listeners reconnect), continuous play, name or statistics."""
-        bridge = station.bridge
-        live = bool(getattr(bridge, "stream_mode", False))
-        access = station.listener_access if live else None
-        cfg = station.cfg
-        metadata_changed = any(
-            getattr(cfg.stream, field) != getattr(body, field)
-            for field in ("station_name", "genre", "description", "url")
-            if getattr(body, field) is not None
-        )
-        if body.show_next and cfg.dmca.enabled:
-            raise HTTPException(
-                status_code=409,
-                detail="DMCA mode is on, so the next song is never shown publicly.",
-            )
-        # The AAC and Opus changes go first, all or none: each is checked and
-        # ffmpeg is tried on it before anything changes (#50).
-        formats: dict[str, int] = {
-            name: value
-            for name, value in (("aac", body.aac_bitrate), ("opus", body.opus_bitrate))
-            if value is not None
-        }
-        changed_formats: list[str] = []
-        if formats and live:
-            try:
-                changed_formats = await asyncio.to_thread(bridge.set_stream_formats, formats)
-            except EncoderUnavailableError as exc:
-                logger.error("A stream format could not be turned on: %s", exc)
-                raise HTTPException(status_code=503, detail=f"{exc}. Nothing was changed.") from exc
-            except (ValueError, MountsClosedError) as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-        if body.bitrate is not None and live:
-            try:
-                await asyncio.to_thread(bridge.set_stream_bitrate, body.bitrate)
-            except EncoderUnavailableError as exc:
-                if not changed_formats:
-                    raise HTTPException(status_code=503, detail="stream encoder failed") from exc
-                # Say exactly what did change before the MP3 encoder failed.
-                await asyncio.to_thread(bridge.save_persistent_state)
-                labels = " and ".join(FORMATS[name].label for name in changed_formats)
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        "The MP3 stream encoder failed, so its quality is unchanged. "
-                        f"The {labels} change was saved; nothing else was changed."
-                    ),
-                ) from exc
-        if body.stats_days is not None:
-            cfg.stream.stats_days = body.stats_days
-            if station.listener_stats is not None:
-                # Days no longer kept go now, not at the next tick.
-                await asyncio.to_thread(station.listener_stats.tick)
-                await asyncio.to_thread(station.listener_stats.flush)
-        if body.continuous is not None:
-            cfg.stream.continuous = body.continuous
-        if body.station_name is not None:
-            # Read per stream request, so each player shows it when it next connects.
-            cfg.stream.station_name = body.station_name
-        for field in ("genre", "description", "url"):
-            value = getattr(body, field)
-            if value is not None:
-                setattr(cfg.stream, field, value)
-        if body.show_next is not None:
-            cfg.nowplaying.show_next = body.show_next
-        if live:
-            station.nowplaying.refresh()
-        if body.max_listeners_per_address is not None:
-            cfg.stream.max_listeners_per_address = body.max_listeners_per_address
-            if access is not None:
-                access.max_per_address = body.max_listeners_per_address
-        await asyncio.to_thread(bridge.save_persistent_state)
-        if live and metadata_changed and bridge.relays is not None:
-            await asyncio.to_thread(_refresh_relay_metadata, station, request.app.state.stations)
-        return _stream_info(station)
 
     # ------------------------------------------------------------------
     # Profiles
@@ -2266,65 +2697,8 @@ def install_station_routes(router: StationRouter) -> None:
             )
         return JSONResponse(await asyncio.to_thread(station.bridge.get_state))
 
-    # ------------------------------------------------------------------
-    # Settings (mirror of CLI flags)
-    # ------------------------------------------------------------------
-
-    @router.post("/preset")
-    async def api_preset(station: SavedStationDep, body: PresetBody) -> dict:
-        """Activate a preset by name."""
-        bridge = station.bridge
-        bridge.set_preset(body.name)
-        bridge.save_persistent_state()
-        return bridge.get_settings()
-
-    @router.post("/transition")
-    async def api_transition(station: SavedStationDep, body: TransitionBody) -> dict:
-        """Apply transition-effect overrides."""
-        bridge = station.bridge
-        try:
-            bridge.set_transition(body.effect)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        bridge.save_persistent_state()
-        return bridge.get_settings()
-
-    @router.post("/djmix")
-    async def api_djmix(station: SavedStationDep, body: DjMixBody) -> dict:
-        """Apply dj-mix flag overrides (beatmatch, harmonic, etc.)."""
-        bridge = station.bridge
-        bridge.set_djmix(**body.model_dump(exclude_none=True))
-        bridge.save_persistent_state()
-        return bridge.get_settings()
-
-    @router.post("/playback-settings")
-    async def api_playback_settings(station: SavedStationDep, body: PlaybackSettingsBody) -> dict:
-        """Apply playback-flag overrides (transition mode, lyrics, ...)."""
-        bridge = station.bridge
-        try:
-            await run_in_threadpool(bridge.set_playback_settings, body)
-        # FileNotFoundError (an OSError) is a Stereo Tool preset that is gone.
-        except (OSError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        bridge.save_persistent_state()
-        return bridge.get_settings()
-
-    @router.post("/bpm-range")
-    async def api_bpm_range(station: SavedStationDep, body: BpmRangeBody) -> dict:
-        """Set the active BPM range filter."""
-        bridge = station.bridge
-        bridge.set_bpm_range(body.lo, body.hi)
-        bridge.save_persistent_state()
-        return bridge.get_settings()
-
-    @router.post("/discovery")
-    async def api_discovery(station: SavedStationDep, body: DiscoveryBody) -> dict:
-        """Set the discovery rate (null turns discovery off)."""
-        bridge = station.bridge
-        bridge.set_discovery_every(body.every)
-        bridge.save_persistent_state()
-        return bridge.get_settings()
-
+    # Settings configuration is saved through PATCH /settings. The discovery toggle below
+    # remains operational and immediate.
     @router.post("/discovery/toggle")
     async def api_discovery_toggle(station: StationDep) -> dict[str, bool]:
         """Turn discovery on or off and remember it (the Now Playing Discovery button)."""
@@ -2333,8 +2707,8 @@ def install_station_routes(router: StationRouter) -> None:
         return {"discovery_enabled": enabled}
 
     @router.post("/eq")
-    async def api_eq(station: SavedStationDep, body: EqBody) -> dict[str, float]:
-        """Set the 3-band EQ gains."""
+    async def api_eq(station: StationDep, body: EqBody) -> dict[str, float]:
+        """Adjust the live EQ immediately, like the other Now Playing controls."""
         result = station.bridge.set_eq(low=body.low, mid=body.mid, high=body.high)
         station.bridge.save_persistent_state()
         return result

@@ -8,8 +8,82 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-23
+
+AutoDJ 0.22.0 gives every station, the default one included, its own folder and `station.json`,
+so each station can be started, stopped and edited from the page, also while it is off air.
+Streaming and server sound-card output now mix songs live, so the next song stays editable until
+it starts. Also new are a speech studio, private programme reviews, prepared show editions, an
+update check with a restart button, worker pairing and management from Settings, and browser
+sign-in through an authenticating proxy. On first start the index folder moves to a new layout.
+A backup made by an older release does not restore on 0.22.0, so make a new backup after
+upgrading. Read the **Breaking** entries under Changed and Removed before you upgrade. The
+screen-reader sample for this release is in
+[docs/accessibility-samples/0.22.0.md](docs/accessibility-samples/0.22.0.md).
+
 ### Added
 
+- **Settings**, **Updates** says when a newer AutoDJ is out on the Stable channel (release tags)
+  or the Development channel (`master`), links its release notes and lists the commands that
+  update this kind of installation. AutoDJ does not update itself. `autodj doctor` and the new
+  `autodj check-update` use the same check, and **Check for updates** turns it off. **Restart
+  AutoDJ** restarts the server from the page when something will start it again: the checkout
+  launcher, a systemd unit with a restart policy, or a container restart policy.
+- **Settings**, **Analysis workers** can pause a worker and set its songs per claim and idle
+  release minutes; the worker picks them up without a restart. **Pair a worker** shows a
+  one-time code for `autodj worker --pair CODE --server URL`, which saves the worker's token for
+  later runs. A worker the server refused shows why and what to do.
+- While a worker is connected, it also decodes a scan's new and changed songs for cue points,
+  loudness and beats, so a large import no longer keeps a small server busy for hours. A changed
+  song stays playable until its new measurements arrive.
+- **Settings**, **Stations** lists every station in a table with what it plays, its listeners,
+  **Start with the server** and a Start or Stop button, the default station included. A stopped
+  station's settings, schedule, clockwheels, relays, carts, shows, ads, liners and requests can
+  be edited, and Start uses them.
+- Shift+[ and Shift+] switch to the previous and next station. A switch, and Shift+C, say the
+  station, what it plays, then whether it is on air.
+- The **Speech studio** in **Settings**, **Voice liners** compares voices from OpenAI, Speechify,
+  compatible speech servers and the station's time check command on the same script. A result
+  can be saved as a liner, and a full set of spoken time checks, once approved, plays from local
+  files. Generating speech can cost money. See [speech studio](docs/guides/operations/speech-studio.md).
+- **Programme review**, the last card in Library tools, makes a shortened private preview of a
+  saved show, the queue or a forecast, even while the station is stopped. It keeps every join and
+  the first and last 10 seconds of each song. Listen in the browser or download MP3 or WAV;
+  nothing reaches the stream or the play history.
+- **Prepared editions** in Shows record or import the speech for a future airing of a show, with
+  its own takes and approvals, and play it through Programme review before it airs.
+- Voice tracks can be recorded and booked while announcer uploads are off, and can be up to ten
+  minutes long. The voice tracker remembers the chosen microphone and has a private microphone
+  test. The spoken transition around a voice track can be edited, and voice tracks and automatic
+  liners fit over the songs' Outro and Intro the way liners do.
+- A matched intro rule can choose liners by a file name pattern filled from the song's tags, such
+  as `year-{year}-*.wav`; `{artist}`, `{title}`, `{album}`, `{genre}` and `{bpm}` work too. **Test
+  with a song** shows what matches without playing anything. A matched intro row in the hour
+  preview opens that liner's Track info.
+- A category can be created from a music condition in a clockwheel step or an intro rule without
+  leaving the editor.
+- Rescan finds beats and song structure for every song, not only songs that played or went
+  through Analyse, unless **Find beats and song structure** in Library tools is off.
+- **Rescan cue points** in Track info analyses a song or liner again, then lets you compare,
+  preview and pick the proposed cue points to keep. Cue points you set or imported start
+  unticked.
+- **Music fade drop (dB)** in Library tools sets how far a song must fall to count as fading out:
+  1 to 30 dB, 10 by default. Saved cue points do not change.
+- `t` opens Track info for the song on air.
+- DMCA mode, in **Settings**, **Song picking**, and the public player page, its embeddable
+  version and the sites allowed to embed it, in **Settings**, **Stream**, are set per station on
+  the page.
+- **Browse** buttons choose a server folder or file for a registered folder, a clockwheel track
+  step and a folder condition.
+- `[server] auth_mode = "trusted_proxy"` lets an authenticating reverse proxy sign browsers in
+  instead of pairing. The proxy must also send a shared secret, and AutoDJ refuses to start
+  without one. See [manage access](docs/guides/manage-access.md).
+- `autodj serve` keeps its log in `logs/autodj.log` in the index folder, with a new file each day
+  and the last 7 kept, startup messages included. Each clockwheel pick logs one line, and the
+  default station's lines carry `[default]` like other stations' names.
+- When no beets path matches a library song, the log, `autodj doctor` and the page say so and
+  name `[library] music_dir` as the setting to check.
+- On Windows, `autodj doctor` offers to install a missing FFmpeg with WinGet, as setup does.
 - `autodj setup --no-model` installs basic music import, browser playback and
   streaming without MuQ, PyTorch, Transformers or model weights. Local model
   analysis and worker execution remain disabled until a model-capable runtime
@@ -23,50 +97,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A related tracks entry can name its artist as `*` to mean every track with that title (#411).
   A medley written with `"* - Let It Snow! Let It Snow! Let It Snow!"` holds back every recording
   of the song in the library, including ones added later, instead of a line that names each one.
-- Time check voice packs and clips are managed in **Settings**, **Time checks** instead of
-  `config.toml` (#388). Every folder in the station's time checks folder is a voice pack, found
-  without a restart and without a `voice_packs` line; packs still listed in `voice_packs` keep
-  working, and **Look for new voice packs** finds folders copied in by hand. **Add a voice pack**
-  uploads a zip of the pack's WAV, MP3, FLAC or OGG files (up to 256 MB, and 2000 files or 512 MB
-  unpacked) and asks before it replaces a pack of the same name; any other file in the zip, a
-  path outside the pack or a link refuses the whole zip, and nothing is left behind. A pack added
-  here has a **Remove** button. **Recorded minute clips folder**, **Intro clip** and **Outro
-  clip** are chosen from the files in the time checks folder, and **Upload a clip** adds one.
-  Only the text-to-speech command stays in `config.toml`, because it runs a program on the
-  server; `clips_folder`, `intro_clip` and `outro_clip` there are now starting values.
-- Announcer breaks can be turned on and off for each station in the new Settings, Breaks tab,
-  without editing `config.toml` or restarting. The tab also sets where a DJ break goes
-  (automatic, talking up the next song, or between the songs), the shortest intro to talk up,
-  and how far the music drops under a break. Turning breaks off drops the breaks still waiting
-  for their song change, and the announcer program is told breaks are off.
+- Time check voice packs and clips are managed in **Settings**, **Time checks** (#388). Every
+  folder in the station's time checks folder is a voice pack, found without a restart and without
+  a `voice_packs` line; **Look for new voice packs** finds folders copied in by hand. **Add a
+  voice pack** uploads a zip of the pack's WAV, MP3, FLAC or OGG files (up to 256 MB, and 2000
+  files or 512 MB unpacked) and asks before it replaces a pack of the same name; an unsafe zip is
+  refused whole. A pack added here has a **Remove** button. **Recorded minute clips folder**,
+  **Intro clip** and **Outro clip** are chosen from the files in the time checks folder, and
+  **Upload a clip** adds one. Only the text-to-speech command has no control on the page, because
+  it runs a program on the server.
+- The new **Settings**, **Breaks** tab sets, for each station, whether it accepts announcer
+  uploads, where a DJ break goes (automatic, talking up the next song, or between the songs), the
+  shortest intro to talk up, and how far the music drops under a break. Turning uploads off drops
+  the uploaded breaks still waiting for their song change, and the announcer program is told.
 - Listener requests can be turned on and off, and their approval set (you approve each one, or
   automatic), in the Listener requests card in Queue & Search, which now shows while requests
   are off. The request page opens or closes at once. While closed it says "Requests are closed",
   also to a listener whose page was open when requests were turned off.
-- `[breaks]` and `[requests]` in `config.toml` stay in charge of these settings until you save
-  them on the page for the station; saving another setting, such as the volume, does not change
-  that. Once saved there, the page's values are kept with the station's other settings and win at
-  every start, and the log says so once when they differ from `config.toml`. The break upload
-  limits and quotas, and the request limits, stay in `config.toml`.
-- Stereo Tool can be set up from Settings, Sound, with no configuration file. After you choose
-  Stereo Tool and tick that you accept Thimeo's terms, **Download Stereo Tool** fetches Thimeo's
-  Stereo Tool plugin (about 320 MB) straight from thimeo.com and keeps only the library the server
-  needs (64-bit Linux PC or ARM, or 64-bit Windows) in the index folder; it then reads **Update
-  Stereo Tool** and the page shows the installed version. AutoDJ still does not include Stereo
-  Tool, and the container image has none: use the button, or copy the library into
-  `tools/stereo-tool/` in the index folder. A station that keeps the default `stereotool_path`
-  finds it there with no configuration change.
-- **Stereo Tool licence key** in Settings, Sound saves your key where only AutoDJ can read it,
-  outside backups, and never shows it again; the page says "Licence set" or "No licence", then
-  whether Stereo Tool itself says the key covers the preset, and **Clear licence** removes it. One
-  key serves every station, or tick **For this station only** to give one station its own.
-  Installs without a browser can set `AUTODJ_STEREOTOOL_LICENSE_KEY` or
-  `AUTODJ_STEREOTOOL_LICENSE_FILE`, or a station's `[playback] stereotool_license_file`. Stereo
-  Tool restarts with a new key or a new library; a key for one station restarts only that station,
-  and saving the same key again restarts nothing.
+- Stereo Tool can be set up from **Settings**, **Sound**, with no configuration file. After you
+  tick that you accept Thimeo's terms, **Download Stereo Tool** fetches Thimeo's Stereo Tool
+  plugin (about 320 MB) from thimeo.com and keeps only the library this computer needs (64-bit
+  Linux PC or ARM, or 64-bit Windows) in `tools/stereo-tool/` in the index folder; the page then
+  shows the installed version. AutoDJ still does not include Stereo Tool, and the container
+  image has none: use the button, or copy the library into that folder.
+- **Stereo Tool licence key** in **Settings**, **Sound** saves your key where only AutoDJ can
+  read it, outside backups, and never shows it again; the page says whether a licence is set and
+  whether Stereo Tool says it covers the preset, and **Clear licence** removes it. One key serves
+  every station, or tick **For this station only** to keep a key in that station's
+  `secrets.json`. Installs without a browser can set `AUTODJ_STEREOTOOL_LICENSE_KEY`. A new key
+  or library restarts only the stations it affects.
 
 ### Changed
 
+- **Breaking:** the index folder moves to a new layout when AutoDJ first starts: the library in
+  `libraries/main/`, each station in `stations/<id>/` (the default station too), shared files in
+  `shared/` and logs in `logs/`. Every station is defined by its own `station.json`. Its settings
+  in `config.toml` and `config.local.toml`, including any `[stations.<id>]` table, are copied
+  there once and then ignored; `config.toml` itself is never edited. Relays go to the station's
+  `relays.json`, and listener logins and webhooks to `secrets.json`, which only your account can
+  read and backups leave out. Play history moves to each station's `station.db`. Make a new
+  backup after upgrading, and keep the one from before to go back to 0.21.0. See
+  [backups and updates](docs/guides/backups-and-updates.md).
+- **Breaking:** a station other than the default streams at `/<id>.mp3`, with `.m3u`, `.aac` and
+  `.opus`, instead of `/stations/<id>.mp3`. Listeners with a saved `/stations/` stream link need
+  the new one. The default station keeps `/stream.mp3`, and status, player and request pages keep
+  their `/stations/<id>/` addresses. A station can no longer be called `stream`.
+- **Breaking for containers:** Compose pulls the published image
+  `ghcr.io/blindndangerous/autodj:stable` instead of building one. `:development` follows
+  `master`, and each release also has its version tag, such as `:0.22.0`. To keep building the
+  image yourself, add `compose.build.yaml`, for example with
+  `COMPOSE_FILE=compose.yaml:compose.build.yaml` in `.env`. The
+  [containers guide](docs/guides/operations/containers-and-windows.md) covers choosing and
+  pinning an image and moving an installation that builds its own.
 - **Breaking:** plain package installs now omit MuQ and Transformers. Direct
   wheel installations that need local model analysis must select `index`,
   sound-card output needs `play`, and `all` includes both. Preserve the desired
@@ -74,33 +156,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   model analysis. In no-model mode, `autodj index` saves playable songs and
   reports pending analysis successfully; remote analysis requires an existing
   compatible server-side model cache. See [setup](docs/setup.md#no-model-installation).
+- Streaming and server sound-card output decode songs as they play and mix them live. The next
+  song stays editable until it starts: **Play next** replaces it, and a change that affects a
+  voice track asks whether to keep or discard the voice track, or cancel the change. Announcer
+  uploads and scheduled speech join the current song change. FFmpeg is now needed for every
+  server-mixed output. Sound-card output on this engine has had little testing on real devices.
+- Settings tabs save through one **Save changes** and **Discard changes** bar instead of saving
+  each control as it changes. Edits stay drafts until saved, also while a station is off air, and
+  leaving the tab or switching stations with edits asks whether to save, discard or stay.
+- Clockwheel steps, categories, intro rules, scheduled events, ad spots and ad breaks are added
+  and edited in dialogs, each titled with a level-one heading. Escape or Cancel asks before
+  discarding changes, and focus returns to the item edited.
+- Editable lists, such as intro rules, categories, schedules and saved clockwheels, are one Tab
+  stop with arrow keys between rows and their buttons, and keep focus when they refresh. Up and
+  Down in the clockwheel steps stay in the column.
+- In focus mode, moving to another row of a table reads that row's song after the cell, and
+  moving to another column reads the column heading.
+- Songs of any length import and play, so DJ mixes and full-album files are no longer refused.
+  Songs longer than **Advanced analysis length** in Library tools (15 minutes by default, 0 for
+  any length) are only left out of advanced analysis.
+- Song and artist intro uploads overlap the song change the way liners do, so a short intro no
+  longer has to fit inside the song's Intro.
+- The hour preview also predicts matched intros, automatic liners, scheduled liners and carts,
+  and time checks. It times the top of the hour only when **Fit songs to the hour** is on, and
+  its card gives the counts once.
+- Test rotation lists the top 20 songs and artists and the first ten songs never picked, and,
+  with a clockwheel, which steps supplied songs, with combined figures for identical steps.
+- Most help paragraphs on the page are now one short line or gone, with the detail in the docs.
+  Each cue point in Track info has one line saying what it does.
+- Now Playing no longer says the next handoff is prepared in almost every song; it speaks only
+  when the handoff could not be prepared.
+- Music speed is one number field instead of a slider and a field, and **Listen here** comes
+  before **Play or Pause**.
+- The log leaves routine worker polling at debug level and now includes the web server's own
+  warnings and errors. Model downloads no longer fill a log file with progress bars.
+- The documentation is organised by what you want to do, with task guides, thirteen tutorials, a
+  [settings reference](docs/settings-reference.md) and a glossary; start at
+  [docs/README.md](docs/README.md).
 - Liners and voice tracks use the same preparation loudness as music in Smooth and Stereo Tool.
   Produced IDs no longer receive an extra compressor; spoken breaks and matched intros use
   lighter 2:1 compression. AGC drive and master processing stay unchanged. **Music duck (dB)**
-  in Settings, Liners defaults to 3 dB, uses smooth ramps, and also applies to scheduled IDs.
+  in Settings, Voice liners defaults to 3 dB, uses smooth ramps, and also applies to scheduled IDs.
   Existing saved duck depths, including zero, are kept; break-specific ducking still takes
   precedence for spoken breaks. Old liner measurements refresh automatically (#402).
-
-- **Breaking:** `[playback] stereotool_path` now names Thimeo's Stereo Tool plugin library
-  (`libStereoTool_*.so` or `.dll`), not the command-line program `stereo_tool_cmd`. A
-  configuration that points it at `stereo_tool_cmd` stops processing with Stereo Tool after the
-  upgrade: the station plays on with its limited bypass and says the file "is not Thimeo's Stereo
-  Tool plugin library". To fix it, delete the `stereotool_path` line and press Download Stereo
-  Tool in Settings, Sound, or point the line at the library from Thimeo's plugin zip.
 - Stereo Tool now runs Thimeo's plugin library (`libStereoTool`, as AzuraCast and Liquidsoap do)
   in a helper process of AutoDJ's own, instead of the command-line program. The licence key
   reaches it over that process's input, never a command line, and a crash in Stereo Tool ends only
-  the helper. Linux on 64-bit PCs has been tested with Thimeo's real plugin; Windows and 64-bit
-  ARM have not been tested with it yet.
-- A station set to Stereo Tool without the library now says "Stereo Tool is not installed.
-  Download it in Settings, Sound, with the Download Stereo Tool button." A station whose own
-  `stereotool_path` names a missing library says that path is missing instead.
-- A new index name, given with `--name`, may not contain `:` or end with a dot or a space,
-  because Windows reads such a name as another folder: `D:music` is a folder on drive D:, and
-  `chill.` is the folder of `chill`. An `[index] name` already in `config.toml` that does this
-  still loads, with a warning asking you to rename the index folder and the setting. Only a name
-  that would put the index outside `index_dir`, such as `D:music` on Windows, stops AutoDJ at
-  startup, with a message saying so.
+  the helper. Linux on 64-bit PCs and 64-bit Windows have been tested with Thimeo's real plugin;
+  64-bit ARM has not.
+- A station set to Stereo Tool without the library says "Stereo Tool is not installed. Download
+  it in Settings, Sound, with the Download Stereo Tool button."
 - Two relays whose names read the same password variable, such as `a-b` and `a_b`, stop AutoDJ
   at startup, and are refused in Settings, when that variable is set, so one server's source
   password is never sent to another. While it is unset, each relay keeps its own password.
@@ -109,6 +214,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   statistics in Settings, Stream; Rules for every break and Ad report in Ads; and Uploaded clips in
   Carts. A field with an error opens its card before it takes focus. In Settings, Stream,
   Broadcast recording now comes before these cards, just after the general settings.
+- The Track info and Library tools sections are cards too, with Song structure last in Track
+  info, and every card remembers in this browser whether it was open.
+
+### Fixed
+
+- After a station started, the clockwheel played straight past its restart minutes; it restarts
+  on time again.
+- Song picking set to Clockwheel with no clockwheel loaded no longer goes silent after the song
+  playing; it carries on with ordinary picks. A hard event that changes song picking applies to
+  the very next songs.
+- An interval event due during a scheduler stall is no longer lost, **Fit songs to the hour**
+  allows for Music speed, and the hour preview no longer hangs at a half-hour clock change.
+- Library analysis no longer undoes Track info edits, or clears cue points, saved while it ran.
+  A rescan reads tags another program changed in place; the first rescan after upgrading reads
+  every file once.
+- Replacing a file at the same path no longer brings back its old Intro and Outro.
+- An automatic segue is placed only where the song stays quiet to its end, a song with a pause
+  before its last sound keeps that ending, and trailing silence no longer skews Segue
+  suggestions for songs and liners.
+- Intro rules use the liner's saved cue points, Overlap start included.
+- Every station can use every registered liner; stations other than the default skipped liner
+  steps from registered folders.
+- A relay output or recording whose encoder stopped restarts by itself, a listener dropped for
+  falling behind counts against the listener limits until it is gone, and a quiet announcer break
+  is no longer dropped at air time.
+- A short stall in Stereo Tool or FFmpeg master processing is covered with unprocessed audio
+  instead of restarting the processor, and a station's first song no longer loses its opening
+  while Stereo Tool starts.
+- Stopping AutoDJ is fast on large libraries: the library scan stops first and stream encoders
+  end at once. `compose.yaml` gives the container 90 seconds to stop (`stop_grace_period`).
+- Switching stations asks before discarding unsaved clockwheel edits or a voice track take, and
+  a failed status read during a switch no longer shows the station as off air.
+- Screen-reader fixes from the 0.21.0 sample and since: a repeated message is spoken again;
+  errors, counts and results are said once; focus returns to the control that opened a dialog or
+  the keyboard shortcuts list; Save show and Delete category keep focus; the queue, show song
+  lists and the folder table update without cutting speech; a slow button says one short line
+  while it waits; and a one-second wait says "1 second".
+- Between songs, the player shows 0:00 / 0:00 instead of a time past the song's length.
+- Track info shows when the selected station last played the song, not the default station.
+- **AGC drive boost (dB)** in Settings, Sound now saves.
+- An incomplete liner play date says to enter it as a full date, and a file that is not audio is
+  refused at liner upload.
+- On Windows, saving tags to a read-only file says so, and cue points imported from Rekordbox,
+  Traktor and Mixxx match library songs.
+- A malformed repick request can no longer stop song picking, failed listener logins can no
+  longer grow memory without bound, and the server log no longer keeps the startup pairing code.
+- Certifi, Pillow, filelock, setuptools and virtualenv are updated for published security
+  advisories.
+
+### Removed
+
+- **Breaking:** `[playback] stereotool_path` and `stereotool_license_file`, and
+  `AUTODJ_STEREOTOOL_LICENSE_FILE`. Stereo Tool always lives in `tools/stereo-tool/` in the index
+  folder, and a configuration that still names them gets an unknown-key warning. A station that
+  ran the command-line `stereo_tool_cmd` plays on with its limited bypass until you press
+  **Download Stereo Tool** in Settings, Sound.
+- **Breaking:** named indexes: `[index] name`, `--name` and `autodj list-indexes`. The move to the
+  new layout uses an old `name` to find the folder to move, and leaves other named indexes'
+  folders alone with a warning.
+- `[playback] liners_folder`. Each station keeps uploads in its own `liners` folder, and other
+  liners come from registered liner folders.
+- `server_max_track_minutes`: there is no length limit for importing or playing.
 
 ## [0.21.0] - 2026-10-14
 
@@ -2766,7 +2933,8 @@ The "make it feel like a real radio station" release.
 
 AutoDJ is built and maintained by a blind developer.  Every change to the web UI runs through an accessibility review before it ships.  If you find a screen-reader bug or a keyboard trap, please file an issue.
 
-[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.19.1...v0.21.0
 [0.20.0]: https://github.com/blindndangerous/AutoDJ/commit/5f2fbd208ded518d7572dce755faaae186add889
 [0.19.1]: https://github.com/blindndangerous/AutoDJ/compare/v0.19.0...v0.19.1

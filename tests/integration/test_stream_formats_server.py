@@ -15,6 +15,7 @@ from autodj.stream_formats import StreamFormat
 from autodj.stream_mounts import StreamMounts
 from tests._layout import point_index
 from tests._server import create_app
+from tests.integration._helpers import patch_station_settings
 
 
 def _output(first: bytes, bitrate: int = 320) -> MagicMock:
@@ -116,7 +117,13 @@ def test_the_other_formats_need_no_pairing(bridge, tmp_path: Path) -> None:
     assert rig.client.head("/stream.opus").status_code == 404
     assert rig.client.get("/api/stream/stats").status_code == 401
     assert rig.client.get("/api/stream/stats/export").status_code == 401
-    assert rig.client.post("/api/stream/settings", json={"aac_bitrate": 0}).status_code == 401
+    assert (
+        rig.client.patch(
+            "/api/settings",
+            json={"revision": "not-used", "changes": {"stream": {"aac_bitrate": 0}}},
+        ).status_code
+        == 401
+    )
 
 
 def test_listening_is_counted_in_the_statistics(rig: Rig) -> None:
@@ -149,7 +156,8 @@ def test_listening_is_counted_in_the_statistics(rig: Rig) -> None:
 
 def test_formats_are_turned_on_changed_and_off_from_settings(rig: Rig) -> None:
     cfg = rig.bridge.player._cfg
-    info = rig.client.post("/api/stream/settings", json={"aac_bitrate": 128}).json()
+    assert patch_station_settings(rig.client, {"stream": {"aac_bitrate": 128}}).status_code == 200
+    info = rig.client.get("/api/stream").json()
     assert cfg.stream.aac_bitrate == 128
     aac = next(item for item in info["formats"] if item["format"] == "aac")
     assert aac == {
@@ -160,7 +168,7 @@ def test_formats_are_turned_on_changed_and_off_from_settings(rig: Rig) -> None:
         "listeners": 0,
         "error": None,
     }
-    rig.client.post("/api/stream/settings", json={"opus_bitrate": 48, "aac_bitrate": 0})
+    patch_station_settings(rig.client, {"stream": {"opus_bitrate": 48, "aac_bitrate": 0}})
     assert rig.mounts.get("aac") is None and rig.mounts.bitrate("opus") == 48
     assert (cfg.stream.aac_bitrate, cfg.stream.opus_bitrate) == (0, 48)
     assert rig.bridge.save_persistent_state.called
@@ -168,19 +176,17 @@ def test_formats_are_turned_on_changed_and_off_from_settings(rig: Rig) -> None:
     assert (saved["stream_aac_bitrate"], saved["stream_opus_bitrate"]) == (0, 48)
     # Only the listed bitrates; the MP3 one is not an AAC one.
     for body in ({"aac_bitrate": 320}, {"opus_bitrate": 32}, {"opus_bitrate": True}):
-        assert rig.client.post("/api/stream/settings", json=body).status_code == 422
+        assert patch_station_settings(rig.client, {"stream": body}).status_code == 422
 
 
 def test_a_format_ffmpeg_cannot_encode_is_refused_and_nothing_changes(rig: Rig) -> None:
     rig.mounts.set_bitrate("aac", 96)
     rig.fail = True
-    response = rig.client.post(
-        "/api/stream/settings", json={"opus_bitrate": 64, "aac_bitrate": 0, "bitrate": 192}
+    response = patch_station_settings(
+        rig.client, {"stream": {"opus_bitrate": 64, "aac_bitrate": 0, "bitrate": 192}}
     )
-    assert response.status_code == 503
-    assert response.json()["detail"] == (
-        "ffmpeg could not encode Opus: Unknown encoder. Nothing was changed."
-    )
+    assert response.status_code == 207
+    assert "ffmpeg could not encode Opus" in response.json()["failed"]["stream"]
     assert not rig.mounts.enabled("opus") and rig.mounts.bitrate("aac") == 96
     assert rig.bridge.player._cfg.stream.opus_bitrate == 0
     assert rig.bridge.player._cfg.stream.bitrate == 320
@@ -189,12 +195,9 @@ def test_a_format_ffmpeg_cannot_encode_is_refused_and_nothing_changes(rig: Rig) 
 
 def test_an_mp3_failure_after_the_formats_changed_says_what_was_saved(rig: Rig) -> None:
     rig.main.set_bitrate.side_effect = EncoderUnavailableError("stream encoder failed")
-    response = rig.client.post("/api/stream/settings", json={"opus_bitrate": 64, "bitrate": 192})
-    assert response.status_code == 503
-    assert response.json()["detail"] == (
-        "The MP3 stream encoder failed, so its quality is unchanged. "
-        "The Opus change was saved; nothing else was changed."
-    )
+    response = patch_station_settings(rig.client, {"stream": {"opus_bitrate": 64, "bitrate": 192}})
+    assert response.status_code == 207
+    assert "Opus change was saved" in response.json()["failed"]["stream"]
     assert rig.mounts.bitrate("opus") == 64
     assert rig.bridge.save_persistent_state.called
 
@@ -209,16 +212,18 @@ def test_a_listener_whose_encoder_cannot_start_is_told_so(rig: Rig) -> None:
 
 def test_a_stopped_stream_refuses_format_changes(rig: Rig) -> None:
     rig.mounts.close()
-    response = rig.client.post("/api/stream/settings", json={"aac_bitrate": 96})
-    assert response.status_code == 409
+    response = patch_station_settings(rig.client, {"stream": {"aac_bitrate": 96}})
+    assert response.status_code == 207
+    assert "stream has stopped" in response.json()["failed"]["stream"].lower()
     assert rig.client.get("/stream.aac").status_code == 404
 
 
 def test_a_stream_without_mounts_refuses_format_changes(bridge, tmp_path: Path) -> None:
     rig = Rig(bridge, tmp_path)
     bridge.mounts = None
-    response = rig.client.post("/api/stream/settings", json={"aac_bitrate": 96})
-    assert response.status_code == 409
+    response = patch_station_settings(rig.client, {"stream": {"aac_bitrate": 96}})
+    assert response.status_code == 207
+    assert "no extra formats" in response.json()["failed"]["stream"].lower()
     # The statistics still work: they count the MP3 stream only.
     rig.main.listener_count = 2
     assert rig.client.get("/api/stream/stats").json()["now"] == {
@@ -233,12 +238,14 @@ def test_keeping_fewer_days_deletes_the_older_ones_now(rig: Rig) -> None:
     )
     with rig.client.stream("GET", "/stream.mp3") as response:
         next(response.iter_bytes())
-    assert rig.client.post("/api/stream/settings", json={"stats_days": 0}).status_code == 200
+    assert patch_station_settings(rig.client, {"stream": {"stats_days": 0}}).status_code == 200
     assert rig.bridge.player._cfg.stream.stats_days == 0
     assert '"days": []' in stats_path.read_text(encoding="utf-8")
     assert rig.client.get("/api/stream").json()["stats_days"] == 0
     for days in (-1, 3651, 1.5):
-        assert rig.client.post("/api/stream/settings", json={"stats_days": days}).status_code == 422
+        assert (
+            patch_station_settings(rig.client, {"stream": {"stats_days": days}}).status_code == 422
+        )
 
 
 def test_the_station_starts_and_stops_its_extra_formats_with_the_mp3_stream() -> None:

@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { formatPlayedAt } from "../../src/autodj/static/modules/history-format.js";
-import { applyMixSettings, installMixSettings } from
+import { applyMixSettings, installMixSettings, resetMixSettings } from
   "../../src/autodj/static/modules/mix-settings.js";
+import { applySettingsDrafts, resetSettingsDrafts, saveSettingsPanel } from
+  "../../src/autodj/static/modules/settings-drafts.js";
 import { installProfiles, profileFromSettings } from
   "../../src/autodj/static/modules/profiles.js";
 import {
@@ -51,6 +53,7 @@ function recordFocus() {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  resetSettingsDrafts(document);
   document.body.replaceChildren();
 });
 
@@ -63,160 +66,163 @@ describe("history dates", () => {
 });
 
 describe("mix settings", () => {
-  function setup(postSettings) {
-    document.body.innerHTML = `
-      <input type="number" id="wet" value="100">
-      <p id="settings-status"></p><div id="status-toast" hidden></div>`;
+  function setup(initial, fail = false) {
+    const panel = document.createElement("div");
+    panel.id = "spanel-djmix";
+    panel.innerHTML = `<input type="number" id="wet"><input type="number" id="stretch">
+      <input type="number" id="crossfade"><input type="number" id="temperature">
+      <p id="settings-status"></p>`;
+    document.body.append(panel);
     const els = {
-      txWetMix: document.querySelector("#wet"),
+      txWetMix: panel.querySelector("#wet"), djMaxStretch: panel.querySelector("#stretch"),
+      pbCrossfade: panel.querySelector("#crossfade"), pbPickTemperature: panel.querySelector("#temperature"),
     };
-    const settingsStatus = document.querySelector("#settings-status");
-    installMixSettings(els, { postSettings, settingsStatus });
-    applyMixSettings({ playback: { transition_wet_mix: 0.5 } }, els);
-    return { els, settingsStatus };
+    const settingsStatus = panel.querySelector("#settings-status");
+    const requests = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url, options = {}) => {
+      const body = JSON.parse(options.body);
+      requests.push(body);
+      if (fail) return new globalThis.Response(JSON.stringify({ detail: "The settings service is busy." }), {
+        status: 503, headers: { "Content-Type": "application/json" },
+      });
+      const values = globalThis.structuredClone(initial);
+      for (const [group, changes] of Object.entries(body.changes)) values[group] = { ...values[group], ...changes };
+      return new globalThis.Response(JSON.stringify({ revision: "two", settings: { revision: "two", values },
+        applied: Object.keys(body.changes), failed: {} }), { headers: { "Content-Type": "application/json" } });
+    }));
+    installMixSettings(els, { settingsStatus });
+    applySettingsDrafts({ revision: "one", values: initial });
+    return { panel, els, settingsStatus, requests };
   }
 
-  it("refuses a crossfade longer than 20 seconds instead of saving it", async () => {
-    document.body.innerHTML = `
-      <input type="number" id="crossfade" min="0" max="20" value="3">
-      <p id="settings-status"></p><div id="status-toast" hidden></div>`;
-    const els = { pbCrossfade: document.querySelector("#crossfade") };
-    const settingsStatus = document.querySelector("#settings-status");
-    const postSettings = vi.fn().mockResolvedValue(true);
-    installMixSettings(els, { postSettings, settingsStatus });
-    applyMixSettings({ playback: { crossfade_seconds: 4 } }, els);
-
-    els.pbCrossfade.value = "99";
-    els.pbCrossfade.dispatchEvent(new Event("change"));
-
-    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
-      "Could not save Crossfade seconds: enter a number from 0 to 20.  It is still 4.",
-    ));
-    expect(els.pbCrossfade.value).toBe("4");
-    expect(postSettings).not.toHaveBeenCalled();
-
-    els.pbCrossfade.value = "4.5";
-    els.pbCrossfade.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
-      "/api/playback-settings", { crossfade_seconds: 4.5 }, els.pbCrossfade,
-    ));
-  });
-
-  it("sends the effect level as a fraction", async () => {
-    const postSettings = vi.fn().mockResolvedValue(true);
-    const { els } = setup(postSettings);
+  it("stages mix fields and saves only changed fields, retaining percent storage", async () => {
+    const initial = { playback: { crossfade_seconds: 4, transition_wet_mix: 0.5 },
+      djmix: { beatmatch_max_stretch: 0.125 } };
+    const { panel, els, requests } = setup(initial);
     expect(els.txWetMix.value).toBe("50");
-
-    els.txWetMix.value = "75";
-    els.txWetMix.dispatchEvent(new Event("change"));
-
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
-      "/api/playback-settings", { transition_wet_mix: 0.75 }, els.txWetMix,
-    ));
-  });
-
-  it("shows the beatmatch stretch limit in percent and saves it as a fraction", async () => {
-    document.body.innerHTML = `
-      <input type="number" id="stretch" value="8">
-      <p id="settings-status"></p><div id="status-toast" hidden></div>`;
-    const els = { djMaxStretch: document.querySelector("#stretch") };
-    const settingsStatus = document.querySelector("#settings-status");
-    const postSettings = vi.fn().mockResolvedValue(true);
-    installMixSettings(els, { postSettings, settingsStatus });
-    applyMixSettings({ djmix: { beatmatch_max_stretch: 0.125 } }, els);
     expect(els.djMaxStretch.value).toBe("12.5");
-
+    els.txWetMix.value = "75";
     els.djMaxStretch.value = "6";
-    els.djMaxStretch.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
-      "/api/djmix", { beatmatch_max_stretch: 0.06 }, els.djMaxStretch,
-    ));
+    els.txWetMix.dispatchEvent(new Event("input", { bubbles: true }));
+    els.djMaxStretch.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(requests).toHaveLength(0);
+    await saveSettingsPanel(panel);
+    expect(requests).toEqual([{ revision: "one", changes: {
+      playback: { transition_wet_mix: 0.75 }, djmix: { beatmatch_max_stretch: 0.06 },
+    } }]);
+    expect(els.pbCrossfade.value).toBe("4");
   });
 
-  it("saves the new number settings to their routes and refuses out-of-range values", async () => {
-    document.body.innerHTML = `
-      <input type="number" id="top-k" value="1">
-      <input type="number" id="glide" value="8">
-      <input type="number" id="clip" value="1">
-      <p id="settings-status"></p><div id="status-toast" hidden></div>`;
+  it("keeps an invalid mix value and makes no request until corrected", async () => {
+    const { panel, els, requests, settingsStatus } = setup({ playback: { crossfade_seconds: 4, pick_temperature: 1 } });
+    els.pbCrossfade.value = "99";
+    els.pbCrossfade.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(await saveSettingsPanel(panel)).toBe(false);
+    expect(els.pbCrossfade.value).toBe("99");
+    expect(els.pbCrossfade.getAttribute("aria-invalid")).toBe("true");
+    await vi.waitFor(() => expect(settingsStatus.textContent).toContain("0 to 20"));
+    expect(requests).toHaveLength(0);
+  });
+
+  it("retains staged edits after a failed settings patch", async () => {
+    const { panel, els, requests } = setup({ playback: { pick_temperature: 1 } }, true);
+    els.pbPickTemperature.value = "5";
+    els.pbPickTemperature.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(await saveSettingsPanel(panel)).toBe(false);
+    expect(requests[0].changes).toEqual({ playback: { pick_temperature: 5 } });
+    expect(els.pbPickTemperature.value).toBe("5");
+    await vi.waitFor(() => expect(panel.querySelector(".settings-save-status").textContent)
+      .toContain("The settings service is busy."));
+  });
+
+  it("saves changed sound controls through the tab bar and retains validation", async () => {
+    const panel = document.createElement("div");
+    panel.id = "spanel-sound";
+    panel.innerHTML = `
+      <select id="mode"><option>off</option><option>replaygain</option><option>smooth</option><option>stereotool</option></select>
+      <input type="number" id="lift" step="any" value="4"><input type="number" id="target" step="any" value="-14">
+      <input type="number" id="clip" step="any" value="1"><input type="number" id="trim" step="any" value="0">
+      <input type="number" id="boost" step="any" value="7"><input type="number" id="speed" step="any" value="0">
+      <select id="preset"><option value="included">Included</option><option value="Night.sts">Night</option></select>
+      <input type="checkbox" id="prefetch" checked><input type="checkbox" id="silence" checked>
+      <p id="settings-status"></p>`;
+    document.body.append(panel);
     const els = {
-      pbPickTopK: document.querySelector("#top-k"),
-      djGlideBars: document.querySelector("#glide"),
+      pbLoudness: document.querySelector("#mode"),
+      pbIntroLift: document.querySelector("#lift"),
+      pbRgTarget: document.querySelector("#target"),
       pbRgClip: document.querySelector("#clip"),
+      pbStereoTrim: document.querySelector("#trim"),
+      pbStereoAgcDrive: document.querySelector("#boost"),
+      pbMusicSpeed: document.querySelector("#speed"),
+      stereoPreset: document.querySelector("#preset"),
+      pbPrefetch: document.querySelector("#prefetch"),
+      pbSilenceTrigger: document.querySelector("#silence"),
     };
-    const settingsStatus = document.querySelector("#settings-status");
-    const postSettings = vi.fn().mockResolvedValue(true);
-    installMixSettings(els, { postSettings, settingsStatus });
-    applyMixSettings({
-      playback: { pick_top_k: 3, replaygain_max_clip_safe_gain: 1 },
-      djmix: { beatmatch_glide_bars: 8 },
-    }, els);
-    expect(els.pbPickTopK.value).toBe("3");
+    const initial = { playback: {
+      loudness_processing: "stereotool", intro_lift_max_db: 4,
+      replaygain_target_db: -14, replaygain_max_clip_safe_gain: 1,
+      stereotool_input_trim_db: 0, stereotool_agc_drive_db: 7,
+      music_speed_percent: 0, stereotool_preset: "included",
+      prefetch_next_track: true, silence_trigger_crossfade: true,
+    } };
+    const requests = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url, options) => {
+      const body = JSON.parse(options.body);
+      requests.push(body);
+      const values = globalThis.structuredClone(initial);
+      values.playback = { ...values.playback, ...body.changes.playback };
+      return new globalThis.Response(JSON.stringify({ revision: "two", settings: { revision: "two", values },
+        applied: ["playback"], failed: {} }), { headers: { "Content-Type": "application/json" } });
+    }));
+    installMixSettings(els, { settingsStatus: panel.querySelector("#settings-status") });
+    applySettingsDrafts({ revision: "one", values: initial });
+    els.pbLoudness.value = "replaygain";
+    els.pbIntroLift.value = "5";
+    els.pbRgTarget.value = "-12";
+    els.pbRgClip.value = "1.2";
+    els.pbStereoTrim.value = "-2";
+    els.pbStereoAgcDrive.value = "5.5";
+    els.pbMusicSpeed.value = "2.5";
+    els.stereoPreset.value = "Night.sts";
+    els.pbPrefetch.checked = false;
+    els.pbSilenceTrigger.checked = false;
+    for (const control of Object.values(els)) control.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(requests).toHaveLength(0);
 
-    els.pbPickTopK.value = "5";
-    els.pbPickTopK.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
-      "/api/playback-settings", { pick_top_k: 5 }, els.pbPickTopK,
-    ));
-    els.djGlideBars.value = "4";
-    els.djGlideBars.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
-      "/api/djmix", { beatmatch_glide_bars: 4 }, els.djGlideBars,
-    ));
+    els.pbStereoAgcDrive.value = "12.1";
+    els.pbStereoAgcDrive.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(await saveSettingsPanel(panel)).toBe(false);
+    expect(els.pbStereoAgcDrive.getAttribute("aria-invalid")).toBe("true");
+    expect(requests).toHaveLength(0);
+    els.pbStereoAgcDrive.value = "5.5";
+    els.pbStereoAgcDrive.dispatchEvent(new Event("input", { bubbles: true }));
 
-    postSettings.mockClear();
-    els.pbRgClip.value = "3";
-    els.pbRgClip.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
-      "Could not save ReplayGain peak limit: enter a number from 0.1 to 2.  It is still 1.",
-    ));
-    expect(postSettings).not.toHaveBeenCalled();
+    await saveSettingsPanel(panel);
+    expect(requests).toEqual([{ revision: "one", changes: { playback: {
+      loudness_processing: "replaygain", intro_lift_max_db: 5,
+      replaygain_target_db: -12, replaygain_max_clip_safe_gain: 1.2,
+      stereotool_input_trim_db: -2, stereotool_agc_drive_db: 5.5,
+      music_speed_percent: 2.5, stereotool_preset: "Night.sts",
+      prefetch_next_track: false, silence_trigger_crossfade: false,
+    } } }]);
+    applyMixSettings({ playback: initial.playback }, els);
+    expect(els.pbStereoAgcDrive.value).toBe("5.5");
+    expect(els.pbLoudness.value).toBe("replaygain");
+
+    expect(els.pbStereoAgcDrive.value).toBe("5.5");
   });
 
-  it("saves the hour fitting window as whole minutes from 1 to 30", async () => {
-    document.body.innerHTML = `<input type="number" id="window" value="10">
-      <p id="settings-status"></p><div id="status-toast" hidden></div>`;
-    const pbHourFitWindow = document.querySelector("#window");
-    const settingsStatus = document.querySelector("#settings-status");
-    const postSettings = vi.fn().mockResolvedValue(true);
-    installMixSettings({ pbHourFitWindow }, { postSettings, settingsStatus });
-    applyMixSettings({ playback: { hour_fit_window_minutes: 12 } }, { pbHourFitWindow });
-    expect(pbHourFitWindow.value).toBe("12");
-
-    pbHourFitWindow.value = "2.5";
-    pbHourFitWindow.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
-      "Could not save Minutes before to start fitting: enter a whole number from 1 to 30.  It is still 12.",
-    ));
-    expect(pbHourFitWindow.value).toBe("12");
-    expect(postSettings).not.toHaveBeenCalled();
-
-    pbHourFitWindow.value = "30";
-    pbHourFitWindow.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
-      "/api/playback-settings", { hour_fit_window_minutes: 30 }, pbHourFitWindow,
-    ));
-  });
-
-  it("saves Stereo Tool AGC drive within its server range and reads the saved value", async () => {
-    document.body.innerHTML = '<input type="number" id="boost" value="9">';
-    const pbStereoAgcDrive = document.querySelector("#boost");
-    const postSettings = vi.fn().mockResolvedValue(true);
-    installMixSettings({ pbStereoAgcDrive }, { postSettings });
-    applyMixSettings({ playback: { stereotool_agc_drive_db: 9 } }, { pbStereoAgcDrive });
-
-    pbStereoAgcDrive.value = "12.1";
-    pbStereoAgcDrive.dispatchEvent(new Event("change"));
-    expect(pbStereoAgcDrive.value).toBe("9");
-    expect(postSettings).not.toHaveBeenCalled();
-
-    pbStereoAgcDrive.value = "5.5";
-    pbStereoAgcDrive.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
-      "/api/playback-settings", { stereotool_agc_drive_db: 5.5 }, pbStereoAgcDrive,
-    ));
-    applyMixSettings({ playback: { stereotool_agc_drive_db: 5.5 } }, { pbStereoAgcDrive });
-    expect(pbStereoAgcDrive.value).toBe("5.5");
+  it("keeps legacy reset support for the registered fields", () => {
+    const panel = document.createElement("div");
+    panel.id = "spanel-sound";
+    panel.innerHTML = '<input type="number" id="boost" value="7"><p id="status"></p>';
+    document.body.append(panel);
+    const els = { pbStereoAgcDrive: panel.querySelector("#boost") };
+    installMixSettings(els, { settingsStatus: panel.querySelector("#status") });
+    els.pbStereoAgcDrive.value = "5";
+    resetMixSettings(els);
+    expect(els.pbStereoAgcDrive.value).toBe("7");
   });
 });
 

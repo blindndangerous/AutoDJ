@@ -104,16 +104,9 @@ export function installStereoToolSetup({ document: doc = document, request = req
     else button.removeAttribute("aria-busy");
   }
 
-  function describe(field, on) {
-    const ids = (field.getAttribute("aria-describedby") || "").split(/\s+/)
-      .filter((ref) => ref && ref !== keyError.id);
-    if (on) ids.push(keyError.id);
-    field.setAttribute("aria-describedby", ids.join(" "));
-  }
-
   function clearKeyError() {
     keyField.removeAttribute("aria-invalid");
-    describe(keyField, false);
+    keyField.removeAttribute("aria-errormessage");
     keyError.textContent = "";
     keyError.hidden = true;
   }
@@ -122,7 +115,7 @@ export function installStereoToolSetup({ document: doc = document, request = req
     keyField.setAttribute("aria-invalid", "true");
     keyError.textContent = message;
     keyError.hidden = false;
-    describe(keyField, true);
+    keyField.setAttribute("aria-errormessage", keyError.id);
     focusRevealed(keyField);
     speak(message, true);
   }

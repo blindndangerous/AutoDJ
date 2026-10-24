@@ -230,7 +230,7 @@ def _mix_player(
     cfg.djmix.beatmatch = beatmatch
     cfg.djmix.beatmatch_glide_bars = glide_bars
     cfg.djmix.phrase_align = phrase_align
-    player = Player(cfg, make_sim_index(3))
+    player = Player(cfg, make_sim_index(3), dry_run=True)
     cur, nxt = player._sim.entries[0], player._sim.entries[1]
     cur.bpm, nxt.bpm = bpms
     return player, cur, nxt
@@ -449,7 +449,7 @@ def test_unstretched_renders_are_unchanged(name: str) -> None:
     cfg.playback.beat_sync_fx = False
     cfg.playback.key_sync_fx = False
     cfg.djmix.beatmatch = case.get("beatmatch", False)
-    player = Player(cfg, make_sim_index(3))
+    player = Player(cfg, make_sim_index(3), dry_run=True)
     cur, nxt = player._sim.entries[0], player._sim.entries[1]
     cur.bpm, nxt.bpm = case.get("bpms", (120.0, 120.0))
     rng = np.random.default_rng(7)

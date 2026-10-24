@@ -15,14 +15,15 @@
     "audit:visual": "node tests/playwright/visual_audit.mjs",
     "audit:reviews": "node tests/playwright/programme_review_audit.mjs",
     "audit:editions": "node tests/playwright/prepared_edition_audit.mjs",
-    "audit:ci": "npm run audit:health && npm run audit:transitions && npm run audit:visual"
+    "audit:settings": "node tests/playwright/settings_audit.mjs",
+    "audit:ci": "npm run audit:health && npm run audit:transitions && npm run audit:visual && npm run audit:settings"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@playwright/test": "1.64.1",
     "axe-core": "4.14.0",
     "eslint": "10.12.0",
-    "happy-dom": "21.0.3",
+    "happy-dom": "^21.0.4",
     "knip": "6.41.0",
     "vitest": "5.0.5"
   },

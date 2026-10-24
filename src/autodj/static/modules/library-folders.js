@@ -70,7 +70,8 @@ export function importSummary(data) {
   if (job.running) {
     const where = job.current ? `; ${job.current}` : "";
     const failed = errors ? `; ${count(errors, "error")} so far` : "";
-    return `Importing tracks (${job.phase || "working"}): ${job.done || 0} of ${job.total || 0}${where}${failed}`;
+    const activity = job.phase === "recovering analysis" ? "Recovering analysis" : `Importing tracks (${job.phase || "working"})`;
+    return `${activity}: ${job.done || 0} of ${job.total || 0}${where}${failed}`;
   }
   const ready = `${count(data?.tracks_ready, "track")} ready; ${Number(data?.tracks_indexed || 0).toLocaleString("en-US")} indexed.`;
   if (errors) return `Import finished with ${count(errors, "error")}; the list follows. ${ready}${longNote}`;
@@ -299,8 +300,13 @@ export function installLibraryFolders({ document: doc = document, request = requ
     }
     const summary = importSummary(data);
     progress.textContent = summary;
-    if (importRunning && !data.import?.running) announceAction(summary);
-    importRunning = !!data.import?.running;
+    // Background recovery can start between two polls, right after a scan
+    // the user started: that scan has still finished, so say so.
+    const scanRunning = !!data.import?.running && data.import?.phase !== "recovering analysis";
+    if (importRunning && !scanRunning) {
+      announceAction(scanRunning === !!data.import?.running ? summary : importSummary({ ...data, import: { ...data.import, running: false } }));
+    }
+    importRunning = scanRunning;
     renderErrors(data.import?.errors || []);
     showBeetsPaths(beetsPaths, data.beets_paths, { full: true });
   }

@@ -101,7 +101,7 @@ When AutoDJ starts, it prints each station's stream address and status page.
 In Settings, Stations, **Time for the selected station** holds **Time zone**. It controls that
 station's schedule, ad breaks, and clockwheel restarts. A change takes effect when that station
 next starts. **Time format for all stations** changes the display between 24 hour and 12 hour
-time. Press **Save time settings** after changing either.
+time. Press **Save changes** in **Stations** after changing either.
 
 **Output for the selected station** holds **Playback output**: Browser, Server sound card, or
 Radio stream. **Also play the radio stream on the server sound card** works with Radio stream.

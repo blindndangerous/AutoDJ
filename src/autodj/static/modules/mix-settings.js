@@ -11,99 +11,107 @@
 // has, so the field never shows a setting that is not in effect.
 
 import { announceStatus } from "./live-region.js";
-import { saveHolds } from "./settings-panel.js";
+import { applySoundModeVisibility } from "./settings-panel.js";
+import { registerSettingsGroup, settingsDraftHolds } from "./settings-drafts.js";
 
+const drafts = new WeakMap();
 const NUMBER_FIELDS = [
   {
-    key: "pbCrossfade", url: "/api/playback-settings", field: "crossfade_seconds",
+    key: "pbCrossfade", group: "playback", field: "crossfade_seconds",
     label: "Crossfade seconds", min: 0, max: 20, integer: false,
     read: (st) => st.playback?.crossfade_seconds,
   },
   {
-    key: "pbFadeIn", url: "/api/playback-settings", field: "fade_in_seconds",
+    key: "pbFadeIn", group: "playback", field: "fade_in_seconds",
     label: "Fade-in seconds", min: 0, max: 20, integer: false,
     read: (st) => st.playback?.fade_in_seconds,
   },
   {
-    key: "djPhraseBars", url: "/api/djmix", field: "phrase_bars",
+    key: "djPhraseBars", group: "djmix", field: "phrase_bars",
     label: "Phrase length", min: 1, max: 64, integer: true,
     read: (st) => st.djmix?.phrase_bars,
   },
   {
     // Shown in percent, stored as a fraction.
-    key: "txWetMix", url: "/api/playback-settings", field: "transition_wet_mix",
+    key: "txWetMix", group: "playback", field: "transition_wet_mix",
     label: "Transition effect level", min: 0, max: 100, integer: false,
     read: (st) => (typeof st.playback?.transition_wet_mix === "number"
       ? Math.round(st.playback.transition_wet_mix * 100) : undefined),
     toServer: (value) => value / 100,
   },
   {
-    key: "pbRgTarget", url: "/api/playback-settings", field: "replaygain_target_db",
+    key: "pbRgTarget", group: "playback", field: "replaygain_target_db",
     label: "ReplayGain target loudness", min: -30, max: 0, integer: false,
     read: (st) => st.playback?.replaygain_target_db,
   },
   {
-    key: "pbRgClip", url: "/api/playback-settings", field: "replaygain_max_clip_safe_gain",
+    key: "pbRgClip", group: "playback", field: "replaygain_max_clip_safe_gain",
     label: "ReplayGain peak limit", min: 0.1, max: 2, integer: false,
     read: (st) => st.playback?.replaygain_max_clip_safe_gain,
   },
   {
-    key: "pbBassCutoff", url: "/api/playback-settings", field: "crossfade_bass_cutoff_hz",
+    key: "pbBassCutoff", group: "playback", field: "crossfade_bass_cutoff_hz",
     label: "EQ duck cutoff", min: 20, max: 1000, integer: false,
     read: (st) => st.playback?.crossfade_bass_cutoff_hz,
   },
   {
-    key: "pbPickTopK", url: "/api/playback-settings", field: "pick_top_k",
+    key: "pbPickTopK", group: "playback", field: "pick_top_k",
     label: "Choose among the closest songs", min: 1, max: 100, integer: true,
     read: (st) => st.playback?.pick_top_k,
   },
   {
-    key: "pbPickTemperature", url: "/api/playback-settings", field: "pick_temperature",
+    key: "pbPickTemperature", group: "playback", field: "pick_temperature",
     label: "Pick randomness", min: 0, max: 10, integer: false,
     read: (st) => st.playback?.pick_temperature,
   },
   {
-    key: "pbHourFitWindow", url: "/api/playback-settings", field: "hour_fit_window_minutes",
+    key: "pbHourFitWindow", group: "playback", field: "hour_fit_window_minutes",
     label: "Minutes before to start fitting", min: 1, max: 30, integer: true,
     read: (st) => st.playback?.hour_fit_window_minutes,
   },
   {
     // Shown in percent, stored as a fraction.
-    key: "djMaxStretch", url: "/api/djmix", field: "beatmatch_max_stretch",
+    key: "djMaxStretch", group: "djmix", field: "beatmatch_max_stretch",
     label: "Beatmatch stretch limit", min: 0, max: 50, integer: false,
     read: (st) => (typeof st.djmix?.beatmatch_max_stretch === "number"
       ? Math.round(st.djmix.beatmatch_max_stretch * 1000) / 10 : undefined),
     toServer: (value) => value / 100,
   },
   {
-    key: "djGlideBars", url: "/api/djmix", field: "beatmatch_glide_bars",
+    key: "djGlideBars", group: "djmix", field: "beatmatch_glide_bars",
     label: "Glide back", min: 0, max: 64, integer: true,
     read: (st) => st.djmix?.beatmatch_glide_bars,
   },
   {
-    key: "djSweepFloor", url: "/api/djmix", field: "filter_sweep_floor_hz",
+    key: "djSweepFloor", group: "djmix", field: "filter_sweep_floor_hz",
     label: "Filter sweep floor", min: 20, max: 5000, integer: false,
     read: (st) => st.djmix?.filter_sweep_floor_hz,
   },
   {
-    key: "pbIntroLift", url: "/api/playback-settings", field: "intro_lift_max_db",
+    key: "pbIntroLift", group: "playback", field: "intro_lift_max_db",
     label: "Quiet intro lift limit", min: 0, max: 6, integer: false,
     read: (st) => st.playback?.intro_lift_max_db,
   },
   {
-    key: "pbStereoTrim", url: "/api/playback-settings", field: "stereotool_input_trim_db",
+    key: "pbStereoTrim", group: "playback", field: "stereotool_input_trim_db",
     label: "Stereo Tool input trim", min: -12, max: 6, integer: false,
     read: (st) => st.playback?.stereotool_input_trim_db,
   },
   {
-    key: "pbStereoAgcDrive", url: "/api/playback-settings", field: "stereotool_agc_drive_db",
+    key: "pbStereoAgcDrive", group: "playback", field: "stereotool_agc_drive_db",
     label: "AGC drive boost", min: 0, max: 12, integer: false,
     read: (st) => st.playback?.stereotool_agc_drive_db,
   },
+  {
+    key: "pbMusicSpeed", group: "playback", field: "music_speed_percent",
+    label: "Music speed", min: -10, max: 10, integer: false,
+    read: (st) => st.playback?.music_speed_percent ?? 0,
+  },
 ];
 
-const _serverValue = new WeakMap();
-
+const LOUDNESS_FIELD = {
+  read: (st) => st.playback?.loudness_processing ?? (st.playback?.replaygain_enabled ? "replaygain" : "off"),
+};
 // NVDA at punctuation level none drops a leading hyphen, so "-14" would
 // be heard as "14".
 function numberWords(n) {
@@ -114,6 +122,10 @@ function rangeWords(spec) {
   const words = numberWords;
   const kind = spec.integer ? "a whole number" : "a number";
   return `${kind} from ${words(spec.min)} to ${words(spec.max)}`;
+}
+
+function invalidText(spec) {
+  return `Could not save ${spec.label}: enter ${rangeWords(spec)}.`;
 }
 
 // The number in *text* when it is inside spec's range, else null.
@@ -133,62 +145,87 @@ export function refusalText(spec, shown) {
 export function applyMixSettings(st, els) {
   if (!st) return;
   const doc = Object.values(els).find(Boolean)?.ownerDocument;
+  for (const input of Object.values(els).filter(Boolean)) {
+    const binding = drafts.get(input);
+    if (binding && st[binding.group]) binding.draft.accept(st[binding.group]);
+  }
   for (const spec of NUMBER_FIELDS) {
     const input = els[spec.key];
     const value = spec.read(st);
-    if (!input || typeof value !== "number") continue;
-    // A save still out (or not yet echoed) keeps the field's new value.
-    if (saveHolds(input, value)) continue;
-    _serverValue.set(input, value);
+    if (!input || typeof value !== "number" || settingsDraftHolds(input)) continue;
     if (doc?.activeElement !== input && input.value !== String(value)) {
       input.value = String(value);
     }
   }
+  const loudness = els.pbLoudness;
+  const loudnessValue = LOUDNESS_FIELD.read(st);
+  if (loudness && typeof loudnessValue === "string" && !settingsDraftHolds(loudness)) {
+    loudness.value = loudnessValue;
+  }
+  if (els.stereoPreset && typeof st.playback?.stereotool_preset === "string"
+      && !settingsDraftHolds(els.stereoPreset)) {
+    els.stereoPreset.value = st.playback.stereotool_preset;
+  }
+  for (const [key, field] of [["pbPrefetch", "prefetch_next_track"],
+    ["pbSilenceTrigger", "silence_trigger_crossfade"]]) {
+    const input = els[key];
+    if (input && typeof st.playback?.[field] === "boolean" && !settingsDraftHolds(input)) {
+      input.checked = st.playback[field];
+    }
+  }
+  applySoundModeVisibility(els, st, doc);
   const sweep = els.djFilterSweep;
   if (sweep && st.djmix && typeof st.djmix.filter_sweep === "boolean"
-      && !saveHolds(sweep, st.djmix.filter_sweep)) {
+      && !settingsDraftHolds(sweep)) {
     sweep.checked = st.djmix.filter_sweep;
   }
 }
 
 export function resetMixSettings(els) {
   for (const input of Object.values(els)) {
-    if (!input) continue;
+    if (!input || input.tagName === "BUTTON") continue;
     if (input.type === "checkbox") input.checked = input.defaultChecked;
-    else input.value = input.defaultValue;
-    _serverValue.delete(input);
+    else if (input.tagName !== "SELECT") input.value = input.defaultValue;
   }
 }
 
-// postSettings(url, body, control) resolves true on success and has
-// already reported a failure in the settings status region.
-export function installMixSettings(els, { postSettings, settingsStatus }) {
+export function installMixSettings(els, { settingsStatus }) {
   for (const spec of NUMBER_FIELDS) {
     const input = els[spec.key];
     if (!input) continue;
-    const revert = () => {
-      const saved = _serverValue.get(input);
-      input.value = saved === undefined ? input.defaultValue : String(saved);
-    };
-    input.addEventListener("change", async () => {
-      const value = parseSettingValue(input.value, spec);
-      if (value === null) {
-        revert();
-        announceStatus(settingsStatus, refusalText(spec, input.value),
-          { dwellMs: 6000, force: true, tone: "error" });
-        return;
-      }
-      const sent = spec.toServer ? spec.toServer(value) : value;
-      const ok = await postSettings(spec.url, { [spec.field]: sent }, input);
-      if (ok) _serverValue.set(input, value);
-      else revert();
+    const group = spec.group;
+    const draft = registerSettingsGroup({
+      panel: input.closest('[id^="spanel-"]'), group, controls: [input],
+      read: () => ({ [spec.field]: spec.toServer ? spec.toServer(Number(input.value)) : Number(input.value) }),
+      write(value) {
+        const shown = spec.read({ [spec.group]: value });
+        if (shown != null) input.value = shown;
+      },
+      validate() {
+        if (parseSettingValue(input.value, spec) !== null) { input.removeAttribute("aria-invalid"); return true; }
+        input.setAttribute("aria-invalid", "true"); input.focus();
+        announceStatus(settingsStatus, invalidText(spec), { force: true, tone: "error" });
+        return false;
+      },
     });
+    drafts.set(input, { draft, group });
   }
-  if (els.djFilterSweep) {
-    els.djFilterSweep.addEventListener("change", async () => {
-      const box = els.djFilterSweep;
-      const ok = await postSettings("/api/djmix", { filter_sweep: box.checked }, box);
-      if (!ok) box.checked = !box.checked;
+  for (const [key, field, group] of [
+    ["pbLoudness", "loudness_processing", "playback"], ["stereoPreset", "stereotool_preset", "playback"],
+    ["pbPrefetch", "prefetch_next_track", "playback"], ["pbSilenceTrigger", "silence_trigger_crossfade", "playback"],
+    ["djFilterSweep", "filter_sweep", "djmix"],
+  ]) {
+    const input = els[key];
+    if (!input) continue;
+    const draft = registerSettingsGroup({ panel: input.closest('[id^="spanel-"]'), group, controls: [input],
+      read: () => ({ [field]: input.type === "checkbox" ? input.checked : input.value }),
+      write(value) {
+        if (!(field in value)) return;
+        if (input.type === "checkbox") input.checked = value[field]; else input.value = value[field];
+        applySoundModeVisibility(els);
+      },
     });
+    drafts.set(input, { draft, group });
+    input.addEventListener("change", () => applySoundModeVisibility(els));
   }
 }

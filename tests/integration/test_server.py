@@ -34,7 +34,14 @@ from autodj.settings_bodies import PlaybackSettingsBody
 from tests._layout import layout_index, point_index
 from tests._server import create_app
 
-from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock, wav_bytes
+from ._helpers import (
+    NO_INDEX_DIR,
+    _make_entry,
+    _make_player_mock,
+    _make_sim_mock,
+    patch_station_settings,
+    wav_bytes,
+)
 
 
 @pytest.fixture(params=[1, 2])
@@ -589,13 +596,15 @@ class TestLiners:
         from fastapi.testclient import TestClient
 
         tc = TestClient(create_app(bridge))
-        resp = tc.post(
-            "/api/playback-settings",
-            json={
-                "liners_enabled": True,
-                "liners_every_n_songs": 5,
-                "liners_pick_mode": "sequential",
-                "liners_duck_db": -8.0,
+        resp = patch_station_settings(
+            tc,
+            {
+                "playback": {
+                    "liners_enabled": True,
+                    "liners_every_n_songs": 5,
+                    "liners_pick_mode": "sequential",
+                    "liners_duck_db": -8.0,
+                }
             },
         )
         assert resp.status_code == 200
@@ -627,7 +636,7 @@ class TestLiners:
         bridge.save_persistent_state = MagicMock()
 
         tc = TestClient(create_app(bridge))
-        resp = tc.post("/api/playback-settings", json=payload)
+        resp = patch_station_settings(tc, {"playback": payload})
         assert resp.status_code == 422
         assert bridge.player._cfg.playback.liners_enabled is False
         bridge.save_persistent_state.assert_not_called()
@@ -637,7 +646,7 @@ class TestLiners:
 
         bridge.player._cfg.playback.liners_pick_mode = "random"
         tc = TestClient(create_app(bridge))
-        tc.post("/api/playback-settings", json={"liners_pick_mode": "BOGUS"})
+        patch_station_settings(tc, {"playback": {"liners_pick_mode": "BOGUS"}})
         assert bridge.player._cfg.playback.liners_pick_mode == "random"
 
     def test_liner_upload_and_list(self, bridge, tmp_path) -> None:
@@ -903,11 +912,11 @@ class TestRepeatSettings:
         path.write_text('[related]\n"Alpha" = ["Beta"]\n', encoding="utf-8")
         payload = self._payload()
 
-        response = client.post("/api/playback-settings", json=payload)
+        response = patch_station_settings(client, {"playback": payload})
 
         assert response.status_code == 200
         # Without their own limits, related artists keep the artist rule's.
-        assert response.json()["playback"]["repeat_rules"] == {
+        assert response.json()["settings"]["values"]["playback"]["repeat_rules"] == {
             **payload["repeat_rules"],
             "related_artist": payload["repeat_rules"]["artist"],
             "related_track": {"tracks": 20, "minutes": 0.0},
@@ -917,13 +926,17 @@ class TestRepeatSettings:
             "hourpart": {"plays": 0},
         }
         assert bridge.player._state.rules.related.related_to("alpha") == {"beta"}
+        state_file = bridge.settings.state_dir / "web_state.json"
+        persisted = json.loads(state_file.read_text(encoding="utf-8"))
+        assert persisted["playback"]["repeat_rules"]["track"] == {"tracks": 7, "minutes": 10.0}
 
         path.write_text('[related]\n"Alpha" = ["Gamma"]\n', encoding="utf-8")
-        response = client.post("/api/playback-settings", json=payload)
+        response = patch_station_settings(client, {"playback": payload})
 
         assert response.status_code == 200
         assert bridge.player._state.rules.related.related_to("alpha") == {"gamma"}
-        assert bridge.save_persistent_state.call_count == 2
+        persisted = json.loads(state_file.read_text(encoding="utf-8"))
+        assert persisted["playback"]["repeat_rules"]["track"] == {"tracks": 7, "minutes": 10.0}
 
     @pytest.mark.parametrize(
         "rule",
@@ -940,7 +953,7 @@ class TestRepeatSettings:
         client = self._client(bridge, tmp_path)
         before = bridge.player._cfg.playback.repeat_rules.model_dump()
 
-        response = client.post("/api/playback-settings", json={"repeat_rules": rule})
+        response = patch_station_settings(client, {"playback": {"repeat_rules": rule}})
 
         assert response.status_code == 422
         assert bridge.player._cfg.playback.repeat_rules.model_dump() == before
@@ -957,10 +970,10 @@ class TestRepeatSettings:
             }
         }
 
-        response = client.post("/api/playback-settings", json=payload)
+        response = patch_station_settings(client, {"playback": payload})
 
         assert response.status_code == 200
-        saved = response.json()["playback"]["repeat_rules"]
+        saved = response.json()["settings"]["values"]["playback"]["repeat_rules"]
         assert saved["daypart"] == {"days": 3, "start_hours": [0, 6, 19]}
         assert saved["hourpart"] == {"plays": 2}
         rules = bridge.player._state.rules
@@ -969,20 +982,27 @@ class TestRepeatSettings:
             (0, 6, 19),
             2,
         )
-        bridge.save_persistent_state.assert_called_once()
+        persisted = json.loads(
+            (bridge.settings.state_dir / "web_state.json").read_text(encoding="utf-8")
+        )
+        assert persisted["playback"]["repeat_rules"]["daypart"] == {
+            "days": 3,
+            "start_hours": [0, 6, 19],
+        }
+        assert persisted["playback"]["repeat_rules"]["hourpart"] == {"plays": 2}
 
     def test_invalid_related_file_keeps_live_repeat_settings(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
         path = bridge.player._cfg.index.library_dir / "related-artists.toml"
         path.write_text('[related]\n"Alpha" = ["Beta"]\n', encoding="utf-8")
         payload = self._payload()
-        assert client.post("/api/playback-settings", json=payload).status_code == 200
+        assert patch_station_settings(client, {"playback": payload}).status_code == 200
         rules = bridge.player._cfg.playback.repeat_rules
         state_rules = bridge.player._state.rules
         bridge.save_persistent_state.reset_mock()
         path.write_text("[related\n", encoding="utf-8")
 
-        response = client.post("/api/playback-settings", json=payload)
+        response = patch_station_settings(client, {"playback": payload})
 
         assert response.status_code == 400
         assert response.json()["detail"] == "The related artists file is not valid: line 1."
@@ -1002,16 +1022,25 @@ class TestRepeatSettings:
         payload["repeat_rules"]["related_track"] = {"tracks": 7, "minutes": 15}
         payload["repeat_rules"]["use_related_tracks"] = True
 
-        response = client.post("/api/playback-settings", json=payload)
+        response = patch_station_settings(client, {"playback": payload})
 
         assert response.status_code == 200
         rules = bridge.player._state.rules
         assert rules.related_tracks.related_to(("beta", "two")) == {("alpha", "one")}
         assert (rules.related_track_window, rules.related_track_minutes) == (7, 15.0)
-        playback = response.json()["playback"]
+        playback = response.json()["settings"]["values"]["playback"]
         assert playback["repeat_rules"]["use_related_tracks"] is True
-        assert playback["related_tracks_problem"] is None
-        assert playback["related_tracks_default_file"] == str(path.resolve())
+        assert bridge.get_settings()["playback"]["related_tracks_problem"] is None
+        assert bridge.get_settings()["playback"]["related_tracks_default_file"] == str(
+            path.resolve()
+        )
+        persisted = json.loads(
+            (bridge.settings.state_dir / "web_state.json").read_text(encoding="utf-8")
+        )
+        assert persisted["playback"]["repeat_rules"]["related_track"] == {
+            "tracks": 7,
+            "minutes": 15.0,
+        }
 
     def test_invalid_related_tracks_file_keeps_live_repeat_settings(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
@@ -1019,12 +1048,12 @@ class TestRepeatSettings:
         path.write_text('[related]\n"Alpha - One" = ["Beta - Two"]\n', encoding="utf-8")
         payload = self._payload()
         payload["repeat_rules"]["use_related_tracks"] = True
-        assert client.post("/api/playback-settings", json=payload).status_code == 200
+        assert patch_station_settings(client, {"playback": payload}).status_code == 200
         state_rules = bridge.player._state.rules
         bridge.save_persistent_state.reset_mock()
         path.write_text('[related]\n"Alpha" = ["Beta - Two"]\n', encoding="utf-8")
 
-        response = client.post("/api/playback-settings", json=payload)
+        response = patch_station_settings(client, {"playback": payload})
 
         assert response.status_code == 400
         assert response.json()["detail"] == "The related tracks file is not valid."
@@ -1036,14 +1065,14 @@ class TestRepeatSettings:
 
         # Turned off, the broken file is not read and the save goes through.
         payload["repeat_rules"]["use_related_tracks"] = False
-        assert client.post("/api/playback-settings", json=payload).status_code == 200
+        assert patch_station_settings(client, {"playback": payload}).status_code == 200
         assert not bridge.player._state.rules.related_tracks.links
 
     def test_api_rejects_related_file_path(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
         payload = self._payload()
         payload["repeat_rules"]["related_artists_file"] = str(tmp_path / "secret.toml")
-        response = client.post("/api/playback-settings", json=payload)
+        response = patch_station_settings(client, {"playback": payload})
         assert response.status_code == 422
         bridge.save_persistent_state.assert_not_called()
 
@@ -1053,15 +1082,18 @@ class TestRepeatSettings:
         path.write_text("[related\n", encoding="utf-8")
         payload = self._payload()
         payload["repeat_rules"]["use_related_artists"] = False
-        response = client.post("/api/playback-settings", json=payload)
+        response = patch_station_settings(client, {"playback": payload})
         assert response.status_code == 200
-        assert response.json()["playback"]["repeat_rules"]["use_related_artists"] is False
+        assert (
+            response.json()["settings"]["values"]["playback"]["repeat_rules"]["use_related_artists"]
+            is False
+        )
 
     def test_invalid_file_error_does_not_echo_file_keys(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
         path = bridge.player._cfg.index.library_dir / "related-artists.toml"
         path.write_text('secret_api_token = "private"\n', encoding="utf-8")
-        response = client.post("/api/playback-settings", json=self._payload())
+        response = patch_station_settings(client, {"playback": self._payload()})
         assert response.status_code == 400
         assert response.json()["detail"] == "The related artists file is not valid."
         assert "secret_api_token" not in response.text
@@ -1174,7 +1206,7 @@ class TestProfiles:
         bridge.save_persistent_state = MagicMock()
         tc = TestClient(create_app(bridge))
 
-        resp = tc.post("/api/playback-settings", json={"crossfade_seconds": 9.0, field: "bogus"})
+        resp = patch_station_settings(tc, {"playback": {"crossfade_seconds": 9.0, field: "bogus"}})
 
         assert resp.status_code == 422
         assert pb.crossfade_seconds == pytest.approx(3.0)
@@ -1656,7 +1688,7 @@ class TestDiscoveryToggle:
 
         point_index(bridge.player._cfg.index, tmp_path)
         client = TestClient(create_app(bridge))
-        client.post("/api/discovery", json={"every": 7})
+        patch_station_settings(client, {"discovery": {"every": 7}})
         client.post("/api/discovery/toggle")
         saved = json.loads(
             (tmp_path / "stations" / "default" / "web_state.json").read_text(encoding="utf-8")
@@ -2020,6 +2052,66 @@ class TestLifespan:
 
         assert not player_thread.is_alive()
 
+    def test_independent_shutdown_steps_stop_together_and_are_timed(
+        self, caplog, monkeypatch
+    ) -> None:
+        """ADR-0008-31. Stopped one after another, each worker's timeout would add up."""
+        import logging
+        import threading
+
+        from fastapi.testclient import TestClient
+
+        import autodj.jobs
+
+        # Every worker waits for the others: run one at a time, the first
+        # would wait alone until the barrier broke.
+        together = threading.Barrier(7, timeout=5)
+
+        class Worker:
+            def __init__(self) -> None:
+                self.timeouts: list[float] = []
+
+            def shutdown(self, timeout: float) -> bool:
+                self.timeouts.append(timeout)
+                together.wait()
+                return True
+
+        jobs = Worker()
+        monkeypatch.setattr(autodj.jobs, "get_manager", lambda: jobs)
+        bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
+        app = create_app(bridge)
+        names = (
+            "speech",
+            "rotation_tests",
+            "show_generations",
+            "hour_previews",
+            "cue_rescan",
+            "review_jobs",
+        )
+        workers = {name: Worker() for name in names}
+        client = TestClient(app)
+        client.__enter__()
+        for name, worker in workers.items():
+            setattr(app.state, name, worker)
+        caplog.set_level(logging.DEBUG, logger="autodj.stations")
+        client.__exit__(None, None, None)
+
+        assert not together.broken
+        assert [worker.timeouts for worker in (jobs, *workers.values())] == [[30.0]] * 7
+        steps = [
+            record.getMessage().split(" took ")[0].removeprefix("Shutdown step ")
+            for record in caplog.records
+            if record.getMessage().startswith("Shutdown step ")
+        ]
+        for step in (
+            "stopping the library job",
+            "stopping hour previews",
+            "stopping the stations and the library",
+            "closing the library",
+        ):
+            assert step in steps
+        assert "A rotation test was still running" not in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # serve() — wires Player thread + uvicorn
@@ -2039,6 +2131,38 @@ class TestServeFunction:
             manager.return_value.entries_snapshot.return_value = ()
             yield
 
+    @pytest.mark.parametrize(
+        ("stop", "expected"),
+        [("restart", True), ("ctrl-c", False), ("signal", False)],
+    )
+    def test_a_stop_signal_wins_over_a_pending_restart(self, tmp_path, stop, expected) -> None:
+        """ADR-0016-10: Ctrl+C or SIGTERM during a restart's shutdown stops AutoDJ."""
+        import signal as signals
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        cfg = _test_config(tmp_path)
+        cfg.station.output = "browser"
+        cfg.default_station.cfg.station.output = "browser"
+        server = MagicMock()
+        server.started = True
+        server._captured_signals = [signals.SIGTERM] if stop == "signal" else []
+
+        def run() -> None:
+            app = config.call_args.args[0]
+            app.state.restart_requested = True
+            if stop == "ctrl-c":
+                raise KeyboardInterrupt
+
+        server.run.side_effect = run
+        with (
+            patch("autodj.player.Player.run", MagicMock()),
+            patch("uvicorn.Config") as config,
+            patch("uvicorn.Server", return_value=server),
+        ):
+            assert serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None) is expected
+
     def test_serve_starts_uvicorn(self, caplog, tmp_path) -> None:
         """The server app's lifespan builds and starts its default station."""
         import logging
@@ -2056,7 +2180,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run", player_run),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             caplog.at_level(logging.INFO, logger="autodj.server"),
         ):
             serve(cfg=cfg, sim=sim, seed_entry=None)
@@ -2081,6 +2206,62 @@ class TestServeFunction:
             assert runtime.server_audio is False
             assert runtime.bridge.player.on_track_started is not None
             player_run.assert_called_once_with(seed_entry=None)
+
+    def test_uvicorn_errors_reach_the_root_handlers_once(self, tmp_path) -> None:
+        """uvicorn's errors reach the log file on the root logger; its access log does not."""
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        import uvicorn
+
+        from autodj.server import serve
+
+        cfg = _test_config(tmp_path)
+        cfg.station.output = "browser"
+        cfg.default_station.cfg.station.output = "browser"
+        with (
+            patch("autodj.player.Player.run", MagicMock()),
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
+        ):
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
+        kwargs = mock_uvicorn.call_args.kwargs
+
+        class Collect(logging.Handler):
+            def __init__(self) -> None:
+                super().__init__()
+                self.records: list[logging.LogRecord] = []
+
+            def emit(self, record: logging.LogRecord) -> None:
+                self.records.append(record)
+
+        root = logging.getLogger()
+        names = ("uvicorn", "uvicorn.error", "uvicorn.access")
+        saved = [(root, root.handlers[:], root.level, root.propagate)]
+        for name in names:
+            named = logging.getLogger(name)
+            saved.append((named, named.handlers[:], named.level, named.propagate))
+            # As a new process has them, before uvicorn configures anything.
+            named.handlers, named.propagate = [], True
+            named.setLevel(logging.NOTSET)
+        collect = Collect()
+        root.handlers = [collect]
+        root.setLevel(logging.INFO)
+        try:
+            uvicorn.Config(mock_uvicorn.call_args.args[0], **kwargs)
+            logging.getLogger("uvicorn.error").error("timeout graceful shutdown exceeded")
+            logging.getLogger("uvicorn.error").info("Started server process")
+            logging.getLogger("uvicorn.access").info('"GET /api/status HTTP/1.1" 200')
+            handlers = [logging.getLogger(name).handlers for name in names]
+        finally:
+            for logger_, handlers_, level, propagate in saved:
+                logger_.handlers = handlers_
+                logger_.setLevel(level)
+                logger_.propagate = propagate
+        assert [(record.name, record.getMessage()) for record in collect.records] == [
+            ("uvicorn.error", "timeout graceful shutdown exceeded")
+        ]
+        assert handlers == [[], [], []]
 
     def test_serve_starts_player_thread(self, tmp_path) -> None:
         """The supplied factory launches a daemon Player thread when it is built."""
@@ -2125,7 +2306,8 @@ class TestServeFunction:
             patch.object(Player, "__init__", spy_init),
             patch("autodj.player.Player.run", run),
             patch("autodj.server.create_app", wraps=create_app) as app_spy,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg_mock, sim=sim, seed_entry=_make_entry(0), **serve_kwargs)
             captured["create_app_kwargs"] = app_spy.call_args.kwargs
@@ -2156,6 +2338,23 @@ class TestServeFunction:
         assert captured["runtime"].stream_mode is True
         assert captured["player"]._stream_mode is True
         assert captured["player"]._server_audio_too is True
+
+    def test_serve_server_audio_uses_live_mixing_without_stream_mode(self, tmp_path) -> None:
+        from autodj.live_playout import LivePlayout
+
+        captured = self._serve_capturing_player(tmp_path, no_playback=False)
+        assert captured["runtime"].server_audio is True
+        assert captured["runtime"].stream_mode is False
+        assert captured["player"]._stream_mode is False
+        assert captured["player"].live_mixing is True
+        assert isinstance(captured["player"]._playout, LivePlayout)
+
+    def test_server_audio_requires_ffmpeg_for_progressive_decoding(self, tmp_path) -> None:
+        with (
+            patch("shutil.which", return_value=None),
+            pytest.raises(RuntimeError, match="Server-mixed audio requires ffmpeg on PATH"),
+        ):
+            self._serve_capturing_player(tmp_path, no_playback=False)
 
     def test_serve_hands_the_other_stations_to_the_app(self, tmp_path) -> None:
         """[stations.<slug>] stations are built when the app starts; they always stream."""
@@ -2233,7 +2432,8 @@ class TestServeFunction:
         cfg.default_station.cfg.station.output = "server"
         with (
             patch("autodj.server._missing_audio_modules", return_value=["soundfile"]),
-            patch("uvicorn.run") as uvicorn_run,
+            patch("uvicorn.Config") as uvicorn_run,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
             app = uvicorn_run.call_args.args[0]
@@ -2268,7 +2468,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg, sim=sim, seed_entry=None)
 
@@ -2290,7 +2491,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player") as player_class,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             pytest.raises(ValueError, match="wildcard binding requires"),
         ):
             serve(
@@ -2324,7 +2526,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player") as player_class,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             pytest.raises(ValueError) as raised,
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2347,7 +2550,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
 
@@ -2391,7 +2595,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             caplog.at_level(logging.INFO, logger="autodj.server"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2438,7 +2643,8 @@ class TestServeFunction:
             caplog.clear()
             with (
                 patch("autodj.player.Player.run"),
-                patch("uvicorn.run") as mock_uvicorn,
+                patch("uvicorn.Config") as mock_uvicorn,
+                patch("uvicorn.Server"),
                 caplog.at_level(logging.INFO, logger="autodj.server"),
             ):
                 serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2489,7 +2695,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player") as player_class,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             pytest.raises(ValueError, match="allowed origin"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2545,7 +2752,7 @@ class TestSettingsEndpoints:
 
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
-        resp = tc.post("/api/transition", json={"effect": "echo_out"})
+        resp = patch_station_settings(tc, {"transition": {"effect": "echo_out"}})
         assert resp.status_code == 200
         assert bridge.player._cfg.transitions.effect == "echo_out"
 
@@ -2555,7 +2762,7 @@ class TestSettingsEndpoints:
         point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.transitions.effect = "echo_out"
         tc = TestClient(create_app(bridge))
-        resp = tc.post("/api/transition", json={"effect": "BOGUS_FX"})
+        resp = patch_station_settings(tc, {"transition": {"effect": "BOGUS_FX"}})
         assert resp.status_code == 400
         assert bridge.player._cfg.transitions.effect == "echo_out"
 
@@ -2564,7 +2771,7 @@ class TestSettingsEndpoints:
 
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
-        tc.post("/api/transition", json={"effect": "tape_stop"})
+        patch_station_settings(tc, {"transition": {"effect": "tape_stop"}})
         # File written under tmp_path/web_state.json
         f = tmp_path / "stations" / "default" / "web_state.json"
         assert f.exists()
@@ -2597,7 +2804,7 @@ class TestSettingsEndpoints:
 
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
-        tc.post("/api/djmix", json={"beatmatch": True, "harmonic_mode": "strict"})
+        patch_station_settings(tc, {"djmix": {"beatmatch": True, "harmonic_mode": "strict"}})
         assert bridge.player._cfg.djmix.beatmatch is True
         assert bridge.player._cfg.djmix.harmonic_mode == "strict"
 
@@ -2606,12 +2813,14 @@ class TestSettingsEndpoints:
 
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
-        settings = tc.post("/api/djmix", json={"drop_mix": True, "key_shift": True}).json()
+        settings = patch_station_settings(
+            tc, {"djmix": {"drop_mix": True, "key_shift": True}}
+        ).json()
         assert bridge.player._cfg.djmix.drop_mix is True
         assert bridge.player._cfg.djmix.key_shift is True
-        assert settings["djmix"]["drop_mix"] is True
-        assert settings["djmix"]["key_shift"] is True
-        assert tc.post("/api/djmix", json={"key_shift": "maybe"}).status_code == 422
+        assert settings["settings"]["djmix"]["drop_mix"] is True
+        assert settings["settings"]["djmix"]["key_shift"] is True
+        assert patch_station_settings(tc, {"djmix": {"key_shift": "maybe"}}).status_code == 422
 
     def test_post_djmix_skips_none_fields(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -2619,7 +2828,7 @@ class TestSettingsEndpoints:
         point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.djmix.beatmatch = True
         tc = TestClient(create_app(bridge))
-        tc.post("/api/djmix", json={"harmonic_mode": "strict"})  # beatmatch absent
+        patch_station_settings(tc, {"djmix": {"harmonic_mode": "strict"}})  # beatmatch absent
         assert bridge.player._cfg.djmix.beatmatch is True  # untouched
 
     def test_post_djmix_rejects_removed_harmonic_mixing(self, bridge, tmp_path) -> None:
@@ -2627,7 +2836,7 @@ class TestSettingsEndpoints:
 
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
-        response = tc.post("/api/djmix", json={"harmonic_mixing": True})
+        response = patch_station_settings(tc, {"djmix": {"harmonic_mixing": True}})
         assert response.status_code == 422
         assert bridge.player._cfg.djmix.harmonic_mode == "off"
 
@@ -2636,13 +2845,15 @@ class TestSettingsEndpoints:
 
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
-        tc.post(
-            "/api/playback-settings",
-            json={
-                "crossfade_seconds": 5.5,
-                "crossfade_eq_duck": True,
-                "pure_shuffle": True,
-                "replaygain_enabled": True,
+        patch_station_settings(
+            tc,
+            {
+                "playback": {
+                    "crossfade_seconds": 5.5,
+                    "crossfade_eq_duck": True,
+                    "pure_shuffle": True,
+                    "replaygain_enabled": True,
+                }
             },
         )
         assert bridge.player._cfg.playback.crossfade_seconds == 5.5
@@ -2656,7 +2867,7 @@ class TestSettingsEndpoints:
         point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.playback.transition_mode = "fixed"
         tc = TestClient(create_app(bridge))
-        tc.post("/api/playback-settings", json={"transition_mode": "full_intro_outro"})
+        patch_station_settings(tc, {"playback": {"transition_mode": "full_intro_outro"}})
         assert bridge.player._cfg.playback.transition_mode == "full_intro_outro"
 
     def test_post_playback_settings_transition_mode_invalid(self, bridge, tmp_path) -> None:
@@ -2670,7 +2881,7 @@ class TestSettingsEndpoints:
         # confirm the config is not mutated by an unknown value.
         prev = bridge.player._cfg.playback.transition_mode
         with contextlib.suppress(Exception):
-            tc.post("/api/playback-settings", json={"transition_mode": "wat"})
+            patch_station_settings(tc, {"playback": {"transition_mode": "wat"}})
         assert bridge.player._cfg.playback.transition_mode == prev
 
     def test_post_playback_settings_rejects_negative(self, bridge, tmp_path) -> None:
@@ -2679,7 +2890,7 @@ class TestSettingsEndpoints:
         point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.playback.crossfade_seconds = 3.0
         tc = TestClient(create_app(bridge))
-        resp = tc.post("/api/playback-settings", json={"crossfade_seconds": -3.0})
+        resp = patch_station_settings(tc, {"playback": {"crossfade_seconds": -3.0}})
         assert resp.status_code == 422
         assert bridge.player._cfg.playback.crossfade_seconds == 3.0
 
@@ -2688,9 +2899,9 @@ class TestSettingsEndpoints:
 
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
-        tc.post("/api/playback-settings", json={"fade_in_seconds": 1.5})
+        patch_station_settings(tc, {"playback": {"fade_in_seconds": 1.5}})
         assert bridge.player._cfg.playback.fade_in_seconds == pytest.approx(1.5)
-        resp = tc.post("/api/playback-settings", json={"fade_in_seconds": -1.0})
+        resp = patch_station_settings(tc, {"playback": {"fade_in_seconds": -1.0}})
         assert resp.status_code == 422
         assert bridge.player._cfg.playback.fade_in_seconds == pytest.approx(1.5)
 
@@ -2704,10 +2915,10 @@ class TestSettingsEndpoints:
         point_index(bridge.player._cfg.index, tmp_path)
         setattr(bridge.player._cfg.playback, name, 3.0)
         tc = TestClient(create_app(bridge))
-        assert tc.post("/api/playback-settings", json={name: 99}).status_code == 422
+        assert patch_station_settings(tc, {"playback": {name: 99}}).status_code == 422
         assert tc.post("/api/profiles", json={"name": "long", name: 99}).status_code == 422
         assert getattr(bridge.player._cfg.playback, name) == 3.0
-        assert tc.post("/api/playback-settings", json={name: 20}).status_code == 200
+        assert patch_station_settings(tc, {"playback": {name: 20}}).status_code == 200
         assert getattr(bridge.player._cfg.playback, name) == 20.0
 
     def test_post_playback_pure_shuffle(self, bridge, tmp_path) -> None:
@@ -2715,7 +2926,7 @@ class TestSettingsEndpoints:
 
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
-        tc.post("/api/playback-settings", json={"pure_shuffle": True})
+        patch_station_settings(tc, {"playback": {"pure_shuffle": True}})
         assert bridge.player._cfg.playback.pick_mode == "random"
 
     def test_post_playback_show_lyrics_false_clears_buffer(self, bridge, tmp_path) -> None:
@@ -2727,7 +2938,7 @@ class TestSettingsEndpoints:
         bridge.player._current_lyrics = [LyricLine(0.0, "x")]
         bridge.player._current_lyrics_plain = "stuff"
         tc = TestClient(create_app(bridge))
-        tc.post("/api/playback-settings", json={"show_lyrics": False})
+        patch_station_settings(tc, {"playback": {"show_lyrics": False}})
         assert bridge.player._cfg.playback.show_lyrics is False
         assert bridge.player._current_lyrics == []
         assert bridge.player._current_lyrics_plain == ""
@@ -2737,9 +2948,9 @@ class TestSettingsEndpoints:
 
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
-        tc.post("/api/djmix", json={"harmonic_mode": "strict"})
+        patch_station_settings(tc, {"djmix": {"harmonic_mode": "strict"}})
         assert bridge.player._cfg.djmix.harmonic_mode == "strict"
-        tc.post("/api/djmix", json={"harmonic_mode": "off"})
+        patch_station_settings(tc, {"djmix": {"harmonic_mode": "off"}})
         assert bridge.player._cfg.djmix.harmonic_mode == "off"
 
     def test_post_djmix_invalid_harmonic_mode_ignored(self, bridge, tmp_path) -> None:
@@ -2748,7 +2959,7 @@ class TestSettingsEndpoints:
         point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.djmix.harmonic_mode = "compatible"
         tc = TestClient(create_app(bridge))
-        tc.post("/api/djmix", json={"harmonic_mode": "bogus_mode"})
+        patch_station_settings(tc, {"djmix": {"harmonic_mode": "bogus_mode"}})
         assert bridge.player._cfg.djmix.harmonic_mode == "compatible"
 
     def test_set_djmix_skips_none_value_explicit(self, bridge) -> None:
@@ -2770,7 +2981,7 @@ class TestSettingsEndpoints:
         # the moment anchored mode is enabled.
         bridge.player._seed_path = None
         tc = TestClient(create_app(bridge))
-        tc.post("/api/playback-settings", json={"anchor_to_seed": True})
+        patch_station_settings(tc, {"playback": {"anchor_to_seed": True}})
         assert bridge.player._anchor_to_seed is True
         assert bridge.player._seed_path == bridge.player._state.current_track.path
 
@@ -2780,7 +2991,7 @@ class TestSettingsEndpoints:
         point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._anchor_to_seed = True
         tc = TestClient(create_app(bridge))
-        tc.post("/api/playback-settings", json={"anchor_to_seed": False})
+        patch_station_settings(tc, {"playback": {"anchor_to_seed": False}})
         assert bridge.player._anchor_to_seed is False
 
 
@@ -2836,7 +3047,7 @@ class TestLibraryEndpoints:
 
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
-        tc.post("/api/bpm-range", json={"lo": 100, "hi": 140})
+        patch_station_settings(tc, {"bpm_range": {"lo": 100, "hi": 140}})
         assert bridge.player._bpm_range == (100.0, 140.0)
 
     def test_post_bpm_range_clears_on_null(self, bridge, tmp_path) -> None:
@@ -2845,7 +3056,7 @@ class TestLibraryEndpoints:
         point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._bpm_range = (100.0, 140.0)
         tc = TestClient(create_app(bridge))
-        tc.post("/api/bpm-range", json={"lo": None, "hi": None})
+        patch_station_settings(tc, {"bpm_range": {"lo": None, "hi": None}})
         assert bridge.player._bpm_range is None
 
     def test_post_bpm_range_clears_when_lo_ge_hi(self, bridge, tmp_path) -> None:
@@ -2853,7 +3064,7 @@ class TestLibraryEndpoints:
 
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
-        tc.post("/api/bpm-range", json={"lo": 140, "hi": 100})
+        patch_station_settings(tc, {"bpm_range": {"lo": 140, "hi": 100}})
         assert bridge.player._bpm_range is None
 
     def test_library_run_hands_the_child_the_server_config(
@@ -2902,7 +3113,7 @@ class TestLibraryEndpoints:
 
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
-        tc.post("/api/discovery", json={"every": 25})
+        patch_station_settings(tc, {"discovery": {"every": 25}})
         assert bridge.player._discovery_every == 25
         # Configuring a rate arms the runtime toggle too, so the Settings
         # checkbox and the Now Playing button agree.
@@ -2915,7 +3126,7 @@ class TestLibraryEndpoints:
         point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._discovery_every = 20
         tc = TestClient(create_app(bridge))
-        tc.post("/api/discovery", json={"every": 0})
+        patch_station_settings(tc, {"discovery": {"every": 0}})
         assert bridge.player._discovery_every is None
         assert bridge.player._state.discovery_enabled is False
         assert tc.get("/api/status").json()["discovery_enabled"] is False
@@ -2923,12 +3134,18 @@ class TestLibraryEndpoints:
     def test_post_preset_clears_on_null(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
+        from autodj.presets import Preset, constant_curve
+
         point_index(bridge.player._cfg.index, tmp_path)
-        # mock a preset
-        bridge.player._preset = MagicMock(name="energetic")
+        bridge.player._cfg.presets = {
+            "energetic": Preset(name="energetic", bpm_weight=0.5, _curve=constant_curve(120.0))
+        }
+        bridge.settings.set_preset("energetic", refresh=False)
         tc = TestClient(create_app(bridge))
-        tc.post("/api/preset", json={"name": None})
-        assert bridge.player._preset is None
+        patch_station_settings(tc, {"preset": {"name": None}})
+        assert bridge.settings._preset is None
+        saved = json.loads((bridge.settings.state_dir / "web_state.json").read_text())
+        assert saved["preset"] is None
 
     def test_post_preset_unknown_name_silent(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -2936,7 +3153,7 @@ class TestLibraryEndpoints:
         point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._preset = None
         tc = TestClient(create_app(bridge))
-        tc.post("/api/preset", json={"name": "totally_made_up_preset_xyz"})
+        patch_station_settings(tc, {"preset": {"name": "totally_made_up_preset_xyz"}})
         assert bridge.player._preset is None  # silently ignored
 
     def test_post_preset_applies_discovery_every(self, bridge, tmp_path) -> None:
@@ -2956,7 +3173,7 @@ class TestLibraryEndpoints:
             ),
         }
         tc = TestClient(create_app(bridge))
-        tc.post("/api/preset", json={"name": "test"})
+        patch_station_settings(tc, {"preset": {"name": "test"}})
         assert bridge.player._discovery_every == 15
 
     def test_lyrics_for_reads_and_serialises_the_requested_path(self, bridge) -> None:

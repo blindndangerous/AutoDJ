@@ -8,24 +8,31 @@
 # start and saved in the index folder.
 #
 # Optional settings go in .env beside this file (see the README):
+#   AUTODJ_IMAGE  the image to run; see "Choose an image" below
 #   AUTODJ_MUSIC_DIR, AUTODJ_INDEX_DIR, AUTODJ_MODEL_DIR  host folders
 #   AUTODJ_BEETS_PATH  host folder holding beets' library.db, mounted at /beets
 #   AUTODJ_UID, AUTODJ_GID  the owner of those host folders
 # Server and library settings come from config.toml and config.local.toml in
 # this folder, as on bare metal.
+#
+# The image: by default the published release image (tag :stable), which
+# `docker compose pull` updates. For the newest code on master, set
+# AUTODJ_IMAGE in .env to the same image with the tag :development; to stay on
+# one release, use its version as the tag, such as :0.22.0. To build the image
+# on this computer instead, see compose.build.yaml. Details:
+# docs/guides/operations/containers-and-windows.md#choose-an-image
 
 services:
   autodj:
-    build:
-      context: .
-      dockerfile: Containerfile
-      args:
-        # The commit shown in the web page's footer; see
-        # docs/guides/operations/containers-and-windows.md#build-stamp.
-        AUTODJ_COMMIT: ${AUTODJ_COMMIT:-}
-    image: autodj:local
+    image: &image ${AUTODJ_IMAGE:-ghcr.io/blindndangerous/autodj:stable}
     container_name: autodj
     restart: unless-stopped
+    # How long a stop or recreation waits before it kills AutoDJ, which saves
+    # its state as it stops.  That normally takes a few seconds; every step
+    # has its own time limit, and together they come to about 75 seconds for
+    # one station whose workers will not stop.  Each further station can add
+    # up to 30 seconds.  Docker's default of 10 seconds could cut the save short.
+    stop_grace_period: 90s
     network_mode: host
     user: "${AUTODJ_UID:-10001}:${AUTODJ_GID:-10001}"
     # config.toml and config.local.toml are read from the working directory.
@@ -34,6 +41,11 @@ services:
     environment:
       # Tells LAN mode the addresses it detects are the machine's own.
       AUTODJ_HOST_NETWORK: "1"
+      # Tells AutoDJ the restart policy above, so Settings, Updates may offer
+      # Restart AutoDJ.  Keep the two the same; remove this line to hide it.
+      AUTODJ_RESTART_POLICY: unless-stopped
+      # The image above, so Settings, Updates gives the commands that update it.
+      AUTODJ_IMAGE: *image
       # Writable for any AUTODJ_UID; the image's home belongs to uid 10001.
       HOME: /tmp
       XDG_CACHE_HOME: /tmp/.cache

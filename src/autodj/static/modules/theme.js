@@ -1,3 +1,4 @@
+import { registerSettingsGroup } from "./settings-drafts.js";
 // Settings, Display and keys, Theme: System (the default), Light or Dark.
 //
 // app.css gives every colour a light and a dark value with light-dark().
@@ -9,7 +10,7 @@
 // Changing the theme announces nothing beyond the radio button's own
 // checked state.
 
-import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
+import { defaultStorage, readStorage } from "./safe-storage.js";
 
 export const THEME_STORAGE_KEY = "autodj.theme";
 const PINNED = new Set(["light", "dark"]);
@@ -27,7 +28,8 @@ export function applyThemeChoice(choice, root = globalThis.document?.documentEle
 }
 
 function writeThemeChoice(storage, choice) {
-  writeStorage(storage, THEME_STORAGE_KEY, choice);
+  if (!storage) throw new Error("Browser storage is unavailable.");
+  storage.setItem(THEME_STORAGE_KEY, choice);
 }
 
 export function installThemeSetting(doc = globalThis.document, storage = defaultStorage()) {
@@ -37,16 +39,21 @@ export function installThemeSetting(doc = globalThis.document, storage = default
     applyThemeChoice(choice, doc.documentElement);
   };
   show(readThemeChoice(storage));
+  const draft = registerSettingsGroup({ panel: radios[0]?.closest('[id^="spanel-"]'), controls: radios,
+    read: () => ({ theme: radios.find((radio) => radio.checked)?.value || "system" }),
+    write: (value) => show(value.theme),
+    persisted: () => ({ theme: readThemeChoice(storage) }),
+    commit: (value) => writeThemeChoice(storage, value.theme),
+  });
   for (const radio of radios) {
     radio.addEventListener("change", () => {
       if (!radio.checked) return;
       const choice = PINNED.has(radio.value) ? radio.value : "system";
       applyThemeChoice(choice, doc.documentElement);
-      writeThemeChoice(storage, choice);
     });
   }
   // Another tab of this page changed it: follow, silently.
   doc.defaultView?.addEventListener?.("storage", (event) => {
-    if (event.key === THEME_STORAGE_KEY) show(readThemeChoice(storage));
+    if (event.key === THEME_STORAGE_KEY) draft.accept({ theme: readThemeChoice(storage) });
   });
 }

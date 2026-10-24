@@ -18,6 +18,7 @@ import { confirmAction } from "./confirm-dialog.js";
 import { sayIfStillPending } from "./live-region.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
+import { registerSettingsGroup } from "./settings-drafts.js";
 
 const USERNAME = /^[\x21-\x39\x3b-\x7e]{1,64}$/;
 
@@ -77,6 +78,28 @@ export function installLiveSettings({
   // aria-busy says it is busy instead, and a slow reply says "Saving…"
   // (#384).
   const saving = new Set();
+  const returnSeconds = id("return-seconds");
+  const duckDb = id("duck-db");
+  const draft = registerSettingsGroup({
+    panel: doc.getElementById("spanel-live"), group: "live",
+    controls: [returnSeconds, duckDb],
+    read: () => ({ mic_return_seconds: Number(returnSeconds.value), mic_duck_db: Number(duckDb.value) }),
+    write: renderSettings,
+    validate() {
+      clearErrors(id("talkover"), talkError);
+      const seconds = Number(returnSeconds.value);
+      const duck = Number(duckDb.value);
+      if (returnSeconds.value === "" || !(seconds >= 0.1 && seconds <= 10)) {
+        fail(returnSeconds, talkError, "Return time: enter a number of seconds from 0.1 to 10.");
+        return false;
+      }
+      if (duckDb.value === "" || !(duck >= 0 && duck <= 30)) {
+        fail(duckDb, talkError, "Duck amount: enter a number of decibels from 0 to 30.");
+        return false;
+      }
+      return true;
+    },
+  });
 
   function link(control, errorNode, on) {
     const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
@@ -274,49 +297,6 @@ export function installLiveSettings({
 
   // ---- Talkover settings ----
 
-  async function saveTalkover(control) {
-    clearErrors(id("talkover"), talkError);
-    const returnField = id("return-seconds");
-    const duckField = id("duck-db");
-    const returnSeconds = Number(returnField.value);
-    const duckDb = Number(duckField.value);
-    if (returnField.value === "" || !(returnSeconds >= 0.1 && returnSeconds <= 10)) {
-      fail(returnField, talkError, "Return time: enter a number of seconds from 0.1 to 10.");
-      return;
-    }
-    if (duckField.value === "" || !(duckDb >= 0 && duckDb <= 30)) {
-      fail(duckField, talkError, "Duck amount: enter a number of decibels from 0 to 30.");
-      return;
-    }
-    const stopPending = sayIfStillPending(announce, "Saving the talk settings…");
-    try {
-      saving.add(control);
-      control.classList.add("is-pending");
-      control.setAttribute("aria-busy", "true");
-      const saved = await request("/api/live/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mic_return_seconds: returnSeconds, mic_duck_db: duckDb }),
-      });
-      renderSettings(saved);
-    } catch (err) {
-      const left = staleActionText(err);
-      if (left) {
-        announce(left, !err.actionDone);
-        return;
-      }
-      const field = String(err.message).toLowerCase().includes("duck") ? duckField : returnField;
-      fail(field, talkError, `Could not save the talk settings. ${err.message}`);
-      return;
-    } finally {
-      stopPending();
-      saving.delete(control);
-      control.classList.remove("is-pending");
-      control.removeAttribute("aria-busy");
-    }
-    announce("Talk settings saved.");
-  }
-
   // ---- Loading ----
 
   async function refresh() {
@@ -331,11 +311,11 @@ export function installLiveSettings({
     const available = Boolean(info?.available);
     id("unavailable").hidden = available || !info?.reason;
     id("unavailable").textContent = available ? "" : (info?.reason || "");
-    id("settings").hidden = !available;
+    id("settings").hidden = !info;
     if (info) {
       djs = Array.isArray(info.djs) ? info.djs.filter((dj) => typeof dj?.username === "string") : [];
       renderSource(info);
-      renderSettings(info.settings);
+      draft.accept(info.settings);
       render();
     }
     onInfo(info);
@@ -359,11 +339,7 @@ export function installLiveSettings({
     if (saving.has(control)) return;
     void saveDj(control);
   });
-  id("talkover-save").addEventListener("click", (event) => {
-    const control = event.currentTarget;
-    if (saving.has(control)) return;
-    void saveTalkover(control);
-  });
+  id("talkover")?.addEventListener("submit", (event) => event.preventDefault());
   id("source-copy").addEventListener("click", async () => {
     const text = id("source-url").value;
     try {

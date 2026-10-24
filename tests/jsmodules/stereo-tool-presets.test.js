@@ -8,6 +8,7 @@ import { installStereoToolPresets } from "../../src/autodj/static/modules/stereo
 const staticPath = (name) => join(process.cwd(), "src", "autodj", "static", name);
 const html = readFileSync(staticPath("index.html"), "utf8");
 const css = readFileSync(staticPath("app.css"), "utf8");
+const app = readFileSync(staticPath("app.js"), "utf8");
 // A template parses the page without loading its stylesheet or scripts.
 const template = document.createElement("template");
 template.innerHTML = html;
@@ -37,12 +38,15 @@ function server({ active = "included", names = ["included", "Night.sts"] } = {})
         name, label: name === "included" ? "Included" : name, included: name === "included",
       })) };
     }
-    if (url === "/api/playback-settings") {
-      const chosen = JSON.parse(options.body).stereotool_preset;
+    if (url === "/api/settings" && !options.method) {
+      return { revision: "current", values: { playback: { stereotool_preset: state.active } } };
+    }
+    if (url === "/api/settings" && options.method === "PATCH") {
+      const chosen = JSON.parse(options.body).changes.playback.stereotool_preset;
       state.posts.push(chosen);
       if (state.failSelect) throw new Error(state.failSelect);
       state.active = chosen;
-      return {};
+      return { revision: "next", applied: ["playback"], settings: { values: { playback: { stereotool_preset: chosen } } } };
     }
     if (url === "/api/stereo-tool-presets/upload") {
       const uploaded = options.body.get("file");
@@ -112,6 +116,27 @@ describe("Stereo Tool preset markup", () => {
       .toBe("pb-replaygain=replaygain");
   });
 
+  it("leaves Stereo Tool restart guidance without a duplicate Save button", () => {
+    expect(page.getElementById("mastering-save")).toBeNull();
+    expect(page.getElementById("mastering-save-note").textContent)
+      .toMatch(/preset or AGC drive restarts Stereo Tool.*brief bypass/i);
+  });
+
+  it("keeps Sound controls named without focus help", () => {
+    for (const control of panel.querySelectorAll("input, select, button")) {
+      expect(control.hasAttribute("aria-describedby"), control.id).toBe(false);
+      expect(control.hasAttribute("aria-label"), control.id).toBe(false);
+      expect(control.hasAttribute("title"), control.id).toBe(false);
+    }
+  });
+
+  it("wires AGC drive to the shared settings module", () => {
+    expect(page.getElementById("pb-stereo-agc-drive")).not.toBeNull();
+    expect(app).toMatch(/pbStereoAgcDrive:\s*document\.getElementById\("pb-stereo-agc-drive"\)/);
+    expect(app).toMatch(/stereoPreset:\s*document\.getElementById\("stereo-preset"\)/);
+    expect(app).not.toMatch(/masteringSave/);
+  });
+
   it("labels every control and lists Included first", () => {
     for (const id of ["stereo-preset", "stereo-preset-file", "pb-stereo-trim", "pb-intro-lift"]) {
       const label = panel.querySelector(`label[for="${id}"]`);
@@ -139,7 +164,7 @@ describe("Stereo Tool preset markup", () => {
       const desc = page.getElementById(`${input.id}-desc`);
       expect(input.hasAttribute("aria-describedby")).toBe(false);
       expect(desc.hidden).toBe(false);
-      expect(desc.textContent).toMatch(/from (0|minus 12) to (6|plus 6)/);
+      expect(desc.textContent).toContain(`from ${input.min} to ${input.max}`);
     }
   });
 });
@@ -175,36 +200,27 @@ describe("Stereo Tool preset controls", () => {
     expect($("stereo-preset-delete").disabled).toBe(true);
   });
 
-  it("selects a preset and says it is active", async () => {
+  it("keeps a preset selection pending for Save sound settings", async () => {
     const state = server();
-    await install(state);
+    const presets = await install(state);
     pick("Night.sts");
-    await vi.waitFor(() => expect(statusText()).toBe("Preset Night.sts active"));
-    expect(state.posts).toEqual(["Night.sts"]);
+    expect(state.posts).toEqual([]);
+    expect($("stereo-preset").value).toBe("Night.sts");
     expect($("stereo-preset-delete").disabled).toBe(false);
+    presets.panel.setActive("Night.sts");
+    expect(state.posts).toEqual([]);
   });
 
-  it("saves only the newest of choices made while a save runs", async () => {
-    const state = server({ names: ["included", "A.sts", "B.sts", "C.sts"] });
-    await install(state);
-    pick("A.sts");
-    pick("B.sts");
-    pick("C.sts");
-    await vi.waitFor(() => expect(statusText()).toBe("Preset C.sts active"));
-    expect(state.posts).toEqual(["A.sts", "C.sts"]);
-    expect($("stereo-preset").value).toBe("C.sts");
-  });
-
-  it("puts the list back and says why when a selection fails", async () => {
+  it("drops a preset draft on station reset before loading the next station", async () => {
     const state = server();
-    state.failSelect = "preset Night.sts was not found";
-    await install(state);
+    const presets = await install(state);
     pick("Night.sts");
-    await vi.waitFor(() => expect(statusText())
-      .toBe("Could not select preset Night.sts: preset Night.sts was not found"));
-    expect($("stereo-preset").value).toBe("included");
-    expect(document.activeElement).toBe($("stereo-preset"));
-    expect($("stereo-preset-delete").disabled).toBe(true);
+    state.names.push("Day.sts");
+    state.active = "Day.sts";
+    presets.panel.reset();
+    await presets.panel.refresh();
+    expect($("stereo-preset").value).toBe("Day.sts");
+    expect(state.posts).toEqual([]);
   });
 
   it("uploads a preset, says so and moves to the list", async () => {

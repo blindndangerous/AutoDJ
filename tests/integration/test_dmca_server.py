@@ -15,7 +15,7 @@ from autodj.repeat_rules import PlayRecord, TrackKeyCache
 from tests._layout import point_index
 from tests._server import create_app
 
-from ._helpers import _make_entry
+from ._helpers import _make_entry, patch_station_settings
 
 
 @pytest.fixture
@@ -135,9 +135,9 @@ def test_show_next_cannot_be_turned_on_in_dmca_mode(dmca_bridge, tmp_path) -> No
     dmca_bridge.attach_stream(stream=MagicMock(listener_count=0), station=MagicMock(state="idle"))
     dmca_bridge.save_persistent_state = MagicMock()
     with TestClient(create_app(dmca_bridge), client=("192.0.2.4", 50000)) as client:
-        refused = client.post("/api/stream/settings", json={"show_next": True})
+        refused = patch_station_settings(client, {"stream": {"show_next": True}})
         assert refused.status_code == 409
         assert "DMCA mode is on" in refused.json()["detail"]
         assert dmca_bridge.player._cfg.nowplaying.show_next is False
-        assert client.post("/api/stream/settings", json={"show_next": False}).status_code == 200
+        assert patch_station_settings(client, {"stream": {"show_next": False}}).status_code == 200
     assert dmca_bridge.get_settings()["playback"]["dmca_enabled"] is True

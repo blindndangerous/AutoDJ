@@ -50,8 +50,8 @@ class Similarity:
     def entries_snapshot(self):
         return self.entries
 
-    def replace_catalog_index(self, entries, vectors):
-        self.replaced = (entries, vectors.copy())
+    def replace_catalog_faiss(self, entries, index):
+        self.replaced = (entries, index.reconstruct_n(0, index.ntotal))
 
     def replace_catalog_entries(self, entries):
         if self.replaced is None or [e.path for e in self.replaced[0]] != [e.path for e in entries]:
@@ -124,6 +124,1569 @@ def fake_basic(path: Path, kind: str = "music", audio=None, **kwargs):
         "segue": 160.0,
         "end": 179.0,
     }
+
+
+def tick_and_wait(manager):
+    manager.tick()
+    if manager._thread is not None:
+        manager._thread.join(timeout=10)
+        assert not manager._thread.is_alive()
+
+
+def test_recovery_drains_backlog_in_one_run(abandoned_scan, monkeypatch):
+    """ADR-0008-06, ADR-0008-22. A serial drain refreshes once without a clock advance."""
+    manager, queue, now, songs = abandoned_scan
+    for number in range(30):
+        song = manager.cfg.library.music_dir / f"extra-{number:02}.flac"
+        song.write_bytes(songs[0].read_bytes())
+        songs.append(song)
+    manager.scan()
+    now[0] += 121
+    refresh = Mock(wraps=manager.refresh)
+    monkeypatch.setattr(manager, "refresh", refresh)
+    tick_and_wait(manager)
+    assert not queue.pending_scans()
+    assert all(manager.catalog.record_for_path(song)["energy"] > 0 for song in songs)
+    assert refresh.call_count == 1
+    assert not manager.snapshot()["import"]["running"]
+
+
+def test_recovery_refreshes_catalog_at_bounded_intervals(abandoned_scan, monkeypatch):
+    """ADR-0008-22. Long drains publish busy state and refresh at bounded intervals."""
+    manager, queue, now, songs = abandoned_scan
+    now[0] += 121
+    refreshed = []
+    refresh = manager.refresh
+
+    def reload():
+        refreshed.append(now[0])
+        return refresh()
+
+    def decode(path, **kwargs):
+        state = manager.snapshot()["import"]
+        assert state["running"] and state["phase"] == "recovering analysis"
+        assert state["current"] == str(path)
+        now[0] += 31
+        return fake_basic(path, **kwargs)
+
+    monkeypatch.setattr(manager, "refresh", reload)
+    monkeypatch.setattr("autodj.library.analyze_basic", decode)
+    tick_and_wait(manager)
+    assert not queue.pending_scans()
+    assert refreshed == [1152.0, 1183.0, 1183.0]
+    state = manager.snapshot()["import"]
+    assert not state["running"] and not state["current"]
+    assert state["done"] == len(songs)
+
+
+def test_scan_decodes_locally_if_just_deferred_row_disappears(manager_factory, monkeypatch):
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "new.flac"
+    sf.write(song, np.ones((100, 2)) * 0.1, 22050)
+    queue = manager.analysis_queue
+    queue.seen("worker", "Worker", scan_decode=True)
+    add = manager._add_from_tags
+
+    def publish(path, **kwargs):
+        queue.cancel_scan(_path(path))
+        return add(path, **kwargs)
+
+    monkeypatch.setattr(manager, "_add_from_tags", publish)
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr("autodj.library.analyze_basic", fake_basic)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+    manager.scan()
+    assert manager.catalog.record_for_path(song)["energy"] > 0
+    assert not queue.scan_pending(_path(song))
+
+
+@pytest.mark.parametrize("worker_connected", [False, True])
+def test_touched_nonpending_song_preserves_dj_cues_with_invalid_points(
+    manager_factory, monkeypatch, worker_connected
+):
+    from autodj.dj_meta import Cue, DjMeta
+
+    manager = manager_factory()
+    if worker_connected:
+        manager.analysis_queue.seen("worker", "Worker", scan_decode=True)
+    song = manager.cfg.library.music_dir / "song.flac"
+    sf.write(song, np.ones((100, 2)) * 0.1, 22050)
+    manager.catalog.put_entry(make_entry(song), "music")
+    manager.catalog.set_intro_lift(song, 1.0)
+    cache = manager._dj_cache()
+    cue = Cue(0.3, type="user", label="Saved cue", source="user")
+    cache.set(str(song), DjMeta(analysed=True, beats=[0.3], cues=[cue]))
+    stat = song.stat()
+    os.utime(song, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    decode = Mock(return_value=np.ones(22050, dtype=np.float32))
+    monkeypatch.setattr("autodj.library.load_for_analysis", decode)
+    monkeypatch.setattr("autodj.library.analyze_basic", fake_basic)
+    manager.scan()
+    decode.assert_not_called()
+    assert not manager.analysis_queue.scan_pending(_path(song))
+    assert cache.get(str(song)).cues == [cue]
+    assert cache.get(str(song)).beats == [0.3]
+
+
+@pytest.mark.parametrize("import_external", [False, True])
+def test_remote_scan_preserves_saved_dj_cues(manager_factory, import_external):
+    from autodj.dj_meta import Cue, DjMeta
+
+    manager = manager_factory()
+    manager.cfg.playback.import_external_cues = import_external
+    song = manager.cfg.library.music_dir / "song.flac"
+    cache = manager._dj_cache()
+    cues = [Cue(1.0, source="user"), Cue(5.0, source="rekordbox")]
+    cache.set(str(song), DjMeta(analysed=True, cues=cues))
+    manager.store_scan_dj(song, DjMeta(analysed=True, beats=[2.0], cues=[Cue(1.0)]), force=True)
+    assert cache.get(str(song)).cues == cues
+    assert cache.get(str(song)).beats == [2.0]
+
+
+@pytest.mark.dj_analysis
+@pytest.mark.parametrize("flow", ["local", "worker"])
+def test_scan_dj_keeps_current_imported_markers(manager_factory, monkeypatch, flow):
+    from autodj.dj_cues_import import _normalise_keys
+    from autodj.dj_meta import Cue, DjMeta
+
+    manager = manager_factory()
+    manager.cfg.playback.import_external_cues = True
+    song = manager.cfg.library.music_dir / "My Song.flac"
+    song.write_bytes(b"audio")
+    entry, points = fake_basic(song)
+    manager.catalog.put_entry(entry, points=points, point_source="analysis")
+    before = manager.catalog.record_for_path(song)
+    # Use the catalog's runtime path and the importers' normalized keys on both OSes.
+    path = Path(before["path"])
+    imported = [
+        Cue(30.0, "intro_end", source="mixxx"),
+        Cue(42.0, "hot", "Drop", "mixxx"),
+        Cue(150.0, "outro_start", source="mixxx"),
+    ]
+    monkeypatch.setattr(
+        "autodj.dj_cues_import.auto_import_cues",
+        lambda **kwargs: _normalise_keys({song.as_posix(): imported}),
+    )
+    meta = DjMeta(
+        analysed=True,
+        intro_end_s=10.0,
+        outro_start_s=165.0,
+        beats=[2.0],
+        cues=[Cue(10.0, "intro_end"), Cue(165.0, "outro_start")],
+    )
+    cache = manager._dj_cache()
+    assert cache is not None
+    assert manager.dj_analysis_enabled()
+    if flow == "local":
+        with patch("autodj.dj_meta.analyse_audio", return_value=meta):
+            manager._dj_analyse(path, np.zeros(22050 * 180, np.float32))
+    else:
+        manager._refresh_scan_cues()
+        manager.store_scan_dj(path, meta, force=True)
+
+    stored = cache.get(str(path))
+    assert stored.analysed
+    assert stored.beats == [2.0]
+    assert imported[1] in stored.cues
+    assert stored.intro_end_s == 30.0
+    assert stored.outro_start_s == 150.0
+    assert [cue for cue in stored.cues if cue.source != "auto"] == imported
+    after = manager.catalog.record_for_path(path)
+    assert after["points"] == before["points"]
+    assert after["point_sources"] == before["point_sources"]
+    assert after["point_sources"]["intro"] == "analysis"
+    assert after["point_sources"]["outro"] == "analysis"
+
+
+@pytest.mark.dj_analysis
+@pytest.mark.parametrize("flow", ["local", "worker"])
+@pytest.mark.parametrize("source", ["user", "mixxx"])
+@pytest.mark.parametrize("import_external", [True, False])
+def test_scan_dj_cached_markers_follow_import_setting(
+    manager_factory, monkeypatch, flow, source, import_external
+):
+    from autodj.dj_meta import Cue, DjMeta
+
+    manager = manager_factory()
+    manager.cfg.playback.import_external_cues = import_external
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"old recording")
+    cache = manager._dj_cache()
+    assert cache is not None
+    saved = [
+        Cue(5.0, "intro_start", source=source),
+        Cue(30.0, "intro_end", source=source),
+        Cue(42.0, "hot", "Saved", source),
+        Cue(150.0, "outro_start", source=source),
+    ]
+    cache.set(str(song), DjMeta(analysed=True, cues=saved))
+    song.write_bytes(b"replacement recording")
+    entry, points = fake_basic(song)
+    manager.catalog.put_entry(entry, points=points, point_source="analysis")
+    monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", lambda **kwargs: {})
+    meta = DjMeta(
+        analysed=True,
+        intro_start_s=0.0,
+        intro_end_s=10.0,
+        outro_start_s=165.0,
+        cues=[Cue(0.0, "intro_start"), Cue(10.0, "intro_end"), Cue(165.0, "outro_start")],
+    )
+    if flow == "local":
+        with patch("autodj.dj_meta.analyse_audio", return_value=meta):
+            manager._dj_analyse(song, np.zeros(22050 * 180, np.float32), force=True)
+    else:
+        manager._refresh_scan_cues()
+        manager.store_scan_dj(song, meta, force=True)
+
+    stored = cache.get(str(song))
+    assert stored.analysed
+    assert [cue for cue in stored.cues if cue.source != "auto"] == (
+        [saved[2]] if import_external else saved
+    )
+    assert (stored.intro_start_s, stored.intro_end_s, stored.outro_start_s) == (
+        (0.0, 10.0, 165.0) if import_external else (5.0, 30.0, 150.0)
+    )
+
+
+def test_remote_scan_before_snapshot_merges_imported_cues(manager_factory, monkeypatch):
+    """ADR-0008-22. Results before snapshot loading receive imported cues afterward."""
+    from autodj.dj_meta import Cue, DjMeta
+
+    manager = manager_factory()
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    song = manager.cfg.library.music_dir / "song.flac"
+    cue = Cue(5.0, source="rekordbox")
+    monkeypatch.setattr(
+        "autodj.dj_cues_import.auto_import_cues", lambda **kwargs: {str(song): [cue]}
+    )
+    manager.store_scan_dj(song, DjMeta(analysed=True, beats=[2.0]), force=True)
+    assert manager._dj_cache().get(str(song)).analysed
+    manager._refresh_scan_cues()
+    assert manager._dj_cache().get(str(song)).cues == [cue]
+    assert manager._dj_cache().get(str(song)).beats == [2.0]
+
+
+def test_cue_only_refresh_leaves_import_state_idle(manager_factory, monkeypatch):
+    """ADR-0008-22. Snapshot refreshes alone never publish a running import."""
+    from autodj.dj_meta import DjMeta
+
+    manager = manager_factory()
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: False)
+    before = manager.snapshot()["import"]
+    states = []
+
+    def import_cues(**kwargs):
+        states.append(manager.snapshot()["import"])
+        return {}
+
+    monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", import_cues)
+    manager.store_scan_dj(manager.cfg.library.music_dir / "song.flac", DjMeta(), force=True)
+    tick_and_wait(manager)
+    assert states == [before]
+    assert manager.snapshot()["import"] == before
+
+
+def test_recovery_resets_count_after_worker_handoff(abandoned_scan, monkeypatch):
+    """ADR-0008-22. Each recovery run starts with its own remaining count."""
+    manager, queue, now, songs = abandoned_scan
+    now[0] += 121
+
+    def decode(path, **kwargs):
+        queue.seen("worker", "Worker", scan_decode=True)
+        record = manager.catalog.record_for_path(songs[1])
+        queue.claim("worker", [(record["path"], record["size"], record["fingerprint"])], 600)
+        queue.release_path("worker", record["path"])
+        return fake_basic(path, **kwargs)
+
+    monkeypatch.setattr("autodj.library.analyze_basic", decode)
+    tick_and_wait(manager)
+    assert not manager._scan_fallback_running
+    now[0] += 121
+    states = []
+
+    def decode_next(path, **kwargs):
+        states.append(manager.snapshot()["import"])
+        return fake_basic(path, **kwargs)
+
+    monkeypatch.setattr("autodj.library.analyze_basic", decode_next)
+    tick_and_wait(manager)
+    assert states[0]["total"] == 1
+    assert states[0]["done"] == 0
+
+
+def test_changed_pending_song_stays_playable_until_fallback(manager_factory, monkeypatch):
+    """ADR-0008-16. Pending bytes must not replace a playable record with silence."""
+    from dataclasses import replace
+
+    from autodj.audio_meta import read_file_tags
+
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "song.flac"
+    sf.write(song, np.ones((22050, 2)) * 0.1, 22050)
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr("autodj.library.analyze_basic", fake_basic)
+    monkeypatch.setattr(
+        "autodj.audio_meta.read_file_tags", lambda path: replace(read_file_tags(path), length=180.0)
+    )
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+    manager.scan()
+    set_vector(manager.catalog, song, np.ones(FEATURE_DIM, dtype=np.float32))
+    before = manager.catalog.record_for_path(song)
+    old_vectors = vectors_snapshot(manager.catalog)[1].copy()
+    tags = FLAC(song)
+    tags["title"] = "Updated title"
+    tags.save()
+    queue = manager.analysis_queue
+    queue.seen("worker", "Worker", scan_decode=True)
+    manager.scan()
+    manager.scan()
+    assert queue.scan_pending(_path(song))
+    assert manager.catalog.record_for_path(song) == before
+    assert manager.entries_snapshot()[0].energy > 0
+    assert not manager.entry_for_path(song).is_silent
+    np.testing.assert_array_equal(vectors_snapshot(manager.catalog)[1], old_vectors)
+    queue.forget_worker("worker")
+    with manager._scan_lock:
+        assert manager._recover_scan_one(False)
+    after = manager.catalog.record_for_path(song)
+    assert (after["size"], after["fingerprint"]) == file_fingerprint(song)
+    assert after["energy"] > 0 and after["points"] == fake_basic(song)[1]
+    assert not queue.scan_pending(_path(song))
+
+
+def test_retag_changed_pending_song_still_decodes_locally(manager_factory, monkeypatch):
+    """ADR-0008-16. Tag edits cannot make unmeasured replacement bytes look analysed."""
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"original recording")
+    manager.catalog.put_entry(make_entry(song), points=fake_basic(song)[1])
+    manager.catalog.set_intro_lift(song, 1.0)
+    set_vector(manager.catalog, song, np.ones(FEATURE_DIM, dtype=np.float32))
+    before = manager.catalog.record_for_path(song)
+    song.write_bytes(b"replacement recording")
+    queue = manager.analysis_queue
+    queue.defer_scan(_path(song), *file_fingerprint(song))
+    song.write_bytes(b"replacement recording with edited tags")
+    assert manager.catalog.retag(song, {"title": "Edited replacement"})
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+
+    def decode(path, **kwargs):
+        entry, points = fake_basic(path, **kwargs)
+        entry.title = "Edited replacement"
+        entry.length = 240.0
+        points["end"] = 239.0
+        return entry, points
+
+    monkeypatch.setattr("autodj.library.analyze_basic", decode)
+    with manager._scan_lock:
+        assert manager._recover_scan_one(False)
+    after = manager.catalog.record_for_path(song)
+    assert after["length"] == 240.0
+    assert after["points"]["end"] == 239.0
+    assert after["title"] == "Edited replacement"
+    assert (after["size"], after["fingerprint"]) == file_fingerprint(song)
+    assert after["fingerprint"] != before["fingerprint"]
+    assert not vectors_snapshot(manager.catalog)[0]
+    assert not queue.scan_pending(_path(song))
+
+
+def test_pending_tag_refresh_keeps_edits_before_local_decode(manager_factory, monkeypatch):
+    """ADR-0008-23. A tag estimate must not discard edits before the fallback measures length."""
+    from autodj.audio_meta import FileTags
+
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"original recording")
+    manager.catalog.put_entry(make_entry(song), points={"start": 0.0, "end": 180.0})
+    song.write_bytes(b"replacement recording")
+    queue = manager.analysis_queue
+    queue.defer_scan(_path(song), *file_fingerprint(song))
+    manager.catalog.set_points(song, {"intro": 150.0})
+    manager.catalog.retag(song, {"bpm": 133.0, "key": 7, "mode": 1})
+    monkeypatch.setattr("autodj.audio_meta.read_file_tags", lambda p: FileTags(length=120.0))
+    monkeypatch.setattr("autodj.library.analyze_basic", fake_basic)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *a: 1.0)
+    with manager._scan_lock:
+        assert manager._recover_scan_one(False)
+    after = manager.catalog.record_for_path(song)
+    assert after["points"]["intro"] == 150.0
+    assert (after["bpm"], after["key"], after["mode"]) == (133.0, 7, 1)
+
+
+@pytest.mark.parametrize("already_pending", [False, True])
+@pytest.mark.parametrize(
+    ("old_length", "tag_length", "silent"),
+    [
+        (180.0, 240.0, True),
+        (180.0, 120.0, True),
+        (180.0, 0.0, False),
+        (180.0, 183.6, False),
+        (50.0, 52.0, False),
+        (50.0, 52.1, True),
+    ],
+)
+def test_changed_pending_duration_controls_playability(
+    manager_factory, monkeypatch, already_pending, old_length, tag_length, silent
+):
+    """ADR-0008-16. Only a known duration outside tolerance silences a replacement."""
+    from autodj.audio_meta import FileTags
+
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"original recording")
+    entry = make_entry(song)
+    entry.length = old_length
+    manager.catalog.put_entry(entry, points={"start": 0.0, "end": old_length})
+    manager.catalog.set_intro_lift(song, 1.0)
+    set_vector(manager.catalog, song, np.ones(FEATURE_DIM, dtype=np.float32))
+    before = manager.catalog.record_for_path(song)
+    queue = manager.analysis_queue
+    queue.seen("worker", "Worker", scan_decode=True)
+    if already_pending:
+        queue.defer_scan(_path(song), *file_fingerprint(song))
+    song.write_bytes(b"replacement recording")
+    monkeypatch.setattr(
+        "autodj.audio_meta.read_file_tags", lambda path: FileTags(length=tag_length)
+    )
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    manager.scan()
+    after = manager.catalog.record_for_path(song)
+    assert queue.scan_pending(_path(song))
+    assert manager.entry_for_path(song).is_silent is silent
+    if silent:
+        assert after["length"] == tag_length
+        assert after["points"] == {}
+        assert not vectors_snapshot(manager.catalog)[0]
+    else:
+        assert after == before
+        assert vectors_snapshot(manager.catalog)[0]
+
+
+@pytest.mark.parametrize("recover", [False, True])
+def test_pending_decode_rewrite_discards_measurements(manager_factory, monkeypatch, recover):
+    """ADR-0008-19. A successful decode cannot publish measurements for replaced bytes."""
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"original recording")
+    manager.catalog.put_entry(make_entry(song), points=fake_basic(song)[1])
+    manager.catalog.set_intro_lift(song, 1.0)
+    set_vector(manager.catalog, song, np.ones(FEATURE_DIM, dtype=np.float32))
+    before = manager.catalog.record_for_path(song)
+    vectors = vectors_snapshot(manager.catalog)[1].copy()
+    song.write_bytes(b"replacement recording")
+    queue = manager.analysis_queue
+    now = [1000.0]
+    queue._now = lambda: now[0]
+    queue.defer_scan(_path(song), *file_fingerprint(song))
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+
+    def decode(path, **kwargs):
+        path.write_bytes(b"rewritten during decode")
+        return fake_basic(path, **kwargs)
+
+    monkeypatch.setattr("autodj.library.analyze_basic", decode)
+    assert not manager._read_track("music", song, False, recover_scan=recover)
+    assert manager.catalog.record_for_path(song) == before
+    np.testing.assert_array_equal(vectors_snapshot(manager.catalog)[1], vectors)
+    assert queue.scan_pending(_path(song))
+    assert queue.scan_identity(_path(song)) == file_fingerprint(song)
+    now[0] += 60
+    monkeypatch.setattr("autodj.library.analyze_basic", fake_basic)
+    assert manager._read_track("music", song, False, recover_scan=recover)
+    assert not queue.scan_pending(_path(song))
+    after = manager.catalog.record_for_path(song)
+    assert (after["size"], after["fingerprint"]) == file_fingerprint(song)
+
+
+def test_pending_decode_rewrites_back_off_and_exhaust_budget(abandoned_scan, monkeypatch, caplog):
+    """ADR-0008-11. Growing files cannot monopolize recovery or reset its retry budget."""
+    manager, queue, now, songs = abandoned_scan
+    now[0] += 121
+    decoded = []
+
+    def decode(path, **kwargs):
+        decoded.append(path)
+        if path == songs[0]:
+            path.write_bytes(b"growing recording " * len(decoded))
+        return fake_basic(path, **kwargs)
+
+    monkeypatch.setattr("autodj.library.analyze_basic", decode)
+    with manager._scan_lock:
+        assert manager._recover_scan_one(False)
+        assert queue.scan_identity(_path(songs[0])) == file_fingerprint(songs[0])
+        assert queue.abandoned_scans(worker_active=False) == [_path(songs[1])]
+        assert manager._recover_scan_one(False)
+        assert not manager._recover_scan_one(False)
+        assert decoded == songs
+        assert manager.catalog.record_for_path(songs[1])["energy"] > 0
+        for _ in range(2):
+            now[0] += 59
+            assert not manager._recover_scan_one(False)
+            now[0] += 1
+            assert manager._recover_scan_one(False)
+            assert not manager._recover_scan_one(False)
+        now[0] += 86400
+        assert not manager._recover_scan_one(False)
+    assert decoded == [songs[0], songs[1], songs[0], songs[0]]
+    assert queue.pending_scans() == {_path(songs[0])}
+    assert sum("Scan retries exhausted" in record.message for record in caplog.records) == 1
+
+
+@pytest.mark.parametrize("new_listing", [False, True])
+def test_retag_tag_only_pending_tracks_bytes_and_listing_origin(
+    manager_factory, monkeypatch, new_listing
+):
+    """ADR-0008-16. Pending tag edits preserve claim identity and retirement provenance."""
+    from autodj.audio_meta import FileTags
+    from autodj.stereo import UnplayableAudioError
+
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"original recording")
+    if not new_listing:
+        manager.catalog.put_entry(make_entry(song), points=fake_basic(song)[1])
+        song.write_bytes(b"replacement recording")
+    queue = manager.analysis_queue
+    queue.seen("worker", "Worker", scan_decode=True)
+    monkeypatch.setattr("autodj.audio_meta.read_file_tags", lambda path: FileTags(length=240.0))
+    manager.scan()
+    before = manager.catalog.record_for_path(song)
+    assert before["energy"] == 0 and not before["points"]
+    assert queue.scan_identity(_path(song)) == (before["size"], before["fingerprint"])
+    song.write_bytes(b"recording with edited tags")
+    assert manager.catalog.retag(song, {"title": "Edited"})
+    after = manager.catalog.record_for_path(song)
+    identity = file_fingerprint(song)
+    assert queue.scan_identity(_path(song)) == identity
+    assert (after["size"], after["fingerprint"]) == identity
+    assert queue.scan_created_listing(_path(song), *identity) is new_listing
+    queue.forget_worker("worker")
+    monkeypatch.setattr(
+        "autodj.library.analyze_basic", Mock(side_effect=UnplayableAudioError("invalid audio"))
+    )
+    with manager._scan_lock:
+        assert manager._recover_scan_one(False)
+    assert (manager.catalog.record_for_path(song) is None) is new_listing
+    assert queue.scan_pending(_path(song)) is not new_listing
+
+
+@pytest.mark.parametrize("reason", ["worker", "stop", "scan"])
+def test_recovery_yields_between_candidates(abandoned_scan, monkeypatch, reason):
+    """ADR-0008-09. Recovery yields its slot between songs when ownership changes."""
+    manager, queue, now, songs = abandoned_scan
+    now[0] += 121
+    decoded = []
+    scanned = []
+
+    def decode(path, **kwargs):
+        decoded.append(path)
+        if reason == "worker":
+            queue.seen("worker", "Worker", scan_decode=True)
+            record = manager.catalog.record_for_path(songs[1])
+            assert queue.claim(
+                "worker", [(record["path"], record["size"], record["fingerprint"])], 600
+            )
+            queue.release_path("worker", record["path"])
+            queue.handoff_scan(record["path"])
+        elif reason == "stop":
+            manager._stop.set()
+        else:
+            manager.start_scan()
+        return fake_basic(path, **kwargs)
+
+    monkeypatch.setattr("autodj.library.analyze_basic", decode)
+    monkeypatch.setattr(manager, "_scan", lambda *args: scanned.append(True))
+    tick_and_wait(manager)
+    assert decoded == [songs[0]]
+    assert queue.pending_scans() == {_path(songs[1])}
+    assert scanned == ([True] if reason == "scan" else [])
+    assert not manager._scan_lock.locked()
+
+
+@pytest.mark.parametrize("older", [False, True])
+@pytest.mark.parametrize("failure", ["ffmpeg", "timeout", "decoder", "analysis", "mixed"])
+def test_exhausted_scan_reports_failure_and_retires_only_new_listing(
+    abandoned_scan, monkeypatch, older, failure
+):
+    """ADR-0008-19. Exhausted non-access failures retire new listings, preserving history."""
+    from autodj.stereo import decode_error
+
+    manager, queue, now, songs = abandoned_scan
+    song = songs[0]
+    queue.cancel_scan(_path(songs[1]))
+    if older:
+        with queue._write() as db:
+            db.execute("UPDATE scan_pending SET new_listing=0")
+        manager.ledger.remember_play(song, 99.5)
+    before = manager.catalog.record_for_path(song)
+    failures = {
+        "ffmpeg": RuntimeError("FFmpeg is required to decode"),
+        "timeout": TimeoutError("decode timed out"),
+        "decoder": decode_error(song, "Decoder not found"),
+        "analysis": ValueError("analysis failed"),
+        "mixed": ValueError("analysis failed"),
+    }
+    monkeypatch.setattr("autodj.library.analyze_basic", Mock(side_effect=failures[failure]))
+    now[0] += 121
+    for attempt in range(3):
+        if failure == "mixed" and attempt:
+            monkeypatch.setattr(
+                "autodj.library.analyze_basic", Mock(side_effect=PermissionError("denied"))
+            )
+        manager._import_errors.clear()
+        tick_and_wait(manager)
+        assert any(song.name in error for error in manager.snapshot()["import"]["errors"])
+        if attempt < 2:
+            assert manager.catalog.record_for_path(song) == before
+        now[0] += 21601
+    if older:
+        assert manager.catalog.record_for_path(song) == before
+        assert manager.ledger.store.last_played()[_path(song)] == 99.5
+    else:
+        assert manager.catalog.record_for_path(song) is None
+        assert not queue.scan_pending(_path(song))
+    assert song.is_file()
+
+
+@pytest.mark.parametrize("worker_returns", [False, True])
+@pytest.mark.parametrize("failure", ["permission", "io", "missing", "resource"])
+def test_access_only_exhaustion_preserves_listing_and_next_scan_retries(
+    abandoned_scan, monkeypatch, failure, worker_returns
+):
+    """ADR-0008-19. Access-only exhaustion preserves the entry and permits a later scan."""
+    from autodj.stereo import decode_error
+
+    manager, queue, now, songs = abandoned_scan
+    song = songs[0]
+    queue.cancel_scan(_path(songs[1]))
+    before = manager.catalog.record_for_path(song)
+    error = {
+        "permission": PermissionError("denied"),
+        "io": decode_error(song, "Input/output error"),
+        "missing": FileNotFoundError("missing input"),
+        "resource": decode_error(song, "Resource temporarily unavailable"),
+    }[failure]
+    monkeypatch.setattr("autodj.library.analyze_basic", Mock(side_effect=error))
+    now[0] += 121
+    for _ in range(3):
+        tick_and_wait(manager)
+        now[0] += 21601
+    assert manager.catalog.record_for_path(song) == before
+    assert queue.scan_pending(_path(song))
+    monkeypatch.setattr("autodj.library.analyze_basic", fake_basic)
+    if worker_returns:
+        queue.seen("worker", "Worker", scan_decode=True)
+        other = manager.catalog.record_for_path(songs[1])
+        assert queue.claim("worker", [(other["path"], other["size"], other["fingerprint"])], 600)
+    manager.scan()
+    if worker_returns:
+        assert _path(song) in queue.claimable_scans(limit=10)
+        assert queue.claim("worker", [(before["path"], before["size"], before["fingerprint"])], 600)
+    else:
+        assert not queue.scan_pending(_path(song))
+        assert manager.catalog.record_for_path(song)["energy"] > 0
+
+
+@pytest.mark.parametrize("attempts", [1, 3])
+@pytest.mark.parametrize("expired", [False, True])
+def test_scan_without_worker_retries_pending_holds(abandoned_scan, attempts, expired):
+    """ADR-0008-19. A local scan must not silently skip deferred retry holds."""
+    manager, queue, now, songs = abandoned_scan
+    now[0] += 121
+    with queue._write() as db:
+        db.execute(
+            "UPDATE scan_pending SET attempts=?, retry_at=?",
+            (attempts, now[0] - 1 if expired else now[0] + 21600),
+        )
+    manager.scan()
+    assert not queue.pending_scans()
+    assert all(manager.catalog.record_for_path(song)["energy"] > 0 for song in songs)
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_exhausted_scan_preserves_disappeared_or_changed_file(abandoned_scan, monkeypatch, changed):
+    """ADR-0008-19. Exhaustion cannot retire a listing after its input changes or disappears."""
+    manager, queue, now, songs = abandoned_scan
+    song = songs[0]
+    queue.cancel_scan(_path(songs[1]))
+    before = manager.catalog.record_for_path(song)
+    with queue._write() as db:
+        db.execute("UPDATE scan_pending SET attempts=2")
+
+    def fail(path, **kwargs):
+        if changed:
+            path.write_bytes(b"changed audio")
+        else:
+            path.unlink()
+        raise ValueError("analysis failed")
+
+    monkeypatch.setattr("autodj.library.analyze_basic", fail)
+    now[0] += 121
+    tick_and_wait(manager)
+    assert manager.catalog.record_for_path(song) == before
+    assert queue.scan_pending(_path(song))
+
+
+@pytest.mark.parametrize("state", ["exhausted", "backoff", "held", "busy"])
+def test_tick_starts_no_recovery_without_recoverable_scan(abandoned_scan, monkeypatch, state):
+    """ADR-0008-08. Ineligible pending rows never take the scan slot across idle ticks."""
+    from autodj.analysis_queue import SCAN_MAX_ATTEMPTS
+
+    manager, queue, now, songs = abandoned_scan
+    if state == "exhausted":
+        with queue._write() as db:
+            db.execute("UPDATE scan_pending SET attempts=?", (SCAN_MAX_ATTEMPTS,))
+    elif state == "backoff":
+        with queue._write() as db:
+            db.execute("UPDATE scan_pending SET retry_at=?", (now[0] + 3600,))
+    else:
+        for song in songs if state == "held" else songs[:1]:
+            record = manager.catalog.record_for_path(song)
+            queue.claim("worker", [(record["path"], record["size"], record["fingerprint"])], 3600)
+    now[0] += 601
+    if state == "busy":
+        queue.seen("worker", "Worker", scan_decode=True)
+        queue.release_path("worker", _path(songs[0]))
+        record = manager.catalog.record_for_path(songs[0])
+        queue.claim("worker", [(record["path"], record["size"], record["fingerprint"])], 3600)
+    acquire = Mock(wraps=manager._scan_lock)
+    monkeypatch.setattr(manager, "_scan_lock", acquire)
+    start = Mock(side_effect=AssertionError("unexpected recovery thread"))
+    monkeypatch.setattr("autodj.library.threading.Thread.start", start)
+    cues = Mock()
+    monkeypatch.setattr(manager, "_refresh_scan_cues", cues)
+    for _ in range(20):
+        manager.tick()
+        assert not manager._scan_lock.locked()
+    monkeypatch.setattr(manager, "_scan_lock", acquire._mock_wraps)
+    start.assert_not_called()
+    acquire.acquire.assert_not_called()
+    cues.assert_not_called()
+
+
+def test_tick_checks_auto_rescan_before_recovery(abandoned_scan, monkeypatch):
+    manager, _queue, now, _songs = abandoned_scan
+    now[0] += 121
+    manager._auto_rescan_minutes = 1
+    manager._last_scan_end = manager._clock() - 61
+    events = []
+    monkeypatch.setattr(manager, "start_scan", lambda **kwargs: events.append("rescan"))
+    monkeypatch.setattr(manager, "_take_abandoned_scan", lambda: events.append("recovery"))
+    manager.tick()
+    assert events == ["rescan", "recovery"]
+
+
+def test_scan_recovers_abandoned_work_between_files(abandoned_scan, monkeypatch):
+    """ADR-0008-09. A long scan recovers earlier deferrals before its final file."""
+    manager, queue, now, songs = abandoned_scan
+    clock = [manager._clock()]
+    manager._clock = lambda: clock[0]
+    read = manager._read_track
+    seen = []
+
+    def visit(kind, path, override_tags, **kwargs):
+        if not kwargs.get("recover_scan"):
+            seen.append(path)
+            if len(seen) == 2:
+                assert manager.catalog.record_for_path(songs[0])["energy"] > 0
+        result = read(kind, path, override_tags, **kwargs)
+        if not kwargs.get("recover_scan") and len(seen) == 1:
+            now[0] += 121
+            clock[0] += 6
+        return result
+
+    monkeypatch.setattr(manager, "_read_track", visit)
+    manager.scan()
+    assert not queue.pending_scans()
+
+
+def test_tick_does_not_wait_for_scan_decode(abandoned_scan, monkeypatch):
+    """ADR-0008-12. Library maintenance continues while recovery decodes."""
+    manager, _queue, now, _songs = abandoned_scan
+    now[0] += 121
+    entered = threading.Event()
+    release = threading.Event()
+
+    def decode(path, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return fake_basic(path, **kwargs)
+
+    monkeypatch.setattr("autodj.library.analyze_basic", decode)
+    caller = threading.Thread(target=manager.tick)
+    caller.start()
+    try:
+        assert entered.wait(5)
+        caller.join(timeout=1)
+        assert not caller.is_alive()
+        manager.tick()
+    finally:
+        release.set()
+        caller.join(timeout=5)
+        if manager._thread is not None:
+            manager._thread.join(timeout=5)
+
+
+def test_tick_survives_scan_queue_error(manager_factory, monkeypatch, caplog):
+    """ADR-0008-12. Queue failures cannot end periodic library maintenance."""
+    import sqlite3
+
+    manager = manager_factory()
+    scheduled = []
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: scheduled.append(True))
+    monkeypatch.setattr(
+        manager.analysis_queue,
+        "abandoned_scans",
+        Mock(side_effect=sqlite3.OperationalError("database is locked")),
+    )
+    with caplog.at_level(logging.WARNING):
+        manager.tick()
+        manager.tick()
+    assert scheduled == [True, True]
+    assert sum("Scan recovery unavailable" in r.message for r in caplog.records) == 1
+
+
+def test_deferred_scan_loudness_failure_is_nonfatal(abandoned_scan, monkeypatch):
+    manager, queue, now, songs = abandoned_scan
+    now[0] += 121
+    monkeypatch.setattr("autodj.library.analyze_loudness", Mock(side_effect=ValueError("silent")))
+    tick_and_wait(manager)
+    assert not queue.scan_pending(_path(songs[0]))
+    assert manager.catalog.record_for_path(songs[0])["points"]["end"] == 179.0
+
+
+def test_scan_removes_corrupt_deferred_file(manager_factory, monkeypatch):
+    """ADR-0008-19. A real decoder rejection retires only the new tag listing and scan."""
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "broken.flac"
+    song.write_bytes(b"not an audio file")
+    queue = manager.analysis_queue
+    now = [1000.0]
+    queue._now = lambda: now[0]
+    queue.seen("worker", "Worker", scan_decode=True)
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: False)
+    manager.scan()
+    assert manager.catalog.record_for_path(song) is not None
+    assert queue.scan_pending(_path(song))
+    now[0] += 121
+    tick_and_wait(manager)
+    assert manager.catalog.record_for_path(song) is None
+    assert not queue.scan_pending(_path(song))
+    assert song.read_bytes() == b"not an audio file"
+
+
+@pytest.mark.parametrize("failure", ["missing", "open", "stat", "unknown"])
+@pytest.mark.parametrize("background", [True, False])
+def test_pending_scan_preserves_unreadable_file(abandoned_scan, monkeypatch, failure, background):
+    """ADR-0008-19. Unavailable bytes retain catalog identity and receive retry backoff."""
+    manager, queue, now, songs = abandoned_scan
+    from autodj.processing import analyze_basic
+
+    monkeypatch.setattr("autodj.library.analyze_basic", analyze_basic)
+    song = songs[0]
+    before = manager.catalog.record_for_path(song)
+    queue.cancel_scan(_path(songs[1]))
+    if failure == "missing":
+        song.rename(song.with_suffix(".offline"))
+    elif failure in {"open", "stat"}:
+        original = getattr(Path, failure)
+
+        def unavailable(path, *args, **kwargs):
+            if _path(path) == _path(song):
+                raise OSError("file unavailable")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, failure, unavailable)
+    else:
+        monkeypatch.setattr("autodj.library.file_fingerprint", lambda path: (0, ""))
+    refresh = Mock(wraps=queue.refresh_scan)
+    reserve = Mock(wraps=queue.claim_scan)
+    monkeypatch.setattr(queue, "refresh_scan", refresh)
+    monkeypatch.setattr(queue, "claim_scan", reserve)
+    now[0] += 121
+    for _ in range(2):
+        if background:
+            tick_and_wait(manager)
+        else:
+            manager._read_track("music", song, False)
+    assert manager.catalog.record_for_path(song) == before
+    assert queue._read(
+        "SELECT size,fingerprint,retry_at FROM scan_pending WHERE path=?", (_path(song),)
+    ) == [(before["size"], before["fingerprint"], now[0] + 21600)]
+    refresh.assert_not_called()
+    reserve.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [OSError("unavailable"), RuntimeError("decoder unavailable"), ValueError("analysis failed")],
+)
+def test_pending_scan_keeps_transient_decode_failures(abandoned_scan, monkeypatch, failure):
+    """ADR-0008-19. An arbitrary analysis exception is not proof of corrupt audio."""
+    manager, queue, now, songs = abandoned_scan
+    before = manager.catalog.record_for_path(songs[0])
+    monkeypatch.setattr("autodj.library.analyze_basic", Mock(side_effect=failure))
+    now[0] += 121
+    tick_and_wait(manager)
+    assert manager.catalog.record_for_path(songs[0]) == before
+    assert queue._read(
+        "SELECT attempts,retry_at FROM scan_pending WHERE path=?", (_path(songs[0]),)
+    ) == [(1, now[0] + 21600)]
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_pending_scan_preserves_file_changed_during_decode(abandoned_scan, monkeypatch, changed):
+    """ADR-0008-19. Decoder rejection cannot delete a disappeared or replaced input."""
+    from autodj.stereo import UnplayableAudioError
+
+    manager, queue, now, songs = abandoned_scan
+    before = manager.catalog.record_for_path(songs[0])
+
+    def reject(path, **kwargs):
+        if changed:
+            path.write_bytes(b"replacement")
+        else:
+            path.unlink()
+        raise UnplayableAudioError("invalid audio")
+
+    monkeypatch.setattr("autodj.library.analyze_basic", reject)
+    now[0] += 121
+    tick_and_wait(manager)
+    assert manager.catalog.record_for_path(songs[0]) == before
+    assert queue.scan_pending(_path(songs[0]))
+
+
+def test_pending_scan_preserves_decoder_io_failure(abandoned_scan, monkeypatch):
+    """ADR-0008-19. FFmpeg I/O errors do not prove readable bytes are corrupt."""
+    from autodj.processing import read_windows
+
+    manager, queue, now, songs = abandoned_scan
+    before = manager.catalog.record_for_path(songs[0])
+    monkeypatch.setattr("autodj.processing._pipe_ffmpeg", lambda *args: (1, b"Input/output error"))
+    monkeypatch.setattr("autodj.library.analyze_basic", lambda path, **kwargs: read_windows(path))
+    now[0] += 121
+    tick_and_wait(manager)
+    assert manager.catalog.record_for_path(songs[0]) == before
+    assert queue.scan_pending(_path(songs[0]))
+
+
+def test_pending_scan_preserves_older_corrupt_song_and_history(manager_factory, monkeypatch):
+    """ADR-0008-19. Missing cues never make an older song disposable."""
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "older.flac"
+    song.write_bytes(b"not audio")
+    manager.catalog.put_entry(make_entry(song))
+    manager.ledger.remember_play(song, 99.5)
+    before = manager.catalog.record_for_path(song)
+    queue = manager.analysis_queue
+    now = [1000.0]
+    queue._now = lambda: now[0]
+    queue.seen("worker", "Worker", scan_decode=True)
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: False)
+    manager.scan()
+    now[0] += 121
+    tick_and_wait(manager)
+    assert manager.catalog.record_for_path(song) == before
+    assert manager.ledger.store.last_played()[_path(song)] == 99.5
+    assert queue.scan_pending(_path(song))
+
+
+def test_idle_recovery_checks_are_throttled_outside_library_lock(abandoned_scan, monkeypatch):
+    """ADR-0008-20. Repeated idle ticks cannot query the backlog under the library lock."""
+    manager, queue, _now, _songs = abandoned_scan
+    clock = [0.0]
+    manager._clock = lambda: clock[0]
+    calls = []
+    read = queue.abandoned_scans
+
+    def checked(**kwargs):
+        acquired = []
+
+        def probe():
+            if manager._lock.acquire(timeout=0.2):
+                acquired.append(True)
+                manager._lock.release()
+
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join(timeout=1)
+        assert acquired == [True]
+        calls.append(clock[0])
+        return read(**kwargs)
+
+    monkeypatch.setattr(queue, "abandoned_scans", checked)
+    for second in range(0, 62, 2):
+        clock[0] = float(second)
+        manager.tick()
+    assert calls == [0.0, 30.0, 60.0]
+
+
+def test_scan_recovery_repairs_partial_points_after_timestamp_change(abandoned_scan):
+    manager, queue, now, songs = abandoned_scan
+    song = songs[0]
+    manager.catalog.set_points(song, {"intro": 0.5}, source="analysis")
+    stat = song.stat()
+    os.utime(song, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    now[0] += 121
+    tick_and_wait(manager)
+    assert not queue.scan_pending(_path(song))
+    record = manager.catalog.record_for_path(song)
+    assert record["points"]["end"] == 179.0
+    assert record["energy"] > 0
+
+
+def test_background_scan_queue_error_releases_slot_and_recovers(
+    abandoned_scan, monkeypatch, caplog
+):
+    import sqlite3
+
+    manager, queue, now, _songs = abandoned_scan
+    now[0] += 121
+    read = queue.abandoned_scans
+    monkeypatch.setattr(
+        queue, "abandoned_scans", Mock(side_effect=sqlite3.OperationalError("locked"))
+    )
+    with caplog.at_level(logging.WARNING):
+        tick_and_wait(manager)
+        tick_and_wait(manager)
+    assert not manager._scan_lock.locked()
+    assert sum("Scan recovery unavailable" in r.message for r in caplog.records) == 1
+    monkeypatch.setattr(queue, "abandoned_scans", read)
+    now[0] += 30
+    tick_and_wait(manager)
+    assert not queue.pending_scans()
+
+
+def test_scan_retry_budget_logs_once_and_preserves_vector_queue(
+    abandoned_scan, monkeypatch, caplog
+):
+    """ADR-0008-11. Repeated storage failure exhausts a persistent scan-only budget."""
+    from autodj.analysis_queue import FAILED_RETRY_SECONDS, SERVER_HOLDER
+
+    manager, queue, now, songs = abandoned_scan
+    queue.cancel_scan(_path(songs[1]))
+    now[0] += 121
+    # A transient storage failure differs from an unplayable input file.
+    monkeypatch.setattr(
+        manager.catalog, "set_intro_lift", Mock(side_effect=RuntimeError("disk full"))
+    )
+    with caplog.at_level(logging.WARNING):
+        for _ in range(5):
+            tick_and_wait(manager)
+            now[0] += FAILED_RETRY_SECONDS + 1
+    assert sum("Scan retries exhausted" in r.message for r in caplog.records) == 1
+    assert _path(songs[0]) in caplog.text
+    record = manager.catalog.record_for_path(songs[0])
+    assert record is not None
+    assert queue.claim(
+        SERVER_HOLDER, [(record["path"], record["size"], record["fingerprint"])], 600
+    )
+
+
+def test_scan_dj_storage_never_imports_on_request_path(manager_factory, monkeypatch):
+    from autodj.dj_meta import DjMeta, close_cache
+
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "song.flac"
+    sf.write(song, np.ones((100, 2)) * 0.1, 22050)
+    monkeypatch.setattr(
+        "autodj.dj_cues_import.auto_import_cues", Mock(side_effect=AssertionError("request import"))
+    )
+    try:
+        manager.store_scan_dj(song, DjMeta(analysed=True), force=True)
+        assert manager._dj_cache().get(str(song)).analysed
+    finally:
+        close_cache()
+
+
+def test_scan_external_cue_failure_does_not_stop_discovery(manager_factory, monkeypatch, caplog):
+    manager = manager_factory()
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    monkeypatch.setattr(manager, "_dj_backlog", lambda: None)
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"audio")
+    monkeypatch.setattr("autodj.library.analyze_basic", fake_basic)
+    monkeypatch.setattr("autodj.library.load_for_analysis", lambda path: np.ones(22050))
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+    monkeypatch.setattr(
+        "autodj.dj_cues_import.auto_import_cues", Mock(side_effect=OSError("unavailable"))
+    )
+    with caplog.at_level(logging.WARNING):
+        manager.scan()
+        manager.scan()
+    assert manager._state["phase"] == "complete"
+    assert sum("External cue import unavailable" in r.message for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+def test_external_cues_load_once_per_long_scan_or_drain(abandoned_scan, monkeypatch, recovery):
+    """ADR-0008-22. Slow songs do not trigger repeated external library parsing."""
+    from autodj.dj_meta import DjMeta
+
+    manager, queue, now, songs = abandoned_scan
+    now[0] += 121
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    imported = Mock(return_value={})
+    monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", imported)
+
+    def decode(path):
+        now[0] += 61
+        return np.ones(22050)
+
+    monkeypatch.setattr("autodj.library.load_for_analysis", decode)
+    monkeypatch.setattr(
+        "autodj.dj_meta.analyse_decoded", lambda *args, **kwargs: DjMeta(analysed=True)
+    )
+    if recovery:
+        tick_and_wait(manager)
+    else:
+        manager.scan()
+    assert not queue.pending_scans()
+    assert all(manager._dj_cache().get(str(song)).analysed for song in songs)
+    imported.assert_called_once()
+    # A later pass sees edits to an external library when it next needs DJ analysis.
+    new_song = manager.cfg.library.music_dir / "later.flac"
+    new_song.write_bytes(songs[0].read_bytes())
+    manager.scan()
+    assert imported.call_count == 2
+
+
+def test_scan_without_dj_work_does_not_parse_external_cues(manager_factory, monkeypatch):
+    manager = manager_factory()
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    imported = Mock(return_value={})
+    monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", imported)
+    manager.scan()
+    manager.scan()
+    imported.assert_not_called()
+
+
+def test_remote_cue_refresh_is_bounded_and_runs_off_request_thread(manager_factory, monkeypatch):
+    """ADR-0008-22. Remote results request bounded cue refresh on the scan owner."""
+    from autodj.dj_meta import DjMeta
+
+    manager = manager_factory()
+    now = [1000.0]
+    manager._clock = lambda: now[0]
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: False)
+    imported_on = []
+
+    def import_cues(**kwargs):
+        assert manager._scan_lock.locked()
+        imported_on.append(threading.current_thread())
+        return {}
+
+    monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", import_cues)
+    song = manager.cfg.library.music_dir / "remote.flac"
+    manager.store_scan_dj(song, DjMeta(analysed=True), force=True)
+    assert not imported_on
+    tick_and_wait(manager)
+    assert len(imported_on) == 1
+    assert imported_on[0] is not threading.current_thread()
+    manager.store_scan_dj(song, DjMeta(analysed=True), force=True)
+    now[0] += 30
+    tick_and_wait(manager)
+    assert len(imported_on) == 1
+    now[0] += 30
+    tick_and_wait(manager)
+    assert len(imported_on) == 2
+    now[0] += 61
+    tick_and_wait(manager)
+    assert len(imported_on) == 2
+
+
+@pytest.mark.parametrize("capable", [None, False, True])
+def test_scan_worker_capability_controls_music_decoding(manager_factory, monkeypatch, capable):
+    """ADR-0008-06. Only a capable worker takes over scan decoding."""
+    manager = manager_factory(processing="smooth")
+    song = manager.cfg.library.music_dir / "new.flac"
+    sf.write(song, np.ones((22050, 2)) * 0.1, 22050)
+    if capable is not None:
+        manager.analysis_queue.seen("worker", "Worker", scan_decode=capable)
+    basic = Mock(side_effect=fake_basic)
+    loudness = Mock(side_effect=fake_loudness)
+    monkeypatch.setattr("autodj.library.analyze_basic", basic)
+    monkeypatch.setattr("autodj.library.analyze_loudness", loudness)
+    monkeypatch.setattr("autodj.library.load_for_analysis", Mock(side_effect=AssertionError))
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    intro = Mock(return_value=1.0)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", intro)
+    manager.scan()
+    record = manager.catalog.record_for_path(song)
+    assert record is not None
+    assert basic.call_count == loudness.call_count == intro.call_count == int(not capable)
+    assert (record["energy"] == 0) == bool(capable)
+
+
+@pytest.mark.parametrize("outcome", ["claimed", "failed", "stale", "disconnected"])
+def test_scan_expired_worker_lease_falls_back(manager_factory, monkeypatch, outcome):
+    """ADR-0008-06. Expiry allows a later scan to finish deferred music."""
+    from autodj.analysis_queue import (
+        FAILED_RETRY_SECONDS,
+        STALE_RETRY_SECONDS,
+        WORKER_LEASE_SECONDS,
+    )
+
+    manager = manager_factory(processing="smooth")
+    now = [1000.0]
+    queue = manager.analysis_queue
+    queue._now = lambda: now[0]
+    queue.seen("worker", "Worker", scan_decode=True)
+    song = manager.cfg.library.music_dir / "new.flac"
+    sf.write(song, np.ones((22050, 2)) * 0.1, 22050)
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    manager.scan()
+    record = manager.catalog.record_for_path(song)
+    if outcome == "disconnected":
+        now[0] += 121
+    else:
+        lease = queue.claim(
+            "worker",
+            [(record["path"], record["size"], record["fingerprint"])],
+            WORKER_LEASE_SECONDS,
+        )[0]
+        if outcome != "claimed":
+            queue.finish(lease, outcome)
+        now[0] += {
+            "claimed": WORKER_LEASE_SECONDS,
+            "failed": FAILED_RETRY_SECONDS,
+            "stale": STALE_RETRY_SECONDS,
+        }[outcome] + 1
+        # Even another connected worker must not postpone this song indefinitely.
+        queue.seen("other", "Worker", scan_decode=True)
+    basic = Mock(side_effect=fake_basic)
+    monkeypatch.setattr("autodj.library.analyze_basic", basic)
+    monkeypatch.setattr("autodj.library.analyze_loudness", fake_loudness)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+    manager.scan()
+    assert basic.call_count == 1
+    record = manager.catalog.record_for_path(song)
+    assert record["energy"] > 0
+    assert record["points"]["end"] == 179.0
+    assert record["loudness"]
+
+
+def test_scan_defers_changed_music_but_still_decodes_liners(manager_factory, monkeypatch, tmp_path):
+    liners = tmp_path / "liners"
+    liners.mkdir()
+    manager = manager_factory(liners=liners, processing="smooth")
+    song = manager.cfg.library.music_dir / "changed.flac"
+    liner = liners / "liner.flac"
+    sf.write(song, np.ones((22050, 2)) * 0.1, 22050)
+    sf.write(liner, np.ones((22050, 2)) * 0.1, 22050)
+    entry = make_entry(song)
+    entry.length = 1.0
+    manager.catalog.put_entry(entry, points={"start": 0.0, "end": 1.0})
+    sf.write(song, np.ones((44100, 2)) * 0.2, 22050)
+    manager.analysis_queue.seen("worker", "Worker", scan_decode=True)
+    basic = Mock(side_effect=fake_basic)
+    loudness = Mock(side_effect=fake_loudness)
+    monkeypatch.setattr("autodj.library.analyze_basic", basic)
+    monkeypatch.setattr("autodj.library.analyze_loudness", loudness)
+    manager.scan()
+    assert [call.args[0] for call in basic.call_args_list] == [liner]
+    assert [call.args[0] for call in loudness.call_args_list] == [liner]
+    record = manager.catalog.record_for_path(song)
+    assert record["energy"] == 0.25
+    assert record["points"] == {"start": 0.0, "end": 1.0}
+    assert record["length"] == 1.0
+
+
+def test_scan_adapts_when_worker_connects_after_tag_discovery(manager_factory, monkeypatch):
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "new.flac"
+    sf.write(song, np.ones((22050, 2)) * 0.1, 22050)
+    add = manager._add_from_tags
+    now = [0.0]
+    manager._clock = lambda: now[0]
+
+    def connect_after_tags(path, **kwargs):
+        result = add(path, **kwargs)
+        manager.analysis_queue.seen("worker", "Worker", scan_decode=True)
+        now[0] += 6
+        return result
+
+    monkeypatch.setattr(manager, "_add_from_tags", connect_after_tags)
+    monkeypatch.setattr("autodj.library.analyze_basic", Mock(side_effect=AssertionError("decoded")))
+    manager.scan()
+    assert manager.catalog.record_for_path(song)["energy"] == 0
+    assert manager.analysis_queue.scan_pending(_path(song))
+
+
+def test_scan_marks_new_worker_song_pending_before_publishing_tags(manager_factory, monkeypatch):
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "new.flac"
+    sf.write(song, np.ones((100, 2)) * 0.1, 22050)
+    queue = manager.analysis_queue
+    queue.seen("worker", "Worker", scan_decode=True)
+    add = manager._add_from_tags
+
+    def publish(path, **kwargs):
+        assert queue.scan_pending(_path(path))
+        return add(path, **kwargs)
+
+    monkeypatch.setattr(manager, "_add_from_tags", publish)
+    manager.scan()
+    assert queue.pending_scans() == {_path(song)}
+
+
+def test_scan_relists_retagged_pending_song_while_worker_is_busy(abandoned_scan):
+    """ADR-0008-16. Retagged pending music remains claimable during a worker backlog."""
+    manager, queue, _now, songs = abandoned_scan
+    record = manager.catalog.record_for_path(songs[1])
+    queue.claim("worker", [(record["path"], record["size"], record["fingerprint"])], 600)
+    tags = FLAC(songs[0])
+    tags["title"] = "Updated title"
+    tags.save()
+    manager.scan()
+    record = manager.catalog.record_for_path(songs[0])
+    assert (record["size"], record["fingerprint"]) == file_fingerprint(songs[0])
+    assert record["title"] == "Updated title"
+    assert record["energy"] == 0
+    assert queue.scan_pending(record["path"])
+
+
+@pytest.fixture
+def abandoned_scan(manager_factory, monkeypatch):
+    manager = manager_factory(processing="smooth")
+    now = [1000.0]
+    manager._clock = lambda: now[0]
+    queue = manager.analysis_queue
+    queue._now = lambda: now[0]
+    queue.seen("worker", "Worker", scan_decode=True)
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: False)
+    monkeypatch.setattr("autodj.library.analyze_basic", fake_basic)
+    monkeypatch.setattr("autodj.library.analyze_loudness", fake_loudness)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+    songs = [manager.cfg.library.music_dir / f"pending-{i}.flac" for i in range(2)]
+    for song in songs:
+        sf.write(song, np.ones((22050, 2)) * 0.1, 22050)
+    manager.scan()
+    assert len(queue.pending_scans()) == 2
+    return manager, queue, now, songs
+
+
+@pytest.mark.parametrize("outcome", ["disconnected", "expired", "failed", "unclaimed"])
+def test_tick_decodes_abandoned_scan_without_rescan(abandoned_scan, outcome, caplog):
+    """ADR-0008-06. Pending scans recover without another discovery pass."""
+    from autodj.analysis_queue import WORKER_ACTIVE_SECONDS, WORKER_LEASE_SECONDS
+
+    manager, queue, now, songs = abandoned_scan
+    if outcome in {"expired", "failed"}:
+        record = manager.catalog.record_for_path(songs[0])
+        lease = queue.claim(
+            "worker",
+            [(record["path"], record["size"], record["fingerprint"])],
+            WORKER_LEASE_SECONDS,
+        )[0]
+        if outcome == "failed":
+            queue.finish(lease, "failed")
+    now[0] += (
+        WORKER_LEASE_SECONDS if outcome in {"expired", "unclaimed"} else WORKER_ACTIVE_SECONDS
+    ) + 1
+    generation = manager._scan_generation
+    with caplog.at_level(logging.INFO, logger="autodj.library"):
+        tick_and_wait(manager)
+        now[0] += 30
+        tick_and_wait(manager)
+        now[0] += 30
+        tick_and_wait(manager)
+    assert queue.pending_scans() == set()
+    assert manager._scan_generation == generation
+    for song in songs:
+        record = manager.catalog.record_for_path(song)
+        assert record["energy"] > 0
+        assert record["points"]["end"] == 179.0
+        assert record["loudness"]
+        assert record["intro_lift_db"] == 1.0
+    messages = [record.message for record in caplog.records if "abandoned scan" in record.message]
+    assert len(messages) == 2
+    assert "2" in messages[0]
+
+
+def test_tick_scan_fallback_yields_to_reconnected_worker(abandoned_scan, monkeypatch):
+    """ADR-0008-09. Ordinary pending songs return to a reconnected worker."""
+    manager, queue, now, _songs = abandoned_scan
+
+    def reconnect(path, **kwargs):
+        queue.seen("worker", "Worker", scan_decode=True)
+        return fake_basic(path, **kwargs)
+
+    monkeypatch.setattr("autodj.library.analyze_basic", reconnect)
+    now[0] += 121
+    tick_and_wait(manager)
+    assert len(queue.pending_scans()) == 1
+    queue.seen("worker", "Worker", scan_decode=True)
+    now[0] += 30
+    tick_and_wait(manager)
+    assert len(queue.pending_scans()) == 1
+
+
+def test_tick_scan_fallback_respects_scan_lock_and_live_lease(abandoned_scan):
+    """ADR-0008-09. Scans and live claims exclude background recovery."""
+    from autodj.analysis_queue import WORKER_LEASE_SECONDS
+
+    manager, queue, now, songs = abandoned_scan
+    record = manager.catalog.record_for_path(songs[0])
+    queue.claim(
+        "worker",
+        [(record["path"], record["size"], record["fingerprint"])],
+        WORKER_LEASE_SECONDS,
+    )
+    now[0] += 121
+    with manager._scan_lock:
+        tick_and_wait(manager)
+    assert len(queue.pending_scans()) == 2
+    tick_and_wait(manager)
+    tick_and_wait(manager)
+    assert queue.pending_scans() == {_path(songs[0])}
+
+
+@pytest.mark.parametrize("outcome", ["failed", "expired", "unclaimed"])
+def test_tick_scan_recovers_abandoned_song_despite_worker_heartbeats(abandoned_scan, outcome):
+    from autodj.analysis_queue import WORKER_LEASE_SECONDS
+
+    manager, queue, now, songs = abandoned_scan
+    if outcome != "unclaimed":
+        record = manager.catalog.record_for_path(songs[0])
+        lease = queue.claim(
+            "worker",
+            [(record["path"], record["size"], record["fingerprint"])],
+            WORKER_LEASE_SECONDS,
+        )[0]
+        if outcome == "failed":
+            queue.finish(lease, "failed")
+    if outcome != "failed":
+        now[0] += WORKER_LEASE_SECONDS + 1
+    queue.seen("worker", "Worker", scan_decode=True)
+    tick_and_wait(manager)
+    assert len(queue.pending_scans()) == (1 if outcome == "failed" else 0)
+    assert manager.catalog.record_for_path(songs[0])["energy"] > 0
+
+
+def test_tick_scan_holds_server_lease_and_yields_to_queued_scan(abandoned_scan, monkeypatch):
+
+    manager, queue, now, _songs = abandoned_scan
+    now[0] += 121
+    scanned = []
+
+    def decode(path, **kwargs):
+        assert manager._scan_lock.locked()
+        record = manager.catalog.record_for_path(path)
+        assert (
+            queue.claim("worker", [(record["path"], record["size"], record["fingerprint"])], 600)
+            == []
+        )
+        assert queue._read("SELECT attempts FROM scan_pending WHERE path=?", (_path(path),)) == [
+            (1,)
+        ]
+        manager.start_scan()
+        return fake_basic(path, **kwargs)
+
+    monkeypatch.setattr("autodj.library.analyze_basic", decode)
+    monkeypatch.setattr(manager, "_scan", lambda *args: scanned.append(True))
+    tick_and_wait(manager)
+    manager._thread.join(timeout=5)
+    assert scanned == [True]
+    assert not manager._thread.is_alive()
+
+
+def test_tick_scan_local_failure_does_not_retry_each_tick(abandoned_scan, monkeypatch):
+    manager, queue, now, _songs = abandoned_scan
+    now[0] += 121
+    decode = Mock(side_effect=RuntimeError("unreadable audio"))
+    monkeypatch.setattr("autodj.library.analyze_basic", decode)
+    for _ in range(5):
+        tick_and_wait(manager)
+        now[0] += 30
+    assert decode.call_count == 2
+    assert len(queue.pending_scans()) == 2
+    assert len(manager.catalog.all_entries("music")) == 2
+
+
+def test_tick_scan_decodes_pending_song_after_timestamp_change(abandoned_scan):
+    manager, queue, now, songs = abandoned_scan
+    now[0] += 121
+    song = songs[0]
+    stat = song.stat()
+    os.utime(song, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    tick_and_wait(manager)
+    assert not queue.scan_pending(_path(song))
+    record = manager.catalog.record_for_path(song)
+    assert record["energy"] > 0
+    assert record["points"]["end"] == 179.0
+
+
+@pytest.mark.parametrize("measured", [False, True])
+def test_tick_scan_uses_local_dj_path(abandoned_scan, monkeypatch, measured):
+    from autodj.dj_meta import DjMeta, close_cache
+
+    manager, _queue, now, songs = abandoned_scan
+    now[0] += 121
+    if measured:
+        # A remote result can store basic measurements before DJ storage fails.
+        entry, points = fake_basic(songs[0])
+        manager.catalog.put_entry(entry, points=points)
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    monkeypatch.setattr("autodj.library.load_for_analysis", lambda path: np.zeros(22050))
+    monkeypatch.setattr("autodj.dj_meta.analyse_audio", lambda *a, **kw: DjMeta(analysed=True))
+    imports = Mock(return_value={})
+    monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", imports)
+    try:
+        tick_and_wait(manager)
+        now[0] += 30
+        tick_and_wait(manager)
+        assert manager._dj_cache().get(str(songs[0])).analysed
+        assert manager._dj_cache().get(str(songs[1])).analysed
+        assert imports.call_count == 1
+    finally:
+        close_cache()
+
+
+def test_empty_scan_fallback_uses_bounded_reads_without_decode(manager_factory, monkeypatch):
+    """ADR-0008-08. Empty recovery reads worker progress and candidates without writes."""
+    manager = manager_factory()
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: False)
+    queue = manager.analysis_queue
+    read = Mock(wraps=queue._read)
+    write = Mock(wraps=queue._write)
+    decode = Mock(side_effect=AssertionError("unexpected decode"))
+    monkeypatch.setattr(queue, "_read", read)
+    monkeypatch.setattr(queue, "_write", write)
+    monkeypatch.setattr("autodj.library.analyze_basic", decode)
+    manager.tick()
+    assert read.call_count == 2
+    write.assert_not_called()
+    decode.assert_not_called()
+
+
+def test_unchanged_scan_has_no_per_song_queue_work(manager_factory, monkeypatch):
+    """ADR-0008-08. Unchanged music and liners add no per-song queue work."""
+    manager = manager_factory()
+    queue = manager.analysis_queue
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr("autodj.library.analyze_basic", fake_basic)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+    for i in range(40):
+        song = manager.cfg.library.music_dir / f"unchanged-{i}.flac"
+        sf.write(song, np.ones((100, 2)) * 0.1, 22050)
+    liner = manager.cfg.index.stations_dir / "default" / "liners" / "liner.flac"
+    sf.write(liner, np.ones((100, 2)) * 0.1, 22050)
+    manager.scan()
+    queue.seen("worker", "Worker", scan_decode=True)
+    read = Mock(wraps=queue._read)
+    write = Mock(wraps=queue._write)
+    monkeypatch.setattr(queue, "_read", read)
+    monkeypatch.setattr(queue, "_write", write)
+    manager.scan()
+    write.assert_not_called()
+    assert read.call_count <= 2  # Pending paths and capability, once for this pass.
 
 
 def fake_loudness(path: Path, kind: str = "music") -> dict:
@@ -756,6 +2319,81 @@ def test_confirmed_move_preserves_points_loudness_vector_and_play_history(
     np.testing.assert_array_equal(vectors_snapshot(manager.catalog)[1][0], vector)
 
 
+@pytest.mark.parametrize("ambiguity", ["missing", "candidate", "present", "present_pending"])
+def test_pending_move_requires_unique_identity(manager_factory, ambiguity):
+    """ADR-0008-24. Duplicate pending identities must not transfer another song's history."""
+    manager = manager_factory()
+    root = manager.cfg.library.music_dir
+    old, new, other = root / "old.flac", root / "new.flac", root / "other.flac"
+    old.write_bytes(b"old recording")
+    manager.catalog.put_entry(make_entry(old))
+    old.write_bytes(b"pending recording")
+    manager.analysis_queue.defer_scan(_path(old), *file_fingerprint(old))
+    old.rename(new)
+    other.write_bytes(new.read_bytes())
+    found = [("music", new), ("music", other)]
+    if ambiguity != "candidate":
+        manager.catalog.put_entry(make_entry(other))
+        if ambiguity == "present_pending":
+            other.write_bytes(b"another replacement")
+            manager.analysis_queue.defer_scan(_path(other), *file_fingerprint(other))
+        if ambiguity == "missing":
+            other.unlink()
+            found.pop()
+    manager._reconcile_moves(found)
+    assert manager.catalog.record_for_path(new) is None
+    assert manager.catalog.record_for_path(old) is not None
+    assert manager.analysis_queue.scan_pending(_path(old))
+    assert not manager.analysis_queue.scan_pending(_path(new))
+
+
+def test_pending_move_preserves_retry_state(manager_factory):
+    """ADR-0008-24. Renaming cannot reset a deferred scan's retry budget."""
+    manager = manager_factory()
+    old = manager.cfg.library.music_dir / "old.flac"
+    new = old.with_name("new.flac")
+    old.write_bytes(b"old recording")
+    manager.catalog.put_entry(make_entry(old))
+    old.write_bytes(b"pending recording")
+    queue = manager.analysis_queue
+    identity = file_fingerprint(old)
+    queue.defer_scan(_path(old), *identity)
+    assert queue.claim_scan(_path(old), *identity)
+    queue.fail_scan(_path(old), *identity, non_access_failure=True)
+    before = queue._read("SELECT * FROM scan_pending WHERE path=?", (_path(old),))[0]
+    old.rename(new)
+    manager._reconcile_moves([("music", new)])
+    after = queue._read("SELECT * FROM scan_pending WHERE path=?", (_path(new),))
+    assert after and after[0][1:] == before[1:]
+
+
+def test_pending_rekey_rolls_back_queue_and_lease_on_catalog_failure(manager_factory):
+    import sqlite3
+
+    manager = manager_factory()
+    old = manager.cfg.library.music_dir / "old.flac"
+    new = old.with_name("new.flac")
+    old.write_bytes(b"pending recording")
+    manager.catalog.put_entry(make_entry(old))
+    queue = manager.analysis_queue
+    identity = file_fingerprint(old)
+    queue.defer_scan(_path(old), *identity, new_listing=True)
+    lease = queue.claim("worker", [(_path(old), *identity)], 600)[0]
+    old.rename(new)
+    manager.catalog._db().execute(
+        "CREATE TEMP TRIGGER reject_move BEFORE UPDATE OF path ON catalog_entries "
+        "BEGIN SELECT RAISE(ABORT, 'move failed'); END"
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="move failed"):
+        manager.catalog.rekey(old, new)
+    assert manager.catalog.record_for_path(old) is not None
+    assert manager.catalog.record_for_path(new) is None
+    assert queue.scan_identity(_path(old)) == identity
+    assert queue.scan_created_listing(_path(old), *identity)
+    assert not queue.scan_pending(_path(new))
+    assert queue.lease(lease.lease_id, "worker") == lease
+
+
 def test_unchanged_liner_with_unset_analysis_segue_is_backfilled(manager_factory, tmp_path):
     liner_root = tmp_path / "liners"
     liner_root.mkdir()
@@ -1202,8 +2840,158 @@ def test_liner_source_takes_over_scanned_music(manager_factory, tmp_path):
 
 
 @pytest.mark.dj_analysis
+@pytest.mark.parametrize("change", ["size", "fingerprint"])
+@pytest.mark.parametrize("dj_enabled", [False, True])
+@pytest.mark.parametrize("stale_pending", [False, True])
+def test_changed_file_recalculates_cues_without_inheriting_dj_cache(
+    manager_factory, tmp_path, change, dj_enabled, stale_pending
+):
+    """ADR-0006-05: timing analysis belongs to the current file identity."""
+    from autodj.dj_meta import Cue, DjMeta, DjMetaCache
+
+    song = tmp_path / "Music" / "song.flac"
+    song.parent.mkdir()
+    song.write_bytes(b"a" * 1000)
+    manager = manager_factory(music=song.parent)
+    original = make_entry(song)
+    original.length = 18
+    object.__setattr__(manager.cfg.playback, "import_external_cues", False)
+    record_id = manager.catalog.put_entry(
+        original,
+        points={"start": 0, "intro": 8, "outro": 12, "end": 18},
+        point_source="user",
+    )
+    original_identity = file_fingerprint(song)
+    cache = manager._dj_cache()
+    cache.set(
+        str(song),
+        DjMeta(
+            analysed=True,
+            intro_end_s=8,
+            outro_start_s=12,
+            beats=[8, 12],
+            cues=[Cue(12, type="outro_downbeat")],
+        ),
+    )
+    cache.flush(force=True)
+    manager.set_dj_analysis_enabled(dj_enabled)
+    song.write_bytes(b"b" * (1200 if change == "size" else 1000))
+    assert file_fingerprint(song) != original_identity
+    if stale_pending:
+        # The worker finished after discovery captured the pending paths.
+        manager._scan_pending = {_path(song)}
+    fresh = make_entry(song)
+    fresh.length = 24
+    fresh_meta = DjMeta(analysed=True, outro_start_s=24, beats=[2, 4])
+    with (
+        patch(
+            "autodj.library.analyze_basic",
+            return_value=(
+                fresh,
+                {
+                    "start": 0,
+                    "intro": None,
+                    "outro": None,
+                    "end": 24,
+                },
+            ),
+        ),
+        patch(
+            "autodj.library.load_for_analysis", return_value=np.zeros((24 * 44100, 2), np.float32)
+        ) as decode,
+        patch.object(manager, "_legacy_point_suggestions", side_effect=AssertionError("old cues")),
+        patch("autodj.dj_meta.analyse_decoded", return_value=fresh_meta) as analyse,
+        patch("autodj.intro_lift.measure_source_intro", return_value=0),
+    ):
+        assert manager._read_track("music", song, override_tags=False)
+        record = manager.catalog.record_for_path(song)
+        assert record["id"] == record_id
+        assert (record["size"], record["fingerprint"]) == file_fingerprint(song)
+        assert record["length"] == 24
+        assert record["points"]["end"] == 24
+        assert record["points"]["intro"] is None
+        assert record["points"]["outro"] is None
+        if not dj_enabled:
+            analyse.assert_not_called()
+            decode.assert_not_called()
+            assert cache.get(str(song)) == DjMeta()
+            disk = DjMetaCache(manager.cfg.index.library_dir / "dj_meta.db", song.parent)
+            try:
+                assert disk.get(str(song)) == DjMeta()
+            finally:
+                disk.close()
+            manager.set_dj_analysis_enabled(True)
+            manager._dj_backlog()
+        analyse.assert_called_once()
+        assert analyse.call_args.kwargs["intro_end_s"] == 0
+        assert analyse.call_args.kwargs["outro_start_s"] == 24
+        assert cache.get(str(song)) == fresh_meta
+
+
+@pytest.mark.dj_analysis
+@pytest.mark.parametrize("already_pending", [False, True])
+@pytest.mark.parametrize("change", ["size", "fingerprint"])
+def test_deferred_replacement_clears_old_dj_cache_before_publishing_identity(
+    manager_factory, monkeypatch, already_pending, change
+):
+    """ADR-0006-05: worker hints and local recovery cannot inherit old DJ timing."""
+    from autodj.audio_meta import FileTags
+    from autodj.dj_meta import Cue, DjMeta, DjMetaCache
+
+    manager = manager_factory()
+    manager.set_dj_analysis_enabled(False)
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"a" * 1000)
+    original = make_entry(song)
+    original.length = 18
+    manager.catalog.put_entry(original, points={"start": 0, "intro": 8, "outro": 12, "end": 18})
+    cache = manager._dj_cache()
+    cache.set(
+        str(song),
+        DjMeta(
+            analysed=True,
+            intro_end_s=8,
+            outro_start_s=12,
+            beats=[8, 12],
+            cues=[Cue(12, type="outro_downbeat")],
+        ),
+    )
+    cache.flush(force=True)
+    queue = manager.analysis_queue
+    queue.seen("worker", "Worker", scan_decode=True)
+    if already_pending:
+        queue.defer_scan(_path(song), *file_fingerprint(song))
+    song.write_bytes(b"b" * (1200 if change == "size" else 1000))
+    monkeypatch.setattr("autodj.audio_meta.read_file_tags", lambda path: FileTags(length=24))
+    assert manager._read_track("music", song, override_tags=False)
+    record = manager.catalog.record_for_path(song)
+    assert (record["size"], record["fingerprint"]) == file_fingerprint(song)
+    assert queue.scan_pending(_path(song))
+    assert cache.get(str(song)) == DjMeta()
+    assert manager.scan_options(song)["suggestions"] == {}
+    disk = DjMetaCache(manager.cfg.index.library_dir / "dj_meta.db", song.parent)
+    try:
+        assert disk.get(str(song)) == DjMeta()
+    finally:
+        disk.close()
+    fresh = make_entry(song)
+    fresh.length = 24
+    monkeypatch.setattr(
+        "autodj.library.analyze_basic",
+        lambda *a, **k: (fresh, {"start": 0, "intro": None, "outro": None, "end": 24}),
+    )
+    assert manager._read_track("music", song, override_tags=False, recover_scan=True)
+    record = manager.catalog.record_for_path(song)
+    assert record["points"]["intro"] is None
+    assert record["points"]["outro"] is None
+    assert record["points"]["end"] == 24
+    assert cache.get(str(song)) == DjMeta()
+
+
+@pytest.mark.dj_analysis
 @pytest.mark.parametrize("migrated", [False, True])
 def test_rescan_reads_external_tag_edit_with_unchanged_size(manager_factory, tmp_path, migrated):
+    """ADR-0006-05: unchanged identities preserve their existing timing analysis."""
     from autodj.dj_meta import Cue, DjMeta
 
     song = tmp_path / "Music" / "song.flac"
@@ -2186,3 +3974,253 @@ def test_no_model_keeps_basic_tracks_and_remote_analysis_queue(
     with patch.object(manager.analysis_queue, "worker_active", return_value=True):
         assert not manager.schedule_analysis()
     assert manager._yielded_to_worker
+
+
+@pytest.mark.dj_analysis
+def test_shutdown_stops_the_scan_before_the_dj_meta_cache_closes(manager_factory, monkeypatch):
+    """ADR-0008-31. A scan running at shutdown ends before the DJ-meta cache closes.
+
+    It neither opens the cache again nor reloads the catalog.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from autodj import dj_meta
+    from autodj.stations import SharedLibrary
+
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"music")
+    manager.catalog.put_entry(make_entry(song), "music")
+    # The player opened the cache at startup; a big library has many rows.
+    cache = dj_meta.get_cache(manager.cfg.index.library_dir, manager.cfg.library.music_dir)
+    assert cache is not None
+    cache.set(str(song), dj_meta.DjMeta(analysed=True, beats=[0.5]))
+    cache.flush(force=True)
+    opened = []
+
+    class Spy(dj_meta.DjMetaCache):
+        def __init__(self, *args, **kwargs):
+            opened.append(args)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(dj_meta, "DjMetaCache", Spy)
+    discovering = threading.Event()
+
+    def discover(source_ids=None):
+        # A big library's folders take a while to list.
+        discovering.set()
+        assert manager._stop.wait(5)
+        return [("music", song)]
+
+    monkeypatch.setattr(manager, "_discover", discover)
+    reconciled, refreshed = [], []
+    monkeypatch.setattr(manager, "_reconcile_moves", lambda *args: reconciled.append(args))
+    monkeypatch.setattr(manager, "refresh", lambda **kwargs: refreshed.append(kwargs))
+    monkeypatch.setattr(manager, "tick", lambda: None)
+
+    async def shut_down() -> bool:
+        shared = SharedLibrary(manager, SimpleNamespace(all=lambda: []))
+        await shared.start()
+        assert await asyncio.to_thread(discovering.wait, 5)
+        return await shared.close(True, timeout_s=5)
+
+    assert asyncio.run(shut_down())
+    assert opened == []
+    assert dj_meta._CACHE is None
+    assert reconciled == [] and refreshed == []
+    assert manager._thread is not None and not manager._thread.is_alive()
+
+
+def test_stop_scan_is_bounded_for_a_scan_that_has_not_stopped(manager_factory, monkeypatch):
+    """ADR-0008-31. Waiting for the scan to stop has a time limit, and no scan starts after."""
+    manager = manager_factory()
+    scanning, release = threading.Event(), threading.Event()
+
+    def scan(*_args):
+        scanning.set()
+        release.wait(5)
+
+    monkeypatch.setattr(manager, "_scan", scan)
+    assert manager.start_scan()
+    assert scanning.wait(5)
+    try:
+        assert not manager.stop_scan(0.05)
+        assert not manager.start_scan()
+    finally:
+        release.set()
+    assert manager.stop_scan(5)
+
+
+def test_discovery_stops_between_folders_once_the_library_closes(manager_factory, monkeypatch):
+    """ADR-0008-31. Listing a big library's folders stops at the next folder."""
+    manager = manager_factory()
+    music = manager.cfg.library.music_dir
+    for name in ("a", "b", "c"):
+        (music / name).mkdir()
+        (music / name / "song.flac").write_bytes(b"music")
+    walk = os.walk
+
+    def stopping_walk(top, **kwargs):
+        for folder in walk(top, **kwargs):
+            yield folder
+            manager._stop.set()
+
+    monkeypatch.setattr("autodj.library.os.walk", stopping_walk)
+    # The top folder holds no song; the walk ends before the first that does.
+    assert manager._discover() == []
+
+
+@pytest.mark.dj_analysis
+def test_the_dj_backlog_stops_reading_the_cache_once_the_library_closes(
+    manager_factory, monkeypatch
+):
+    """ADR-0008-31. Listing unanalysed songs reads every row: shutdown cuts that short."""
+    from autodj.dj_meta import DjMeta
+
+    manager = manager_factory()
+    music = manager.cfg.library.music_dir
+    records = tuple({"path": str(music / f"{n}.flac")} for n in range(1000))
+    monkeypatch.setattr(manager.catalog, "all_entries", lambda kind=None: records)
+    read = []
+
+    class Cache:
+        def get(self, path):
+            read.append(path)
+            if len(read) == 3:
+                manager._stop.set()
+            return DjMeta()
+
+        def flush(self, force=False):
+            pass
+
+    monkeypatch.setattr(manager, "_dj_cache", lambda: Cache())
+    analysed = []
+    monkeypatch.setattr(manager, "_dj_analyse", lambda path, *args, **kwargs: analysed.append(path))
+    manager._dj_backlog()
+    assert len(read) == 3
+    assert analysed == []
+
+
+def test_a_closing_library_starts_no_analysis_job(manager_factory, monkeypatch):
+    """ADR-0008-31. Shutdown has stopped the job runner: the tick must not start a job."""
+    manager = manager_factory()
+    monkeypatch.setattr(manager, "analysis_pending", lambda force=False: [{"path": "song"}])
+    monkeypatch.setattr("autodj.model_identity.model_analysis_available", lambda: True)
+    manager.stop_scan()
+    with patch("autodj.jobs.get_manager") as jobs:
+        assert not manager.schedule_analysis()
+        jobs.assert_not_called()
+
+
+def _scan_summaries(caplog, level=logging.INFO):
+    """The scan summary lines logged at *level*; any other summary line fails the test."""
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "autodj.library" and record.getMessage().startswith("Library scan ")
+    ]
+    caplog.clear()
+    assert all(record.levelno == level for record in records)
+    return [record.getMessage() for record in records]
+
+
+def test_a_scan_logs_one_summary_only_when_something_changed(manager_factory, monkeypatch, caplog):
+    """Per-song detail stays out of INFO; a periodic rescan that found nothing adds no line."""
+    manager = manager_factory()
+    now = [1000.0]
+    manager._clock = lambda: now[0]
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: False)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+
+    def decode(path, **kwargs):
+        now[0] += 25
+        return fake_basic(path, **kwargs)
+
+    monkeypatch.setattr("autodj.library.analyze_basic", decode)
+    music = manager.cfg.library.music_dir
+    songs = [music / f"song-{number}.flac" for number in range(3)]
+    for number, song in enumerate(songs):
+        sf.write(song, np.ones((22050 + number, 2)) * 0.1, 22050)
+
+    with caplog.at_level(logging.DEBUG, logger="autodj.library"):
+        manager.scan()
+        assert _scan_summaries(caplog) == [
+            "Library scan finished in 1 min 15 s: 3 new, 3 decoded here"
+        ]
+        manager.scan()
+        assert _scan_summaries(caplog, logging.DEBUG) == [
+            "Library scan finished in 0 s: nothing changed"
+        ]
+
+        sf.write(songs[0], np.ones((44100, 2)) * 0.2, 22050)
+        songs[1].rename(music / "renamed.flac")
+        songs[2].unlink()
+        manager.scan()
+        assert _scan_summaries(caplog) == [
+            "Library scan finished in 25 s: 1 changed, 1 moved, 1 gone, 1 decoded here"
+        ]
+
+
+def test_scan_summary_counts_work_left_to_a_worker_and_the_take_back(abandoned_scan, caplog):
+    """One line names the songs sent to a worker, one the songs taken back."""
+    manager, queue, now, _songs = abandoned_scan
+    song = manager.cfg.library.music_dir / "late.flac"
+    sf.write(song, np.ones((22050, 2)) * 0.3, 22050)
+    with caplog.at_level(logging.INFO, logger="autodj.library"):
+        manager.scan()
+        assert _scan_summaries(caplog) == [
+            "Library scan finished in 0 s: 1 new, 1 sent to an analysis worker"
+        ]
+        now[0] += 121
+        tick_and_wait(manager)
+    assert not queue.pending_scans()
+    taken = [record.getMessage() for record in caplog.records if "abandoned" in record.message]
+    assert taken == [
+        "Server starting abandoned scan work: 3 songs",
+        "Server finished abandoned scan work",
+    ]
+
+
+def test_the_tick_does_not_reload_a_library_that_is_closing(manager_factory, monkeypatch, caplog):
+    """ADR-0008-31. A scan stopped by shutdown wrote records; the tick still does not reload.
+
+    Its summary says the scan stopped rather than finished.
+    """
+    caplog.set_level(logging.INFO, logger="autodj.library")
+    manager = manager_factory()
+    music = manager.cfg.library.music_dir
+    songs = []
+    for n in range(3):
+        song = music / f"s{n}.flac"
+        song.write_bytes(b"music")
+        songs.append(song)
+    manager.refresh()
+
+    def read_track(kind, path, override_tags=False, **kwargs):
+        # The scan writes a changed record, then shutdown begins.
+        manager.catalog.put_entry(make_entry(path), "music")
+        manager._tally("changed")
+        if path == songs[0]:
+            manager.stop_scan()
+        return True
+
+    monkeypatch.setattr(manager, "_read_track", read_track)
+    monkeypatch.setattr(manager, "_add_from_tags", lambda *args, **kwargs: False)
+    refreshed = []
+    real_refresh = manager.refresh
+    monkeypatch.setattr(
+        manager, "refresh", lambda **kwargs: refreshed.append(kwargs) or real_refresh(**kwargs)
+    )
+    manager.scan()
+    assert manager._changed()
+    manager.tick()
+    assert refreshed == []
+    summaries = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Library scan ")
+    ]
+    assert len(summaries) == 1
+    assert summaries[0].startswith("Library scan stopped in ")

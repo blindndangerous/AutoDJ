@@ -60,7 +60,7 @@ export function lastSeenWords(seconds, nowMs = Date.now()) {
 
 // "1234 5678" on screen; "1 2 3 4, 5 6 7 8" for speech, so a screen
 // reader says each digit instead of "one thousand two hundred ...".
-function shownCode(code) {
+export function shownCode(code) {
   return `${code.slice(0, 4)} ${code.slice(4)}`;
 }
 

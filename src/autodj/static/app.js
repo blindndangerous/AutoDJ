@@ -1,3 +1,4 @@
+import { registerSettingsGroup, applySettingsDrafts, loadSettingsDrafts, resetSettingsDrafts, confirmSettingsNavigation, settingsDraftHolds } from "./modules/settings-drafts.js";
 // Pure helpers live in ./modules/dom-helpers.js.
 import {
   isDebug,
@@ -171,18 +172,27 @@ const OLD_ANNOUNCE_KEY = "autodj.announceTrackChangesEverywhere";
 const announceTrackChanges = document.getElementById("announce-track-changes");
 try {
   const storage = globalThis.localStorage;
-  const saved = storage?.getItem(ANNOUNCE_KEY)
-    || (storage?.getItem(OLD_ANNOUNCE_KEY) === "on" ? "all" : "now");
-  if (["all", "now", "off"].includes(saved)) announceTrackChanges.value = saved;
+  const canonical = storage?.getItem(ANNOUNCE_KEY);
+  const legacy = storage?.getItem(OLD_ANNOUNCE_KEY);
+  const saved = ["all", "now", "off"].includes(canonical) ? canonical : legacy === "on" ? "all" : "now";
+  announceTrackChanges.value = saved;
+  if (legacy != null) {
+    if (canonical !== saved) storage.setItem(ANNOUNCE_KEY, saved);
+    storage.removeItem(OLD_ANNOUNCE_KEY);
+  }
 } catch (_) {
   // Blocked storage: the default, for this page load.
 }
-announceTrackChanges.addEventListener("change", () => {
-  try {
-    globalThis.localStorage?.setItem(ANNOUNCE_KEY, announceTrackChanges.value);
-  } catch (_) {
-    // Still honoured until the page is reloaded.
-  }
+let savedAnnouncementChoice = announceTrackChanges.value;
+registerSettingsGroup({ panel: announceTrackChanges.closest('[id^="spanel-"]'), controls: [announceTrackChanges],
+  read: () => ({ choice: announceTrackChanges.value }),
+  write: (value) => { announceTrackChanges.value = value.choice; },
+  persisted: () => ({ choice: localStorage.getItem(ANNOUNCE_KEY) || "now" }),
+  commit(value) {
+    localStorage.setItem(ANNOUNCE_KEY, value.choice);
+    localStorage.removeItem(OLD_ANNOUNCE_KEY);
+    savedAnnouncementChoice = value.choice;
+  },
 });
 
 // Stream mode (`autodj serve --stream`): the server mixes, so this page is
@@ -224,12 +234,10 @@ btnListen.addEventListener("click", () => {
   renderListenContext();
 });
 // Settings subtabs (./modules/subtabs.js).  Stream shows only in stream mode.
-const settingsTabs = initSubtabs(document.getElementById("settings-tabs"));
+initSubtabs(document.getElementById("settings-tabs"));
 // Settings > Stream > More formats: the AAC and Opus streams (#50).
 const streamFormats = installStreamFormats({
   doc: document,
-  save: (name, value, control) =>
-    postSettings("/api/stream/settings", { [`${name}_bitrate`]: value }, control),
   refresh: () => { void streamSettings.refresh(); },
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
@@ -242,17 +250,10 @@ const streamSettings = createStreamSettings({
     streamFormats.fill(info);
     return info;
   },
-  saveBitrate: (value, control) =>
-    postSettings("/api/stream/settings", { bitrate: value }, control),
-  saveContinuous: (value, control) =>
-    postSettings("/api/stream/settings", { continuous: value }, control),
-  saveStationName: (value, control) =>
-    postSettings("/api/stream/settings", { station_name: value }, control),
   setAvailable: (available) => {
     relaySettings.setAvailable(available);
   },
   onRelays: (relays) => relaySettings.applyStatuses(relays),
-  focusAway: () => settingsTabs.focusSelected(),
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
 });
@@ -260,24 +261,15 @@ const streamSettings = createStreamSettings({
 const nowPlayingSettings = installNowPlayingSettings({
   doc: document,
   request: requestJson,
-  saveShowNext: (value, control) =>
-    postSettings("/api/stream/settings", { show_next: value }, control),
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
 });
 const publicSettings = installPublicSettings();
-const listenerControls = createListenerControls(
-  document, settingsStatus,
-  (value, control) => postSettings(
-    "/api/stream/settings", { max_listeners_per_address: value }, control,
-  ),
-);
+const listenerControls = createListenerControls(document, settingsStatus);
 const recordingControls = createRecordingControls(document, document.getElementById("sr-status"));
 // Settings > Stream > Listener statistics (#50).
 const listenerStats = installListenerStats({
   doc: document,
-  saveKeepDays: (value, control) =>
-    postSettings("/api/stream/settings", { stats_days: value }, control),
   settingsStatus,
 });
 // A lookup that failed while another tab showed was never heard; opening
@@ -290,24 +282,15 @@ let _lastStreamMode = false;
 // Stream mode with --server-audio: the page's volume and Mute also drive
 // the machine's own speakers.
 let _lastStreamServerAudio = false;
-// Live DJ (#48): the live line and Talk on Now Playing, and Settings >
-// Live DJ.  The tab shows in stream mode (saying why when the station
-// cannot go live) or whenever the server says it can; Talk shows only
-// when it can.
+// Live configuration stays editable off air; Talk follows runtime availability.
 const liveDesk = installLiveDesk({ doc: document, srStatus: document.getElementById("sr-status") });
-let _liveInfo = null;
-function renderLiveTab() {
-  settingsTabs.setTabHidden("live", !(_liveInfo?.available || _lastStreamMode));
-}
 const liveSettings = installLiveSettings({
   doc: document,
   request: requestJson,
   announce: (message, error = false) => announceStatus(settingsStatus, message,
     { tone: error ? "error" : "success", force: true, dwellMs: 6000 }),
   onInfo: (info) => {
-    _liveInfo = info;
     liveDesk?.setInfo(info);
-    renderLiveTab();
   },
 });
 
@@ -356,20 +339,20 @@ function stopProtectedPlayback() {
 // station (#70), and as part of clearing a session that ended.  Listen
 // here, the page's own volume and mute, search and the shared library
 // views are not the station's, so they stay.
-function clearStationViews() {
+function clearStationViews({ keepSettings = false } = {}) {
   _seekController?.cancel();
-  streamSettings.reset();
-  streamFormats.reset();
-  relaySettings.reset();
-  recordingControls.reset();
-  // Switching stations or signing out stops talking and lets the
-  // microphone go; the next station's live line is shown in silence.
+  if (!keepSettings) {
+    streamSettings.reset();
+    streamFormats.reset();
+    relaySettings.reset();
+    recordingControls.reset();
+    liveSettings?.reset();
+    nowPlayingSettings?.reset();
+    listenerControls.reset();
+    listenerStats.reset();
+  }
+  // Stopping, switching or signing out releases the microphone.
   liveDesk?.clear();
-  liveSettings?.reset();
-  _liveInfo = null;
-  nowPlayingSettings?.reset();
-  listenerControls.reset();
-  listenerStats.reset();
   resetTrackCaches();
   historyRequest?.abort();
   _histPlayingPath = null;
@@ -407,12 +390,19 @@ function clearStationViews() {
   renderCueStrip(null);
   applyCamelotWheel(null, "compatible");
   resetQueueState(_queueEls);
-  resetMixSettings(_mixEls);
-  resetRepeatSettings(_repeatEls);
+  if (!keepSettings) {
+    resetMixSettings(_mixEls);
+    _stereoToolPresets?.reset();
+    resetRepeatSettings(_repeatEls);
+    resetSettingsState(_settingsEls());
+    timeCheckControls?.clear();
+    breakSettingsControls?.clear();
+    publicSettings.clear();
+    linerControls?.clear();
+  }
   _profileEls.list.replaceChildren();
   _profileEls.status.textContent = "";
   queueAnnounce.textContent = "";
-  resetSettingsState(_settingsEls());
   settingsStatus.textContent = "";
   clockwheelPanelControls?.clearProtectedData();
   introRulesControls?.clear();
@@ -423,15 +413,11 @@ function clearStationViews() {
   hourPreviewControls?.clear();
   programmeReviewControls?.clear();
   cartWallControls?.clear();
-  timeCheckControls?.clear();
   // Signing out or switching stations stops a recording and lets the
   // microphone go.
   voiceTrackerControls?.clear();
   adsControls?.clear();
   listenerRequestControls?.clear();
-  breakSettingsControls?.clear();
-  publicSettings.clear();
-  linerControls?.clear();
   updateMediaSession({ current_track: null });
   lastNextKey = null;
   _lastWhyKey = "";
@@ -441,6 +427,7 @@ function clearStationViews() {
 }
 
 function clearProtectedSessionData() {
+  resetSettingsDrafts();
   streamMode.stop();
   clearStationViews();
   btnMute.innerHTML = '<span aria-hidden="true">🔊</span> Mute';
@@ -632,10 +619,8 @@ function applyState(s, { announceTrack = true } = {}) {
   _lastStreamServerAudio = inStream && Boolean(s.stream_server_audio);
   streamMode.apply(s);
   streamSettings.apply(s);
-  if (s.stream_mode) recordingControls.apply(s.recording);
-  else recordingControls.reset();
+  recordingControls.apply(s.stream_mode ? { ...s.recording, available: true } : { running: false, available: false });
   liveDesk?.applyState(s);
-  renderLiveTab();
   nowPlayingSettings?.apply(s);
   listenerControls.apply(s);
   streamFormats.apply(s);
@@ -664,7 +649,7 @@ function applyState(s, { announceTrack = true } = {}) {
     // Spoken from #track-announce at body level: a live region inside
     // the hidden Now Playing panel never spoke on another tab.  Other
     // tabs hear it only when Settings > Announcements asks for it.
-    const announce = announceTrackChanges.value;
+    const announce = savedAnnouncementChoice;
     if (announceTrack && trackKey
       && (announce === "all" || (announce === "now" && !panelNow.hidden))) {
       announceStatus(trackAnnounce, trackLabel + trackChangeDetails(s),
@@ -890,9 +875,19 @@ function applyState(s, { announceTrack = true } = {}) {
 }
 
 function applySavedSettings(settings) {
+  applySettingsDrafts(settings);
   if (!settings) return;
+  if (stationOffAir) {
+    streamSettings.apply({ settings });
+    nowPlayingSettings.apply({ settings });
+    recordingControls.apply({ running: false, available: false });
+  }
   applySettingsState(settings, _settingsEls());
   applyMixSettings(settings, _mixEls);
+  if (typeof settings.playback?.stereotool_preset === "string"
+      && _mixEls.stereoPreset?.value === settings.playback.stereotool_preset) {
+    _stereoToolPresets?.setActive(settings.playback.stereotool_preset);
+  }
   applyRepeatSettings(settings, _repeatEls);
 }
 
@@ -921,7 +916,6 @@ const _settingsEls = () => ({
   djBeatmatch, djDropMix, djKeyShift, djPhraseAlign, djOutroIntro, djVocalGuard,
   pbEqDuck, pbPickMode, pbShowLyrics, pbAnchorSeed,
   pbHourFit: document.getElementById("pb-hour-fit"),
-  pbReplayGain, pbLoudness: pbReplayGain,
   pbSavedPointsNote: document.getElementById("pb-saved-points-note"),
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip, pbSkipStyle, lnTalkUp,
   lnMatchedIntroOnlyWithoutLiner,
@@ -929,16 +923,16 @@ const _settingsEls = () => ({
   keyNotation, keyPreferFlats,
   bpmLo, bpmHi,
   discEnabled, discEvery,
-  pbPrefetch: document.getElementById("pb-prefetch"),
-  pbSilenceTrigger: document.getElementById("pb-silence-trigger"),
-  pbMusicSpeed: _musicSpeedNumber,
 });
 
 function postSettings(url, body, control, { onError } = {}) {
   return _postSettingsModule(url, body, { settingsStatus, control, onError });
 }
 
-installSettingsControls(_settingsEls(), postSettings);
+const _settingsControlEls = _settingsEls();
+delete _settingsControlEls.lnTalkUp;
+delete _settingsControlEls.lnMatchedIntroOnlyWithoutLiner;
+installSettingsControls(_settingsControlEls);
 
 // Preview output device: Track info's cue point player on a device of its
 // own (headphones), apart from the browser mix.  Installed before the
@@ -959,6 +953,17 @@ installPreviewOutput({
 const audioDeviceSelect = document.getElementById("audio-device");
 const audioDeviceRefresh = document.getElementById("audio-device-refresh");
 const _SINK_KEY = "autodj.sinkId";
+let audioDeviceDraft = null;
+
+function showAudioDevice(value) {
+  if (value && ![...audioDeviceSelect.options].some((option) => option.value === value)) {
+    const option = document.createElement("option");
+    option.textContent = "Saved output device (unavailable)";
+    option.value = value;
+    audioDeviceSelect.add(option);
+  }
+  audioDeviceSelect.value = value;
+}
 
 function _setSinkIdSupported() {
   // Two distinct setSinkId APIs:
@@ -1001,6 +1006,7 @@ async function _refreshAudioDevices() {
     const devs = await navigator.mediaDevices.enumerateDevices();
     const outs = devs.filter(d => d.kind === "audiooutput");
     const saved = localStorage.getItem(_SINK_KEY) || "";
+    const draftDevice = settingsDraftHolds(audioDeviceSelect) ? audioDeviceSelect.value : null;
     audioDeviceSelect.innerHTML = '<option value="">System default</option>';
     let hasLabels = false;
     outs.forEach((d, i) => {
@@ -1016,8 +1022,9 @@ async function _refreshAudioDevices() {
       }
       audioDeviceSelect.appendChild(opt);
     });
-    if (saved && [...audioDeviceSelect.options].some(o => o.value === saved)) {
-      audioDeviceSelect.value = saved;
+    showAudioDevice(draftDevice ?? saved);
+    audioDeviceDraft?.accept({ device: saved });
+    if (saved && outs.some((device) => device.deviceId === saved)) {
       // Background re-apply: page load, devicechange, post-permission.
       _applySink(saved);
     }
@@ -1029,11 +1036,8 @@ async function _refreshAudioDevices() {
   }
 }
 
-// `userInitiated` separates "the user just picked a device" from the
-// background re-applies that run on page load, after a permission grant,
-// and on every USB plug or unplug.  A saved sink that keeps failing must
-// report once, not once per devicechange event.
-async function _applySink(sinkId, { userInitiated = false } = {}) {
+// Explicit saves use the shared result region; background failures are deduplicated.
+async function _applySink(sinkId, { reportError = true } = {}) {
   // Prefer AudioContext.setSinkId — it actually routes the live crossfade
   // graph.  Element-level setSinkId is a fallback for browsers that lack
   // ctx.setSinkId (Firefox 116+) AND only works when we're playing the
@@ -1061,10 +1065,10 @@ async function _applySink(sinkId, { userInitiated = false } = {}) {
     }
   }
   if (lastErr) {
-    if (settingsStatus) {
+    if (reportError && settingsStatus) {
       announceStatus(settingsStatus, "Could not switch audio device: "
         + (lastErr.message || lastErr.name || "unknown"),
-        { dwellMs: 5000, force: userInitiated, tone: "error" });
+        { dwellMs: 5000, tone: "error" });
     }
     return false;
   }
@@ -1134,19 +1138,40 @@ if (navigator.permissions && navigator.permissions.query) {
 }
 
 if (audioDeviceSelect) {
-  audioDeviceSelect.addEventListener("change", async () => {
-    const id = audioDeviceSelect.value;
-    localStorage.setItem(_SINK_KEY, id);
-    // First-time selection: AudioContext must exist before ctx.setSinkId
-    // works, so build the (silent) graph if it hasn't been yet.
-    if (!_ctx) ensureAudioGraph();
-    const ok = await _applySink(id, { userInitiated: true });
-    if (ok && settingsStatus) {
-      const sel = audioDeviceSelect.options[audioDeviceSelect.selectedIndex];
-      const label = sel ? sel.textContent : "selected device";
-      announceStatus(settingsStatus, `Audio output: ${label}`,
-        { dwellMs: 3000, force: true });
-    }
+  try { showAudioDevice(localStorage.getItem(_SINK_KEY) || ""); } catch (_) { /* Save reports unavailable storage. */ }
+  audioDeviceDraft = registerSettingsGroup({ panel: audioDeviceSelect.closest('[id^="spanel-"]'), controls: [audioDeviceSelect],
+    read: () => ({ device: audioDeviceSelect.value }),
+    write(value) { showAudioDevice(value.device); },
+    persisted: () => ({ device: localStorage.getItem(_SINK_KEY) || "" }),
+    async commit(value) {
+      if (!_ctx) ensureAudioGraph();
+      const previous = localStorage.getItem(_SINK_KEY) || "";
+      localStorage.setItem(_SINK_KEY, value.device);
+      try {
+        if (!await _applySink(value.device, { reportError: false })) {
+          throw new Error("The audio device could not be selected.");
+        }
+      } catch (error) {
+        const rollbackFailures = [];
+        try {
+          if (previous) localStorage.setItem(_SINK_KEY, previous);
+          else localStorage.removeItem(_SINK_KEY);
+        } catch (rollbackError) {
+          rollbackFailures.push(`browser preference: ${rollbackError.message || rollbackError}`);
+        }
+        try {
+          if (!await _applySink(previous, { reportError: false })) {
+            rollbackFailures.push("audio route: the previous device could not be restored");
+          }
+        } catch (rollbackError) {
+          rollbackFailures.push(`audio route: ${rollbackError.message || rollbackError}`);
+        }
+        if (rollbackFailures.length) {
+          throw new Error(`${error.message || error} Rollback also failed for ${rollbackFailures.join(" and ")}.`, { cause: error });
+        }
+        throw error;
+      }
+    },
   });
   if (audioDeviceRefresh) {
     audioDeviceRefresh.addEventListener("click", _grantDeviceLabels);
@@ -1284,6 +1309,11 @@ import {
 } from "./modules/repeat-settings.js";
 
 const _mixEls = {
+  pbLoudness:    pbReplayGain,
+  pbPrefetch: document.getElementById("pb-prefetch"),
+  pbSilenceTrigger: document.getElementById("pb-silence-trigger"),
+  pbMusicSpeed: _musicSpeedNumber,
+  stereoPreset: document.getElementById("stereo-preset"),
   pbCrossfade:    document.getElementById("pb-crossfade"),
   pbFadeIn:       document.getElementById("pb-fade-in"),
   djPhraseBars:   document.getElementById("dj-phrase-bars"),
@@ -1301,14 +1331,11 @@ const _mixEls = {
   pbQuietBoost:   document.getElementById("pb-quiet-boost"),
   pbIntroLift:    document.getElementById("pb-intro-lift"),
   pbStereoTrim:   document.getElementById("pb-stereo-trim"),
+  pbStereoAgcDrive: document.getElementById("pb-stereo-agc-drive"),
 };
-installMixSettings(_mixEls, {
-  postSettings,
-  settingsStatus,
-});
-
 import { installStereoToolPresets } from "./modules/stereo-tool-presets.js";
-installStereoToolPresets({ status: settingsStatus });
+const _stereoToolPresets = installStereoToolPresets({ status: settingsStatus });
+installMixSettings(_mixEls, { settingsStatus });
 
 import { installStereoToolSetup } from "./modules/stereo-tool-setup.js";
 installStereoToolSetup({ status: settingsStatus });
@@ -1337,9 +1364,8 @@ const _repeatEls = {
   fileStatus: document.getElementById("repeat-related-status"),
   tracksDefaultFile: document.getElementById("repeat-related-tracks-default"),
   tracksFileStatus: document.getElementById("repeat-related-tracks-status"),
-  save: document.getElementById("repeat-save"),
 };
-installRepeatSettings(_repeatEls, { postSettings, settingsStatus });
+installRepeatSettings(_repeatEls, { settingsStatus });
 
 // ----------------------------------------------------------------
 // Settings: Profiles and Browser access -- ./modules/profiles.js and
@@ -1386,11 +1412,14 @@ installAccess(_accessEls, {
 // Settings > Analysis workers -- ./modules/analysis-workers.js loads when
 // its subtab is shown.
 import { installAnalysisWorkers } from "./modules/analysis-workers.js";
+import { installUpdates } from "./modules/updates.js";
 import { installStationCreator } from "./modules/station-create.js";
 import { installTimeSettings } from "./modules/time-settings.js";
 import { setTimeFormat } from "./modules/time-format.js";
 
 installAnalysisWorkers();
+// Settings > Updates -- ./modules/updates.js loads when its subtab is shown.
+installUpdates();
 const timeSettings = installTimeSettings();
 
 // ----------------------------------------------------------------
@@ -1755,7 +1784,7 @@ function lastStation() {
 // Start; the page looks every 10 seconds whether it is back.
 function stationWentOffAir() {
   const station = currentStation();
-  clearStationViews();
+  clearStationViews({ keepSettings: true });
   setOffAir(true);
   setConnStatus("error", "Off air");
   void requestJson("/api/settings").then((settings) => {
@@ -1857,6 +1886,7 @@ async function loadStation({ announce = true } = {}) {
     }
   }
   refreshStationPanels();
+  void loadSettingsDrafts();
   if (announce) {
     // Off air is said by the connection pill; this names the station.
     announceStatus(document.getElementById("sr-status"), state
@@ -1915,8 +1945,10 @@ async function switchStation(slug) {
   }
   const entry = knownStations().find((item) => item.slug === slug);
   if (!entry) return;
+  if (!await confirmSettingsNavigation()) return;
   if (!await confirmLeavingStation(entry.name)) return;
   if (slug === currentStation()) return;
+  resetSettingsDrafts();
   selectStation(slug);
   rememberStationInAddress(slug);
   rememberLastStation(slug);
@@ -3259,7 +3291,7 @@ function startAuthenticatedApp(initialState) {
   speechControls = installSpeechStudio();
   listenerRequestControls = installListenerRequests({ isEnabled: authenticatedInteractionEnabled });
   breakSettingsControls = installBreakSettings();
-  linerControls = installLiners(_linerEls, { postSettings, ...linerAudio });
+  linerControls = installLiners(_linerEls, linerAudio);
   // When the server mixes, it plays the cart itself and the page only
   // shows and announces it.
   cartWallControls = installCartWall(undefined, {

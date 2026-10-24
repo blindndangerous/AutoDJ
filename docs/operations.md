@@ -51,6 +51,11 @@ See [Connect devices on a private network — Paired devices](guides/operations/
 
 See [Run AutoDJ in Docker or Windows PowerShell — Docker](guides/operations/containers-and-windows.md#docker).
 
+### Choose an image
+
+See [Run AutoDJ in Docker or Windows PowerShell — Choose an image](guides/operations/containers-and-windows.md#choose-an-image)
+and [Build the image yourself](guides/operations/containers-and-windows.md#build-the-image-yourself).
+
 ### Build stamp
 
 See [Run AutoDJ in Docker or Windows PowerShell — Build stamp](guides/operations/containers-and-windows.md#build-stamp).
@@ -127,14 +132,20 @@ See [Take and moderate listener requests — Listener requests](guides/operation
 
 See [Listen through Sonos, VLC and other stream players — Radio stream (Sonos, VLC and other players)](guides/operations/stream-listening.md#radio-stream-sonos-vlc-and-other-players).
 
-Live mixing uses progressive decoder buffers capped at two seconds each. If a
-needed source is not ready, the programme position holds and the stream may emit
-silence; this is not a zero-gap or hardware timing guarantee. Queue edits
-affecting the current, ready, or pinned-slot handoff ask the operator to keep
-affected speech with its changed music pair, discard it from the changed
-contexts, or cancel the change. Started voice or liner layers keep their
-original timing while unheard incoming music changes at its original boundary,
-so speech does not repeat. See [ADR 4](adr/0004-server-mix-bus-and-stream-mode.md#amendment-2026-10-22-progressive-live-mixing-and-queue-edits).
+Live mixing uses progressive decoder buffers capped at two seconds each. While
+A plays into B, streaming keeps B's decoder cursor and source position for
+continuation; it selects and prepares B→C only when B becomes current. If that
+source is not ready, the programme position holds and the stream may emit
+silence. There is no zero-gap or hardware timing guarantee, and the additional
+selection step needs manual listening and soak evidence on deployment hardware.
+Queue edits affect the current/imminent transition and ask the operator to keep
+affected speech with its changed music pair, discard it from that transition,
+or cancel the change. A pending continuation cursor is not a speech target.
+Future approved speech remains attached to its occurrence until selected as the
+current upcoming change. Started voice or liner layers keep their original
+timing while unheard incoming music changes at its original boundary, so speech
+does not repeat. Local `RenderAhead` refresh and whole-show preview/export keep
+their separate behavior. See [ADR 4](adr/0004-server-mix-bus-and-stream-mode.md#amendment-2026-10-22-select-the-next-stream-handoff-at-promotion-537).
 
 ### Finding the stream address
 
@@ -283,6 +294,18 @@ See [Run analysis on a GPU worker — 3. Install AutoDJ on the GPU machine](guid
 ### 4. Run the worker
 
 See [Run analysis on a GPU worker — 4. Run the worker](guides/operations/gpu-worker.md#4-run-the-worker).
+
+### Pair the worker
+
+See [Run analysis on a GPU worker — Pair the worker](guides/operations/gpu-worker.md#pair-the-worker).
+
+### Manage a worker from the server
+
+See [Run analysis on a GPU worker — Manage a worker from the server](guides/operations/gpu-worker.md#manage-a-worker-from-the-server).
+
+### When the server refuses a worker
+
+See [Run analysis on a GPU worker — When the server refuses a worker](guides/operations/gpu-worker.md#when-the-server-refuses-a-worker).
 
 ### Sharing the GPU with another program
 

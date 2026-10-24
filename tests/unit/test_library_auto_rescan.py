@@ -12,7 +12,7 @@ from tests.unit.test_library import Similarity, make_config
 def timed_manager(tmp_path):
     now = [100.0]
     manager = LibraryManager(make_config(tmp_path), Similarity(), clock=lambda: now[0])
-    manager._flush_ledgers = Mock()
+    manager.flush_ledgers = Mock()
     manager._changed = Mock(return_value=False)
     manager.schedule_analysis = Mock()
     manager.start_scan = Mock(return_value=True)

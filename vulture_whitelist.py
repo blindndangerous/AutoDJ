@@ -35,6 +35,9 @@ _.anchor_to_seed
 _.replaygain_max_clip_safe_gain
 # Read through self.__dict__.setdefault("_fx_plans", ...) in player.py.
 _._fx_plans
+# A worker scan result field (autodj.scan_analysis.ScanResult), read from
+# model_dump() when LibraryCatalog.store_analysis stores it.
+_.intro_lift_db
 
 # Pytest discovers these registered plugin hooks by name (-p scripts.ci_pytest).
 _.pytest_addoption
@@ -42,3 +45,15 @@ _.pytest_sessionstart
 _.pytest_deselected
 _.pytest_testnodedown
 _.pytest_sessionfinish
+
+# uvicorn.Server reads should_exit to stop; Settings, Updates' Restart sets it.
+_.should_exit
+# An UpdateCheck field, read through dataclasses.asdict() in UpdateCheck.to_dict.
+_.checked_at
+# The app's shared update checker; the update API tests replace its check.
+_.update_checker
+# A worker request field (worker_api._ManagedBody) a managing worker sends; the server
+# accepts it so its strict bodies do not refuse that worker, and reads nothing from it.
+_.worker_manage_v1
+# The app's worker pairing state; the pairing tests move its clock.
+_.worker_pairing

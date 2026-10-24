@@ -66,14 +66,14 @@ class StationSettings:
         """Compatibility name shared with PlayerBridge."""
         self.load()
 
-    def save(self) -> None:
+    def save(self, *, strict: bool = False) -> None:
         from autodj.runtime_state import save_from_player
 
-        save_from_player(self.get_settings(), self.state_dir)
+        save_from_player(self.get_settings(), self.state_dir, raise_on_error=strict)
 
-    def save_persistent_state(self) -> None:
+    def save_persistent_state(self, *, strict: bool = False) -> None:
         """Compatibility name shared with PlayerBridge."""
-        self.save()
+        self.save(strict=strict)
 
     def get_settings(self) -> dict[str, Any]:
         """Return the same settings document shape served by PlayerBridge."""
@@ -197,7 +197,77 @@ class StationSettings:
             "eq": self.get_eq(),
         }
 
-    def set_preset(self, name: str | None) -> None:
+    def editable_values(self) -> dict[str, dict[str, Any]]:
+        """Return stable bodies for editable groups, without runtime status fields."""
+        from autodj.settings_bodies import DjMixBody, PlaybackSettingsBody
+
+        settings = self.get_settings()
+        playback = settings["playback"]
+        return {
+            "preset": {"name": settings["preset"]},
+            "transition": {"effect": settings["transition"]},
+            "djmix": {
+                key: value
+                for key, value in settings["djmix"].items()
+                if key in DjMixBody.model_fields and value is not None
+            },
+            "playback": {
+                key: value
+                for key, value in playback.items()
+                if key in PlaybackSettingsBody.model_fields and value is not None
+            },
+            "bpm_range": settings["bpm_range"],
+            "discovery": {"every": settings["discovery_every"]},
+            "eq": settings["eq"],
+        }
+
+    def apply_settings_patch(self, changes: Any) -> None:
+        """Apply validated groups and persist them through the station settings store."""
+        from autodj.presets import get_preset
+        from autodj.settings_bodies import StationSettingsChangesBody
+        from autodj.transitions import TRANSITION_EFFECT_NAMES
+
+        patch = StationSettingsChangesBody.model_validate(changes)
+        if not any(
+            getattr(patch, name) is not None for name in StationSettingsChangesBody.model_fields
+        ):
+            raise ValueError("At least one settings group is required")
+        with self._lock:
+            if patch.preset is not None and patch.preset.name:
+                get_preset(patch.preset.name, self.cfg.presets)
+            if patch.transition is not None and patch.transition.effect.lower() not in (
+                TRANSITION_EFFECT_NAMES
+            ):
+                raise ValueError(f"unknown transition effect: {patch.transition.effect}")
+
+            # Playback is the only setter here that can reject file-backed choices;
+            # run it before the simple in-memory groups so validation cannot leave a
+            # subset applied.
+            if patch.playback is not None:
+                self.set_playback_settings(patch.playback, refresh=False)
+            if patch.preset is not None:
+                self.set_preset(patch.preset.name, refresh=False)
+            if patch.transition is not None:
+                self.set_transition(patch.transition.effect)
+            if patch.djmix is not None:
+                self.set_djmix(**patch.djmix.model_dump(exclude_none=True))
+            if patch.bpm_range is not None:
+                self.set_bpm_range(patch.bpm_range.lo, patch.bpm_range.hi)
+            if patch.discovery is not None:
+                self.set_discovery_every(patch.discovery.every, refresh=False)
+            if patch.eq is not None:
+                self.set_eq(**patch.eq.model_dump(exclude_none=True))
+            self.save(strict=True)
+            if (
+                self.player is not None
+                and any(
+                    getattr(patch, name) is not None for name in ("playback", "preset", "discovery")
+                )
+                and (refresh_playout := getattr(self.player, "refresh_playout", None))
+            ):
+                refresh_playout()
+
+    def set_preset(self, name: str | None, *, refresh: bool = True) -> None:
         if not name:
             self._preset = None
         else:
@@ -209,8 +279,12 @@ class StationSettings:
                 return
             if self._preset.discovery_every and self._discovery_every is None:
                 self._discovery_every = self._preset.discovery_every
-        if self.player is not None and (refresh := getattr(self.player, "refresh_playout", None)):
-            refresh()
+        if (
+            refresh
+            and self.player is not None
+            and (refresh_playout := getattr(self.player, "refresh_playout", None))
+        ):
+            refresh_playout()
 
     def set_transition(self, effect: str) -> None:
         from autodj.transitions import TRANSITION_EFFECT_NAMES
@@ -237,7 +311,13 @@ class StationSettings:
             elif hasattr(self.cfg.djmix, key):
                 setattr(self.cfg.djmix, key, bool(value))
 
-    def set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool = False) -> None:
+    def set_playback_settings(
+        self,
+        body: PlaybackSettingsBody,
+        *,
+        restoring: bool = False,
+        refresh: bool = True,
+    ) -> None:
         values = body.model_dump(exclude_none=True)
         legacy_shuffle = values.pop("pure_shuffle", None)
         if legacy_shuffle is not None and "pick_mode" not in values:
@@ -318,15 +398,16 @@ class StationSettings:
             if (
                 picking_changed
                 and not restoring
-                and (refresh := getattr(player, "refresh_playout", None))
+                and refresh
+                and (refresh_playout := getattr(player, "refresh_playout", None))
             ):
-                refresh()
+                refresh_playout()
             if (
                 "repeat_rules" in values
                 and (ledger := getattr(player, "_ledger", None)) is not None
                 and hasattr(ledger, "recent_plays")
             ):
-                player.restore_repeat_history(ledger, refresh=True)
+                player.restore_repeat_history(ledger, refresh=refresh)
 
     def _read_related_artists(self, body: PlaybackSettingsBody, *, restoring: bool) -> Any:
         if body.repeat_rules is None:
@@ -383,7 +464,9 @@ class StationSettings:
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         self._bpm_range = None if lo is None or hi is None or lo >= hi else (lo, hi)
 
-    def set_discovery_every(self, every: int | None, *, restoring: bool = False) -> None:
+    def set_discovery_every(
+        self, every: int | None, *, restoring: bool = False, refresh: bool = True
+    ) -> None:
         self._discovery_every = None if every is None or every <= 0 else int(every)
         if every is not None and every > 0:
             self._discovery_enabled = True
@@ -391,8 +474,12 @@ class StationSettings:
             self._discovery_enabled = False
         if self.player is not None:
             self.player._state.discovery_enabled = self._discovery_enabled
-            if not restoring and (refresh := getattr(self.player, "refresh_playout", None)):
-                refresh()
+            if (
+                not restoring
+                and refresh
+                and (refresh_playout := getattr(self.player, "refresh_playout", None))
+            ):
+                refresh_playout()
 
     def set_volume(self, volume: float) -> None:
         self._volume = max(0.0, min(1.0, volume))

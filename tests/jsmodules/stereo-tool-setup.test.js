@@ -103,8 +103,7 @@ describe("Stereo Tool setup markup", () => {
     expect(field.getAttribute("autocomplete")).toBe("new-password");
     expect(page.querySelector('label[for="stereo-license-key"]').textContent)
       .toBe("Stereo Tool licence key");
-    expect(field.getAttribute("aria-describedby").split(" "))
-      .toEqual(["stereo-license-status", "stereo-license-desc"]);
+    expect(field.hasAttribute("aria-describedby")).toBe(false);
   });
 
   it("labels the terms box and says the links open a new tab", () => {
@@ -310,7 +309,7 @@ describe("Stereo Tool setup controls", () => {
     await vi.waitFor(() => expect($("stereo-license-error").hidden).toBe(false));
     expect($("stereo-license-error").textContent).toContain("Could not save the licence key: A Stereo Tool");
     expect($("stereo-license-key").getAttribute("aria-invalid")).toBe("true");
-    expect($("stereo-license-key").getAttribute("aria-describedby")).toContain("stereo-license-error");
+    expect($("stereo-license-key").getAttribute("aria-errormessage")).toBe("stereo-license-error");
     expect(document.activeElement).toBe($("stereo-license-key"));
     $("stereo-license-key").value = "better";
     $("stereo-license-key").dispatchEvent(new Event("input"));

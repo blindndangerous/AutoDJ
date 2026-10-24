@@ -18,6 +18,7 @@ import pytest
 
 from autodj.indexer import FEATURE_DIM, IndexEntry
 from autodj.similarity import SimilarityError, SimilarityIndex, _bpm_score, _softmax_pick
+from tests.unit._catalog_vectors import build_faiss_index
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -332,7 +333,7 @@ class TestCatalogRefresh:
         sim, _ = _make_similarity_index(3)
         entries = [_make_entry(i + 10) for i in range(5)]
         vectors = np.array([_unit_vec(seed=i + 10) for i in range(5)], dtype=np.float32)
-        sim.replace_catalog_index(entries, vectors)
+        sim.replace_catalog_faiss(entries, build_faiss_index(vectors))
         assert sim.ntotal == 5
         assert sim.entry_for_path("song_0.flac") is None
         assert sim.entry_for_path(entries[0].path) == entries[0]
@@ -343,7 +344,7 @@ class TestCatalogRefresh:
         entries = sim.entries_snapshot()
         index = sim.faiss_index
         with pytest.raises(ValueError, match="mismatch"):
-            sim.replace_catalog_index(list(entries[:2]), vectors)
+            sim.replace_catalog_faiss(list(entries[:2]), build_faiss_index(vectors))
         assert sim.entries_snapshot() == entries
         assert sim.faiss_index is index
 
@@ -362,11 +363,13 @@ class TestCatalogRefresh:
 
         def reload() -> None:
             try:
-                sim.replace_catalog_index(replacement_entries, replacement_vectors)
+                sim.replace_catalog_faiss(
+                    replacement_entries, build_faiss_index(replacement_vectors)
+                )
             finally:
                 finished.set()
 
-        with patch("autodj.indexer.build_faiss_index", side_effect=fake_load_index):
+        with patch(f"{__name__}.build_faiss_index", side_effect=fake_load_index):
             with sim._reload_lock:
                 worker = threading.Thread(target=reload)
                 worker.start()
@@ -409,13 +412,15 @@ class TestCatalogRefresh:
             target=sim.find_next_for_path,
             args=(old_snapshot[0].path, deque([old_snapshot[0].path])),
         )
-        with patch("autodj.indexer.build_faiss_index", side_effect=fake_load_index):
+        with patch(f"{__name__}.build_faiss_index", side_effect=fake_load_index):
             public.start()
             assert public_entered.wait(timeout=1)
 
             def reload() -> None:
                 try:
-                    sim.replace_catalog_index(replacement_entries, replacement_vectors)
+                    sim.replace_catalog_faiss(
+                        replacement_entries, build_faiss_index(replacement_vectors)
+                    )
                 finally:
                     reload_done.set()
 

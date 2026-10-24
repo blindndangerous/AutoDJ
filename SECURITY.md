@@ -2,9 +2,9 @@
 
 ## Supported versions
 
-Only the latest tagged release on `master` receives security updates. As of
-2026-10-17, that release is **v0.21.0**, dated 2026-10-14 in the
-[changelog](CHANGELOG.md#0210---2026-10-14) (2026-10-15 UTC). Earlier releases
+Only the latest tagged release on `master` receives security updates. That
+release is **v0.22.0**, dated 2026-10-23 in the
+[changelog](CHANGELOG.md#0220---2026-10-23). Earlier releases
 no longer receive security fixes. Check the [latest release](https://github.com/blindndangerous/AutoDJ/releases/latest)
 before reporting a version-specific problem; a newer tag replaces the supported release.
 

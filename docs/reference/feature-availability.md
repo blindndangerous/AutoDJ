@@ -25,7 +25,11 @@ Stations**. Every station supports these choices. Startup flags
 | Broadcast recording and outbound relays | Unavailable | Unavailable | Available when configured |
 
 The mixing paths need separate checks. Server preparation does not guarantee
-continuity under arbitrary load. Seeking is restricted in server-mixed playback.
+continuity under arbitrary load. Seeking is unavailable during radio-stream
+playback.
+Server sound-card and radio-stream output require FFmpeg on PATH for progressive
+audio decoding. Only radio-stream output starts stream encoders and listener
+lifecycle.
 Stream start/stop depends on listeners, continuous-play settings and components
 keeping the station active. Closing the control page is not a stream stop command.
 
@@ -73,6 +77,10 @@ enables the documented trusted-LAN exception. See [access management](../guides/
   Preflight does not prove authentication, service availability or audio quality.
   Generation can cost money. Saved liners and activated complete time-check sets
   play locally without provider access; missing clips are not synthesized on demand.
+- The update check in **Settings**, **Updates** needs network access to the source checkout's
+  `origin` or to GitHub. **Restart AutoDJ** appears only when the checkout launcher, a systemd
+  unit with a restart policy, or a container restart policy will start AutoDJ again. AutoDJ
+  does not install updates itself.
 - Stereo Tool needs a separately obtained compatible library and applicable licence;
   container images do not bundle it. External music, voice packs, playlists and
   tools must remain reachable at their configured paths.

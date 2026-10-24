@@ -2296,3 +2296,15 @@ dialog h1 { font-size: 1.5em; }
 .path-picker #path-picker-location { overflow-wrap: anywhere; }
 .browse-button { margin-inline-start: var(--control-gap); }
 #track-info-error { margin: 0.5rem 0 1rem; color: var(--error-text); }
+
+/* Keep a tab's save action reachable without covering keyboard focus. */
+.settings-save-bar {
+  border-top: 1px solid var(--border);
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+}
+.settings-dirty:not(:focus) { outline: 2px dashed currentColor; outline-offset: 2px; }
+/* An empty save status stays rendered, without its margin.  Hidden until its
+   words arrive, it was a new region each time, and NVDA in Firefox said
+   nothing. */
+.settings-save-status:empty { margin: 0; }

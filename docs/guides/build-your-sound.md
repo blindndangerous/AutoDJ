@@ -11,7 +11,7 @@ Choose how AutoDJ selects music, then shape the transitions. You can use similar
    - **Least recently played** favors songs that have waited longest.
    - **Clockwheel** follows the active clockwheel's steps.
 3. Set **Prevent the same artist from repeating within**, **Prevent the same track from repeating within**, and any other repeat rules you need. A value of 0 turns that limit off.
-4. Press **Save repeat settings** in **Repeats** after changing repeat rules. Open **Test rotation** and press **Test rotation** to inspect future picks before going on air.
+4. Press **Save changes** in **Song picking** after changing the rules. Open **Test rotation** and press **Test rotation** to inspect future picks before going on air.
 
 The queue takes priority over automatic picks. **After queue empties, seed from** decides whether similarity continues from the last queued song or returns to the song playing before the queue. **Inject distant tracks** occasionally moves a similarity set away from its current sound.
 

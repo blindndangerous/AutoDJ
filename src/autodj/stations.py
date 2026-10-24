@@ -798,11 +798,32 @@ def _reusable(task: asyncio.Future[Any] | None) -> bool:
     return not task.cancelled() and task.exception() is None
 
 
+# A shutdown step that takes longer than this is logged at INFO; the rest at DEBUG.
+SLOW_SHUTDOWN_STEP_S = 2.0
+
+
+def _log_step_time(name: str, started: float) -> None:
+    """Log how long shutdown step *name*, begun at monotonic *started*, took."""
+    elapsed = time.monotonic() - started
+    level = logging.INFO if elapsed > SLOW_SHUTDOWN_STEP_S else logging.DEBUG
+    logger.log(level, "Shutdown step %s took %.2f s", name, elapsed)
+
+
+async def timed_shutdown_step[T](name: str, work: Awaitable[T]) -> T:
+    """Await *work*, one step of shutting down, and log how long it took."""
+    started = time.monotonic()
+    try:
+        return await work
+    finally:
+        _log_step_time(name, started)
+
+
 async def _step(what: str, call: Callable[[], Any], problems: list[str]) -> None:
     """Run one step of a stop, awaiting it if it is a coroutine; log a failure and go on.
 
     A failure is also added to *problems*, in plain words, for the reply.
     """
+    started = time.monotonic()
     try:
         result = call()
         if inspect.isawaitable(result):
@@ -810,6 +831,8 @@ async def _step(what: str, call: Callable[[], Any], problems: list[str]) -> None
     except Exception:
         logger.exception("Stopping the station: %s failed", what)
         problems.append(f"{what[0].upper()}{what[1:]} failed; the server log has the details.")
+    finally:
+        _log_step_time(what, started)
 
 
 def _close_master(master: Any, where: str) -> bool:
@@ -1296,8 +1319,9 @@ class StationRuntime:
         if self.player_thread is None and not has_background_writers:
             return True
         try:
-            return await asyncio.to_thread(
-                quiesce_cache_writers, bridge, self.player_thread, timeout_s
+            return await timed_shutdown_step(
+                "waiting for its player",
+                asyncio.to_thread(quiesce_cache_writers, bridge, self.player_thread, timeout_s),
             )
         except Exception:
             logger.exception("Stopping the station: waiting for its player failed")
@@ -2109,13 +2133,26 @@ class StationRegistry:
                 await held.enter_async_context(lock)
             writers_quiesced = True
             for station in self.all():
-                quiet = await _run_as(
-                    station.slug, station.stop(timeout_s), getattr(station, "thread_scope", None)
+                quiet = await timed_shutdown_step(
+                    f"stopping station {station.slug}",
+                    _run_as(
+                        station.slug,
+                        station.stop(timeout_s),
+                        getattr(station, "thread_scope", None),
+                    ),
                 )
                 writers_quiesced = quiet and writers_quiesced
-            cache_closed = await library.close(writers_quiesced, readers_stopped=readers_stopped)
+            cache_closed = await timed_shutdown_step(
+                "closing the library",
+                library.close(
+                    writers_quiesced, readers_stopped=readers_stopped, timeout_s=timeout_s
+                ),
+            )
             for station in self.all():
-                await _run_as(station.slug, station.close(), getattr(station, "thread_scope", None))
+                await timed_shutdown_step(
+                    f"closing station {station.slug}",
+                    _run_as(station.slug, station.close(), getattr(station, "thread_scope", None)),
+                )
             self._running.clear()
             return writers_quiesced, cache_closed
 
@@ -2127,6 +2164,8 @@ class SharedLibrary:
         self.library = library
         self._stations = stations
         self._ticker: asyncio.Task[None] | None = None
+        self._scan_stopped: asyncio.Future[bool] | None = None
+        self._scan_timeout_s = 0.0
 
     async def start(self) -> None:
         """Start the library's scan and its two-second tick."""
@@ -2147,28 +2186,59 @@ class SharedLibrary:
             except Exception:
                 logger.exception("Station %s: could not tidy the matched intros", station.slug)
 
-    async def close(self, writers_quiesced: bool, *, readers_stopped: bool = True) -> bool:
-        """Close the DJ-meta cache if no writer remains, then the library.
+    def stop_scan(self, timeout_s: float) -> None:
+        """Tell the scan to stop, so it winds down while the rest of shutdown runs.
 
-        The library stays open while a reader has not stopped
-        (*readers_stopped* false): closing it under that reader would fail it.
+        :meth:`close` then waits for it, up to *timeout_s* seconds from now.
+        """
+        if self.library is None or self._scan_stopped is not None:
+            return
+        self._scan_timeout_s = timeout_s
+        self._scan_stopped = asyncio.ensure_future(
+            asyncio.to_thread(self.library.stop_scan, timeout_s)
+        )
+
+    async def close(
+        self, writers_quiesced: bool, *, timeout_s: float, readers_stopped: bool = True
+    ) -> bool:
+        """Stop the scan, close the DJ-meta cache if no writer remains, then the library.
+
+        The scan writes the cache, so a scan that has not ended in time
+        (the timeout given to :meth:`stop_scan` when shutdown called it
+        first, else *timeout_s* from now) keeps the cache and the library
+        open.  So does a reader that has not stopped (*readers_stopped*
+        false): closing the library under it would fail it.
 
         Returns:
             Whether the DJ-meta cache closed.
         """
+        scan_stopped = True
+        if self.library is not None:
+            self.stop_scan(timeout_s)
+            assert self._scan_stopped is not None
+            scan_stopped = await self._scan_stopped
+            if not scan_stopped:
+                logger.error(
+                    "The library scan was still running %.2f seconds after it was told to "
+                    "stop; the library and the DJ-meta cache are left open",
+                    self._scan_timeout_s,
+                )
         cache_closed = False
-        if writers_quiesced:
+        if writers_quiesced and scan_stopped:
             try:
                 from autodj.dj_meta import close_cache
 
-                close_cache()
+                await asyncio.to_thread(close_cache)
                 cache_closed = True
             except Exception:  # pragma: no cover -- defensive shutdown logging
                 logger.debug("shutdown: DJ-meta close failed", exc_info=True)
         if self._ticker is not None and self.library is not None:
             await _cancel(self._ticker)
-            if readers_stopped:
+            if readers_stopped and scan_stopped:
                 await asyncio.to_thread(self.library.close)
+            else:
+                # Left open, but the plays since the last tick are still saved.
+                await asyncio.to_thread(self.library.flush_ledgers)
         return cache_closed
 
     async def _tick(self) -> None:
