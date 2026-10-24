@@ -284,6 +284,7 @@ describe("the station switcher (APG menu button)", () => {
   const button = () => document.getElementById("station-button");
   const menu = () => document.getElementById("station-menu");
   const items = () => [...menu().querySelectorAll('[role="menuitemradio"]')];
+  const frame = () => new Promise((resolve) => window.requestAnimationFrame(() => setTimeout(resolve, 0)));
   const key = (target, name, init = {}) => target.dispatchEvent(
     new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init }));
 
@@ -347,23 +348,28 @@ describe("the station switcher (APG menu button)", () => {
     expect(chosen).toEqual([]);
   });
 
-  it("chooses with Enter or Space and puts focus back on the button", () => {
+  it("chooses with Enter or Space and puts focus back on the button", async () => {
     key(button(), "Enter");
     key(items()[0], "ArrowDown");
     key(items()[1], "Enter");
+    // The choice is made once focus is back on the button.
+    expect(chosen).toEqual([]);
+    await frame();
     expect(chosen).toEqual(["nightowl"]);
     expect(menu().hidden).toBe(true);
     expect(button().getAttribute("aria-expanded")).toBe("false");
     expect(document.activeElement).toBe(button());
     key(button(), "Enter");
     key(document.activeElement, " ");
+    await frame();
     expect(chosen).toEqual(["nightowl", "default"]);
   });
 
-  it("closes without choosing on Escape, and on Tab without taking focus back", () => {
+  it("closes without choosing on Escape, and on Tab without taking focus back", async () => {
     key(button(), "Enter");
     key(items()[0], "ArrowDown");
     key(items()[1], "Escape");
+    await frame();
     expect(menu().hidden).toBe(true);
     expect(document.activeElement).toBe(button());
     key(button(), "Enter");
@@ -374,7 +380,9 @@ describe("the station switcher (APG menu button)", () => {
     expect(chosen).toEqual([]);
   });
 
-  it("collapses and moves focus to the button before it hides the menu", () => {
+  it("says collapsed a frame before focus returns to the button, then hides the menu", async () => {
+    // NVDA with Firefox read "Station: AutoDJ button expanded" each time
+    // focus reached the button in the same task as the change.
     key(button(), "Enter");
     key(items()[0], "ArrowDown");
     const seen = [];
@@ -382,9 +390,14 @@ describe("the station switcher (APG menu button)", () => {
       seen.push([menu().hidden, button().getAttribute("aria-expanded")]);
     });
     key(items()[1], "Escape");
-    // The focused item was still shown when focus left it, and the button
-    // already said collapsed.
+    expect(button().getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(items()[1]);
+    expect(seen).toEqual([]);
+    // A second Escape while it waits does nothing more.
+    key(items()[1], "Escape");
+    await frame();
     expect(seen).toEqual([[false, "false"]]);
+    expect(document.activeElement).toBe(button());
     expect(menu().hidden).toBe(true);
   });
 
@@ -398,11 +411,13 @@ describe("the station switcher (APG menu button)", () => {
     expect(night.textContent).toBe("Night Owl Radio, on air, 2 listeners");
   });
 
-  it("works with the mouse: the button toggles, an item chooses, outside closes", () => {
+  it("works with the mouse: the button toggles, an item chooses, outside closes", async () => {
     button().click();
     expect(menu().hidden).toBe(false);
     items()[2].click();
+    await frame();
     expect(chosen).toEqual(["oldies"]);
+    expect(menu().hidden).toBe(true);
     button().click();
     document.getElementById("after").dispatchEvent(new Event("pointerdown", { bubbles: true }));
     expect(menu().hidden).toBe(true);

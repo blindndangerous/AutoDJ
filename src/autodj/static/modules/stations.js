@@ -341,8 +341,10 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
   let typed = "";
   let typedAt = 0;
 
+  // Closing: collapsed and waiting a frame to hand focus back (see close).
+  let closing = false;
   function isOpen() {
-    return !menu.hidden;
+    return !menu.hidden && !closing;
   }
 
   function render() {
@@ -398,26 +400,48 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
 
   function open(index) {
     if (wrap.hidden || !items.length) return;
+    closing = false;
     menu.hidden = false;
     button.setAttribute("aria-expanded", "true");
     focusItem(index);
   }
 
-  // Collapsed, then focus on the button, then the menu hidden: hiding the
-  // focused item first left focus nowhere for a moment, and NVDA with
-  // Firefox once read the button as still expanded.
-  function close(returnFocus = true) {
+  // Collapsed first, then, a frame later, focus on the button and the menu
+  // hidden.  NVDA with Firefox read the button as "expanded" every time
+  // focus reached it in the same task as the change: the browser had not
+  // yet passed the new state on.  Focus stays on the item meanwhile, so it
+  // is never left nowhere.
+  // *then* runs once focus is on the button, so a switch that asks first
+  // (unsaved settings) opens its question from the button.
+  function close(returnFocus = true, then = null) {
     if (!isOpen()) return;
     button.setAttribute("aria-expanded", "false");
     typed = "";
-    if (returnFocus) button.focus();
-    menu.hidden = true;
+    if (!returnFocus) {
+      menu.hidden = true;
+      then?.();
+      return;
+    }
+    closing = true;
+    afterNextFrame(() => {
+      if (!closing) return;
+      closing = false;
+      button.focus();
+      menu.hidden = true;
+      then?.();
+    });
+  }
+
+  function afterNextFrame(callback) {
+    const view = doc.defaultView;
+    if (typeof view?.requestAnimationFrame === "function") {
+      view.requestAnimationFrame(() => view.setTimeout(callback, 0));
+    } else setTimeout(callback, 0);
   }
 
   function choose(item) {
     const slug = item?.dataset?.station;
-    close(true);
-    if (slug) onChoose(slug);
+    close(true, slug ? () => onChoose(slug) : null);
   }
 
   // A letter moves to the next station whose name starts with it; more
