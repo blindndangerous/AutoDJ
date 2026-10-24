@@ -79,6 +79,7 @@ describe("relay settings", () => {
     ui.setAvailable(true);
     document.getElementById("stream-relay-add").click();
     document.getElementById("stream-relay-name").value = "main";
+    document.getElementById("stream-relay-host").value = "relay.example";
     const card = document.getElementById("relay-card");
     card.open = false;
     document.getElementById("stream-relay-form").dispatchEvent(
@@ -91,6 +92,34 @@ describe("relay settings", () => {
     expect(document.activeElement).toBe(host);
     expect(host.getAttribute("aria-describedby")).toContain("stream-relay-form-error");
     expect(document.getElementById("stream-relay-form-error").textContent).toBe("host is required");
+    ui.reset();
+  });
+
+  it("refuses a missing name or host itself, as its fields are not natively required", async () => {
+    // Firefox read the whole Stream group as "invalid entry" before anything
+    // was typed, because the closed Add relay form had empty required fields.
+    const post = vi.fn(async () => true);
+    const ui = installRelaySettings({
+      doc: document, request: vi.fn(async () => ({ relays: [] })), post,
+      remove: vi.fn(), announce: vi.fn(),
+    });
+    ui.setAvailable(true);
+    const form = document.getElementById("stream-relay-form");
+    document.getElementById("stream-relay-add").click();
+    const card = document.getElementById("relay-card");
+    card.open = false;
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    const name = document.getElementById("stream-relay-name");
+    expect(name.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(name);
+    expect(card.open).toBe(true);
+    expect(document.getElementById("stream-relay-form-error").textContent).toBe("Enter a name for the relay.");
+    name.value = "main";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(document.getElementById("stream-relay-host"));
+    expect(document.getElementById("stream-relay-form-error").textContent).toBe("Enter the relay server's host.");
+    expect(name.hasAttribute("aria-invalid")).toBe(false);
+    expect(post).not.toHaveBeenCalled();
     ui.reset();
   });
 
@@ -107,6 +136,8 @@ describe("relay settings", () => {
     });
     ui.setAvailable(true);
     document.getElementById("stream-relay-add").click();
+    document.getElementById("stream-relay-name").value = "main";
+    document.getElementById("stream-relay-host").value = "relay.example";
     document.getElementById("stream-relay-form").dispatchEvent(
       new Event("submit", { bubbles: true, cancelable: true }),
     );

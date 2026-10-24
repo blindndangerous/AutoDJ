@@ -2194,7 +2194,7 @@
         </span>
         <div class="settings-row">
           <label for="recording-retention-days">Days to keep recordings</label>
-          <input type="number" id="recording-retention-days" min="0" step="1" required
+          <input type="number" id="recording-retention-days" min="0" step="1" value="0" required
                  inputmode="numeric" aria-describedby="recording-retention-desc">
         </div>
         <span class="setting-desc" id="recording-retention-desc">
@@ -2202,7 +2202,7 @@
         </span>
         <div class="settings-row">
           <label for="recording-free-space-mb">Minimum free space in MB</label>
-          <input type="number" id="recording-free-space-mb" min="0" step="1" required
+          <input type="number" id="recording-free-space-mb" min="0" step="1" value="100" required
                  inputmode="numeric" aria-describedby="recording-free-space-desc">
         </div>
         <span class="setting-desc" id="recording-free-space-desc">
@@ -2222,12 +2222,18 @@
           <tbody id="stream-relay-rows"></tbody>
         </table>
         </div>
-        <form id="stream-relay-form" hidden>
+        <!-- Required fields here and in the forms below are aria-required,
+             not required, and checked in script: Firefox calls an empty
+             required field, and every fieldset around it, "invalid entry"
+             before anything is typed, so the whole Stream group was read
+             as invalid.  The required number settings start at their
+             defaults for the same reason, until the saved values arrive. -->
+        <form id="stream-relay-form" novalidate hidden>
           <h5 id="stream-relay-form-title">Add relay</h5>
-          <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" required>
+          <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" aria-required="true">
           <label for="stream-relay-type">Server type</label><select id="stream-relay-type"><option value="icecast">Icecast</option><option value="shoutcast1">Shoutcast 1</option><option value="shoutcast2">Shoutcast 2</option></select>
-          <label for="stream-relay-host">Host</label><input id="stream-relay-host" required autocomplete="off">
-          <label for="stream-relay-port">Listener port</label><input id="stream-relay-port" type="number" min="1" max="65535" value="8000" required>
+          <label for="stream-relay-host">Host</label><input id="stream-relay-host" aria-required="true" autocomplete="off">
+          <label for="stream-relay-port">Listener port</label><input id="stream-relay-port" type="number" min="1" max="65535" value="8000" aria-required="true">
           <label for="stream-relay-password">Source password</label><input id="stream-relay-password" type="password" autocomplete="new-password" aria-describedby="stream-relay-password-help">
           <p id="stream-relay-password-help">Saved passwords stay private. Leave blank to keep the current password.</p>
           <p>Relay TLS is unsupported; the source password is sent without encryption.</p>
@@ -2337,11 +2343,12 @@
         <ul id="listener-control-list" aria-label="Connected listeners"></ul>
         <p id="listener-control-empty" hidden>No listeners connected.</p>
         <button type="button" id="listener-ban-new">Add address ban</button>
-        <form id="listener-ban-form" hidden>
+        <form id="listener-ban-form" novalidate hidden>
           <fieldset class="flow-form">
             <legend>Ban a listener address</legend>
             <label for="listener-ban-address">Address or CIDR</label>
-            <input id="listener-ban-address" required autocomplete="off">
+            <input id="listener-ban-address" aria-required="true" autocomplete="off">
+            <p id="listener-ban-error" class="field-error" hidden></p>
             <label for="listener-ban-duration">Duration</label>
             <select id="listener-ban-duration">
               <option value="60">1 hour</option>
@@ -2413,7 +2420,7 @@
         <ul class="stream-detail" id="listener-stats-lengths" aria-labelledby="listener-stats-lengths-title" hidden></ul>
         <div class="settings-row">
           <label for="listener-stats-keep">Days to keep statistics</label>
-          <input type="number" id="listener-stats-keep" min="0" max="3650" step="1" required
+          <input type="number" id="listener-stats-keep" min="0" max="3650" step="1" value="90" required
                  aria-describedby="listener-stats-keep-desc">
         </div>
         <span class="setting-desc" id="listener-stats-keep-desc">
@@ -2501,12 +2508,12 @@
         </span>
         <div class="settings-row">
           <label for="station-create-name">Name</label>
-          <input type="text" id="station-create-name" maxlength="80" autocomplete="off" required>
+          <input type="text" id="station-create-name" maxlength="80" autocomplete="off" aria-required="true">
         </div>
         <div class="settings-row">
           <label for="station-create-slug">Station ID</label>
           <input type="text" id="station-create-slug" maxlength="32" autocomplete="off"
-                 autocapitalize="off" spellcheck="false" required
+                 autocapitalize="off" spellcheck="false" aria-required="true"
                  aria-describedby="station-create-slug-help">
         </div>
         <span class="setting-desc" id="station-create-slug-help">
@@ -3537,7 +3544,7 @@
           <p id="categories-form-error" class="field-error" hidden></p>
           <div class="settings-row">
             <label for="categories-name">Name</label>
-            <input id="categories-name" type="text" maxlength="64" autocomplete="off" spellcheck="false" required>
+            <input id="categories-name" type="text" maxlength="64" autocomplete="off" spellcheck="false" aria-required="true">
           </div>
           <fieldset>
             <legend>Songs come from</legend>
@@ -3687,7 +3694,7 @@
           <p id="shows-form-error" class="field-error" hidden></p>
           <div class="settings-row">
             <label for="shows-name">Name</label>
-            <input id="shows-name" type="text" maxlength="100" autocomplete="off" spellcheck="false" required>
+            <input id="shows-name" type="text" maxlength="100" autocomplete="off" spellcheck="false" aria-required="true">
           </div>
           <fieldset id="shows-source">
             <legend>Songs come from</legend>

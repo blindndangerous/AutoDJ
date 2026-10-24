@@ -2382,6 +2382,28 @@ describe("static accessibility contracts", () => {
     }
   });
 
+  it("keeps groups from starting invalid with an empty required field", () => {
+    // Firefox calls an empty required field, and every fieldset around it,
+    // "invalid entry" before anything is typed: "Stream grouping invalid
+    // entry", "New station grouping invalid entry".  These forms check their
+    // own fields, so the fields are aria-required instead.
+    installDocument();
+    for (const id of ["stream-settings", "station-create-form", "categories-form", "shows-form"]) {
+      const group = document.getElementById(id);
+      const empty = [...group.querySelectorAll("input[required], textarea[required], select[required]")]
+        .filter((control) => !control.value);
+      expect(empty.map((control) => control.id), id).toEqual([]);
+      const form = group.matches("form") ? group : null;
+      for (const item of [form, ...group.querySelectorAll("form")].filter(Boolean)) {
+        expect(item.noValidate, item.id).toBe(true);
+      }
+    }
+    for (const id of ["stream-relay-name", "stream-relay-host", "listener-ban-address",
+      "station-create-name", "station-create-slug", "categories-name", "shows-name"]) {
+      expect(document.getElementById(id).getAttribute("aria-required"), id).toBe("true");
+    }
+  });
+
   it("describes the clockwheel step dialog in one short sentence", () => {
     // Without a description NVDA with Firefox read the whole step form as the
     // dialog opened (the help, the track count, every label), twice.
