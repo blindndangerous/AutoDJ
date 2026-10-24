@@ -75,6 +75,13 @@ function accept(part, value) {
   }
   part.echoUntil = 0;
   part.latest = clone(value);
+  // A draft the server now holds is no longer a change.  Without this a
+  // part that once differed stayed dirty for good, and Settings asked to
+  // save changes that were not there.
+  if (dirty(part) && Object.entries(part.read()).every(([key, item]) => equal(value[key], item))) {
+    part.baseline = clone(part.read());
+    return;
+  }
   if (!dirty(part)) {
     const unchanged = part.baseline !== null && Object.entries(part.baseline).every(([key, item]) => equal(value[key], item));
     if (!unchanged) part.write(value);

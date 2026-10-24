@@ -232,6 +232,21 @@ describe("Settings drafts", () => {
     mocks.choose.mockResolvedValue("alternate"); mocks.request.mockResolvedValue(snapshot());
     expect(await drafts.confirmSettingsNavigation()).toBe(true); expect(input.value).toBe("0");
   });
+  it("ends a draft once the server holds the value the draft shows", () => {
+    // The server moves to 3, the page follows, the field goes back to 0
+    // without an edit, and the server moves back to 0: nothing is unsaved.
+    const part = register(); drafts.applySettingsDrafts(snapshot());
+    part.accept({ music_speed_percent: 3 });
+    expect(input.value).toBe("3");
+    input.value = "0";
+    expect(drafts.settingsHaveChanges()).toBe(true);
+    part.accept({ music_speed_percent: 0 });
+    expect(drafts.settingsHaveChanges()).toBe(false);
+    expect(panel.querySelector("[data-settings-save]").getAttribute("aria-disabled")).toBe("true");
+    edit(5);
+    part.accept({ music_speed_percent: 2 });
+    expect(input.value).toBe("5"); expect(drafts.settingsHaveChanges()).toBe(true);
+  });
   it("lists each dirty part with what it reads and its baseline", () => {
     input.id = "speed";
     register(); drafts.applySettingsDrafts(snapshot());

@@ -746,6 +746,13 @@ async function openHourFit(page, visit) {
   } finally {
     hourFitPages.delete(page);
     await toggle.evaluate((box, checked) => { box.checked = checked; }, was);
+    // The stood-in pushes said Hour fit was on, so the draft may hold "on"
+    // as the server's value; the next real push ends the draft.
+    // waitForFunction does not wait for a promise, so import first.
+    await page.evaluate(async (drafts) => { window.__autodjDrafts = await import(drafts); },
+      "/modules/settings-drafts.js");
+    await page.waitForFunction(() => !window.__autodjDrafts.dirtySettingsParts(document)
+      .some((part) => part.controls.includes("pb-hour-fit")), null, { timeout: 10000 });
   }
 }
 
