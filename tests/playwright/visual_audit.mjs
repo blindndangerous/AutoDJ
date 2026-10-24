@@ -1624,6 +1624,7 @@ async function eachTarget(page, measure) {
   await standInForRequests(page);
   await standInForSchedule(page);
   await standInForUpdates(page);
+  await recordConfirmOpeners(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -1669,7 +1670,7 @@ async function eachTarget(page, measure) {
       await page.locator('[data-settings-discard]:visible').evaluateAll((buttons) => {
         for (const button of buttons) if (button.getAttribute("aria-disabled") !== "true") button.click();
       });
-      await page.locator(`#${id}`).click();
+      await clickSubtabUnprompted(page, id);
       await page.waitForTimeout(150);
       await openEveryCard(page);
       await visit(`settings/${id.replace(/^stab-/, "")}`);
@@ -2140,7 +2141,11 @@ async function checkSystemTheme(browser, mode, out) {
 // An "Unsaved settings" confirmation on a page where nothing was edited
 // has opened now and then.  Note where each confirmation is opened from,
 // so the failure can name the dirty parts and the caller.
+const confirmOpenerPages = new WeakSet();
+
 async function recordConfirmOpeners(page) {
+  if (confirmOpenerPages.has(page)) return;
+  confirmOpenerPages.add(page);
   await page.addInitScript(() => {
     const show = window.HTMLDialogElement.prototype.showModal;
     window.HTMLDialogElement.prototype.showModal = function showModal(...args) {
