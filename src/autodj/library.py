@@ -97,8 +97,12 @@ def freeze_long_lived() -> None:
     A full pass walks every object the collector tracks while holding the
     GIL, so with a large library loaded it held up the mix bus for a long
     time.  Frozen objects are still freed when nothing refers to them; only
-    a reference cycle among them would never be collected.
+    a reference cycle among them would never be collected.  So the young
+    generations are collected first, which is quick: garbage cycles made
+    since the last freeze (a request's frames, a failed future) are not
+    frozen with the rest, and frozen memory does not grow per refresh.
     """
+    gc.collect(1)
     gc.freeze()
 
 

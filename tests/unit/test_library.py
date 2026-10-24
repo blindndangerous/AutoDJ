@@ -4121,6 +4121,30 @@ def test_a_refresh_freezes_the_new_entries_and_frees_the_old_ones(manager_factor
     assert old() is None
 
 
+def test_repeated_refreshes_keep_the_frozen_objects_flat(manager_factory):
+    """ADR-0008-33. Garbage cycles alive at a reload are collected, not frozen for good."""
+    manager = manager_factory()
+    music = manager.cfg.library.music_dir
+    songs = [music / f"{n}.flac" for n in range(200)]
+    for song in songs:
+        manager.catalog.put_entry(make_entry(song))
+    manager.refresh()
+    start = gc.get_freeze_count()
+    # No automatic collection runs between reloads, as on a busy server
+    # whose cycles are still uncollected when the next result arrives.
+    gc.disable()
+    try:
+        for round_ in range(50):
+            cycle: list[object] = [{"round": round_, "n": n} for n in range(200)]
+            cycle.append(cycle)
+            del cycle
+            manager.catalog.put_entry(make_entry(songs[round_ % len(songs)], title=f"T{round_}"))
+            assert manager.refresh()
+    finally:
+        gc.enable()
+    assert gc.get_freeze_count() < start * 1.05
+
+
 @pytest.mark.dj_analysis
 def test_the_dj_backlog_stops_reading_the_cache_once_the_library_closes(
     manager_factory, monkeypatch
