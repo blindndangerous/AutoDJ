@@ -25,6 +25,13 @@ const JSON_HEADERS = { "Content-Type": "application/json" };
 
 // Which repeat choices use a time, a date and so on.
 const USES_TIME = new Set(["once", "daily", "weekdays", "days"]);
+// The help under Repeat dates, for each choice; the date fields read it too.
+// The Repeat rule already sets the days, so the dates repeat yearly at most.
+const DATES_REPEAT_HELP = {
+  none: "The event runs only between these dates, both included.",
+  yearly: "Repeats on these dates every year, ignoring the year; a range may run past New Year. "
+    + "29 February counts as 28 February in other years.",
+};
 
 export function installSchedulerPanel({ doc = document, request = requestJson, now = () => Date.now() } = {}) {
   const panel = doc.getElementById("spanel-schedule");
@@ -334,7 +341,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     // the dates stay in view, to keep or clear.
     const range = get("range");
     if (range) {
-      const dated = Boolean(get("start-date").value || get("end-date").value);
+      const dated = Boolean(get("start-date").value || get("end-date").value || get("dates-repeat").value !== "none");
       range.hidden = repeatSelect.value === "once" && !dated;
     }
     // A description named by aria-describedby is read even when hidden.
@@ -360,11 +367,17 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     get("window-end").value = event?.window_end?.slice(0, 5) ?? "";
     get("start-date").value = event?.start_date ?? "";
     get("end-date").value = event?.end_date ?? "";
+    get("dates-repeat").value = DATES_REPEAT_HELP[event?.dates_repeat] ? event.dates_repeat : "none";
+    showDatesRepeatHelp();
     get("timing").value = event?.timing ?? "soft";
     get("wait").value = String(event?.wait_seconds ?? 0);
     get("enabled").checked = event ? event.enabled : true;
     showRepeatFields();
     editor.open(nameInput, opener);
+  }
+
+  function showDatesRepeatHelp() {
+    get("dates-repeat-desc").textContent = DATES_REPEAT_HELP[get("dates-repeat").value] || DATES_REPEAT_HELP.none;
   }
 
   function closeForm() {
@@ -403,7 +416,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     const ids = {
       name: "name", action: "action", repeat: "repeat", date: "date", time: "time",
       interval_minutes: "interval", window_start: "window-start", window_end: "window-end",
-      start_date: "start-date", end_date: "end-date", timing: "timing",
+      start_date: "start-date", end_date: "end-date", dates_repeat: "dates-repeat", timing: "timing",
       wait_seconds: "wait", enabled: "enabled",
     };
     const control = ids[field] && get(ids[field]);
@@ -463,9 +476,13 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     }
     const from = get("start-date").value;
     const until = get("end-date").value;
-    if (from && until && until < from) return ["end_date", "End date must be on or after the start date"];
+    // Every year ignores the year, so its end date may come first; the
+    // server checks a one-time date against it.
+    const yearly = get("dates-repeat").value === "yearly";
+    if (yearly && !from) return ["start_date", "Enter a start date to repeat the dates every year"];
+    if (!yearly && from && until && until < from) return ["end_date", "End date must be on or after the start date"];
     const day = get("date").value;
-    if (repeat === "once" && ((from && day < from) || (until && day > until))) {
+    if (repeat === "once" && !yearly && ((from && day < from) || (until && day > until))) {
       return ["date", "Date must be within the start and end dates"];
     }
     if (get("timing").value === "hard" && waitSeconds() === null) {
@@ -497,6 +514,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     // An empty date is no limit; the server reads a missing one the same way.
     if (get("start-date").value) body.start_date = get("start-date").value;
     if (get("end-date").value) body.end_date = get("end-date").value;
+    if (get("dates-repeat").value === "yearly") body.dates_repeat = "yearly";
     if (repeat === "once") body.date = get("date").value;
     if (USES_TIME.has(repeat)) body.time = get("time").value;
     if (repeat === "days" || repeat === "interval") body.days = dayBoxes.filter((box) => box.checked).map((box) => Number(box.value));
@@ -548,6 +566,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
   addButton.addEventListener("click", () => openForm(null, addButton));
   actionSelect.addEventListener("change", () => renderParams());
   repeatSelect.addEventListener("change", showRepeatFields);
+  get("dates-repeat").addEventListener("change", showDatesRepeatHelp);
   // A field the user changes is no longer marked as the bad one.
   form.addEventListener("input", (event) => {
     if (event.target.getAttribute?.("aria-invalid")) {

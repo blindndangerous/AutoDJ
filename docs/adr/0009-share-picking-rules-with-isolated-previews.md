@@ -90,6 +90,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0009-05` | Forecast accuracy and omitted simulation features require explicit operational interpretation. | manual | Compare predictions with observed station output and document simulation omissions; forecasts are not immutable playout promises. |
 | `ADR-0009-06` | The announcer context reports the programming the live station is using (the clockwheel picking, a show on the air and the pick mode), read from the live player and show runner rather than from a copy of the schedule. | automated | `tests/unit/test_breaks_api.py::test_context_says_which_programming_is_on_the_air`; `tests/unit/test_shows.py::test_a_stop_that_cannot_take_the_songs_out_keeps_trying` |
 | `ADR-0009-07` | A relative date condition (a Beets date within the last N days) saves the number of days, not a date, and is judged against the time of the pick; cached step and category results are worked out again when its hourly window moves, not for every pick. | automated | `tests/unit/test_clock_conditions.py::test_within_days_matches_beets_dates_in_the_last_n_days`; `tests/unit/test_clock_conditions.py::test_within_days_moves_with_the_clock`; `tests/unit/test_clock_condition_picks.py::test_relative_date_steps_are_worked_out_again_each_hour`; `tests/unit/test_categories.py::test_a_new_music_category_follows_the_clock`; `tests/unit/test_clock_category_player.py::test_a_relative_date_step_is_judged_for_when_the_song_starts`; `tests/jsmodules/condition-editor.test.js::offers within the last N days for a Beets date and reads a whole number of days` |
+| `ADR-0009-08` | A category season or a schedule event's date range may repeat every year (month and day only, wrapping past New Year, 29 February read as 28 February in a common year), and a category season every week (the first and last dates' weekdays, from the first date on); a range that does not repeat keeps its fixed dates, `dates_repeat` is written only when the dates repeat, and the next run of a yearly event is next year's once this year's has passed. | automated | `tests/unit/test_date_repeat.py::test_a_yearly_range_runs_past_new_year_in_every_year`; `tests/unit/test_date_repeat.py::test_29_february_is_28_february_in_a_common_year`; `tests/unit/test_date_repeat.py::test_a_weekly_window_runs_from_its_first_date_and_may_wrap_past_sunday`; `tests/unit/test_date_repeat.py::test_a_weekly_range_with_one_date_is_that_weekday`; `tests/unit/test_date_repeat.py::test_what_is_wrong_with_a_range`; `tests/unit/test_scheduler_dates.py::test_a_yearly_range_runs_every_year_past_new_year`; `tests/unit/test_scheduler_dates.py::test_a_yearly_29_february_runs_on_28_february_in_common_years`; `tests/unit/test_scheduler_dates.py::test_next_events_show_next_years_run_once_this_years_has_passed`; `tests/unit/test_scheduler_dates.py::test_a_one_time_event_in_a_yearly_range`; `tests/unit/test_scheduler_dates.py::test_bad_yearly_dates_name_the_field`; `tests/unit/test_scheduler_dates.py::test_yearly_dates_are_saved_only_when_set_and_old_files_load`; `tests/unit/test_category_dates_step_hours.py::test_a_weekly_season_keeps_its_weekdays_from_its_first_date`; `tests/unit/test_category_dates_step_hours.py::test_a_yearly_season_runs_past_new_year_and_keeps_29_february`; `tests/unit/test_category_dates_step_hours.py::test_repeating_seasons_in_words`; `tests/unit/test_category_dates_step_hours.py::test_a_repeating_season_that_cannot_be_saved_names_its_field`; `tests/unit/test_category_dates_step_hours.py::test_a_repeating_season_is_saved_only_when_set`; `tests/jsmodules/categories-panel.test.js::repeats a season every week or every year, with help the date fields read too`; `tests/jsmodules/scheduler-panel.test.js::repeats an event's dates every year and shows next year's run in Next events` |
 
 ## Verification
 
@@ -140,3 +141,22 @@ Categories judge it at the current time, also in those previews; that is a docum
 simulation omission. AutoDJ's own library has no date added, so the condition reads Beets values
 through the existing Beets condition path. `ADR-0009-07` maps the checks. This amendment does not
 change this record's Proposed status.
+
+## Amendment 2026-10-24: Dates that repeat every week or every year
+
+Issue [#470](https://github.com/blindndangerous/AutoDJ/issues/470) lets seasonal programming
+repeat without editing its dates each year. The existing date fields stay, and a `dates_repeat`
+choice next to them says how to read them. `"none"`, the default, keeps the fixed dates exactly
+as before. `"yearly"` uses only the month and day of both dates. A range whose last day comes
+before its first runs past New Year, such as 20 December to 2 January. A missing last date, or
+the same month and day, is that one day. 29 February counts as 28 February in a year without one.
+Categories may also use `"weekly"`: the weekdays of the first and last dates set a window that
+repeats every week, from the first date on with no end, such as Friday to Sunday. The last date is
+at most 6 days after the first, so the window may run past Sunday. Without a last date, it is the
+first date's weekday. Schedule events offer `"none"` and `"yearly"` only, because their own
+Repeat rule already chooses the days. A repeating range needs its first date. The field is
+written only when the dates repeat, so files from earlier versions load unchanged and stay
+readable by them. The scheduler looks up to 29 years ahead for the next run of a yearly range,
+so a one-day range on a chosen weekday still finds it. Next events lists next year's run once
+this year's has passed. `ADR-0009-08` maps the checks. This amendment does not change this
+record's Proposed status.
