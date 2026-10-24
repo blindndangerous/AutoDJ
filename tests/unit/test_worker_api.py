@@ -443,6 +443,23 @@ def claim_scan(server, secret):
     return reply.json()["songs"][0]
 
 
+def test_scan_lease_embeds_unembedded_song_after_paging_past_it(server):
+    """A scan lease for a song without a vector asks for its vector too.
+
+    The pending song sorts first, so filling the batch from the paged
+    candidates moves past it before the reply is built.
+    """
+    _token, secret = server.token()
+    record = server.manager.catalog.record_for_path(server.songs[0])
+    server.manager.analysis_queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+    reply = server.call("POST", "/api/worker/claim", secret, json={**SCAN_CAPABILITY, "batch": 2})
+    assert reply.status_code == 200, reply.text
+    songs = reply.json()["songs"]
+    assert len(songs) == 2
+    (scan,) = [song for song in songs if "scan" in song]
+    assert scan["embed"] is True
+
+
 def test_worker_combined_result_stores_scan_fields(server):
     """ADR-0008-06. A combined result completes scan work and makes music playable."""
     _token, secret = server.token()
@@ -627,7 +644,7 @@ def test_advanced_lease_before_scan_deferral_stores_vector_and_retains_scan(serv
     assert reply.status_code == 200, reply.text
     assert queue.lease(song["lease"], token.token_id) is None
     assert queue.scan_pending(record["path"])
-    assert record["path"] not in server.manager.catalog.unembedded_paths()
+    assert record["path"] not in server.manager.catalog.iter_unembedded_paths()
     entries, stored_vectors = vectors_snapshot(server.manager.catalog)
     paths = [entry.path for entry in entries]
     np.testing.assert_allclose(stored_vectors[paths.index(record["path"])], vector)
@@ -1536,14 +1553,14 @@ def test_claim_retries_after_other_worker_takes_selected_songs(server, monkeypat
     queue = server.manager.analysis_queue
     real_claim = queue.claim
     catalog = server.manager.catalog
-    real_paths = catalog.unembedded_paths
+    real_paths = catalog.iter_unembedded_paths
     queries = []
 
     def counted_paths():
         queries.append(1)
         return real_paths()
 
-    monkeypatch.setattr(catalog, "unembedded_paths", counted_paths)
+    monkeypatch.setattr(catalog, "iter_unembedded_paths", counted_paths)
     raced = False
 
     def claim_with_race(holder, songs, seconds, **kwargs):
@@ -1935,6 +1952,56 @@ def test_store_analysis_checks_the_record_inside_its_transaction(server):
         catalog._db().commit()
     assert catalog.store_analysis(song, record["size"], record["fingerprint"], fields, vector)
     assert catalog.record_for_path(song)["key"] == 1
+
+
+def test_claim_pages_past_missing_held_and_lost_leases(server, monkeypatch):
+    import autodj.catalog as catalog_module
+
+    monkeypatch.setattr(catalog_module, "ANALYSIS_PAGE_SIZE", 1, raising=False)
+    server.songs[0].unlink()
+    queue = server.manager.analysis_queue
+    record = server.manager.catalog.record_for_path(server.songs[1])
+    queue.claim(
+        "other", [(record["path"], record["size"], record["fingerprint"])], WORKER_LEASE_SECONDS
+    )
+    secret = server.token()[1]
+    assert len(claim(server, secret, batch=2)["songs"]) == 1
+
+
+def test_claim_continues_after_losing_a_page_to_another_worker(server, monkeypatch):
+    import autodj.catalog as catalog_module
+
+    monkeypatch.setattr(catalog_module, "ANALYSIS_PAGE_SIZE", 1, raising=False)
+    queue = server.manager.analysis_queue
+    original = queue.claim
+    lost = []
+
+    def racing_claim(holder, songs, seconds, **kwargs):
+        if not lost:
+            lost.extend(original("competitor", songs[:1], seconds))
+        return original(holder, songs, seconds, **kwargs)
+
+    monkeypatch.setattr(queue, "claim", racing_claim)
+    result = claim(server, server.token()[1], batch=2)
+    assert len(lost) == 1
+    assert len(result["songs"]) == 2
+    assert lost[0].lease_id not in {song["lease"] for song in result["songs"]}
+    assert result["waiting"] == 3  # Exact pending count still includes leased songs.
+
+
+def test_small_claim_does_not_consume_the_entire_candidate_iterator(server, monkeypatch):
+    catalog = server.manager.catalog
+    original = catalog.iter_unembedded_paths
+    examined = []
+
+    def observed():
+        for path in original():
+            examined.append(path)
+            yield path
+
+    monkeypatch.setattr(catalog, "iter_unembedded_paths", observed)
+    assert len(claim(server, server.token()[1], batch=1)["songs"]) == 1
+    assert len(examined) == 1
 
 
 # ---------------------------------------------------------------------------
