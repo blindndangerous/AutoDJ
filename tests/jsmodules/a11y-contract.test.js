@@ -2407,6 +2407,42 @@ describe("static accessibility contracts", () => {
     }
   });
 
+  it("keeps groups from starting invalid with an empty required field", () => {
+    // Firefox calls an empty required field, and every fieldset around it,
+    // "invalid entry" before anything is typed: "Stream grouping invalid
+    // entry", "New station grouping invalid entry".  These forms check their
+    // own fields, so the fields are aria-required instead.
+    installDocument();
+    for (const id of ["stream-settings", "station-create-form", "categories-form", "shows-form", "schedule-form"]) {
+      const group = document.getElementById(id);
+      const empty = [...group.querySelectorAll("input[required], textarea[required], select[required]")]
+        .filter((control) => !control.value);
+      expect(empty.map((control) => control.id), id).toEqual([]);
+      const form = group.matches("form") ? group : null;
+      for (const item of [form, ...group.querySelectorAll("form")].filter(Boolean)) {
+        expect(item.noValidate, item.id).toBe(true);
+      }
+    }
+    for (const id of ["stream-relay-name", "stream-relay-host", "listener-ban-address",
+      "station-create-name", "station-create-slug", "categories-name", "shows-name",
+      "schedule-name", "schedule-date", "schedule-time", "schedule-interval"]) {
+      expect(document.getElementById(id).getAttribute("aria-required"), id).toBe("true");
+    }
+  });
+
+  it("describes the clockwheel step dialog in one short sentence", () => {
+    // Without a description NVDA with Firefox read the whole step form as the
+    // dialog opened (the help, the track count, every label), twice.
+    installDocument();
+    const dialog = document.querySelector("#clock-step-dialog");
+    const description = document.getElementById(dialog.getAttribute("aria-describedby"));
+    expect(description?.tagName).toBe("P");
+    expect(dialog.contains(description)).toBe(true);
+    expect(description.hidden).toBe(false);
+    expect(description.textContent.trim().length).toBeGreaterThan(0);
+    expect(description.textContent.length).toBeLessThan(100);
+  });
+
   it("never nests a dialog inside a tab panel", () => {
     // A <dialog> inside a `[role="tabpanel"]` that is `hidden` on every
     // other tab is not rendered and is invisible to the accessibility
@@ -2591,10 +2627,18 @@ describe("static accessibility contracts", () => {
       const input = document.getElementById(id);
       expect(input.getAttribute("type")).toBe("date");
       expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
-      // Optional: no required attribute, and the description says so in words.
+      // Optional: no required attribute.  The help under Repeat dates says
+      // how the dates are read (the year is ignored for Every year), so the
+      // date fields read it too.
       expect(input.hasAttribute("required")).toBe(false);
-      expect(input.hasAttribute("aria-describedby")).toBe(false);
+      expect(input.getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc");
     }
+    const repeat = document.getElementById("schedule-dates-repeat");
+    expect(repeat.tagName).toBe("SELECT");
+    expect(group.contains(repeat)).toBe(true);
+    expect(document.querySelector('label[for="schedule-dates-repeat"]').textContent.trim()).toBe("Repeat dates");
+    expect(repeat.getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc");
+    expect(document.getElementById("schedule-dates-repeat-desc").classList.contains("setting-desc")).toBe(true);
     // The form's error text has an ID to be linked from the field it names.
     expect(document.querySelector("#schedule-form-error").classList.contains("field-error")).toBe(true);
     // The days description is not linked in the markup: the script links it

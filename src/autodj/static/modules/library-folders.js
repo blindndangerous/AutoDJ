@@ -73,7 +73,9 @@ export function importSummary(data) {
     const activity = job.phase === "recovering analysis" ? "Recovering analysis" : `Importing tracks (${job.phase || "working"})`;
     return `${activity}: ${job.done || 0} of ${job.total || 0}${where}${failed}`;
   }
-  const ready = `${count(data?.tracks_ready, "track")} ready; ${Number(data?.tracks_indexed || 0).toLocaleString("en-US")} indexed.`;
+  // tracks_indexed counts songs with advanced analysis, which a no-model
+  // install never has: "indexed" read as if no song had been imported.
+  const ready = `${count(data?.tracks_ready, "track")} ready; ${Number(data?.tracks_indexed || 0).toLocaleString("en-US")} with advanced analysis.`;
   if (errors) return `Import finished with ${count(errors, "error")}; the list follows. ${ready}${longNote}`;
   return `${ready}${longNote}`;
 }

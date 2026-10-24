@@ -28,8 +28,17 @@ const FIELD_IDS = {
   name: "categories-name", query: "categories-query", playlist: "categories-playlist", source: "categories-source-query",
     conditions: "categories-filter-add",
   days: "categories-day-0", hours_from: "categories-hours-from", hours_until: "categories-hours-until",
-  not_before: "categories-not-before", not_after: "categories-not-after",
+  not_before: "categories-not-before", not_after: "categories-not-after", dates_repeat: "categories-dates-repeat",
 };
+// The help under Repeat dates, for each choice; the date fields read it too.
+const DATES_REPEAT_HELP = {
+  none: "The songs play only between these dates, both included.",
+  weekly: "Repeats every week from the weekday of Not before to that of Do not play after (up to 7 days; it may run past Sunday), "
+    + "starting on Not before. Without Do not play after, it is that one weekday.",
+  yearly: "Repeats on these dates every year, ignoring the year; a range may run past New Year. "
+    + "29 February counts as 28 February in other years.",
+};
+const DAY_MS = 86400000;
 const DAY_IDS = [0, 1, 2, 3, 4, 5, 6].map((day) => `categories-day-${day}`);
 
 const number = (n) => Number(n || 0).toLocaleString("en-US");
@@ -236,7 +245,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     if (!control || !errorText) return;
     const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
       .filter((id) => id && id !== errorText.id);
-    if (linked) ids.push(errorText.id);
+    if (linked) ids.unshift(errorText.id);
     if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
     else control.removeAttribute("aria-describedby");
   }
@@ -292,6 +301,9 @@ export function installCategoriesPanel({ document: doc = document, request = req
     const last = el("categories-not-after")?.value;
     if (first) value.not_before = first;
     if (last) value.not_after = last;
+    // Sent only when the dates repeat, as the server saves it.
+    const repeat = el("categories-dates-repeat")?.value || "none";
+    if (repeat !== "none") value.dates_repeat = repeat;
     return value;
   }
 
@@ -332,9 +344,20 @@ export function installCategoriesPanel({ document: doc = document, request = req
         return false;
       }
     }
-    // ISO dates compare as text.
-    if (value.not_before && value.not_after && value.not_after < value.not_before) {
+    const repeat = value.dates_repeat || "none";
+    if (repeat !== "none" && !value.not_before) {
+      showError("not_before", "Enter a Not before date to repeat the dates.");
+      return false;
+    }
+    // ISO dates compare as text.  Every year ignores the year, so its last
+    // date may come first.
+    if (repeat !== "yearly" && value.not_before && value.not_after && value.not_after < value.not_before) {
       showError("not_after", "Do not play after must be on or after the Not before date.");
+      return false;
+    }
+    if (repeat === "weekly" && value.not_after
+      && (Date.parse(value.not_after) - Date.parse(value.not_before)) / DAY_MS > 6) {
+      showError("not_after", "For Every week, Do not play after must be within 6 days of the Not before date.");
       return false;
     }
     return true;
@@ -359,6 +382,9 @@ export function installCategoriesPanel({ document: doc = document, request = req
       const input = el(id);
       if (input) input.value = category?.[key] || "";
     }
+    const repeatSelect = el("categories-dates-repeat");
+    if (repeatSelect) repeatSelect.value = DATES_REPEAT_HELP[category?.dates_repeat] ? category.dates_repeat : "none";
+    showRepeatHelp();
     el(category?.source === "m3u" ? "categories-source-m3u" : category?.source === "filters" ? "categories-source-filters" : "categories-source-query").checked = true;
     renderPlaylists();
     el("categories-filter-match").value = category?.match || "all";
@@ -563,8 +589,14 @@ export function installCategoriesPanel({ document: doc = document, request = req
     const item = filterRow(); filterHost.append(item.row); item.field.focus(); match.textContent = "Not checked yet.";
   });
   el("categories-filter-match")?.addEventListener("change", () => { match.textContent = "Not checked yet."; scheduleCount(); });
+  // The help says how the dates are read for the chosen repeat.
+  function showRepeatHelp() {
+    const help = el("categories-dates-repeat-help");
+    if (help) help.textContent = DATES_REPEAT_HELP[el("categories-dates-repeat")?.value] || DATES_REPEAT_HELP.none;
+  }
+  el("categories-dates-repeat")?.addEventListener("change", showRepeatHelp);
   for (const field of [nameInput, queryInput, playlistSelect, el("categories-hours-from"),
-    el("categories-hours-until"), el("categories-not-before"), el("categories-not-after")]) {
+    el("categories-hours-until"), el("categories-not-before"), el("categories-not-after"), el("categories-dates-repeat")]) {
     field?.addEventListener("input", () => { unmark(field); scheduleCount(); });
     field?.addEventListener("change", scheduleCount);
   }

@@ -24,7 +24,7 @@ function setup() {
     <p id="listener-control-empty" hidden>No listeners connected.</p>
     <button type="button" id="listener-ban-new">Add address ban</button>
     <form id="listener-ban-form" hidden><label for="listener-ban-address">Address</label>
-      <input id="listener-ban-address" required><label for="listener-ban-duration">Duration</label>
+      <input id="listener-ban-address" aria-required="true"><label for="listener-ban-duration">Duration</label>
       <select id="listener-ban-duration"><option value="60">1 hour</option><option value="">Until removed</option></select>
       <label for="listener-ban-note">Note</label><input id="listener-ban-note">
       <button type="submit">Ban address</button><button type="button" id="listener-ban-cancel">Cancel</button></form>
@@ -48,6 +48,25 @@ describe("listener controls", () => {
       if (options?.method === "POST") return { ban: { address: "192.0.2.4" } };
       throw new Error(`unexpected ${url}`);
     });
+  });
+
+  it("refuses an empty ban address itself, linked to the field and focused", async () => {
+    setup();
+    document.getElementById("listener-ban-new").click();
+    const address = document.getElementById("listener-ban-address");
+    document.getElementById("listener-ban-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await tick();
+    const error = document.getElementById("listener-ban-error");
+    expect(error.textContent).toBe("Enter an address or CIDR range to ban.");
+    expect(error.hidden).toBe(false);
+    expect(address.getAttribute("aria-invalid")).toBe("true");
+    expect(address.getAttribute("aria-describedby")).toContain("listener-ban-error");
+    expect(document.activeElement).toBe(address);
+    expect(requestJson).not.toHaveBeenCalledWith("/api/stream/bans", expect.objectContaining({ method: "POST" }));
+    address.value = "192.0.2.4";
+    address.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(address.hasAttribute("aria-invalid")).toBe(false);
+    expect(error.hidden).toBe(true);
   });
 
   it("lists listeners with named buttons and announces a disconnect", async () => {

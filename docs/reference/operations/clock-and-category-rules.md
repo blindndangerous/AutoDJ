@@ -223,6 +223,23 @@ dates". Dates combine with days and hours: a Friday
 list says the season in words, such as "Plays only between 1 December 2026 and 26 December
 2026", and "Outside its dates now." A category without dates is saved without the two fields.
 
+**Repeating seasons.** **Repeat dates**, under the two dates, says how they are read:
+
+- **Don't repeat**, the default: the fixed dates above.
+- **Every week**: the weekday of **Not before** to the weekday of **Do not play after**, every
+  week from **Not before** on, with no end. **Not before** Friday 6 November and **Do not play
+  after** Sunday 8 November plays every Friday to Sunday from 6 November. The window may run past
+  Sunday, such as Saturday to Monday, and **Do not play after** is at most 6 days after **Not
+  before**. Without **Do not play after**, it is that one weekday. The list says, for example,
+  "Plays only every week from Friday to Sunday, starting 6 November 2026".
+- **Every year**: the month and day only; the year is ignored. A range may run past New Year,
+  such as 20 December to 2 January. Without **Do not play after**, or with the same month and
+  day, it is that one day each year. 29 February counts as 28 February in a year that has none.
+  The list says, for example, "Plays only every year between 20 December and 2 January".
+
+A repeating season needs **Not before**. A season that does not repeat is saved without the
+choice, so an older AutoDJ still reads the file.
+
 Each station has its own categories, like its clockwheels: Library tools, Categories shows the
 ones of the station the page controls. They are kept in the station's `categories.json`
 (`<index_dir>/stations/<slug>/categories.json`), written atomically and

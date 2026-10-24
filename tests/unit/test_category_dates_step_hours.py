@@ -356,3 +356,141 @@ def test_the_warnings_name_what_holds_the_songs_back(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="autodj.player"):
         player._choose_next(current, player._pick_context())
     assert "every song is outside its category's dates" in caplog.text
+
+
+# -- seasons that repeat every week or every year (#470) --------------------------
+
+
+def test_a_weekly_season_keeps_its_weekdays_from_its_first_date() -> None:
+    """ADR-0009-09: Friday 6th to Sunday 8th is every Friday to Sunday from the 6th."""
+    weekend = category(not_before="2026-11-06", not_after="2026-11-08", dates_repeat="weekly")
+    assert not weekend.allows(wall("2026-10-31 12:00"))  # a Saturday before the first date
+    assert weekend.allows(wall("2026-11-06 00:00"))
+    assert weekend.allows(wall("2026-11-15 23:59"))
+    assert not weekend.allows(wall("2026-11-16 00:00"))
+    assert weekend.allows(wall("2027-06-04 12:00"))  # a Friday, with no end
+    assert daypart_refusal(weekend, wall("2027-06-03 12:00")) == "dates"
+    # Saturday to Monday runs past the week's end.
+    wrap = category(not_before="2026-11-07", not_after="2026-11-09", dates_repeat="weekly")
+    assert [wrap.allows(wall(f"2026-11-{day:02d} 12:00")) for day in range(13, 18)] == [
+        False, True, True, True, False,
+    ]  # fmt: skip
+    # With only a first date, it is that one weekday.
+    fridays = category(not_before="2026-11-06", dates_repeat="weekly")
+    assert [fridays.allows(wall(f"2026-11-{day:02d} 12:00")) for day in range(12, 15)] == [
+        False, True, False,
+    ]  # fmt: skip
+    # A window across midnight belongs to the day it starts.
+    late = category(
+        hours_from="22:00", hours_until="02:00", not_before="2026-11-06", dates_repeat="weekly"
+    )
+    assert late.allows(wall("2026-11-14 01:30"))  # Friday night's window
+    assert not late.allows(wall("2026-11-14 22:30"))
+
+
+def test_a_yearly_season_runs_past_new_year_and_keeps_29_february() -> None:
+    """ADR-0009-09: month and day only; 29 February is 28 February in a common year."""
+    holidays = category(not_before="2026-12-20", not_after="2026-01-02", dates_repeat="yearly")
+    assert not holidays.allows(wall("2029-12-19 23:59"))
+    assert holidays.allows(wall("2029-12-20 00:00"))
+    assert holidays.allows(wall("2030-01-02 23:59"))
+    assert daypart_refusal(holidays, wall("2030-01-03 00:00")) == "dates"
+    leap = category(not_before="2028-02-29", dates_repeat="yearly")
+    assert leap.allows(wall("2027-02-28 12:00"))
+    assert not leap.allows(wall("2028-02-28 12:00"))
+    assert leap.allows(wall("2028-02-29 12:00"))
+
+
+def test_repeating_seasons_in_words() -> None:
+    """ADR-0009-09: the list says how the dates repeat."""
+    assert (
+        describe_daypart(
+            category(not_before="2026-11-06", not_after="2026-11-08", dates_repeat="weekly")
+        )
+        == "Plays only every week from Friday to Sunday, starting 6 November 2026"
+    )
+    assert describe_daypart(category(not_before="2026-11-06", dates_repeat="weekly")) == (
+        "Plays only on Fridays, starting 6 November 2026"
+    )
+    assert (
+        describe_daypart(
+            category(not_before="2026-12-20", not_after="2027-01-02", dates_repeat="yearly")
+        )
+        == "Plays only every year between 20 December and 2 January"
+    )
+    assert (
+        describe_daypart(
+            category(
+                hours_from="18:00",
+                hours_until="23:00",
+                not_before="2026-10-31",
+                dates_repeat="yearly",
+            )
+        )
+        == "Plays only every day from 18:00 until 23:00, every year on 31 October"
+    )
+
+
+@pytest.mark.parametrize(
+    ("changes", "field", "message"),
+    [
+        (
+            {"not_after": "2026-11-08", "dates_repeat": "weekly"},
+            "not_before",
+            "Enter a Not before date to repeat the dates",
+        ),
+        (
+            {"dates_repeat": "yearly"},
+            "not_before",
+            "Enter a Not before date to repeat the dates",
+        ),
+        (
+            {"not_before": "2026-11-06", "not_after": "2026-11-13", "dates_repeat": "weekly"},
+            "not_after",
+            "For Every week, Do not play after must be within 6 days of the Not before date",
+        ),
+        (
+            {"not_before": "2026-11-08", "not_after": "2026-11-06", "dates_repeat": "weekly"},
+            "not_after",
+            "Do not play after must be on or after the Not before date",
+        ),
+        (
+            {"not_before": "2026-11-06", "dates_repeat": "monthly"},
+            "dates_repeat",
+            "Repeat dates must be Don't repeat, Every week or Every year",
+        ),
+    ],
+)
+def test_a_repeating_season_that_cannot_be_saved_names_its_field(
+    changes: dict[str, Any], field: str, message: str
+) -> None:
+    """ADR-0009-09: the field errors for repeating dates."""
+    body = {"name": "Christmas", "source": "query", "query": "genre:Xmas"}
+    with pytest.raises(CategoryError) as caught:
+        parse_spec({**body, **changes})
+    assert (caught.value.field, caught.value.message) == (field, message)
+
+
+def test_a_repeating_season_is_saved_only_when_set(tmp_path: Path) -> None:
+    """ADR-0009-09: Don't repeat is never written; old files load with it."""
+    path = tmp_path / "categories.json"
+    old = {
+        "name": "A", "source": "query", "query": "genre:Rock", "playlist": "", "id": "a1",
+        "not_before": "2026-12-01", "not_after": "2026-12-26",
+    }  # fmt: skip
+    path.write_text(json.dumps({"schema_version": 1, "categories": [old]}), encoding="utf-8")
+    store = CategoryStore(path)
+    [loaded] = store.load()
+    assert loaded.dates_repeat == "none"
+    yearly = category(
+        id="x1",
+        name="Holidays",
+        not_before="2026-12-20",
+        not_after="2026-01-02",
+        dates_repeat="yearly",
+    )
+    store.save([loaded, yearly])
+    saved = json.loads(path.read_text(encoding="utf-8"))["categories"]
+    assert saved[0] == old
+    assert saved[1]["dates_repeat"] == "yearly"
+    assert store.load()[1].dates_repeat == "yearly"

@@ -66,7 +66,7 @@ function fakeServer() {
         actions: ACTIONS,
         events: server.events.map(view),
         upcoming: server.events.filter((event) => event.enabled).map((event) => ({
-          id: event.id, name: event.name, time: "2026-10-11T14:00:00+00:00",
+          id: event.id, name: event.name, time: server.upcomingTime || "2026-10-11T14:00:00+00:00",
           repeat_text: view(event).repeat_text, action_text: view(event).action_text,
         })),
         runs: server.runs,
@@ -333,7 +333,7 @@ describe("Schedule panel", () => {
     await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe(message));
     expect(document.activeElement).toBe(wait);
     expect(wait.getAttribute("aria-invalid")).toBe("true");
-    expect(wait.getAttribute("aria-describedby")).toBe("schedule-wait-desc schedule-form-error");
+    expect(wait.getAttribute("aria-describedby")).toBe("schedule-form-error schedule-wait-desc");
     expect(byId("schedule-form-error").textContent).toBe(message);
     expect(server.calls.some((call) => call.method === "POST")).toBe(false);
     wait.value = "45";
@@ -354,6 +354,52 @@ describe("Schedule panel", () => {
     expect(server.calls.find((call) => call.method === "PUT").body.wait_seconds).toBe(0);
   });
 
+  // ADR-0009-09
+  it("repeats an event's dates every year and shows next year's run in Next events", async () => {
+    const server = fakeServer();
+    await openPanel(server);
+    byId("schedule-add").click();
+    const repeat = byId("schedule-dates-repeat");
+    const help = byId("schedule-dates-repeat-desc");
+    // The Repeat rule sets the days, so the dates repeat yearly at most.
+    expect(repeat.labels[0].textContent).toBe("Repeat dates");
+    expect([...repeat.options].map((item) => item.textContent)).toEqual(["Don't repeat", "Every year"]);
+    for (const id of ["schedule-dates-repeat", "schedule-start-date", "schedule-end-date"]) {
+      expect(byId(id).getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc");
+    }
+    expect(help.textContent).toBe("The event runs only between these dates, both included.");
+    repeat.value = "yearly";
+    repeat.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(help.textContent).toBe("Repeats on these dates every year, ignoring the year; a range may run past New Year. "
+      + "29 February counts as 28 February in other years.");
+
+    byId("schedule-name").value = "Holiday music";
+    byId("schedule-time").value = "00:00";
+    submit();
+    await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe("Enter a start date to repeat the dates every year"));
+    expect(document.activeElement).toBe(byId("schedule-start-date"));
+    expect(byId("schedule-start-date").getAttribute("aria-invalid")).toBe("true");
+
+    // Past New Year: the end date may come before the start date.
+    byId("schedule-start-date").value = "2026-12-20";
+    byId("schedule-end-date").value = "2026-01-02";
+    server.upcomingTime = "2027-12-20T00:00:00+00:00";
+    submit();
+    await vi.waitFor(() => expect(status()).toBe("Event Holiday music saved"));
+    expect(server.calls.find((call) => call.method === "POST").body).toMatchObject({
+      start_date: "2026-12-20", end_date: "2026-01-02", dates_repeat: "yearly",
+    });
+    await vi.waitFor(() => expect(byId("schedule-upcoming").textContent).toContain("2027"));
+
+    rowButton("Holiday music", "edit").click();
+    expect(byId("schedule-dates-repeat").value).toBe("yearly");
+    expect(help.textContent).toContain("ignoring the year");
+    repeat.value = "none";
+    repeat.dispatchEvent(new Event("change", { bubbles: true }));
+    submit();
+    await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe("End date must be on or after the start date"));
+  });
+
   it("names a backwards date range and links the error to the field", async () => {
     const server = fakeServer();
     await openPanel(server);
@@ -367,12 +413,14 @@ describe("Schedule panel", () => {
     const end = byId("schedule-end-date");
     expect(document.activeElement).toBe(end);
     expect(end.getAttribute("aria-invalid")).toBe("true");
-    expect(end.getAttribute("aria-describedby")).toBe("schedule-form-error");
+    // The error is read before the long repeat help.
+    expect(end.getAttribute("aria-describedby")).toBe("schedule-form-error schedule-dates-repeat-desc");
     expect(byId("schedule-form-error").textContent).toBe("End date must be on or after the start date");
     end.value = "2026-12-31";
     end.dispatchEvent(new Event("input", { bubbles: true }));
     expect(end.hasAttribute("aria-invalid")).toBe(false);
-    expect(end.hasAttribute("aria-describedby")).toBe(false);
+    // The error leaves; the help about the dates stays.
+    expect(end.getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc");
 
     byId("schedule-repeat").value = "once";
     byId("schedule-repeat").dispatchEvent(new Event("change", { bubbles: true }));

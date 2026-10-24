@@ -1,5 +1,5 @@
 // Settings > Stream > Now-playing feed: the public feed's address, whether
-// it shows the next song, and the webhooks set in config.local.toml.
+// it shows the next song, and the webhooks set in the station's secrets.json.
 //
 // Speech rules (docs/accessibility-testing.md, Announcement contract):
 //   - Copy, the show-next save and Send test are user actions, so their
@@ -40,7 +40,7 @@ export const STATUS_COPIED_TEXT = "Status page link copied.";
 export const STATUS_COPY_FAILED_TEXT =
   "Could not copy. Select the status page link and copy it yourself.";
 export const NO_WEBHOOKS_TEXT =
-  "No webhooks are set up. Add them to config.local.toml on the AutoDJ computer, then restart AutoDJ.";
+  "No webhooks are set up. Add them to this station's secrets.json on the AutoDJ computer, then restart AutoDJ.";
 // While the panel is open, a state push reloads the list at most this
 // often, so each track change's delivery result shows up.
 export const WEBHOOK_REFRESH_MS = 15000;
@@ -172,7 +172,7 @@ export function installNowPlayingSettings({
           say(settingsStatus, `Test delivered to ${hook.host}.`);
         } else {
           say(settingsStatus,
-            `Test to ${hook.host} failed. Check its address in config.local.toml and the AutoDJ log.`,
+            `Test to ${hook.host} failed. Check its address in this station's secrets.json and the AutoDJ log.`,
             "error");
         }
         void load();

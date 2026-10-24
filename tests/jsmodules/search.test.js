@@ -212,6 +212,20 @@ describe("an add answered after a station switch (#70)", () => {
 });
 
 describe("search result actions", () => {
+  it("says which song a second Play next took the place of", async () => {
+    const fetchImpl = vi.fn((url) => Promise.resolve(url.startsWith("/api/search")
+      ? jsonResponse({ results: [{ path: "a.mp3", title: "Alpha", artist: "Band" }] })
+      : jsonResponse({ ok: true, replaced: { path: "b.mp3", artist: "Other", title: "Beta" } })));
+    vi.stubGlobal("fetch", fetchImpl);
+    const els = setup();
+    els.searchInput.value = "alpha";
+    els.btnSearch.click();
+    await vi.waitFor(() => expect(els.searchResults.textContent).toContain("Alpha"));
+    [...els.searchResults.querySelectorAll("button")].find((b) => b.textContent === "Play next").click();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent)
+      .toBe("Band — Alpha plays next, in place of Other — Beta."));
+  });
+
   it("Play next puts the track after the current one; Add to queue appends", async () => {
     const fetchImpl = vi.fn((url) => Promise.resolve(url.startsWith("/api/search")
       ? jsonResponse({ results: [{ path: "a.mp3", title: "Alpha" }] })

@@ -1861,21 +1861,25 @@
     <span class="setting-desc" id="tc-recorded-folder-desc">
       Where the clips named 00_00 to 23_59 are, such as 15_05.wav for 3:05 in the afternoon. A folder chosen here is not a voice pack.
     </span>
+    <!-- Each clip has its own help; the shared note on where the choices
+         come from is read by browsing, not on each focus. -->
     <div class="settings-row">
       <label for="tc-intro">Intro clip</label>
-      <select id="tc-intro" aria-describedby="tc-clip-choice-desc">
+      <select id="tc-intro" aria-describedby="tc-intro-desc">
         <option value="">None</option>
       </select>
     </div>
+    <span class="setting-desc" id="tc-intro-desc">Played before every time check.</span>
     <div class="settings-row">
       <label for="tc-outro">Outro clip</label>
-      <select id="tc-outro" aria-describedby="tc-clip-choice-desc">
+      <select id="tc-outro" aria-describedby="tc-outro-desc">
         <option value="">None</option>
       </select>
     </div>
-    <span class="setting-desc" id="tc-clip-choice-desc">
-      Played before and after every time check. Choose from the audio files in the time checks folder, or upload one below.
-    </span>
+    <span class="setting-desc" id="tc-outro-desc">Played after every time check.</span>
+    <p class="setting-desc" id="tc-clip-choice-desc">
+      Choose the intro and outro from the audio files in the time checks folder, or upload one below.
+    </p>
     <fieldset id="tc-add-clip">
       <legend>Upload a clip</legend>
       <div class="settings-row">
@@ -1981,14 +1985,17 @@
     <button type="button" id="schedule-add">Add event</button>
     <!-- Add and Edit share this form.  It checks its own fields: an error
          is said, the field gets aria-invalid and focus, and the words stay
-         in #schedule-form-error. -->
+         in #schedule-form-error.  Its required fields are aria-required,
+         not required: Firefox calls an empty required field, even a hidden
+         one such as Date for a repeating event, and its group "invalid
+         entry" before anything is typed. -->
     <form id="schedule-form" novalidate hidden>
       <fieldset>
         <legend><h1 id="schedule-form-legend">Add event</h1></legend>
         <p id="schedule-form-error" class="field-error" hidden></p>
         <div class="settings-row">
           <label for="schedule-name">Name</label>
-          <input type="text" id="schedule-name" maxlength="100" autocomplete="off" required>
+          <input type="text" id="schedule-name" maxlength="100" autocomplete="off" aria-required="true">
         </div>
         <div class="settings-row">
           <label for="schedule-action">Action</label>
@@ -2009,16 +2016,16 @@
         <!-- data-repeat lists the repeat choices each part belongs to. -->
         <div class="settings-row" data-repeat="once">
           <label for="schedule-date">Date</label>
-          <input type="date" id="schedule-date" required>
+          <input type="date" id="schedule-date" aria-required="true">
         </div>
         <div class="settings-row" data-repeat="once daily weekdays days">
           <label for="schedule-time">Time</label>
-          <input type="time" id="schedule-time" required>
+          <input type="time" id="schedule-time" aria-required="true">
         </div>
         <div data-repeat="interval">
           <div class="settings-row">
             <label for="schedule-interval">Minutes between runs</label>
-            <input type="number" id="schedule-interval" min="1" max="1440" step="1" required>
+            <input type="number" id="schedule-interval" min="1" max="1440" step="1" aria-required="true">
           </div>
           <div class="settings-row">
             <label for="schedule-window-start">Active from</label>
@@ -2050,12 +2057,21 @@
           <legend>Date range</legend>
           <div class="settings-row">
             <label for="schedule-start-date">Start date</label>
-            <input type="date" id="schedule-start-date">
+            <input type="date" id="schedule-start-date" aria-describedby="schedule-dates-repeat-desc">
           </div>
           <div class="settings-row">
             <label for="schedule-end-date">End date</label>
-            <input type="date" id="schedule-end-date">
+            <input type="date" id="schedule-end-date" aria-describedby="schedule-dates-repeat-desc">
           </div>
+          <div class="settings-row">
+            <label for="schedule-dates-repeat">Repeat dates</label>
+            <select id="schedule-dates-repeat" aria-describedby="schedule-dates-repeat-desc">
+              <option value="none">Don't repeat</option>
+              <option value="yearly">Every year</option>
+            </select>
+          </div>
+          <!-- scheduler-panel.js sets the words for the Repeat dates choice. -->
+          <p class="setting-desc" id="schedule-dates-repeat-desc">The event runs only between these dates, both included.</p>
         </fieldset>
         <div class="settings-row">
           <label for="schedule-timing">Timing</label>
@@ -2190,7 +2206,7 @@
         </span>
         <div class="settings-row">
           <label for="recording-retention-days">Days to keep recordings</label>
-          <input type="number" id="recording-retention-days" min="0" step="1" required
+          <input type="number" id="recording-retention-days" min="0" step="1" value="0" required
                  inputmode="numeric" aria-describedby="recording-retention-desc">
         </div>
         <span class="setting-desc" id="recording-retention-desc">
@@ -2198,7 +2214,7 @@
         </span>
         <div class="settings-row">
           <label for="recording-free-space-mb">Minimum free space in MB</label>
-          <input type="number" id="recording-free-space-mb" min="0" step="1" required
+          <input type="number" id="recording-free-space-mb" min="0" step="1" value="100" required
                  inputmode="numeric" aria-describedby="recording-free-space-desc">
         </div>
         <span class="setting-desc" id="recording-free-space-desc">
@@ -2218,12 +2234,18 @@
           <tbody id="stream-relay-rows"></tbody>
         </table>
         </div>
-        <form id="stream-relay-form" hidden>
+        <!-- Required fields here and in the forms below are aria-required,
+             not required, and checked in script: Firefox calls an empty
+             required field, and every fieldset around it, "invalid entry"
+             before anything is typed, so the whole Stream group was read
+             as invalid.  The required number settings start at their
+             defaults for the same reason, until the saved values arrive. -->
+        <form id="stream-relay-form" novalidate hidden>
           <h5 id="stream-relay-form-title">Add relay</h5>
-          <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" required>
+          <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" aria-required="true">
           <label for="stream-relay-type">Server type</label><select id="stream-relay-type"><option value="icecast">Icecast</option><option value="shoutcast1">Shoutcast 1</option><option value="shoutcast2">Shoutcast 2</option></select>
-          <label for="stream-relay-host">Host</label><input id="stream-relay-host" required autocomplete="off">
-          <label for="stream-relay-port">Listener port</label><input id="stream-relay-port" type="number" min="1" max="65535" value="8000" required>
+          <label for="stream-relay-host">Host</label><input id="stream-relay-host" aria-required="true" autocomplete="off">
+          <label for="stream-relay-port">Listener port</label><input id="stream-relay-port" type="number" min="1" max="65535" value="8000" aria-required="true">
           <label for="stream-relay-password">Source password</label><input id="stream-relay-password" type="password" autocomplete="new-password" aria-describedby="stream-relay-password-help">
           <p id="stream-relay-password-help">Saved passwords stay private. Leave blank to keep the current password.</p>
           <p>Relay TLS is unsupported; the source password is sent without encryption.</p>
@@ -2278,8 +2300,8 @@
         <ul class="stream-detail" id="stream-formats-list" aria-labelledby="stream-formats-intro"></ul>
       </fieldset>
       </details>
-      <!-- The public now-playing feed and the webhooks from
-           config.local.toml; nowplaying-settings.js fills it.  Nested so
+      <!-- The public now-playing feed and the webhooks from the station's
+           secrets.json; nowplaying-settings.js fills it.  Nested so
            it shows, hides and hands focus away with the Stream settings.
            The webhook list and its empty note are plain text, not live:
            results of Copy, the show-next save and Send test go to the
@@ -2325,7 +2347,7 @@
         <h4 id="listener-control-title" tabindex="-1">Listeners</h4>
         <p class="stream-detail" id="stream-listeners"></p>
         <p id="listener-password-state">Listener password status not loaded.</p>
-        <p class="setting-desc">Set or clear listener_user and listener_password in config.local.toml, or a station's secrets.json, then restart AutoDJ. Some players cannot send credentials. HTTP sends the password in plain text.</p>
+        <p class="setting-desc">Set or clear listener_user and listener_password in this station's secrets.json, then restart AutoDJ. Some players cannot send credentials. HTTP sends the password in plain text.</p>
         <div class="settings-row">
           <label for="stream-per-address">Connections per address (0 for unlimited)</label>
           <input id="stream-per-address" type="number" min="0" max="100" step="1">
@@ -2333,11 +2355,12 @@
         <ul id="listener-control-list" aria-label="Connected listeners"></ul>
         <p id="listener-control-empty" hidden>No listeners connected.</p>
         <button type="button" id="listener-ban-new">Add address ban</button>
-        <form id="listener-ban-form" hidden>
+        <form id="listener-ban-form" novalidate hidden>
           <fieldset class="flow-form">
             <legend>Ban a listener address</legend>
             <label for="listener-ban-address">Address or CIDR</label>
-            <input id="listener-ban-address" required autocomplete="off">
+            <input id="listener-ban-address" aria-required="true" autocomplete="off">
+            <p id="listener-ban-error" class="field-error" hidden></p>
             <label for="listener-ban-duration">Duration</label>
             <select id="listener-ban-duration">
               <option value="60">1 hour</option>
@@ -2409,7 +2432,7 @@
         <ul class="stream-detail" id="listener-stats-lengths" aria-labelledby="listener-stats-lengths-title" hidden></ul>
         <div class="settings-row">
           <label for="listener-stats-keep">Days to keep statistics</label>
-          <input type="number" id="listener-stats-keep" min="0" max="3650" step="1" required
+          <input type="number" id="listener-stats-keep" min="0" max="3650" step="1" value="90" required
                  aria-describedby="listener-stats-keep-desc">
         </div>
         <span class="setting-desc" id="listener-stats-keep-desc">
@@ -2497,12 +2520,12 @@
         </span>
         <div class="settings-row">
           <label for="station-create-name">Name</label>
-          <input type="text" id="station-create-name" maxlength="80" autocomplete="off" required>
+          <input type="text" id="station-create-name" maxlength="80" autocomplete="off" aria-required="true">
         </div>
         <div class="settings-row">
           <label for="station-create-slug">Station ID</label>
           <input type="text" id="station-create-slug" maxlength="32" autocomplete="off"
-                 autocapitalize="off" spellcheck="false" required
+                 autocapitalize="off" spellcheck="false" aria-required="true"
                  aria-describedby="station-create-slug-help">
         </div>
         <span class="setting-desc" id="station-create-slug-help">
@@ -3533,7 +3556,7 @@
           <p id="categories-form-error" class="field-error" hidden></p>
           <div class="settings-row">
             <label for="categories-name">Name</label>
-            <input id="categories-name" type="text" maxlength="64" autocomplete="off" spellcheck="false" required>
+            <input id="categories-name" type="text" maxlength="64" autocomplete="off" spellcheck="false" aria-required="true">
           </div>
           <fieldset>
             <legend>Songs come from</legend>
@@ -3599,12 +3622,22 @@
             </div>
             <div class="settings-row">
               <label for="categories-not-before">Not before</label>
-              <input type="date" id="categories-not-before">
+              <input type="date" id="categories-not-before" aria-describedby="categories-dates-repeat-help">
             </div>
             <div class="settings-row">
               <label for="categories-not-after">Do not play after</label>
-              <input type="date" id="categories-not-after">
+              <input type="date" id="categories-not-after" aria-describedby="categories-dates-repeat-help">
             </div>
+            <div class="settings-row">
+              <label for="categories-dates-repeat">Repeat dates</label>
+              <select id="categories-dates-repeat" aria-describedby="categories-dates-repeat-help">
+                <option value="none">Don't repeat</option>
+                <option value="weekly">Every week</option>
+                <option value="yearly">Every year</option>
+              </select>
+            </div>
+            <!-- categories-panel.js sets the words for the Repeat dates choice. -->
+            <p class="setting-desc" id="categories-dates-repeat-help">The songs play only between these dates, both included.</p>
           </fieldset>
           <button type="button" id="categories-check">Check</button>
           <!-- Browseable count; completed results are announced through categories-status. -->
@@ -3688,7 +3721,7 @@
           <p id="shows-form-error" class="field-error" hidden></p>
           <div class="settings-row">
             <label for="shows-name">Name</label>
-            <input id="shows-name" type="text" maxlength="100" autocomplete="off" spellcheck="false" required>
+            <input id="shows-name" type="text" maxlength="100" autocomplete="off" spellcheck="false" aria-required="true">
           </div>
           <fieldset id="shows-source">
             <legend>Songs come from</legend>
@@ -3969,10 +4002,14 @@
      what Escape does: it closes the dialog, keeps the edits and puts focus
      back on the control that opened it. -->
 <!-- New step and Edit open the step form as a modal dialog; Escape
-     or Cancel closes it and returns focus. -->
-<dialog id="clock-step-dialog" aria-labelledby="clock-step-legend">
+     or Cancel closes it and returns focus.  The short description is what
+     NVDA reads after the name: a dialog without one has all of its text
+     read instead, the help, the count and every label, as it opens. -->
+<dialog id="clock-step-dialog" aria-labelledby="clock-step-legend"
+        aria-describedby="clock-step-desc">
 <fieldset id="clock-step-form" class="flow-form">
   <legend><h1 id="clock-step-legend">Add a step</h1></legend>
+  <p class="setting-desc" id="clock-step-desc">Choose what the step plays, how it chooses and when it plays.</p>
   <p id="clock-step-form-error" class="field-error" hidden></p>
   <label for="clock-step-type">Step type</label>
   <select id="clock-step-type">

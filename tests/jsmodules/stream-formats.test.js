@@ -74,6 +74,26 @@ describe("stream formats", () => {
     expect(document.getElementById("stream-aac-bitrate").value).toBe("128");
   });
 
+  it("asks for the addresses again, once, when a push carries a saved format", () => {
+    // After Opus quality was saved, the list kept only MP3 and AAC until a reload.
+    document.body.innerHTML = `<div id="sr-status" role="status"></div><div id="spanel-stream">${fieldset}</div>`;
+    const refresh = vi.fn();
+    const view = installStreamFormats({ doc: document, srStatus: document.getElementById("sr-status"), refresh });
+    view.apply({ settings: { playback: { stream_opus_bitrate: 64, stream_aac_bitrate: 96 } } });
+    expect(refresh).not.toHaveBeenCalled();
+    view.fill(INFO);
+    view.apply({ settings: { playback: { stream_opus_bitrate: 0, stream_aac_bitrate: 96 } } });
+    expect(refresh).not.toHaveBeenCalled();
+    view.apply({ settings: { playback: { stream_opus_bitrate: 64, stream_aac_bitrate: 96 } } });
+    view.apply({ settings: { playback: { stream_opus_bitrate: 64, stream_aac_bitrate: 96 } } });
+    expect(refresh).toHaveBeenCalledOnce();
+    view.fill({ formats: [INFO.formats[0], INFO.formats[1], { ...INFO.formats[2], bitrate: 64 }] });
+    expect([...document.querySelectorAll("#stream-formats-list button")].map((button) => button.textContent))
+      .toEqual(["Copy MP3 address", "Copy AAC address", "Copy Opus address"]);
+    view.apply({ settings: { playback: { stream_opus_bitrate: 64, stream_aac_bitrate: 96 } } });
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
   it("copies an address and says so, or says the address when it cannot", async () => {
     const { view } = setup();
     view.fill(INFO);

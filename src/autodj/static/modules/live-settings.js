@@ -104,7 +104,7 @@ export function installLiveSettings({
   function link(control, errorNode, on) {
     const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
       .filter((ref) => ref && ref !== errorNode.id);
-    if (on) ids.push(errorNode.id);
+    if (on) ids.unshift(errorNode.id);
     if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
     else control.removeAttribute("aria-describedby");
   }

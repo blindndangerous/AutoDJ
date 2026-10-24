@@ -23,6 +23,7 @@ Example:
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -34,12 +35,26 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+def _genre_tokens(genre: str) -> list[str]:
+    """Split a genre field into its values.
+
+    A file's several genre values are kept apart by null characters, which
+    a screen reader skips ("MetalRock"); commas and semicolons also separate.
+    """
+    return [tok.strip() for tok in re.split(r"[,;\x00]", genre) if tok.strip()]
+
+
+def _genre_text(genre: str) -> str:
+    """A genre field as words to read: its values joined with commas."""
+    return ", ".join(_genre_tokens(genre))
+
+
 def _shared_genres(a: str | None, b: str | None) -> list[str]:
     """Return the genre tokens that appear in both *a* and *b* (case-insensitive)."""
     if not a or not b:
         return []
-    a_set = {tok.strip().lower() for tok in a.replace(";", ",").split(",") if tok.strip()}
-    b_set = {tok.strip().lower() for tok in b.replace(";", ",").split(",") if tok.strip()}
+    a_set = {tok.lower() for tok in _genre_tokens(a)}
+    b_set = {tok.lower() for tok in _genre_tokens(b)}
     shared = sorted(a_set & b_set)
     # Title-case for display
     return [tok.title() for tok in shared]
@@ -161,8 +176,8 @@ def explain_pick(
         # Nothing to compare against — still surface a couple of facts.
         if cur.bpm > 0:
             out.append(f"BPM {round(cur.bpm)}.")
-        if cur.genre:
-            out.append(f"Genre: {cur.genre}.")
+        if _genre_text(cur.genre):
+            out.append(f"Genre: {_genre_text(cur.genre)}.")
         return out
 
     # Genre overlap
@@ -172,8 +187,8 @@ def explain_pick(
             out.append(f"Same genre — {shared[0]}.")
         else:
             out.append(f"Shared genres — {', '.join(shared)}.")
-    elif cur.genre:
-        out.append(f"Genre shifts to {cur.genre}.")
+    elif _genre_text(cur.genre):
+        out.append(f"Genre shifts to {_genre_text(cur.genre)}.")
 
     # BPM
     bpm = _bpm_phrase(prev.bpm, cur.bpm)

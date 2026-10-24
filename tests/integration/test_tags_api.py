@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from autodj.audio_meta import read_file_tags, read_reporting_tags
+from autodj.clock_conditions import genres
 from autodj.indexer import FEATURE_DIM, IndexEntry, file_fingerprint
 from autodj.library import LibraryManager
 from autodj.server import PlayerBridge
@@ -56,6 +58,36 @@ def test_track_info_offers_the_tags_to_edit(tagged) -> None:
     }
     assert record["tags_writable"] is True
     assert record["beets_writeback"] is False
+
+
+def test_several_genres_are_shown_apart_and_kept_when_not_edited(tagged) -> None:
+    # A file's several genre values are stored apart by null characters,
+    # which the Genre field held unseen and a save refused.
+    client, manager, song, _bridge = tagged
+    stored = manager.catalog.record_for_path(song)
+    entry = dataclasses.replace(
+        manager.entry_for_path(song), genre="Metal\x00Rock\x00Symphonic Metal"
+    )
+    manager.catalog.put_entry(entry, points=stored["points"], point_source="user")
+    record = client.get("/api/library/points", params={"path": str(song)}).json()
+    assert record["genre"] == "Metal; Rock; Symphonic Metal"
+    assert record["tags"]["genre"] == "Metal; Rock; Symphonic Metal"
+    # Another field's save leaves the stored genre as it was.
+    saved = client.post(
+        "/api/library/tags", json={"path": str(song), "tags": {"title": "New Title"}}
+    )
+    assert saved.status_code == 200, saved.text
+    assert manager.catalog.record_for_path(song)["genre"] == "Metal\x00Rock\x00Symphonic Metal"
+    # Saving the shown text back keeps the same genres for categories and clockwheels.
+    saved = client.post(
+        "/api/library/tags", json={"path": str(song), "tags": {"genre": record["tags"]["genre"]}}
+    )
+    assert saved.status_code == 200, saved.text
+    assert genres(manager.catalog.record_for_path(song)["genre"]) == [
+        "Metal",
+        "Rock",
+        "Symphonic Metal",
+    ]
 
 
 def test_saving_tags_writes_the_file_and_keeps_the_analysis(tagged) -> None:

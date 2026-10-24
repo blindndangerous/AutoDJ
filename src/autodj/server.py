@@ -2495,6 +2495,11 @@ def create_app(
             library.cfg.playback.key_notation,
             prefer_flats=library.cfg.playback.key_prefer_flats,
         )
+        from autodj.clock_conditions import genre_text
+
+        # Shown in Track info and the Tags form; the catalog keeps the
+        # file's own separators, and an unchanged field is not saved back.
+        record["genre"] = genre_text(record.get("genre"))
         record.update(await asyncio.to_thread(tag_form, library, record))
         return record
 

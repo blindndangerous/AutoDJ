@@ -160,7 +160,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   // ---- Errors ----------------------------------------------------------
   function link(control, error, linked) {
     const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== error.id);
-    if (linked) ids.push(error.id);
+    if (linked) ids.unshift(error.id);
     if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
     else control.removeAttribute("aria-describedby");
   }

@@ -235,9 +235,22 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
   form.addEventListener("input", (event) => {
     if (event.target.getAttribute("aria-invalid") === "true") clearFieldError(event.target, formError);
   });
+  // The form is novalidate (index.html says why), so its required fields
+  // are checked here, the first missing one said and focused.
+  function missingField(payload) {
+    if (!payload.name) return { field: "name", message: "Enter a name for the relay." };
+    if (!payload.host) return { field: "host", message: "Enter the relay server's host." };
+    if (!Number.isInteger(payload.port) || payload.port < 1 || payload.port > 65535) {
+      return { field: "port", message: "Enter a listener port from 1 to 65535." };
+    }
+    return null;
+  }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (saving) return;
     const payload = values();
+    const missing = missingField(payload);
+    if (missing) { validationError(missing); return; }
     payload.is_edit = editing !== null;
     if (editing && !payload.password) payload.password = null;
     await save(payload, true);

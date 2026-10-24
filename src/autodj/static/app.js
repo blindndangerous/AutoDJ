@@ -1430,6 +1430,66 @@ const timeSettings = installTimeSettings();
 // runs, otherwise the assignment inside connectWS hits the TDZ and throws,
 // leaving the page stuck on "Connecting…".
 let _ws = null;
+// A reload, or leaving the page, closes the socket as the page goes.  That
+// is not a dropped link, so nothing is said or retried: NVDA said
+// "Disconnected, retrying" on every reload.  Firefox closes the socket
+// after beforeunload and before pagehide, so beforeunload already holds a
+// close or error back, and pagehide drops it.  It is only provisional, as
+// the unsaved-settings prompt can keep the page.  A held drop is reported,
+// a little late, only when no pagehide has come 3 seconds after
+// beforeunload, or after the page last took focus back, and the page has
+// focus: the prompt takes focus and gives it back as it closes, whichever
+// way it is answered, so focus alone says nothing.  After a minute it is
+// reported whatever the focus.  A page brought back from the back-forward
+// cache connects again.
+const LEAVE_GRACE_MS = 3000;
+const LEAVE_RECHECK_MS = 1000;
+const LEAVE_LIMIT_MS = 60000;
+let pageLeft = false;
+let leaveGrace = null;
+let leaveSince = 0;
+let heldWhileLeaving = [];
+function unlessLeaving(handler) {
+  if (pageLeft) return;
+  if (leaveGrace === null) handler();
+  else heldWhileLeaving.push(handler);
+}
+function waitToLeave(ms) {
+  clearTimeout(leaveGrace);
+  leaveGrace = setTimeout(leftOrStayed, ms);
+}
+function leftOrStayed() {
+  const focused = typeof document.hasFocus !== "function" || document.hasFocus();
+  if (!focused && Date.now() - leaveSince < LEAVE_LIMIT_MS) {
+    waitToLeave(LEAVE_RECHECK_MS);
+    return;
+  }
+  leaveGrace = null;
+  const held = heldWhileLeaving;
+  heldWhileLeaving = [];
+  for (const handler of held) handler();
+}
+window.addEventListener("beforeunload", () => {
+  leaveSince = Date.now();
+  waitToLeave(LEAVE_GRACE_MS);
+});
+window.addEventListener("focus", () => {
+  if (leaveGrace !== null) waitToLeave(LEAVE_GRACE_MS);
+});
+window.addEventListener("pagehide", () => {
+  pageLeft = true;
+  clearTimeout(leaveGrace);
+  leaveGrace = null;
+  heldWhileLeaving = [];
+});
+window.addEventListener("pageshow", (event) => {
+  if (!event.persisted || !pageLeft) return;
+  pageLeft = false;
+  if (!_ws || _ws.readyState >= 2) {  // CLOSING or CLOSED
+    _ws = null;
+    connectWS();
+  }
+});
 let authenticatedActivityActive = false;
 
 // #conn-status is a polite live region AND the visible header pill, so
@@ -1542,7 +1602,7 @@ function connectWS({ quiet = false, switching = false } = {}) {
     } catch (_) {}
   };
 
-  ws.onclose = (event) => {
+  const socketClosed = (event) => {
     // A switch to another station closed it; the new station's socket is
     // already open or opening (#70).
     if (ws.closedForSwitch || socketStation !== currentStation()) return;
@@ -1605,8 +1665,9 @@ function connectWS({ quiet = false, switching = false } = {}) {
     }, reconnectDelayMs);
     reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_MAX_MS);
   };
+  ws.onclose = (event) => unlessLeaving(() => socketClosed(event));
 
-  ws.onerror = () => {
+  const socketFailed = () => {
     if (ws.closedForSwitch || socketStation !== currentStation()) return;
     // #conn-status is the single announcement path for transport state.
     // Writing the same sentence into the track-title region as well made
@@ -1624,6 +1685,7 @@ function connectWS({ quiet = false, switching = false } = {}) {
     setLinkUp(false);
     streamMode.setLinkUp(false);
   };
+  ws.onerror = () => unlessLeaving(socketFailed);
 }
 
 // ----------------------------------------------------------------

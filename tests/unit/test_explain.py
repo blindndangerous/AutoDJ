@@ -77,6 +77,18 @@ class TestExplainPick:
         joined = " | ".join(out)
         assert "Ambient" in joined and "Electronic" in joined
 
+    def test_a_files_several_genres_are_read_apart(self) -> None:
+        # Mutagen joins a file's several genre values with null characters,
+        # which NVDA skipped: "Same genre — MetalRockSymphonic Metal."
+        prev = _entry(genre="Metal\x00Rock\x00Symphonic Metal")
+        cur = _entry(genre="Metal\x00Rock\x00Symphonic Metal")
+        assert "Shared genres — Metal, Rock, Symphonic Metal." in explain_pick(prev, cur)
+        shifted = explain_pick(_entry(genre="Jazz"), _entry(genre="Metal\x00Rock"))
+        assert "Genre shifts to Metal, Rock." in shifted
+        assert "Genre: Metal, Rock." in explain_pick(
+            None, _entry(genre="Metal\x00Rock"), mode="seed"
+        )
+
     def test_genre_shift_when_no_overlap(self) -> None:
         prev = _entry(genre="Jazz")
         cur = _entry(genre="House")

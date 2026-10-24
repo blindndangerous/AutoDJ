@@ -164,8 +164,8 @@ export function showFieldError(control, message, error, status) {
   error.hidden = false;
   if (!control) { announceStatus(status, message, { force: true, tone: "error" }); return; }
   control.setAttribute("aria-invalid", "true");
-  const ids = new Set((control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
-  if (error.id) ids.add(error.id);
+  // The error comes first, so it is read before a field's longer help.
+  const ids = new Set([error.id, ...(control.getAttribute("aria-describedby") || "").split(/\s+/)].filter(Boolean));
   if (ids.size) control.setAttribute("aria-describedby", [...ids].join(" "));
   const following = control.nextElementSibling;
   const label = control.closest("label") || (following?.htmlFor === control.id ? following : null);
