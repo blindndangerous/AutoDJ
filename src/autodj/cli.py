@@ -1428,8 +1428,8 @@ def cmd_analyse_library(ctx: click.Context) -> None:
     "--after-command",
     default=None,
     help=(
-        "Program to run after freeing the model, on exit or --idle-release, such as "
-        "'podman start tts-service'.  Run without a shell."
+        "Program to run after freeing the model: on exit, --idle-release, a pause or a long "
+        "server outage, such as 'podman start tts-service'.  Run without a shell."
     ),
 )
 @click.pass_context
