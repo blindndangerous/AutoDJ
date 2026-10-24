@@ -43,6 +43,11 @@ and Doctor advice is the same.
 Restore the backup you made before the upgrade. A newer AutoDJ writes some settings that an older
 one reads differently:
 
+- AutoDJ 0.22.0 moves the index folder into `libraries/`, `stations/`, `shared/` and `logs/`,
+  copies station settings into each `station.json` and moves play history into each station's
+  `station.db`. AutoDJ 0.21.0 and older do not read that layout. To go back, restore a backup
+  that the older release made.
+
 - An every-N-minutes schedule event that keeps to chosen days: AutoDJ 0.20.0 and older ignore its
   days and run it every day. Edit the event, or delete it, before going back.
 - A schedule event with a date range, a category with days, hours or dates, a clockwheel step with

@@ -99,6 +99,16 @@ records remain under `local/sso-audit/`; remove that directory when finished.
 
 ## Published evidence
 
+For 0.22.0, the release sample is recorded in [accessibility-samples/0.22.0.md](accessibility-samples/0.22.0.md).
+It was taken on 2026-10-23 on master at f8660479, the commit the release branch starts from, on
+Windows 11 with NVDA 2026.2 and Mozilla Firefox 158.0.1 (all the flows listed below and the new
+0.22.0 Settings pages), over HTTPS with a self-signed certificate. Chrome, Edge and Narrator were
+not sampled. No person listened: an automated agent sent every key through NVDA and read its
+speech through the screen-reader-testing bridge. The record starts with a summary of what 0.22.0
+ships with, lists the flows with a pass or fail, fifteen defects (D1, moderate, in the Save
+changes and Discard changes feedback, fixed before release and rechecked; D2 to D15 open, none a
+blocker) and the limits of the method. It covers only that pairing and those flows.
+
 For 0.21.0, the release sample is recorded in [accessibility-samples/0.21.0.md](accessibility-samples/0.21.0.md).
 It was taken on 2026-10-14 on the release branch at b895fdef with the fix for its one blocker
 applied, on Windows 11 with NVDA 2026.2 and Google Chrome 155.0.8059.79 (all the flows listed
@@ -402,7 +412,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   switching; Enter switching, with focus staying on the button (now named after the new
   station) and the switch said once ("Now controlling ..."), the connection status saying
   nothing more; Escape closing without switching; Skip, Play or Pause and the queue buttons
-  read with "On <station>" after their names; `c` and Shift+C; Listen here still playing the
+  read by their names alone, without the station; `c` and Shift+C; Listen here still playing the
   station it started on, with its "Playing ..." line; and a stopped station's "Off air" said
   once, with Start reachable on Now Playing.
 - Settings, Stations (#233): browse the station list and read New station fields with their short
