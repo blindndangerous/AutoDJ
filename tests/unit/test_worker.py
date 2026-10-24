@@ -18,6 +18,7 @@ from autodj.cli import cli
 from autodj.indexer import EMBEDDING_DIM, FEATURE_DIM, analyse_file, file_fingerprint
 from autodj.library import LibraryManager, analyse_library
 from autodj.worker import (
+    UNREACHABLE_RELEASE_SECONDS,
     ApiError,
     HttpTransport,
     NetworkError,
@@ -1719,3 +1720,119 @@ def test_a_pause_between_claim_and_load_gives_the_songs_back_unprepared(server):
     worker._process = lambda *args: steps.append("analyse")
     worker.run()
     assert steps == [("given back", ["a" * 32, "b" * 32])]
+
+
+class OutageApi(QueueApi):
+    """A server that stops answering after some claims: claims in *down* refuse connections."""
+
+    def __init__(self, identity, claims=(), down=(), on_claim=None):
+        super().__init__(identity, claims, on_claim)
+        self.down = set(down)
+        self.attempts = 0
+
+    def claim(self, batch, device=""):
+        self.attempts += 1
+        if self.attempts in self.down:
+            raise NetworkError("Connection refused")
+        return super().claim(batch, device)
+
+
+@pytest.mark.parametrize(
+    ("idle_release", "limit"), [(None, UNREACHABLE_RELEASE_SECONDS), (120.0, 120.0)]
+)
+def test_an_unreachable_server_releases_the_model_and_songs_prepare_it_again(
+    server, caplog, idle_release, limit
+):
+    """ADR-0008-32. The release fires during the retries, at the limit, and is logged once."""
+    caplog.set_level("INFO", logger="autodj.worker")
+    identity = server.identity()
+    song = {"lease": "a" * 32}
+    # A batch, then the server refuses connections for a long time, then another batch.
+    api = OutageApi(identity, [[song], [song]], down=range(2, 40))
+    clock = [0.0]
+    steps = []
+    worker = idle_worker(
+        api,
+        identity,
+        clock,
+        once=True,
+        idle_release=idle_release,
+        prepare=lambda: steps.append(("prepare", clock[0])),
+        release=lambda: steps.append(("release", clock[0])),
+    )
+    worker.prepared = True
+    worker._process = lambda *args: steps.append(("analyse", clock[0]))
+    worker.run()
+    assert steps[0] == ("analyse", 0.0)
+    assert steps[1] == ("release", limit)
+    assert [name for name, _ in steps] == ["analyse", "release", "prepare", "analyse"]
+    message = f"Server unreachable for {limit / 60:g} minute"
+    assert caplog.text.count(message) == 1
+    assert api.attempts == 41
+
+
+def test_an_outage_during_a_download_releases_and_reloads_before_analysis(server, monkeypatch):
+    """ADR-0008-32. The model is freed while the download retries and loaded again for the song."""
+    identity = server.identity()
+    clock = [0.0]
+    steps = []
+    api = QueueApi(identity, [[{"lease": "a" * 32, "size": 4, "fingerprint": "f"}]])
+    downloads = []
+
+    def download(lease, path, size):
+        downloads.append(clock[0])
+        if clock[0] < UNREACHABLE_RELEASE_SECONDS + 1:
+            raise NetworkError("Connection refused")
+        path.write_bytes(b"song")
+
+    api.download = download
+    api.submit = lambda result: steps.append("submit") or True
+    monkeypatch.setattr("autodj.worker.file_fingerprint", lambda path: (4, "f"))
+    analysis = Mock(vector=np.zeros(4), energy=0.5, key=1, mode=1, bpm=120.0)
+    analysis.tempo_confidence = 1.0
+    worker = idle_worker(
+        api,
+        identity,
+        clock,
+        once=True,
+        prepare=lambda: steps.append("prepare"),
+        release=lambda: steps.append("release"),
+    )
+    worker.analyse = lambda path: steps.append("analyse") or analysis
+    worker.prepared = True
+    stats = worker.run()
+    assert stats.done == 1
+    assert steps == ["release", "prepare", "analyse", "submit"]
+
+
+@pytest.mark.parametrize("server_returns", [True, False])
+def test_the_after_command_runs_while_the_server_is_down_and_before_runs_again(
+    server, tmp_path, simulated_model_runtime, server_returns
+):
+    """ADR-0008-32. Without an idle release the other program gets the GPU back after 10 minutes.
+
+    Ctrl+C or a stop during the outage runs no second after-command.
+    """
+    order = []
+    song = {"lease": "a" * 32}
+
+    def note(count):
+        order.append("claim")
+
+    def stop_after_release(worker):
+        if not server_returns and "After-command" in order:
+            worker.stop.set()
+
+    api = OutageApi(server.identity(), [[song], [song]], down=range(2, 15), on_claim=note)
+    with patch.object(Worker, "_process", side_effect=lambda *args: order.append("analyse")):
+        result = _run_idle_command(
+            tmp_path, api, order, "--once", record_model=True, on_wait=stop_after_release
+        )
+    assert result.exit_code == 0, result.output
+    loaded = ["Before-command", "load"]
+    freed = ["release", "After-command"]
+    expected = [*loaded, "claim", "analyse", *freed]
+    if server_returns:
+        expected += ["claim", *loaded, "analyse", "claim", *freed]
+    assert order == expected
+    assert result.output.count("Server unreachable for 10 minutes") == 1
