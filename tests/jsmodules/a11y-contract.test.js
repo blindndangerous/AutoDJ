@@ -2591,10 +2591,18 @@ describe("static accessibility contracts", () => {
       const input = document.getElementById(id);
       expect(input.getAttribute("type")).toBe("date");
       expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
-      // Optional: no required attribute, and the description says so in words.
+      // Optional: no required attribute.  The help under Repeat dates says
+      // how the dates are read (the year is ignored for Every year), so the
+      // date fields read it too.
       expect(input.hasAttribute("required")).toBe(false);
-      expect(input.hasAttribute("aria-describedby")).toBe(false);
+      expect(input.getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc");
     }
+    const repeat = document.getElementById("schedule-dates-repeat");
+    expect(repeat.tagName).toBe("SELECT");
+    expect(group.contains(repeat)).toBe(true);
+    expect(document.querySelector('label[for="schedule-dates-repeat"]').textContent.trim()).toBe("Repeat dates");
+    expect(repeat.getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc");
+    expect(document.getElementById("schedule-dates-repeat-desc").classList.contains("setting-desc")).toBe(true);
     // The form's error text has an ID to be linked from the field it names.
     expect(document.querySelector("#schedule-form-error").classList.contains("field-error")).toBe(true);
     // The days description is not linked in the markup: the script links it

@@ -309,3 +309,158 @@ def test_files_without_dates_load_unchanged_and_stay_readable(tmp_path: Path) ->
     again = Rig(path)
     again.schedule.start()
     assert again.schedule.events[saved[1]["id"]].end_date.isoformat() == "2026-12-26"
+
+
+# -- dates that repeat every year (#470) ---------------------------------------
+
+
+def test_a_yearly_range_runs_every_year_past_new_year() -> None:
+    """ADR-0009-09: the dates' years are ignored and the range may wrap past New Year."""
+    item = spec(time="08:00", start_date="2026-12-20", end_date="2026-01-02", dates_repeat="yearly")
+    found = runs(item, "2026-10-11 12:00", 16, UTC_ZONE)
+    assert found[0] == "2026-12-20 08:00"
+    assert found[11:14] == ["2026-12-31 08:00", "2027-01-01 08:00", "2027-01-02 08:00"]
+    assert found[14] == "2027-12-20 08:00"
+    # An every-few-minutes window that starts on the last day runs past midnight.
+    late = spec(
+        repeat="interval",
+        interval_minutes=60,
+        window_start="23:00",
+        window_end="01:00",
+        start_date="2026-12-20",
+        end_date="2026-01-02",
+        dates_repeat="yearly",
+    )
+    assert runs(late, "2027-01-02 22:30", 4, UTC_ZONE) == [
+        "2027-01-02 23:00",
+        "2027-01-03 00:00",
+        "2027-01-03 01:00",
+        "2027-12-20 23:00",
+    ]
+
+
+def test_a_yearly_29_february_runs_on_28_february_in_common_years() -> None:
+    """ADR-0009-09: 29 February counts as 28 February in a year without one."""
+    leap = spec(time="09:00", start_date="2028-02-29", dates_repeat="yearly")
+    assert runs(leap, "2026-10-11 12:00", 3, UTC_ZONE) == [
+        "2027-02-28 09:00",
+        "2028-02-29 09:00",
+        "2029-02-28 09:00",
+    ]
+    # Chosen days still apply: the next Monday on that day is years away.
+    monday = spec(repeat="days", days=[0], start_date="2028-02-29", dates_repeat="yearly")
+    assert runs(monday, "2026-10-11 12:00", 3, UTC_ZONE) == [
+        "2033-02-28 07:00",
+        "2039-02-28 07:00",
+        "2044-02-29 07:00",
+    ]
+
+
+def test_next_events_show_next_years_run_once_this_years_has_passed(tmp_path: Path) -> None:
+    """ADR-0009-09: Next events lists the next occurrence, next year's after this year's."""
+    rig = Rig(tmp_path / "schedule.json", now="2026-10-11 12:00")
+    rig.schedule.start()
+    rig.add(
+        name="Spring",
+        time="06:00",
+        start_date="2026-03-01",
+        end_date="2026-03-02",
+        dates_repeat="yearly",
+    )
+    rig.add(
+        name="Holidays",
+        time="06:00",
+        start_date="2026-12-31",
+        end_date="2026-01-01",
+        dates_repeat="yearly",
+    )
+    rows = rig.schedule.upcoming(5)
+    assert [(when.isoformat(), event.name) for when, event in rows] == [
+        ("2026-12-31T06:00:00+00:00", "Holidays"),
+        ("2027-01-01T06:00:00+00:00", "Holidays"),
+        ("2027-03-01T06:00:00+00:00", "Spring"),
+        ("2027-03-02T06:00:00+00:00", "Spring"),
+        ("2027-12-31T06:00:00+00:00", "Holidays"),
+    ]
+    # A yearly event never ends, even one whose dates are years ago.
+    old = rig.add(
+        name="Old",
+        time="06:00",
+        start_date="2020-03-01",
+        end_date="2020-03-02",
+        dates_repeat="yearly",
+        enabled=False,
+    )
+    asyncio.run(rig.schedule.set_enabled(old.id, True))
+    assert rig.schedule.next_time(old) == utc("2027-03-01 06:00")
+
+
+def test_a_one_time_event_in_a_yearly_range() -> None:
+    """ADR-0009-09: a one-time date is checked against the month and day."""
+    assert (
+        spec(
+            repeat="once",
+            date="2027-01-01",
+            start_date="2026-12-20",
+            end_date="2026-01-02",
+            dates_repeat="yearly",
+        ).date
+        is not None
+    )
+    assert field_of(
+        repeat="once",
+        date="2027-01-03",
+        start_date="2026-12-20",
+        end_date="2026-01-02",
+        dates_repeat="yearly",
+    ) == ("date", "Date must be within the start and end dates")
+
+
+@pytest.mark.parametrize(
+    ("changes", "field", "message"),
+    [
+        (
+            {"end_date": "2026-12-26", "dates_repeat": "yearly"},
+            "start_date",
+            "Enter a start date to repeat the dates every year",
+        ),
+        (
+            {"start_date": "2026-11-06", "dates_repeat": "weekly"},
+            "dates_repeat",
+            "Repeat dates must be Don't repeat or Every year",
+        ),
+    ],
+)
+def test_bad_yearly_dates_name_the_field(changes: dict[str, Any], field: str, message: str) -> None:
+    """ADR-0009-09: a repeating range needs a start date; events never repeat weekly."""
+    assert field_of(**changes) == (field, message)
+
+
+def test_describe_yearly_dates_in_words() -> None:
+    season = spec(
+        time="00:00", start_date="2026-12-20", end_date="2027-01-02", dates_repeat="yearly"
+    )
+    assert describe_repeat(season) == (
+        "Every day at 00:00, every year from 20 December to 2 January"
+    )
+    one = spec(time="00:00", start_date="2026-10-31", dates_repeat="yearly")
+    assert describe_range(one) == "every year on 31 October"
+
+
+def test_yearly_dates_are_saved_only_when_set_and_old_files_load(tmp_path: Path) -> None:
+    """ADR-0009-09: Don't repeat is never written, so older files and readers agree."""
+    path = tmp_path / "schedule.json"
+    rig = Rig(path)
+    rig.schedule.start()
+    plain = rig.add(name="Plain", start_date="2026-11-27", end_date="2026-12-26")
+    yearly = rig.add(
+        name="Yearly", start_date="2026-12-20", end_date="2026-01-02", dates_repeat="yearly"
+    )
+    saved = {event["name"]: event for event in json.loads(path.read_text("utf-8"))["events"]}
+    assert "dates_repeat" not in saved["Plain"]
+    assert saved["Yearly"]["dates_repeat"] == "yearly"
+    again = Rig(path)
+    again.schedule.start()
+    assert again.schedule.events[plain.id].dates_repeat == "none"
+    assert again.schedule.events[yearly.id].dates_repeat == "yearly"
+    assert again.schedule.next_time(again.schedule.events[yearly.id]) == utc("2026-12-20 07:00")

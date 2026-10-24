@@ -2284,6 +2284,10 @@ dialog h1 { font-size: 1.5em; }
 .editor-dialog {
   max-height: calc(100vh - 2rem);
   overflow-y: auto;
+  /* Firefox does not scroll a focused control that is partly hidden
+     under the dialog's bottom padding; with the padding as scroll
+     padding, Tab brings Save and Cancel fully into view (2.4.11). */
+  scroll-padding-block: 1.25rem;
 }
 .editor-dialog .dialog-actions {
   margin-top: var(--control-gap);

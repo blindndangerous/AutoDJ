@@ -322,6 +322,34 @@ def test_date_ranges_are_saved_described_and_skipped_until_they_start(
     assert first["repeat_text"].endswith("from 27 November to 26 December 2099")
 
 
+def test_yearly_dates_are_saved_described_and_refused_without_a_start(
+    rig: tuple[TestClient, PlayerBridge, Path],
+) -> None:
+    client, _bridge, active = rig
+    yearly = event(
+        time="00:00", start_date="2000-12-20", end_date="2000-01-02", dates_repeat="yearly"
+    )
+    created = client.post("/api/schedule", json=yearly)
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["repeat_text"] == "Every day at 00:00, every year from 20 December to 2 January"
+    assert (body["dates_repeat"], body["ended"]) == ("yearly", False)
+    saved = json.loads(
+        (active / "stations" / "default" / "schedule.json").read_text(encoding="utf-8")
+    )["events"][0]
+    assert saved["dates_repeat"] == "yearly"
+    # The dates are years ago, yet the next run is in this year's or next year's range.
+    first = client.get("/api/schedule").json()["upcoming"][0]
+    month, day = int(first["time"][5:7]), int(first["time"][8:10])
+    assert (month, day) >= (12, 20) or (month, day) <= (1, 2)
+    refused = client.post("/api/schedule", json=event(end_date="2099-12-26", dates_repeat="yearly"))
+    assert refused.status_code == 400
+    assert refused.json() == {
+        "detail": "Enter a start date to repeat the dates every year",
+        "field": "start_date",
+    }
+
+
 def test_dates_with_no_run_left_are_refused_in_words(
     rig: tuple[TestClient, PlayerBridge, Path],
 ) -> None:

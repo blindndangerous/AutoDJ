@@ -25,7 +25,8 @@ doctor`` can say how many.
 
 A category may have allowed hours and days (dayparting), and a first and
 last date (a season): outside them its songs are not picked in any pick
-mode, and a clockwheel step for it is skipped.  The hours are wall-clock
+mode, and a clockwheel step for it is skipped.  The season may repeat every
+week or every year (:mod:`autodj.date_repeat`).  The hours are wall-clock
 times in the station time zone; a window that crosses midnight belongs to
 the day it starts, for its days and its dates alike.  A song in several
 categories plays only while every one of them allows it.  Clockwheel steps
@@ -63,6 +64,9 @@ from pydantic import (
 from autodj.beets_query import FIRST_RELEASE_YEAR, Query, QueryError, parse_query
 from autodj.beets_query import first_release_year as _first_release_year
 from autodj.clock_conditions import relative_date_now, uses_relative_dates
+from autodj.date_repeat import DateRepeat, month_day, weekday_name
+from autodj.date_repeat import contains as dates_contain
+from autodj.date_repeat import problem as dates_problem
 from autodj.fsutil import atomic_write, set_aside
 from autodj.timefmt import clock_text
 
@@ -136,9 +140,11 @@ class CategorySpec(BaseModel):
     days: list[StrictInt] = Field(default_factory=list, max_length=7)
     hours_from: Time | None = None
     hours_until: Time | None = None
-    # A season: the first and last day the songs may play, both included.
+    # A season: the first and last day the songs may play, both included,
+    # once or repeating every week or every year.
     not_before: Date | None = None
     not_after: Date | None = None
+    dates_repeat: DateRepeat = "none"
 
     @field_validator("name")
     @classmethod
@@ -231,6 +237,7 @@ _FIELD_NAMES = {
     "hours_until": "Allowed until",
     "not_before": "Not before",
     "not_after": "Do not play after",
+    "dates_repeat": "Repeat dates",
 }
 
 _DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
@@ -265,9 +272,17 @@ def check_daypart(item: Any) -> list[int]:
     if item.hours_from is not None and item.hours_from == item.hours_until:
         raise CategoryError("hours_until", "Allowed until must differ from Allowed from")
     first, last = getattr(item, "not_before", None), getattr(item, "not_after", None)
-    if first is not None and last is not None and last < first:
+    found = dates_problem(first, last, getattr(item, "dates_repeat", "none"))
+    if found == "needs_first":
+        raise CategoryError("not_before", "Enter a Not before date to repeat the dates")
+    if found == "backwards":
         raise CategoryError(
             "not_after", "Do not play after must be on or after the Not before date"
+        )
+    if found == "too_long":
+        raise CategoryError(
+            "not_after",
+            "For Every week, Do not play after must be within 6 days of the Not before date",
         )
     return sorted(set(days))
 
@@ -306,13 +321,35 @@ def daypart_refusal(item: Any, wall: datetime) -> str | None:
     if item.days and day.weekday() not in item.days:
         return "days"
     first, last = getattr(item, "not_before", None), getattr(item, "not_after", None)
-    if (first is not None and day < first) or (last is not None and day > last):
+    if not dates_contain(day, first, last, getattr(item, "dates_repeat", "none")):
         return "dates"
     return None
 
 
 def _day_words(day: Date) -> str:
     return f"{day.day} {_MONTH_NAMES[day.month - 1]} {day.year}"
+
+
+def describe_season(spec: Any) -> str:
+    """Say a category's dates in words, after "Plays only"; empty for none."""
+    first, last = getattr(spec, "not_before", None), getattr(spec, "not_after", None)
+    repeat = getattr(spec, "dates_repeat", "none")
+    if repeat == "weekly" and first is not None:
+        starting = f"starting {_day_words(first)}"
+        if last is None or last == first:
+            return f"on {weekday_name(first)}s, {starting}"
+        return f"every week from {weekday_name(first)} to {weekday_name(last)}, {starting}"
+    if repeat == "yearly" and first is not None:
+        if last is None or (last.month, last.day) == (first.month, first.day):
+            return f"every year on {month_day(first)}"
+        return f"every year between {month_day(first)} and {month_day(last)}"
+    if first is not None and last is not None:
+        return f"between {_day_words(first)} and {_day_words(last)}"
+    if first is not None:
+        return f"from {_day_words(first)}"
+    if last is not None:
+        return f"until {_day_words(last)}"
+    return ""
 
 
 class StepHours(BaseModel):
@@ -407,15 +444,7 @@ def describe_daypart(spec: Any) -> str:
         days = "on " + (names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}")
     else:
         days = "every day"
-    first, last = getattr(spec, "not_before", None), getattr(spec, "not_after", None)
-    if first is not None and last is not None:
-        season = f"between {_day_words(first)} and {_day_words(last)}"
-    elif first is not None:
-        season = f"from {_day_words(first)}"
-    elif last is not None:
-        season = f"until {_day_words(last)}"
-    else:
-        season = ""
+    season = describe_season(spec)
     if spec.hours_from is None or spec.hours_until is None:
         if days != "every day":
             text = f"Plays only {days}"
@@ -460,6 +489,8 @@ def spec_error(exc: ValidationError) -> CategoryError:
         message = f"{_FIELD_NAMES[name]} is too long"
     elif error.get("type") == "literal_error" and name == "source":
         message = "Choose shared filters, a beets query or a playlist file as the source"
+    elif error.get("type") == "literal_error" and name == "dates_repeat":
+        message = "Repeat dates must be Don't repeat, Every week or Every year"
     elif error.get("type") == "extra_forbidden":
         message = f"Unknown field {location[-1] if location else ''}".strip()
     return CategoryError(name or "name", message)
@@ -532,6 +563,7 @@ class CategoryStore:
                 ("hours_until", None),
                 ("not_before", None),
                 ("not_after", None),
+                ("dates_repeat", "none"),
             ):
                 if category[key] == empty:
                     del category[key]
