@@ -279,8 +279,8 @@ seconds behind together, skipping hundreds of periods. A measurement on Linux,
 pinned to two and to four cores, reproduced it: with three Python threads busy
 next to a bus with an FFmpeg master and three MP3 encoders, the bus skipped
 between a quarter and nearly all of its periods on two cores, and up to a sixth
-on four, with single gaps of up to 13 s. With a 0.5 ms interval it skipped none
-in any run; 1 ms still skipped a few.
+on four, with single gaps of up to 13 s. With a 0.5 ms interval no run skipped more
+than one period; 1 ms still skipped a few.
 
 While at least one bus runs, the process therefore uses a 0.5 ms switch interval
 and restores the earlier one when the last bus stops, unless something else has
