@@ -78,7 +78,8 @@ def _builtin_actions(
 
     async def picking(params: dict[str, str]) -> None:
         mode = params["mode"]
-        if mode.startswith("clock:"):
+        selected = mode.startswith("clock:")
+        if selected:
             try:
                 await select_clock(mode.removeprefix("clock:"))
             except HTTPException as exc:
@@ -87,6 +88,16 @@ def _builtin_actions(
         if mode == "clock" and getattr(bridge.player, "_clock", None) is None:
             status = getattr(bridge.player, "_clock_status", None) or "No clockwheel is active"
             raise ValueError(f"The clockwheel cannot play: {status}")
+        playback = cfg.playback
+        if (
+            selected
+            and playback.pick_mode == "clock"
+            and playback.transition_mode == "saved_points"
+        ):
+            # Selecting the wheel has already planned the next song from it;
+            # setting the same mode again would pick and prepare it twice,
+            # costing the mix buses time at the top of the hour.
+            return
         await asyncio.to_thread(
             bridge.set_playback_settings, PlaybackSettingsBody.model_validate({"pick_mode": mode})
         )

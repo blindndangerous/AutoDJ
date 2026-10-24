@@ -200,6 +200,55 @@ def test_song_picking_lists_each_clockwheel_and_switches_to_it(
     assert "no clockwheel named 'Morning'" in gone["message"]
 
 
+def test_switching_clockwheels_on_schedule_plans_the_next_song_once(
+    rig: tuple[TestClient, PlayerBridge, Path],
+) -> None:
+    """Selecting the wheel re-plans the next song; the unchanged mode must not again.
+
+    The second pick and render at the top of the hour cost the mix buses time.
+    """
+    client, bridge, active = rig
+    music = active / "music"
+    music.mkdir()
+    bridge.library = MagicMock()
+    bridge.library.clock_beets.snapshot.return_value = (frozenset(), {}, None)
+    bridge.library.entries_snapshot.return_value = ()
+    bridge.library.catalog.sources.return_value = [
+        {"id": "src1", "kind": "music", "path": str(music), "recursive": True}
+    ]
+    bridge.library.catalog.get_setting.return_value = {}
+    for name in ("Morning", "Evening"):
+        ClockwheelStore(active / "stations" / "default" / "clockwheels").save(
+            {
+                "version": 1,
+                "name": name,
+                "steps": [{"type": "music", "source": "src1"}],
+                "resync_minutes": [0],
+            }
+        )
+    player = bridge.player
+    player._cfg.playback.pick_mode = "similarity"
+    morning = client.post(
+        "/api/schedule", json=event(action="pick_mode", params={"mode": "clock:Morning"})
+    ).json()["id"]
+    evening = client.post(
+        "/api/schedule", json=event(action="pick_mode", params={"mode": "clock:Evening"})
+    ).json()["id"]
+
+    # From another picking mode the mode itself changes, so it re-plans.
+    assert client.post(f"/api/schedule/{morning}/run").json()["result"] == "ok"
+    assert player._cfg.playback.pick_mode == "clock"
+    assert player.refresh_playout.call_count == 1
+
+    player.refresh_playout.reset_mock()
+    player.configure_clock_after_selection.reset_mock()
+    assert client.post(f"/api/schedule/{evening}/run").json()["result"] == "ok"
+    bridge.library.ledger.select_clock.assert_called_with("Evening", None, None)
+    player.configure_clock_after_selection.assert_called_once()
+    player.refresh_playout.assert_not_called()
+    assert player._cfg.playback.pick_mode == "clock"
+
+
 REFUSED = [
     (event(name=" "), "name", "Enter a name of up to 100 characters"),
     (event(time="25:00"), "time", None),
