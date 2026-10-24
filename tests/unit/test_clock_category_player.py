@@ -154,3 +154,36 @@ def test_clock_pick_logs_a_filtered_step_before_the_next_folder(caplog):
         picked = player._clock_pick(context, 0)
     assert picked.entry is second
     assert "Clock selection skipped: Step 1: track step" in caplog.text
+
+
+def test_a_relative_date_step_is_judged_for_when_the_song_starts():
+    """ADR-0009-07: the player judges within the last N days at the pick's start time."""
+    from autodj.catalog import normalize_path
+
+    player = _clock_player([("A", "One"), ("B", "Two")])
+    first, second = player.playable_entries()
+    now = 1_760_000_000 // 3600 * 3600 + 600
+    day = 86400
+    items = {
+        normalize_path(first.path): {"added": now - 40 * day},
+        normalize_path(second.path): {"added": now - 6 * day},
+    }
+    player._library.clock_beets = SimpleNamespace(
+        snapshot=lambda fields: (frozenset({"added"}), items, None)
+    )
+    player._clock_slots = [
+        ClockSlot(
+            conditions=(
+                {"field": "beets", "name": "added", "operator": "within_days", "value": 7},
+            ),
+            enforce_rules=False,
+        )
+    ]
+    context = replace(player._pick_context(), at=float(now))
+    assert player._clock_pick(context, 0).entry is second
+    cache = player._clock_condition_cache
+    assert player._clock_pick(replace(context, at=now + 1200.0), 0).entry is second
+    assert player._clock_condition_cache is cache
+    # Two days later the newest song is eight days old, and the step has nothing.
+    assert player._clock_pick(replace(context, at=now + 2.0 * day), 0).entry is None
+    assert player._clock_condition_cache is not cache

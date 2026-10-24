@@ -1,5 +1,5 @@
 import { stepHoursText } from "./step-hours.js";
-import { NUMERIC_OPERATORS, TEXT_OPERATORS } from "./condition-editor.js";
+import { NUMERIC_OPERATORS, TEXT_OPERATORS, WITHIN_DAYS } from "./condition-editor.js";
 
 const FOLDER_TYPES = new Set(["music", "liner"]);
 
@@ -36,6 +36,9 @@ function describeCondition(condition, sources = [], categories = []) {
     : condition.field === "duration" ? "Duration (seconds)"
       : condition.field === "bpm" ? "BPM"
         : condition.field[0].toUpperCase() + condition.field.slice(1);
+  if (condition.operator === WITHIN_DAYS) {
+    return `${field} within the last ${condition.value} ${Number(condition.value) === 1 ? "day" : "days"}`;
+  }
   const operator = [...NUMERIC_OPERATORS, ...TEXT_OPERATORS].find(([value]) => value === condition.operator)?.[1] || condition.operator;
   return `${field} ${operator} ${condition.value}${["between", "outside"].includes(condition.operator) ? ` and ${condition.upper}` : ""}`;
 }

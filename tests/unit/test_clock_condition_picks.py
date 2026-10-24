@@ -291,3 +291,33 @@ def test_match_all_stops_once_no_entry_can_pass(monkeypatch):
     picked = pick_slot([slot], 0, [Track(r"C:\music\song.flac")], {}, lambda _: True)
     assert picked.entry is None
     assert built == [meta("artist", "is", "Nobody")]
+
+
+def test_relative_date_steps_are_worked_out_again_each_hour():
+    """ADR-0009-07: a within the last N days step follows the pick time, cached by the hour."""
+    from autodj.clockwheel import ConditionPaths
+
+    now = 1_760_000_000 // 3600 * 3600 + 600
+    day = 86400
+    old, new = Track(r"C:\music\old.flac"), Track(r"C:\music\new.flac")
+    entries = (old, new)
+    beets = {
+        normalize_path(old.path): {"added": now - 40 * day},
+        normalize_path(new.path): {"added": now - 29 * day},
+    }
+    recent = ClockSlot(conditions=(meta("beets", "within_days", 30, name="added"),))
+    plain = ClockSlot(conditions=(meta("year", "lt", 2010),))
+    slots = [recent]
+    cache = ConditionPaths(slots, entries, (), beets, None, now)
+    assert cache.paths(0) == {new.path}
+    # The same hour keeps the answer; the next hour works it out again.
+    assert cache.current(slots, entries, (), beets, None, now + 2000)
+    assert not cache.current(slots, entries, (), beets, None, now + 3600)
+    later = ConditionPaths(slots, entries, (), beets, None, now + 2 * day)
+    assert later.paths(0) == set()
+    picked = pick_slot(slots, 0, entries, {}, lambda _: True, beets=beets, condition_cache=later)
+    assert picked.entry is None
+    # A step without one keeps its cache whatever the time.
+    plain_slots = [plain]
+    steady = ConditionPaths(plain_slots, entries, (), None, None, now)
+    assert steady.current(plain_slots, entries, (), None, None, now + 30 * day)

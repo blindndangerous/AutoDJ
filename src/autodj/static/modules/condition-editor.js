@@ -2,6 +2,11 @@ import { addBrowseButton, libraryFolderSource } from "./path-picker.js";
 
 export const NUMERIC_OPERATORS = [["eq", "is"], ["not_eq", "is not"], ["lt", "less than"], ["lte", "at most"], ["gt", "greater than"], ["gte", "at least"], ["between", "between"], ["outside", "outside range"]];
 export const TEXT_OPERATORS = [["is", "is"], ["is_not", "is not"], ["contains", "contains"], ["not_contains", "does not contain"], ["matches", "matches"], ["not_matches", "does not match"]];
+/** The relative date operator: a Beets date, such as added or mtime, in the last N days. */
+export const WITHIN_DAYS = "within_days";
+const MAX_WITHIN_DAYS = 3650;
+const DATE_OPERATORS = [[WITHIN_DAYS, "within the last N days (date)"]];
+const WITHIN_DAYS_HELP = "A Beets date, such as added or mtime, in the last N days; checked every hour.";
 const BEETS_NUMERIC_OPERATORS = new Set(NUMERIC_OPERATORS.map(([value]) => value));
 const CONDITION_FIELD_DEFINITIONS = {
   folder: { label: "Folder", valueType: "folder", operators: "folder", help: "Choose a library folder; optionally limit it to a subfolder." },
@@ -126,14 +131,19 @@ export function createConditionRow({
     const family = CONDITION_FIELD_DEFINITIONS[current]?.operators;
     if (family === "folder") choices = [["is", "is"], ["is_not", "is not"]];
     else if (family === "numeric") choices = NUMERIC_OPERATORS;
-    else if (family === "beets") choices = [["is", "Is (text)"], ["is_not", "Is not (text)"], ...TEXT_OPERATORS.slice(2), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
+    else if (family === "beets") choices = [["is", "Is (text)"], ["is_not", "Is not (text)"], ...TEXT_OPERATORS.slice(2), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1), ...DATE_OPERATORS];
     const previous = operator.value || selectedOperator;
     optionList(doc, operator, choices);
     operator.value = choices.some(([item]) => item === previous) ? previous : choices[0][0];
     selectedOperator = operator.value;
     input.hidden = input.previousElementSibling.hidden = isFolder || isGenre || isCategory;
     upper.hidden = upper.previousElementSibling.hidden = !["between", "outside"].includes(operator.value);
-    input.previousElementSibling.textContent = current === "duration" ? "Value (seconds or MM:SS)" : "Value";
+    const withinDays = operator.value === WITHIN_DAYS;
+    if (withinDays) help.textContent = WITHIN_DAYS_HELP;
+    if (withinDays) input.setAttribute("inputmode", "numeric");
+    else input.removeAttribute("inputmode");
+    input.previousElementSibling.textContent = current === "duration" ? "Value (seconds or MM:SS)"
+      : withinDays ? `Days (1 to ${MAX_WITHIN_DAYS})` : "Value";
     upper.previousElementSibling.textContent = current === "duration" ? "Upper value (seconds or MM:SS)" : "Upper value";
   };
   field.addEventListener("change", () => { sync(); onFieldChange(); });
@@ -241,6 +251,15 @@ export function readConditionRows(rows, {
       if (field !== "beets" && value < 0) invalid(control, negativeError(field));
       return value;
     };
+    if (operator === WITHIN_DAYS) {
+      const days = Number(raw);
+      if (!/^\d+$/.test(raw) || days < 1 || days > MAX_WITHIN_DAYS) {
+        invalid(controls.input, `Enter a whole number of days from 1 to ${MAX_WITHIN_DAYS}.`);
+      }
+      const result = { field, name: beetsSelect.value, operator, value: days };
+      if (!beetsAvailable(result.name)) invalid(beetsSelect, beetsError(result.name));
+      return result;
+    }
     const result = { field, ...(field === "beets" ? { name: beetsSelect.value } : {}), operator, value: numeric ? parse(raw, controls.input) : raw };
     if (field === "beets" && !beetsAvailable(result.name)) invalid(beetsSelect, beetsError(result.name));
     if (["between", "outside"].includes(operator)) {

@@ -162,3 +162,73 @@ def test_negative_conditions_require_known_metadata_and_exclude_any_matching_gen
     assert matches_condition(
         {"field": "year", "operator": "outside", "value": 2000, "upper": 2010}, {"year": 1999}
     )
+
+
+#: A wall-clock time half an hour into an hour, for the relative date tests.
+NOW = 1_760_000_000 // 3600 * 3600 + 1800
+HOUR = NOW - 1800
+DAY = 86400
+
+
+def test_within_days_matches_beets_dates_in_the_last_n_days():
+    """ADR-0009-07: within the last N days reads a Beets date against the given time."""
+    added = {"field": "beets", "name": "added", "operator": "within_days", "value": 30}
+    test = condition_matcher(added)
+    # The window ends at the start of the hour and reaches back N whole days from there.
+    assert test({}, {"added": HOUR - 30 * DAY}, NOW)
+    assert not test({}, {"added": HOUR - 30 * DAY - 1}, NOW)
+    # Added since the hour began, or dated a little ahead, is recent too.
+    assert test({}, {"added": NOW - 60}, NOW)
+    assert test({}, {"added": NOW + 600}, NOW)
+    # Beets' 0 means no date; a missing value or text never matches.
+    for item in ({"added": 0}, {}, None, {"added": "yesterday"}):
+        assert not test({}, item, NOW)
+    # Text holding a number, as a flexible attribute is stored, is read as one.
+    assert test({}, {"added": str(NOW - DAY)}, NOW)
+    mtime = {"field": "beets", "name": "mtime", "operator": "within_days", "value": 1}
+    assert condition_matcher(mtime)({}, {"mtime": HOUR - DAY + 5}, NOW)
+    assert not condition_matcher(mtime)({}, {"mtime": HOUR - 2 * DAY}, NOW)
+
+
+def test_within_days_moves_with_the_clock():
+    """ADR-0009-07: the same saved condition matches less as time passes."""
+    test = condition_matcher(
+        {"field": "beets", "name": "added", "operator": "within_days", "value": 7}
+    )
+    song = {"added": NOW - 6 * DAY}
+    assert test({}, song, NOW)
+    assert test({}, song, NOW + DAY - 1800)  # Still inside the hour the window ends at.
+    assert not test({}, song, NOW + 2 * DAY)
+
+
+@pytest.mark.parametrize(
+    ("value", "upper", "field"),
+    [
+        (0, None, "beets"),
+        (-1, None, "beets"),
+        (3651, None, "beets"),
+        (1.5, None, "beets"),
+        (True, None, "beets"),
+        ("30", None, "beets"),
+        (None, None, "beets"),
+        (30, 40, "beets"),
+        (30, None, "year"),
+        (30, None, "artist"),
+    ],
+)
+def test_within_days_refuses_anything_but_a_whole_number_of_days(value, upper, field):
+    condition = {"field": field, "operator": "within_days", "value": value}
+    if field == "beets":
+        condition["name"] = "added"
+    if upper is not None:
+        condition["upper"] = upper
+    with pytest.raises(ValueError, match="within the last N days"):
+        validate_metadata_condition(condition)
+
+
+def test_within_days_keeps_its_bounds_and_whole_days():
+    condition = {"field": "beets", "name": "added", "operator": "within_days"}
+    assert validate_metadata_condition({**condition, "value": 1})["value"] == 1
+    assert validate_metadata_condition({**condition, "value": 3650})["value"] == 3650
+    assert validate_metadata_condition({**condition, "value": 30.0})["value"] == 30
+    assert type(validate_metadata_condition({**condition, "value": 30.0})["value"]) is int
