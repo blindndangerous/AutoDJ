@@ -1784,8 +1784,8 @@ function controlBoundaryProblems(page) {
     ].join(", "));
     for (const control of controls) {
       if (!control.getClientRects().length || control.closest("[hidden], [aria-hidden='true']")) continue;
-      if (control.disabled || control.getAttribute("aria-disabled") === "true"
-        || control.classList.contains("is-pending")) continue;
+      // A busy (.is-pending) control is still active, so it is measured.
+      if (control.disabled || control.getAttribute("aria-disabled") === "true") continue;
       const style = window.getComputedStyle(control);
       if (style.visibility === "hidden" || Number(style.opacity) === 0) continue;
       const back = behind(control.parentElement);
@@ -1881,6 +1881,47 @@ function showToast(page, message, tone = "info") {
     const { showVisibleStatus } = await import(`${window.location.origin}/modules/live-region.js`);
     showVisibleStatus(text, document, { tone: toneName });
   }, [message, tone]);
+}
+
+// A busy button (.is-pending, as Save changes is while it saves) keeps
+// focus and stays enabled, so it must keep full contrast: axe-core's
+// colour-contrast over it, its boundary, and its own opacity.
+async function pendingButtonProblems(page) {
+  const marked = await page.evaluate(() => {
+    const button = [...document.querySelectorAll("button")].find((item) => item.getClientRects().length
+      && !item.disabled && item.getAttribute("aria-disabled") !== "true"
+      && !item.closest("[hidden], [aria-hidden='true'], dialog"));
+    if (!button) return false;
+    button.classList.add("is-pending");
+    button.dataset.auditPending = "";
+    return true;
+  });
+  if (!marked) return ["no button to mark busy"];
+  await settle(page);
+  if (!await page.evaluate(() => Boolean(window.axe))) await page.addScriptTag({ path: AXE });
+  const problems = await page.evaluate(async () => {
+    const { parse, over, ratio, behind } = window.__contrast;
+    const button = document.querySelector("[data-audit-pending]");
+    const name = button.id ? `#${button.id}` : button.textContent.trim().slice(0, 30);
+    const style = window.getComputedStyle(button);
+    const issues = [];
+    if (Number(style.opacity) < 1) issues.push(`${name} opacity ${style.opacity}`);
+    if (style.cursor !== "progress") issues.push(`${name} cursor ${style.cursor}`);
+    const back = behind(button.parentElement);
+    const fill = over(parse(style.backgroundColor), back);
+    const border = over(parse(style.borderTopColor), back);
+    const best = Math.max(ratio(border, back), ratio(fill, back));
+    if (best < 3) issues.push(`${name} boundary ${best.toFixed(2)}:1`);
+    const result = await window.axe.run(button, { runOnly: { type: "rule", values: ["color-contrast"] } });
+    for (const violation of result.violations) issues.push(`${name} axe ${violation.id}`);
+    return issues;
+  });
+  await page.evaluate(() => {
+    const button = document.querySelector("[data-audit-pending]");
+    button?.classList.remove("is-pending");
+    if (button) delete button.dataset.auditPending;
+  });
+  return problems;
 }
 
 // The status message and its Dismiss button: axe-core over the page with
@@ -2065,6 +2106,7 @@ async function auditTheme(browser, mode, out) {
         record("nonText", "camelot", await wheelProblems(page));
         record("toast", target, await toastProblems(page));
         record("footer", target, await footerLinkProblems(page));
+        record("nonText", "busy button", await pendingButtonProblems(page));
       }
       if (target === "settings/display") record("toast", target, await toastProblems(page));
       if (target === "settings/workers") {
