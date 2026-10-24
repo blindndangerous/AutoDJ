@@ -250,6 +250,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0004-12` | Streaming retains the imminent transition and promotes its incoming source cursor before selecting and preparing the next transition; both server outputs share this path and whole-show preview/export stays offline. | automated | `tests/unit/test_live_playout_controller.py::test_live_playout_pop_waits_for_explicit_cursor_promotion`; `tests/unit/test_live_stream_lifecycle.py::test_stream_selects_successor_only_when_continuation_becomes_current`; `tests/unit/test_hour_preview.py::test_live_mixing_keeps_future_queue_and_show_as_estimates` |
 | `ADR-0004-13` | The newly selected stream boundary may emit silence while programme position holds; zero-gap behavior requires manual listening and soak evidence. | manual | Listen through repeated files, short tracks, cuts, overlaps and incoming glides, then run the documented station soak on target hardware; record boundary latency, silence and underruns without claiming a zero-gap guarantee. |
 | `ADR-0004-14` | Server sound-card and stream playback share live playout; local-only output creates no streaming lifecycle, and whole-show preview/export stays offline. | automated | `tests/unit/test_player_stream_mode.py::test_local_soundcard_uses_live_playout_without_stream_lifecycle` |
+| `ADR-0004-15` | While any mix bus runs, the process uses the 0.5 ms thread switch interval, restoring the earlier interval after the last bus stops unless it was changed meanwhile; a shorter interval is kept. Continuity under load on target hardware remains manual soak evidence (ADR-0004-06). | automated | `tests/unit/test_mixbus.py::test_run_shortens_the_switch_interval_until_the_last_bus_stops`; `tests/unit/test_mixbus.py::test_run_leaves_an_interval_someone_else_chose` |
 
 ## Related proposal — 2026-10-17
 
@@ -265,3 +266,31 @@ Trigger selection, heard-only reservation commits, rotation and preview isolatio
 remain unchanged. The flag remains compatible with non-saved-point live scheduling
 and time checks; browser playback is unchanged. This consolidates current cue-based
 placement without extending beatmixed or browser playback in this change.
+
+## Amendment, 2026-10-24: keep the GIL from starving the mix bus
+
+The bus runs on its own Python thread and gives up the interpreter lock several
+times per 20 ms block: pipe writes, locks shared with the master and encoder
+threads, and sleeping. Each time it asks for the lock again, a thread running
+Python keeps it for a whole switch interval, 5 ms by default in CPython. On a
+low-power NAS, a scheduled clockwheel change, which picked and prepared the next
+song twice, made the bus fall up to 0.19 s behind, and busier times left both stations of the process
+seconds behind together, skipping hundreds of periods. A measurement on Linux,
+pinned to two and to four cores, reproduced it: with three Python threads busy
+next to a bus with an FFmpeg master and three MP3 encoders, the bus skipped
+between a quarter and nearly all of its periods on two cores, and up to a sixth
+on four, with single gaps of up to 13 s. With a 0.5 ms interval it skipped none
+in any run; 1 ms still skipped a few.
+
+While at least one bus runs, the process therefore uses a 0.5 ms switch interval
+and restores the earlier one when the last bus stops, unless something else has
+changed it meanwhile. Background threads lose a little throughput when they
+compete with one another; audio is unchanged. The catch-up rule is unchanged: a
+late block is still made up with at most eight back-to-back blocks, and a longer
+stall still skips the rest. This reduces how often that happens, without promising
+real-time behavior: a long call that holds the lock (a garbage collection over a
+large heap, say) or page faults on a swapping host still stop every thread.
+A scheduled switch to a clockwheel while the station already picks by clockwheel
+now plans the next song once, when the wheel is selected.
+Contract ADR-0004-15 records the interval rule; continuity on target hardware
+remains the manual soak evidence of ADR-0004-06.
