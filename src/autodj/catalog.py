@@ -1389,11 +1389,14 @@ class LibraryCatalog:
             return ADVANCED_MAX_MINUTES
         return value
 
-    def _unembedded_paths(self, *, ordered: bool, too_long: bool = False) -> Iterator[str]:
+    def _unembedded_paths(
+        self, *, ordered: bool, too_long: bool = False, path: str | None = None
+    ) -> Iterator[str]:
         """Yield music paths with no vector under an advanced, non-liner source.
 
         Songs longer than :meth:`advanced_max_minutes` are left out, or,
-        with *too_long*, are the only ones yielded.
+        with *too_long*, are the only ones yielded.  A normalized *path*
+        limits the query to that one record.
         """
         with self._lock:
             db = self._db()
@@ -1417,15 +1420,17 @@ class LibraryCatalog:
                 if too_long
                 else " AND (e.length<=? OR e.length<=0)"
             )
+            if path is not None:
+                length += " AND e.path=?"
             sql = (
                 "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "  # nosec B608 -- fixed SQL fragments; values bound
                 "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL" + length
             )
-            args = (limit,) if limit else ()
+            args = ((limit,) if limit else ()) + ((path,) if path is not None else ())
             if not ordered:
-                for (path,) in db.execute(sql, args):
-                    if _covered_by(path, advanced) and not _covered_by(path, liner):
-                        yield path
+                for (found,) in db.execute(sql, args):
+                    if _covered_by(found, advanced) and not _covered_by(found, liner):
+                        yield found
                 return
 
         after = ""
@@ -1443,9 +1448,9 @@ class LibraryCatalog:
                 return
             # Advance by SQL rows, even when a whole page fails source coverage.
             after = page[-1][0]
-            for (path,) in page:
-                if _covered_by(path, advanced) and not _covered_by(path, liner):
-                    yield path
+            for (found,) in page:
+                if _covered_by(found, advanced) and not _covered_by(found, liner):
+                    yield found
 
     def iter_unembedded_paths(self) -> Iterator[str]:
         """Yield pending paths in bounded pages, releasing the lock before each yield.
@@ -1454,6 +1459,10 @@ class LibraryCatalog:
         size; this iterator only bounds candidate allocation.
         """
         return self._unembedded_paths(ordered=True)
+
+    def awaits_analysis(self, path: str | Path) -> bool:
+        """Whether :meth:`iter_unembedded_paths` would yield *path*, without paging to it."""
+        return bool(list(self._unembedded_paths(ordered=False, path=_path(path))))
 
     def unembedded_count(self) -> int:
         """Count pending music without sorting or materializing its paths."""

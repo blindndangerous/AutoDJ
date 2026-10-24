@@ -603,7 +603,7 @@ def install_worker_api(
                 )
                 if supports_scan and lease.path in pending:
                     songs[-1]["scan"] = manager.scan_options(Path(lease.path))
-                    songs[-1]["embed"] = lease.path in advanced or (
+                    songs[-1]["embed"] = manager.catalog.awaits_analysis(lease.path) or (
                         lease.path in changed_paths
                         and any(
                             source["advanced"]

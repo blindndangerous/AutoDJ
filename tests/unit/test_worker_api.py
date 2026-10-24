@@ -443,6 +443,23 @@ def claim_scan(server, secret):
     return reply.json()["songs"][0]
 
 
+def test_scan_lease_embeds_unembedded_song_after_paging_past_it(server):
+    """A scan lease for a song without a vector asks for its vector too.
+
+    The pending song sorts first, so filling the batch from the paged
+    candidates moves past it before the reply is built.
+    """
+    _token, secret = server.token()
+    record = server.manager.catalog.record_for_path(server.songs[0])
+    server.manager.analysis_queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+    reply = server.call("POST", "/api/worker/claim", secret, json={**SCAN_CAPABILITY, "batch": 2})
+    assert reply.status_code == 200, reply.text
+    songs = reply.json()["songs"]
+    assert len(songs) == 2
+    (scan,) = [song for song in songs if "scan" in song]
+    assert scan["embed"] is True
+
+
 def test_worker_combined_result_stores_scan_fields(server):
     """ADR-0008-06. A combined result completes scan work and makes music playable."""
     _token, secret = server.token()
