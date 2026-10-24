@@ -3959,10 +3959,14 @@
      what Escape does: it closes the dialog, keeps the edits and puts focus
      back on the control that opened it. -->
 <!-- New step and Edit open the step form as a modal dialog; Escape
-     or Cancel closes it and returns focus. -->
-<dialog id="clock-step-dialog" aria-labelledby="clock-step-legend">
+     or Cancel closes it and returns focus.  The short description is what
+     NVDA reads after the name: a dialog without one has all of its text
+     read instead, the help, the count and every label, as it opens. -->
+<dialog id="clock-step-dialog" aria-labelledby="clock-step-legend"
+        aria-describedby="clock-step-desc">
 <fieldset id="clock-step-form" class="flow-form">
   <legend><h1 id="clock-step-legend">Add a step</h1></legend>
+  <p class="setting-desc" id="clock-step-desc">Choose what the step plays, how it chooses and when it plays.</p>
   <p id="clock-step-form-error" class="field-error" hidden></p>
   <label for="clock-step-type">Step type</label>
   <select id="clock-step-type">

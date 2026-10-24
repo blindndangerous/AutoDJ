@@ -2382,6 +2382,19 @@ describe("static accessibility contracts", () => {
     }
   });
 
+  it("describes the clockwheel step dialog in one short sentence", () => {
+    // Without a description NVDA with Firefox read the whole step form as the
+    // dialog opened (the help, the track count, every label), twice.
+    installDocument();
+    const dialog = document.querySelector("#clock-step-dialog");
+    const description = document.getElementById(dialog.getAttribute("aria-describedby"));
+    expect(description?.tagName).toBe("P");
+    expect(dialog.contains(description)).toBe(true);
+    expect(description.hidden).toBe(false);
+    expect(description.textContent.trim().length).toBeGreaterThan(0);
+    expect(description.textContent.length).toBeLessThan(100);
+  });
+
   it("never nests a dialog inside a tab panel", () => {
     // A <dialog> inside a `[role="tabpanel"]` that is `hidden` on every
     // other tab is not rendered and is invisible to the accessibility
