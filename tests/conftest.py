@@ -5,11 +5,38 @@ the sys.modules level before any test module imports autodj.player, so the
 import succeeds without audio hardware.
 """
 
+import atexit
 import os
+import shutil
 import sys
+import tempfile
 from unittest.mock import MagicMock
 
 import pytest
+
+
+def _private_numba_cache() -> str:
+    """Give this test process a numba cache of its own, empty at the start.
+
+    librosa and ``autodj.kernels`` compile with ``cache=True``.  xdist workers
+    sharing one cache, the default beside the installed sources or a shared
+    ``NUMBA_CACHE_DIR``, race on its index files and leave entries that make a
+    later load segfault (#558).  One fresh directory per process means no two
+    processes write the same cache and no run reads another run's entries.  It
+    has to be set before numba is imported, so it is set here, at conftest
+    import; tests' subprocesses inherit it.
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    folder = tempfile.mkdtemp(prefix=f"autodj-numba-{worker}-")
+    atexit.register(shutil.rmtree, folder, ignore_errors=True)
+    os.environ["NUMBA_CACHE_DIR"] = folder
+    numba = sys.modules.get("numba")
+    if numba is not None:  # imported early by a plugin: point its config here too
+        numba.config.CACHE_DIR = folder
+    return folder
+
+
+_private_numba_cache()
 
 # Mock sounddevice before any module-level import can trigger PortAudio lookup
 if "sounddevice" not in sys.modules:
