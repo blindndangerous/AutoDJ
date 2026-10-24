@@ -17,6 +17,12 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
   if (!dialog.id) dialog.id = `${form.id}-dialog`;
   dialog.classList.add("editor-dialog");
   dialog.setAttribute("aria-labelledby", heading.id);
+  // The heading names the dialog from inside its form's legend, so the
+  // fieldset would be a second group with the same name: NVDA said "Add
+  // category dialog" and then "Add category grouping".  The fieldset keeps
+  // its layout and loses its role.
+  const legendGroup = heading.closest("legend")?.parentElement;
+  if (legendGroup?.tagName === "FIELDSET" && form.contains(legendGroup)) legendGroup.setAttribute("role", "none");
   dialog.append(form);
   doc.body.append(dialog);
   const status = dialogStatusLine(dialog, `${form.id}-status`);
