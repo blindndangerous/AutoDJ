@@ -1040,6 +1040,63 @@ class TestDjMetaCacheSeesOtherWriters:
             assert cache.get("song.flac").analysed is False
 
 
+class TestAnalysedAmong:
+    """The DJ backlog asks which songs are analysed without loading their rows (#577)."""
+
+    def test_agrees_with_get_and_keeps_no_rows(self, tmp_path) -> None:
+        """ADR-0008-33. Same answer as ``get`` for every key form, with no row kept."""
+        music = tmp_path / "Music"
+        music.mkdir()
+        path = tmp_path / "cache.db"
+        done, pending, legacy, buffered, absent = (
+            str(music / name)
+            for name in ("done.flac", "pending.flac", "legacy.flac", "buffered.flac", "x.flac")
+        )
+        with DjMetaCache(path, music_dir=music) as writer:
+            writer.set(done, DjMeta(beats=[0.5, 1.0], analysed=True))
+            writer.set(pending, DjMeta(analysed=False))
+            writer.flush(force=True)
+        with DjMetaCache(path) as old_writer:
+            # Written before keys were absolute: relative to the music folder.
+            old_writer.set("legacy.flac", DjMeta(analysed=True))
+            old_writer.flush(force=True)
+        paths = [done, pending, legacy, buffered, absent]
+        with DjMetaCache(path, music_dir=music) as reader:
+            expected = {p for p in paths if p != buffered and reader.get(p).analysed}
+        with DjMetaCache(path, music_dir=music) as cache:
+            cache.set(buffered, DjMeta(analysed=True))
+            assert cache.analysed_among(paths) == expected | {buffered} == {done, legacy, buffered}
+            # Only the unsaved write is held; no row was read into memory.
+            assert set(cache._mem_cache) == {cache._key(buffered)}
+
+    def test_a_saved_reset_counts_as_not_analysed(self, tmp_path) -> None:
+        with DjMetaCache(tmp_path / "cache.db") as cache:
+            cache.set("song.flac", DjMeta(analysed=True))
+            cache.flush(force=True)
+            # A changed file's old analysis is cleared like this before it is redone.
+            cache.set("song.flac", DjMeta())
+            cache.flush(force=True)
+            assert cache.analysed_among(["song.flac"]) == set()
+
+    def test_a_remembered_miss_counts_until_it_expires(self, tmp_path) -> None:
+        now = [0.0]
+        path = tmp_path / "cache.db"
+        with DjMetaCache(path, clock=lambda: now[0]) as server:
+            assert server.get("song.flac").analysed is False
+            with DjMetaCache(path) as analyser:
+                analyser.set("song.flac", DjMeta(analysed=True))
+                analyser.flush(force=True)
+            assert server.analysed_among(["song.flac"]) == set()
+            now[0] += DjMetaCache.MISS_TTL_S
+            assert server.analysed_among(["song.flac"]) == {"song.flac"}
+            assert server._mem_cache == {}
+
+    def test_a_closed_cache_reports_nothing_analysed(self, tmp_path) -> None:
+        cache = DjMetaCache(tmp_path / "cache.db")
+        cache.close()
+        assert cache.analysed_among(["a.flac"]) == set()
+
+
 class TestClosedDjMetaCache:
     """A worker that outlives shutdown must not crash on the closed cache."""
 

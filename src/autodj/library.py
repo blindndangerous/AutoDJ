@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import logging
@@ -88,6 +89,17 @@ def require_current_library(directory: Path, station_web_states: Iterable[Path] 
         "`autodj migrate-index` to preview, then `autodj migrate-index --apply`. "
         "Your original files will be kept."
     )
+
+
+def freeze_long_lived() -> None:
+    """Keep the objects alive now out of the garbage collector's full passes.
+
+    A full pass walks every object the collector tracks while holding the
+    GIL, so with a large library loaded it held up the mix bus for a long
+    time.  Frozen objects are still freed when nothing refers to them; only
+    a reference cycle among them would never be collected.
+    """
+    gc.freeze()
 
 
 class _ImportState(TypedDict):
@@ -407,6 +419,8 @@ class LibraryManager:
                 loaded = self._entries
             for ledger, times in played.items():
                 ledger.loaded(times)
+            if reload_entries:
+                freeze_long_lived()
             return loaded
 
     def _index_entries(self) -> None:
@@ -1798,13 +1812,18 @@ class LibraryManager:
         cache = self._dj_cache()
         if cache is None:
             return
+        # Paths and flags only: reading every song's beats and cues kept them
+        # all in memory, and the garbage collector then stalled playout
+        # walking them.
+        paths = self.catalog.all_paths("music")
+        analysed = cache.analysed_among(paths)
         backlog = []
-        for record in self.catalog.all_entries("music"):
-            # Reading every song's row takes a while in a big library.
+        for stored in paths:
+            # Checking each file takes a while in a big library.
             if self._stop.is_set():
                 return
-            if not cache.get(record["path"]).analysed and Path(record["path"]).is_file():
-                backlog.append(Path(record["path"]))
+            if stored not in analysed and Path(stored).is_file():
+                backlog.append(Path(stored))
         self._set_state(phase="analysing beats", done=0, total=len(backlog), current="")
         for done, path in enumerate(backlog, start=1):
             with self._lock:

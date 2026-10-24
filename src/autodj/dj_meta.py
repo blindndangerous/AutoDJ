@@ -838,6 +838,50 @@ class DjMetaCache:
                 self._misses[key] = (now + self.MISS_TTL_S, meta)
             return meta
 
+    def analysed_among(self, paths: Iterable[str]) -> set[str]:
+        """Those of *paths* that :meth:`get` would report as analysed.
+
+        One query reads only each row's path and ``analysed`` flag, and
+        nothing is kept: a library's worth of :meth:`get` calls would hold
+        every song's beats and cues in memory for the rest of the run.
+        """
+        wanted = list(paths)
+        with self._lock:
+            if self._conn is None:
+                self._warn_closed_locked("read")
+                return set()
+            stored = {
+                str(path): bool(flag)
+                for path, flag in self._conn.execute("SELECT path, analysed FROM dj_meta")
+            }
+            normalized = self._normalized_paths_locked() if os.name == "nt" else {}
+            now = self._clock()
+            found: set[str] = set()
+            for path in wanted:
+                key = self._key(path)
+                if key in self._buf:
+                    analysed = self._buf[key].analysed
+                elif key in self._mem_cache:
+                    analysed = self._mem_cache[key].analysed
+                elif (miss := self._misses.get(key)) is not None and now < miss[0]:
+                    analysed = miss[1].analysed
+                else:
+                    analysed = False
+                    for candidate in (key, self._absolute_alias(path), self._legacy_key(path)):
+                        if candidate is None:
+                            continue
+                        stored_key = (
+                            candidate
+                            if candidate in stored
+                            else normalized.get(ntpath.normcase(candidate))
+                        )
+                        if stored_key is not None:
+                            analysed = stored.get(stored_key, False)
+                            break
+                if analysed:
+                    found.add(path)
+            return found
+
     def _warn_closed_locked(self, action: str) -> None:
         """Log, once, a *action* on the closed cache (hold the lock)."""
         if not self._warned_closed:

@@ -1,6 +1,8 @@
+import gc
 import logging
 import os
 import threading
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -4072,33 +4074,84 @@ def test_discovery_stops_between_folders_once_the_library_closes(manager_factory
 
 
 @pytest.mark.dj_analysis
-def test_the_dj_backlog_stops_reading_the_cache_once_the_library_closes(
+def test_the_dj_backlog_finds_unanalysed_songs_without_loading_any_beats(
     manager_factory, monkeypatch
 ):
-    """ADR-0008-31. Listing unanalysed songs reads every row: shutdown cuts that short."""
-    from autodj.dj_meta import DjMeta
+    """ADR-0008-33. Every song's beats and cues held in memory stalled playout (#577)."""
+    from autodj.dj_meta import Cue, DjMeta
 
     manager = manager_factory()
     music = manager.cfg.library.music_dir
-    records = tuple({"path": str(music / f"{n}.flac")} for n in range(1000))
-    monkeypatch.setattr(manager.catalog, "all_entries", lambda kind=None: records)
-    read = []
+    done, todo = music / "done.flac", music / "todo.flac"
+    for song in (done, todo):
+        song.write_bytes(b"x" * 100)
+        manager.catalog.put_entry(make_entry(song))
+    cache = manager._dj_cache()
+    cache.set(str(done), DjMeta(beats=[0.5] * 400, cues=[Cue(time_s=8.0)], analysed=True))
+    cache.flush(force=True)
+    cache._mem_cache.clear()  # as after a restart
+    analysed = []
+    monkeypatch.setattr(manager, "_dj_analyse", lambda path, *args, **kwargs: analysed.append(path))
+    manager._dj_backlog()
+    assert [_path(path) for path in analysed] == [_path(todo)]
+    assert cache._mem_cache == {}
+
+
+def test_a_refresh_freezes_the_new_entries_and_frees_the_old_ones(manager_factory, monkeypatch):
+    """ADR-0008-33. Frozen entries leave full collections, yet replaced ones are still freed."""
+    import autodj.library as library
+
+    freezes = []
+    real_freeze = library.freeze_long_lived
+    monkeypatch.setattr(library, "freeze_long_lived", lambda: freezes.append(real_freeze()))
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "song.flac"
+    manager.catalog.put_entry(make_entry(song, title="Old"))
+    manager.refresh()
+    frozen = len(freezes)
+    assert frozen and gc.get_freeze_count() > 0
+    old = weakref.ref(manager.entries_snapshot()[0])
+    manager.refresh()  # nothing changed: nothing reloaded or frozen
+    assert len(freezes) == frozen
+    manager.catalog.put_entry(make_entry(song, title="New"))
+    manager.refresh()
+    assert len(freezes) == frozen + 1
+    assert [entry.title for entry in manager.entries_snapshot()] == ["New"]
+    # Freed by reference counting, with no collection: no cycle keeps it.
+    assert old() is None
+
+
+@pytest.mark.dj_analysis
+def test_the_dj_backlog_stops_reading_the_cache_once_the_library_closes(
+    manager_factory, monkeypatch
+):
+    """ADR-0008-31. Listing unanalysed songs checks every file: shutdown cuts that short."""
+    manager = manager_factory()
+    music = manager.cfg.library.music_dir
+    paths = [str(music / f"{n}.flac") for n in range(1000)]
+    monkeypatch.setattr(manager.catalog, "all_paths", lambda kind: paths)
 
     class Cache:
-        def get(self, path):
-            read.append(path)
-            if len(read) == 3:
-                manager._stop.set()
-            return DjMeta()
+        def analysed_among(self, wanted):
+            return set()
 
         def flush(self, force=False):
             pass
 
     monkeypatch.setattr(manager, "_dj_cache", lambda: Cache())
+    checked = []
+
+    def is_file(path):
+        checked.append(path)
+        if len(checked) == 3:
+            manager._stop.set()
+        return True
+
+    monkeypatch.setattr(Path, "is_file", is_file)
     analysed = []
     monkeypatch.setattr(manager, "_dj_analyse", lambda path, *args, **kwargs: analysed.append(path))
     manager._dj_backlog()
-    assert len(read) == 3
+    assert len(checked) == 3
     assert analysed == []
 
 

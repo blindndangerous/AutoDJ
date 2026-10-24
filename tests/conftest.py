@@ -77,6 +77,19 @@ def _close_global_dj_cache_between_tests():
 
 
 @pytest.fixture(autouse=True)
+def _unfreeze_gc_after_test():
+    """Hand objects a library refresh froze back to the garbage collector.
+
+    The server freezes what it has loaded (``autodj.library.freeze_long_lived``);
+    in a test run that would keep every earlier test's reference cycles forever.
+    """
+    import gc
+
+    yield
+    gc.unfreeze()
+
+
+@pytest.fixture(autouse=True)
 def _no_scan_dj_analysis(request, monkeypatch):
     """Scans in tests skip the beat and cue analysis, unless marked ``dj_analysis``.
 

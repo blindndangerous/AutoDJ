@@ -110,6 +110,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0008-30` | Settings, Analysis workers gives each worker labelled native settings with its own Save, keeps unsaved edits through refreshes, links and focuses errors, says results and new refusals through the panel's status region, and shows a pairing code in digits for speech with Copy buttons. NVDA 2026.2 with Firefox 158 passed on 2026-10-23 at 975a9891; its two minor points (saved values not repeated, focus briefly on the page after Dismiss) are fixed. | automated | `tests/jsmodules/analysis-workers.test.js::gives each worker labelled native settings, filled from the server`; `tests/jsmodules/analysis-workers.test.js::saves a row, says so, and a refresh keeps changes not yet saved`; `tests/jsmodules/analysis-workers.test.js::marks a value out of range, says why and moves focus to it`; `tests/jsmodules/analysis-workers.test.js::shows refusal notices in words, says a new one once, and dismisses them`; `tests/jsmodules/analysis-workers.test.js::pairs a worker with a spoken code, a selected command and Copy buttons`; `tests/jsmodules/analysis-workers.test.js::keeps focus on a field in any row while polls reorder last-seen times`; `tests/jsmodules/analysis-workers.test.js::says an ongoing refusal once, though its time keeps moving`; `tests/jsmodules/analysis-workers.test.js::moves focus to the next notice, then Refresh workers, before a notice goes` |
 | `ADR-0008-31` | Shutdown tells the library scan to stop when it begins; listing folders and the DJ backlog stop at the request; neither a stopping scan nor the tick reloads the catalog, a scan cut short is logged as stopped, and a closing library starts no scan or analysis job. The cache closes only after the scan ends within the shutdown timeout; a scan still running keeps the cache and the library open, logs it and still saves buffered plays. Independent workers stop concurrently within their own timeouts, and each shutdown step logs its duration. | automated | `tests/unit/test_library.py::test_shutdown_stops_the_scan_before_the_dj_meta_cache_closes`; `tests/unit/test_library.py::test_stop_scan_is_bounded_for_a_scan_that_has_not_stopped`; `tests/unit/test_library.py::test_discovery_stops_between_folders_once_the_library_closes`; `tests/unit/test_library.py::test_the_dj_backlog_stops_reading_the_cache_once_the_library_closes`; `tests/unit/test_library.py::test_a_closing_library_starts_no_analysis_job`; `tests/unit/test_library.py::test_the_tick_does_not_reload_a_library_that_is_closing`; `tests/integration/test_stations.py::test_a_scan_that_will_not_stop_keeps_the_cache_and_library_open`; `tests/integration/test_stations.py::test_each_shutdown_step_logs_how_long_it_took`; `tests/integration/test_server.py::TestLifespan::test_independent_shutdown_steps_stop_together_and_are_timed` |
 | `ADR-0008-32` | A prepared worker that cannot reach the server for its idle release, or 10 minutes without one, frees the model and runs its after-command during the retries, logs it once and prepares again, running its before-command, for the next songs, including a song whose download outlasted the outage. | automated | `tests/unit/test_worker.py::test_an_unreachable_server_releases_the_model_and_songs_prepare_it_again`; `tests/unit/test_worker.py::test_an_outage_during_a_download_releases_and_reloads_before_analysis`; `tests/unit/test_worker.py::test_the_after_command_runs_while_the_server_is_down_and_before_runs_again` |
+| `ADR-0008-33` | The DJ backlog reads only stored paths and analysed flags, keeps no song's beats or cues in memory, and agrees with the cache's per-song answer. The server freezes the objects alive once the library and stations have loaded, and again after each refresh that reloads the entries; replaced entries are still freed by reference counting. | automated | `tests/unit/test_dj_meta.py::TestAnalysedAmong::test_agrees_with_get_and_keeps_no_rows`; `tests/unit/test_library.py::test_the_dj_backlog_finds_unanalysed_songs_without_loading_any_beats`; `tests/unit/test_library.py::test_a_refresh_freezes_the_new_entries_and_frees_the_old_ones` |
 
 ## Verification
 
@@ -507,3 +508,23 @@ lands on the limit. An outage during a song's download releases the same way; th
 prepares again before it is analysed. Otherwise the next claim that returns songs prepares again,
 running the before-command. Ctrl+C and exit cleanup are unchanged: the after-command runs at most
 once per preparation. Contract ADR-0008-32 records this; the ADR remains Proposed.
+
+## Amendment clarification 2026-10-24: Keeping a scan from stalling the mix bus
+
+Issue #577: while a library scan ran, every station's mix bus fell seconds behind. The cause was
+the cyclic garbage collector. Python 3.14 collects in full passes that walk every tracked object
+while holding the GIL. To list the songs still waiting for beat analysis, the scan read every
+song's DJ-meta row through the cache, which keeps each analysed row, beats and cues included, for
+the rest of the run. On a large library that grew the server's memory by gigabytes, and the many
+new objects set off full passes over that bigger heap. With 80,000 synthetic songs the worst
+probe delay of a paced 20 ms thread was about 300 ms, 400 ms with a further 1.2 GB of heap, and
+memory grew by 2.4 GB.
+
+The backlog now asks the catalog for paths and the cache for analysed flags in one query each,
+and keeps nothing. Once the library and the stations have loaded, and after each refresh that
+reloads the entries, the server calls `gc.freeze()`, so the long-lived library objects leave the
+collector's passes. Frozen objects are still freed when their reference count drops; only a
+reference cycle among them would stay, and the entries a refresh replaces hold none. On the same
+benchmark the worst delay fell to 25 to 50 ms and memory grew by 0.65 GB. These are measurements
+on one machine, not a latency guarantee. Running the scan in a child process remains an option if
+the field shows further stalls. Contract ADR-0008-33 records this; the ADR remains Proposed.

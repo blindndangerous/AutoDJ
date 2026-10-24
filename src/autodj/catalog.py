@@ -1663,6 +1663,14 @@ class LibraryCatalog:
                 self._record(row) for row in self._db().execute(sql + " ORDER BY path", args)
             )
 
+    def all_paths(self, kind: str) -> list[str]:
+        """The path of every stored record of *kind*, in :meth:`all_entries` order."""
+        with self._lock:
+            rows = self._db().execute(
+                "SELECT path FROM catalog_entries WHERE kind=? ORDER BY path", (kind,)
+            )
+            return [str(row[0]) for row in rows]
+
     def points(self, path: str | Path) -> dict:
         record = self.record_for_path(path)
         return {p: (record["points"].get(p) if record else None) for p in _POINTS}
