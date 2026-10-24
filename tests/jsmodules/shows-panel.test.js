@@ -250,7 +250,7 @@ describe("planning a show", () => {
     field.value = "Live\tnow";
     byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
     expect(field.getAttribute("aria-invalid")).toBe("true");
-    expect(field.getAttribute("aria-describedby").split(" ")).toEqual(["shows-station-name-help", "shows-form-error"]);
+    expect(field.getAttribute("aria-describedby").split(" ")).toEqual(["shows-form-error", "shows-station-name-help"]);
     expect(byId("shows-form-error").textContent).toBe("Station name while active cannot contain tabs, line breaks or other control characters.");
     expect(document.activeElement).toBe(field);
     expect(server.calls.some((call) => call.method === "PUT")).toBe(false);

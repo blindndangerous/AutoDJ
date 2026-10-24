@@ -752,7 +752,7 @@ describe("clockwheel editor", () => {
     expect(byId("clock-next").textContent).toBe("Save to play these changes.");
     byId("clock-save").click();
     expect(field.getAttribute("aria-invalid")).toBe("true");
-    expect(field.getAttribute("aria-describedby").split(" ")).toEqual(["clock-station-name-help", "clock-station-name-error"]);
+    expect(field.getAttribute("aria-describedby").split(" ")).toEqual(["clock-station-name-error", "clock-station-name-help"]);
     expect(error.hidden).toBe(false);
     expect(error.textContent).toBe("Station name while active cannot contain tabs, line breaks or other control characters.");
     expect(document.activeElement).toBe(field);
