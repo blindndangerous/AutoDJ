@@ -1565,6 +1565,7 @@ async function openStationMenu(page, visit) {
   await page.locator("#station-menu").waitFor({ state: "visible" });
   await visit("now/station-menu");
   if (await page.locator("#station-menu").isVisible()) await page.keyboard.press("Escape");
+  await page.locator("#station-menu").waitFor({ state: "hidden", timeout: 2000 }).catch(() => {});
 }
 
 async function openEveryCard(page) {
@@ -2683,6 +2684,9 @@ async function stationSwitcherProblems(page) {
   now = await state();
   if (now.checked !== "true") problems.push("Down Arrow did not wrap to the first station");
   await page.keyboard.press("Escape");
+  // The menu says collapsed at once and hands focus back a frame later.
+  await page.waitForFunction(() => document.getElementById("station-menu").hidden
+    && document.activeElement?.id === "station-button", null, { timeout: 2000 }).catch(() => {});
   now = await state();
   if (now.open || now.id !== "station-button" || now.expanded !== "false") {
     problems.push("Escape did not close the menu and return to the button");
