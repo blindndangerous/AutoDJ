@@ -888,6 +888,29 @@ describe("app request behavior", () => {
     expect(pill.textContent).toBe("Disconnected, retrying");
   });
 
+  it("says nothing and does not retry when the socket closes as the page unloads", async () => {
+    // A reload said "Disconnected, retrying" as the old page went.
+    const { webSocket, WebSocketImpl } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const pill = document.querySelector("#conn-status");
+    const before = pill.textContent;
+    vi.useFakeTimers();
+    window.dispatchEvent(new Event("pagehide"));
+    webSocket.onerror();
+    webSocket.onclose({ code: 1001, wasClean: true });
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(pill.textContent).toBe(before);
+    expect(WebSocketImpl).toHaveBeenCalledOnce();
+    // Brought back from the back-forward cache, the page connects again.
+    webSocket.readyState = 3;
+    const shown = new Event("pageshow");
+    Object.defineProperty(shown, "persisted", { value: true });
+    window.dispatchEvent(shown);
+    expect(WebSocketImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("backs off between retries instead of hammering every three seconds", async () => {
     const { webSocket, WebSocketImpl } = await setupApp({
       initialState: { current_track: { path: "current.mp3", title: "Current" } },

@@ -1430,6 +1430,20 @@ const timeSettings = installTimeSettings();
 // runs, otherwise the assignment inside connectWS hits the TDZ and throws,
 // leaving the page stuck on "Connecting…".
 let _ws = null;
+// A reload, or leaving the page, closes the socket as the page goes.  That
+// is not a dropped link, so nothing is said or retried: NVDA said
+// "Disconnected, retrying" on every reload.  A page brought back from the
+// back-forward cache connects again.
+let pageLeaving = false;
+window.addEventListener("pagehide", () => { pageLeaving = true; });
+window.addEventListener("pageshow", (event) => {
+  if (!event.persisted || !pageLeaving) return;
+  pageLeaving = false;
+  if (!_ws || _ws.readyState >= 2) {  // CLOSING or CLOSED
+    _ws = null;
+    connectWS();
+  }
+});
 let authenticatedActivityActive = false;
 
 // #conn-status is a polite live region AND the visible header pill, so
@@ -1545,7 +1559,7 @@ function connectWS({ quiet = false, switching = false } = {}) {
   ws.onclose = (event) => {
     // A switch to another station closed it; the new station's socket is
     // already open or opening (#70).
-    if (ws.closedForSwitch || socketStation !== currentStation()) return;
+    if (ws.closedForSwitch || socketStation !== currentStation() || pageLeaving) return;
     _ws = null;
     if (!authenticatedActivityActive) return;
     // The station was stopped (4409) or is no longer configured (4404):
@@ -1607,7 +1621,7 @@ function connectWS({ quiet = false, switching = false } = {}) {
   };
 
   ws.onerror = () => {
-    if (ws.closedForSwitch || socketStation !== currentStation()) return;
+    if (ws.closedForSwitch || socketStation !== currentStation() || pageLeaving) return;
     // #conn-status is the single announcement path for transport state.
     // Writing the same sentence into the track-title region as well made
     // NVDA speak the outage three or four times every three seconds and
