@@ -7,10 +7,12 @@
 // Firefox and Chrome alike, so a cell's own name never repeats it.  Until
 // focus leaves, a cell moved to on another row is named with its text and
 // the row's name cell, such as its song.  A cell that holds a button is
-// named by the row's song and described as a button, so NVDA says
-// "<song> button Play now" rather than the button's own name, which starts
-// with the column heading.  A checkbox's cell, read before the focused
-// checkbox, is named by the row's song for the same reason.
+// described as a button and named by its action and the row's song:
+// "Remove folder, <path> button Actions".  When the column heading already
+// names the action, as Play now does in Search, the cell is named by the
+// song alone, so NVDA says "<song> button Play now" and not the action
+// twice.  A checkbox's cell, read before the focused checkbox, is named by
+// the row's song.
 export function installTableNavigation(body) {
   if (!body) return { refresh() {} };
   const cells = () => [...body.querySelectorAll("tr > td[role=gridcell], tr > td[role=rowheader]")];
@@ -20,6 +22,19 @@ export function installTableNavigation(body) {
   const text = (cell) => cell?.textContent.replace(/\s+/g, " ").trim();
   const button = (cell) => controls(cell).find((item) => item.tagName === "BUTTON" && !item.disabled);
   const rowName = (cell) => !cell.hasAttribute("data-name") && text(cell.parentElement.querySelector("[data-name]"));
+  const columnHeading = (cell) => {
+    const row = [...cell.parentElement.children];
+    const place = row.slice(0, row.indexOf(cell)).reduce((sum, item) => sum + item.colSpan, 0);
+    return text(cell.closest("table")?.querySelector("thead tr")?.children[place]) || "";
+  };
+  // An action cell's name: its action, unless the column heading says it,
+  // then the row's song.  No song leaves the button's own name.
+  const actionName = (cell, control, song) => {
+    if (!song) return null;
+    const action = text(control);
+    const heading = columnHeading(cell);
+    return action && action.toLowerCase() !== heading.toLowerCase() ? `${action}, ${song}` : song;
+  };
   const label = (cell, name, role = null) => {
     if (name) cell.setAttribute("aria-label", name);
     if (role) cell.setAttribute("aria-roledescription", role);
@@ -54,7 +69,7 @@ export function installTableNavigation(body) {
     if (event.target !== target) { target.focus(); return; }
     setRovingFocus(target);
     const song = rowName(cell);
-    if (target === cell && button(cell)) label(cell, song, "button");
+    if (target === cell && button(cell)) label(cell, actionName(cell, button(cell), song), "button");
     else if (target !== cell && song) label(cell, song);
   });
   body.addEventListener("keydown", (event) => {

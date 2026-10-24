@@ -40,6 +40,30 @@ describe("native table grid navigation", () => {
     expect([one, two, three, four].filter((item) => item.tabIndex === 0)).toEqual([three]);
   });
 
+  it("says an action cell's action when the column heading does not name it", () => {
+    // The folder table's heading is "Actions": the cell was read as only
+    // "<path> button Actions", and Enter removed the folder unheard.
+    document.body.innerHTML = `<table><thead><tr><th>Path</th><th>Actions</th><th>Start or stop</th><th>Track info</th></tr></thead><tbody id="rows">
+      <tr><td role="gridcell" data-name>/music/rock</td>
+        <td role="gridcell"><button type="button">Remove folder</button></td>
+        <td role="gridcell"><button type="button" aria-label="Start Night Owl">Start</button></td>
+        <td role="gridcell"><button type="button" aria-label="Track info for /music/rock">Track info</button></td></tr>
+    </tbody></table>`;
+    const body = document.getElementById("rows");
+    installTableNavigation(body);
+    const [path, remove, start, info] = body.querySelectorAll("td");
+    path.focus();
+    path.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(remove);
+    expect(remove.getAttribute("aria-label")).toBe("Remove folder, /music/rock");
+    expect(remove.getAttribute("aria-roledescription")).toBe("button");
+    remove.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(start.getAttribute("aria-label")).toBe("Start, /music/rock");
+    start.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    // The heading names this action, so the cell is named by its row.
+    expect(info.getAttribute("aria-label")).toBe("/music/rock");
+  });
+
   it("names the song on another row and leaves the column heading to NVDA", () => {
     // NVDA says the column heading itself in focus mode, so adding it to the
     // cell's name made it say "6:50, Length LENGTH".
