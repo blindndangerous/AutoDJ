@@ -433,18 +433,28 @@
       content: "\2713" / "";
       font-weight: 700;
     }
-    /* .is-pending: a focused button or checkbox busy with a request
-       keeps focus and stays enabled (see withDisabled in
-       modules/api-client.js) but must look busy.  aria-disabled is the
-       history pager's Prev / Next, and the show-next box in DMCA mode. */
+    /* Unavailable controls are dimmed.  aria-disabled is the history
+       pager's Prev / Next, and the show-next box in DMCA mode. */
     button:disabled,
     button[aria-disabled="true"],
-    input[type="checkbox"][aria-disabled="true"],
-    button.is-pending,
-    input[type="checkbox"].is-pending {
+    input[type="checkbox"][aria-disabled="true"] {
       opacity: 0.45;
       cursor: not-allowed;
     }
+    /* .is-pending: a focused button or checkbox busy with a request keeps
+       focus and stays enabled (see withDisabled in modules/api-client.js),
+       so its text and boundary keep their full contrast (WCAG 1.4.3 and
+       1.4.11): it was dimmed like a disabled control, and a Save changes
+       button mid-save measured under 4.5:1.  It looks busy without colour:
+       the progress cursor, and a button's border turns dashed, which
+       forced colours keep too.  The class is only visual; what the press
+       did is said when it settles. */
+    button.is-pending,
+    input[type="checkbox"].is-pending {
+      opacity: 1;
+      cursor: progress;
+    }
+    button.is-pending { border-style: dashed; }
 
     input:not([type="checkbox"]):not([type="radio"]),
     select,
