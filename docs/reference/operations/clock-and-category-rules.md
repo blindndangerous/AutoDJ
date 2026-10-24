@@ -90,6 +90,9 @@ leaves the clock off while the station keeps playing:
 }
 ```
 
+An optional `"station_name"` holds **Station name while active**, up to 100 characters; a
+clockwheel without one is saved without the key, so an older AutoDJ still reads it.
+
 `source` is the ID of a registered library folder, so the file never holds a full path; removing
 that folder from the library stops the clockwheel until you edit its steps. Later features (carts,
 time checks, ad breaks) add their own step types through `autodj.clockwheel_store.register_step_type`.

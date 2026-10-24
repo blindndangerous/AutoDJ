@@ -391,6 +391,8 @@ class ClockBody(BaseModel):
     name: str = PydanticField(max_length=64)
     steps: list[Any] = PydanticField(max_length=256)
     resync_minutes: list[Any] = PydanticField(max_length=60)
+    # The station name while it is active (#472); clockwheel_store checks it.
+    station_name: str = ""
 
 
 class ClockStepCheckBody(BaseModel):

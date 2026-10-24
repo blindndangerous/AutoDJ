@@ -53,11 +53,14 @@ from pydantic import (
     StrictStr,
     StringConstraints,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
 from autodj.fsutil import atomic_write, file_signature, set_aside
 from autodj.identity_map import attached
+from autodj.station_name import LABEL as STATION_NAME_LABEL
+from autodj.station_name import checked_name
 from autodj.timefmt import length_text
 
 logger = logging.getLogger(__name__)
@@ -109,6 +112,7 @@ FIELD_LABELS = {
     "category": "Category",
     "clockwheel": "Clockwheel",
     "target_minutes": "Target length (minutes)",
+    "station_name": STATION_NAME_LABEL,
     "songs": "Songs",
 }
 
@@ -125,6 +129,17 @@ class ShowSpec(BaseModel):
     target_minutes: StrictInt = Field(
         default=DEFAULT_TARGET_MINUTES, ge=MIN_TARGET_MINUTES, le=MAX_TARGET_MINUTES
     )
+    #: The station name listeners see while the show is on the air (#472);
+    #: blank leaves the clockwheel's name or the station's normal one.
+    station_name: StrictStr = ""
+
+    @field_validator("station_name")
+    @classmethod
+    def _check_station_name(cls, value: str) -> str:
+        try:
+            return checked_name(value)
+        except ValueError as exc:
+            raise ShowError("station_name", str(exc)) from None
 
     @model_validator(mode="after")
     def _one_source(self) -> Self:
@@ -267,8 +282,13 @@ class ShowStore:
         return dict(shows)
 
     def _write_locked(self, shows: dict[str, Show]) -> None:
+        # A show without a station name is written without the key, so an
+        # older AutoDJ still reads it.
         entries: dict[str, Any] = {
-            show_id: show.model_dump(mode="json") for show_id, show in shows.items()
+            show_id: show.model_dump(
+                mode="json", exclude=None if show.station_name else {"station_name"}
+            )
+            for show_id, show in shows.items()
         }
         for show_id, raw in self._skipped.items():
             entries.setdefault(show_id, raw)
@@ -746,6 +766,9 @@ class _OnAir:
     confirm_reair: bool = False
     marked_started: bool = False
     committed_audio_notice: str | None = None
+    # The saved show whose station name applies (#472): the show itself, or
+    # the show a prepared edition was made from.
+    named_by: str | None = None
 
     def resume_index(self) -> int:
         """The first place in the list that has not played: the earliest waiting copy's."""
@@ -908,6 +931,27 @@ class ShowRunner:
             if air is None or air.stopping:
                 return None
             return {"id": air.show_id, "name": air.name}
+
+    def on_air_station_name(self) -> str:
+        """The station name the show on the air asks for, or ``""`` (#472).
+
+        Read from the saved show each time, so a name saved while it airs
+        applies at once.  Blocking: it may read the shows file.
+        """
+        with self._state_lock:
+            air = self._on_air
+            named_by = None if air is None or air.stopping else air.named_by
+        if named_by is None:
+            return ""
+        show = self._store.get(named_by)
+        return show.station_name if show is not None else ""
+
+    def _edition_show(self, edition_id: str) -> str | None:
+        """The ID of the show a prepared edition was made from, or ``None``."""
+        try:
+            return str(self._edition_store.get(edition_id).show_id)
+        except (KeyError, ValueError, OSError):
+            return None
 
     #: Set by the station: the name of a show the schedule starts within the
     #: given seconds, or ``None``.
@@ -1365,6 +1409,7 @@ class ShowRunner:
         entries = tuple(prepared_entry(row, self._bridge.library) for row in plan.items)
         if not any(entry is not None for entry in entries):
             raise ValueError("This edition has no playable items")
+        named_by = await asyncio.to_thread(self._edition_show, edition_id)
         started = self._clock()
         air = _OnAir(
             edition_id,
@@ -1376,6 +1421,7 @@ class ShowRunner:
             prepared=plan,
             prepared_entries=entries,
             confirm_reair=confirm_reair,
+            named_by=named_by,
         )
         for omission in plan.omissions:
             air.skip("", "Prepared speech", str(omission))
@@ -1479,7 +1525,7 @@ class ShowRunner:
         songs = tuple(show.songs)
         started = self._clock()
         ends_by = await asyncio.to_thread(self._ends_by, songs, started)
-        air = _OnAir(show_id, show.name, songs, started, ends_by)
+        air = _OnAir(show_id, show.name, songs, started, ends_by, named_by=show_id)
         async with self._turn:
             await asyncio.to_thread(self._interrupt_edition)
             with self._state_lock:
@@ -1640,6 +1686,7 @@ class ShowRunner:
                 next_index=start_at,
                 played=int(saved.get("played") or 0),
                 skipped_count=int(saved.get("skipped_count") or 0),
+                named_by=str(saved["show_id"]),
             )
             try:
                 queued, _skipped = await self._begin(air, now=False)

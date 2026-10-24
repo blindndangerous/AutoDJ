@@ -258,7 +258,7 @@ Station section: `stream` in `station.json`, except for listener credentials and
 - `max_listeners_per_address`. Values: whole number from 0 to 100. Default: 0. Limits connections from one address; 0 means unlimited. **Connections per address (0 for unlimited)**.
 - `listener_user`. Values: user name or empty string. Default: empty string. Sets an optional listener login with listener_password. Stored under `stream` in this station's private `secrets.json`.
 - `listener_password`. Values: password or empty string. Default: empty string. Protects the stream when set with listener_user. Stored under `stream` in this station's private `secrets.json`.
-- `station_name`. Values: printable name up to 100 characters. Default: `AutoDJ` for the default station; a named station without this field uses its station ID. Names the station in players and feeds. **Station name**.
+- `station_name`. Values: printable name up to 100 characters. Default: `AutoDJ` for the default station; a named station without this field uses its station ID. Names the station in players and feeds. A clockwheel's or show's **Station name while active** replaces it on the air without changing it; see [Streaming and relays](guides/streaming-and-relays.md#a-station-name-while-a-clockwheel-or-show-is-on-the-air). **Station name**.
 - `genre`. Values: printable text up to 255 characters. Default: empty string. Sets the genre sent to players. **Genre**.
 - `description`. Values: printable text up to 255 characters. Default: empty string. Sends the station description to Icecast only. **Description**.
 - `url`. Values: website URL up to 2048 characters. Default: empty string. Sets the station website sent to players. **Website URL**.

@@ -25,6 +25,10 @@ categories use (:func:`autodj.categories.daypart_refusal`).  Outside them
 the step is skipped, as an empty one is.  A step without them is written
 without the keys, so an older AutoDJ still reads the file.
 
+A clockwheel may also have ``station_name``, the station name listeners see
+while it picks the songs (#472, see :mod:`autodj.station_name`).  A wheel
+without one is written without the key, for the same reason.
+
 An ad break step books eligible spots before the next clockwheel song.
 Step types live in a registry, like the scheduler's actions. Loading a
 clockwheel with a type nobody registered fails with an error that names
@@ -46,6 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from autodj.clockwheel import MUSIC_KINDS, ClockSlot, validate_resync_minutes
+from autodj.station_name import checked_name
 
 VERSION = 1
 MAX_STEPS = 256
@@ -338,8 +343,8 @@ def validate_clockwheel(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("A clockwheel must be a JSON object")
     expected = {"version", "name", "steps", "resync_minutes"}
-    if set(value) != expected:
-        unknown, missing = set(value) - expected, expected - set(value)
+    if set(value) - {"station_name"} != expected:
+        unknown, missing = set(value) - expected - {"station_name"}, expected - set(value)
         problem = f"unknown {sorted(unknown)}" if unknown else f"missing {sorted(missing)}"
         raise ValueError(f"A clockwheel has version, name, steps and resync_minutes ({problem})")
     if type(value["version"]) is not int or value["version"] != VERSION:
@@ -362,12 +367,25 @@ def validate_clockwheel(value: Any) -> dict[str, Any]:
                 f"Steps {index + 1} and {(index + 1) % len(steps) + 1} are both liners; "
                 "put music between them"
             )
-    return {
+    clock = {
         "version": VERSION,
         "name": name,
         "steps": steps,
         "resync_minutes": validate_resync_minutes(value["resync_minutes"]),
     }
+    if station_name := checked_name(value.get("station_name", "")):
+        clock["station_name"] = station_name
+    return clock
+
+
+def split_station_name(clock: Mapping[str, Any]) -> tuple[dict[str, Any], str]:
+    """A loaded clockwheel without its station name, and the name (``""`` without one).
+
+    The name is not part of how the wheel picks: changing only the name
+    neither restarts the wheel nor waits for its next restart.
+    """
+    rest = {key: value for key, value in clock.items() if key != "station_name"}
+    return rest, str(clock.get("station_name") or "")
 
 
 class ClockwheelStore:

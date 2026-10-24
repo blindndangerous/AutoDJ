@@ -2134,7 +2134,7 @@
               >
       </div>
       <span class="setting-desc" id="stream-station-name-desc">
-        The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.
+        The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.  A clockwheel or show can set another name while it is on the air.
       </span>
       <div class="settings-row"><label for="stream-station-genre">Genre</label><input id="stream-station-genre" maxlength="255" autocomplete="off"></div>
       <div class="settings-row"><label for="stream-station-description">Description</label><input id="stream-station-description" maxlength="255" autocomplete="off"></div>
@@ -3647,6 +3647,11 @@
       <button type="button" id="clock-new-step">New step</button>
       <button type="button" id="clock-undo" aria-keyshortcuts="Control+Z" disabled>Undo step change</button>
       <p id="clock-next"></p>
+      <h4>Station name</h4>
+      <label for="clock-station-name">Station name while active</label>
+      <input id="clock-station-name" type="text" maxlength="100" autocomplete="off" aria-describedby="clock-station-name-help">
+      <p id="clock-station-name-help">Listeners see this name while this clockwheel picks the songs. Leave empty for the station's normal name.</p>
+      <p id="clock-station-name-error" class="field-error" hidden></p>
       <h4>Restarts and saving</h4>
       <label for="clock-resync-minutes">Restart at these minutes past each hour</label>
       <input id="clock-resync-minutes" type="text" inputmode="numeric" value="0" autocomplete="off" aria-describedby="clock-resync-help">
@@ -3711,6 +3716,11 @@
             <input id="shows-target" type="text" inputmode="numeric" autocomplete="off" value="60" aria-describedby="shows-target-help">
           </div>
           <p class="setting-desc" id="shows-target-help">5 to 360. Generating stops once the songs reach this length.</p>
+          <div class="settings-row">
+            <label for="shows-station-name">Station name while active</label>
+            <input id="shows-station-name" type="text" maxlength="100" autocomplete="off" aria-describedby="shows-station-name-help">
+          </div>
+          <p class="setting-desc" id="shows-station-name-help">Listeners see this name while the show is on the air. Leave empty to keep the name in use.</p>
           <button type="submit" id="shows-save">Save show</button>
           <button type="button" id="shows-cancel">Cancel</button>
         </fieldset>

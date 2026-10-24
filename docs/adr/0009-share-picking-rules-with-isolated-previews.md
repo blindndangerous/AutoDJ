@@ -90,6 +90,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0009-05` | Forecast accuracy and omitted simulation features require explicit operational interpretation. | manual | Compare predictions with observed station output and document simulation omissions; forecasts are not immutable playout promises. |
 | `ADR-0009-06` | The announcer context reports the programming the live station is using (the clockwheel picking, a show on the air and the pick mode), read from the live player and show runner rather than from a copy of the schedule. | automated | `tests/unit/test_breaks_api.py::test_context_says_which_programming_is_on_the_air`; `tests/unit/test_shows.py::test_a_stop_that_cannot_take_the_songs_out_keeps_trying` |
 | `ADR-0009-07` | A relative date condition (a Beets date within the last N days) saves the number of days, not a date, and is judged against the time of the pick; cached step and category results are worked out again when its hourly window moves, not for every pick. | automated | `tests/unit/test_clock_conditions.py::test_within_days_matches_beets_dates_in_the_last_n_days`; `tests/unit/test_clock_conditions.py::test_within_days_moves_with_the_clock`; `tests/unit/test_clock_condition_picks.py::test_relative_date_steps_are_worked_out_again_each_hour`; `tests/unit/test_categories.py::test_a_new_music_category_follows_the_clock`; `tests/unit/test_clock_category_player.py::test_a_relative_date_step_is_judged_for_when_the_song_starts`; `tests/jsmodules/condition-editor.test.js::offers within the last N days for a Beets date and reads a whole number of days` |
+| `ADR-0009-08` | The station name on the air is the show on the air's **Station name while active**, else that of the clockwheel picking the songs, else the saved normal name; a blank field leaves the level below. It follows activation by hand or by schedule, pick-mode changes and the end of a show, reaches the now-playing feed, status page and relays, survives a restart through the saved wheel and show, never rewrites the saved normal name, and a name-only edit neither restarts the wheel nor waits for its restart. | automated | `tests/unit/test_station_name.py::test_a_clockwheel_saves_its_station_name_only_when_it_has_one`; `tests/unit/test_station_name.py::test_a_show_saves_its_station_name_and_names_the_field_it_refuses`; `tests/unit/test_station_name.py::test_activating_a_clockwheel_by_hand_names_the_station`; `tests/unit/test_station_name.py::test_the_schedule_switching_clockwheels_names_the_station`; `tests/unit/test_station_name.py::test_saving_only_the_name_of_the_wheel_on_the_air_keeps_its_place`; `tests/unit/test_station_name.py::test_a_show_on_the_air_names_the_station_before_the_clockwheel`; `tests/unit/test_station_name.py::test_after_a_restart_the_name_matches_what_is_on_the_air`; `tests/unit/test_prepared_playout.py::test_a_prepared_edition_names_the_station_as_its_show_does`; `tests/unit/test_clock_config_api.py::test_a_clockwheel_keeps_the_station_name_the_editor_sends`; `tests/integration/test_shows_api.py::test_a_show_keeps_the_station_name_the_form_sends`; `tests/integration/test_station_name_api.py::test_the_name_on_the_air_reaches_the_feed_and_status_page_but_not_settings`; `tests/integration/test_stations.py::test_relays_connect_with_the_name_on_the_air_and_reconnect_when_it_changes`; `tests/jsmodules/station-name-field.test.js::allows a blank name, trims it and refuses what the server refuses`; `tests/jsmodules/clockwheel-panel.test.js::saves the station name while active and puts a refusal on the field`; `tests/jsmodules/shows-panel.test.js::saves a show's station name while active and puts a refusal on the field` |
 
 ## Verification
 
@@ -140,3 +141,27 @@ Categories judge it at the current time, also in those previews; that is a docum
 simulation omission. AutoDJ's own library has no date added, so the condition reads Beets values
 through the existing Beets condition path. `ADR-0009-07` maps the checks. This amendment does not
 change this record's Proposed status.
+
+## Amendment 2026-10-24: Station name while active
+
+Issue [#472](https://github.com/blindndangerous/AutoDJ/issues/472) adds an optional
+**Station name while active** to each clockwheel and each show, so a station can rename its
+stream while a late show or a seasonal wheel is on the air without changing the name by hand
+twice. The name on the air is the show's when a show is on the air and has one, else the
+clockwheel's while the station picks by clockwheel and that wheel can play, else the saved
+`[stream] station_name`. A blank field leaves the level below it, so switching to a wheel without
+a name, changing the pick mode or ending a show restores the normal name with no second event;
+existing shows, which have no name, change nothing. A prepared edition uses the name of the show it
+was made from. A per-wheel field was chosen over a "Station name" schedule action because an action
+needs a pair of events and does not follow an operator's own switch.
+
+The name on the air is held on the station's player bridge, apart from the saved name: the settings
+store, Settings, Stream and the station switcher keep the operator's name. The station checks the
+programming once a second on its schedule tick (and once at start, before relays connect) and, on a
+change, refreshes the now-playing feed and reconnects enabled relays, as saving the station name does;
+new listener connections receive it as `icy-name`. A clockwheel's name is not part of how it picks:
+saving only the name applies at once and neither restarts the wheel nor waits for its next restart.
+A blank name is not written to the clockwheel or show file, so files without one stay readable by an
+older AutoDJ. The announcer context's programming (`ADR-0009-06`) uses the same definition of the
+wheel on the air. `ADR-0009-08` maps the checks. This amendment does not change this record's
+Proposed status.

@@ -12,7 +12,7 @@ import soundfile as sf
 
 from autodj._bridge import PlayerBridge
 from autodj.identity_map import attached
-from autodj.shows import ShowRunner, ShowStore
+from autodj.shows import ShowRunner, ShowStore, parse_spec
 from autodj.stereo import SAMPLE_RATE as SR
 from tests.unit._rotation_station import make_station, song
 
@@ -21,6 +21,8 @@ class Editions:
     def __init__(self, plan):
         self.plan = plan
         self.started = 0
+        # The show the edition was made from, which names the station (#472).
+        self.show_id = "b" * 32
 
     def runtime_plan(self, identity, station, *, include_pending=False, from_occurrence=None):
         assert identity == self.plan.edition_id
@@ -30,6 +32,10 @@ class Editions:
             i for i, item in enumerate(self.plan.items) if item.occurrence_id == from_occurrence
         )
         return SimpleNamespace(**{**vars(self.plan), "items": self.plan.items[index:]})
+
+    def get(self, identity):
+        assert identity == self.plan.edition_id
+        return SimpleNamespace(show_id=self.show_id)
 
     def mark_started(self, identity, *, confirm_reair=False):
         if self.plan.previously_started and not confirm_reair:
@@ -636,3 +642,22 @@ def test_render_guard_validates_outside_settings_lock_and_rejects_settings_race(
     monkeypatch.setattr(source.player, "settings_lock", settings())
     with runner.prepared_render_guard(token) as valid:
         assert not valid
+
+
+def test_a_prepared_edition_names_the_station_as_its_show_does(tmp_path):
+    """ADR-0009-08: an edition on the air uses the station name of the show it was made from."""
+    runner, _source, _bridge, editions, _station = setup(tmp_path)
+    show_id, _show = runner._store.add(
+        parse_spec(
+            {
+                "name": "Tomorrow",
+                "source": "category",
+                "category": "hits",
+                "station_name": "Example FM Tomorrow",
+            }
+        )
+    )
+    editions.show_id = show_id
+    assert runner.on_air_station_name() == ""
+    asyncio.run(runner.start_edition(editions.plan.edition_id))
+    assert runner.on_air_station_name() == "Example FM Tomorrow"

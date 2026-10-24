@@ -27,6 +27,8 @@ track or listener change. The response schema is version 2:
 Version 2 added `peak_listeners_today` and `uptime_seconds`. Clients that read version 1 keep
 working, since no field was removed or renamed.
 
+- `station_name` is the name on the air: the **Station name while active** of the show on the
+  air or of the clockwheel picking the songs, else the station's **Station name**.
 - `listener_count` is the number of players connected to this server's stream now (0 outside
   stream mode). Listeners of a relay to another server are not counted.
 - `peak_listeners_today` is the most listeners connected at once since midnight in the station

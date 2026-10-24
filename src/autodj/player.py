@@ -856,6 +856,8 @@ class Player:
     _pending_clock_name: str | None = None
     _pending_clock_boundary: float | None = None
     _clock: dict[str, Any] | None = None
+    # The loaded clockwheel's station name while it picks (#472), or "".
+    _clock_station_name: str = ""
     _clock_next_boundary: float | None = None
     # Hour fitting's hard events (or a callable giving the scheduler's
     # current ones) and the time zone they run in (#126).
@@ -1433,6 +1435,16 @@ class Player:
         """The name of the loaded clockwheel, or ``None`` without one."""
         return (self._clock or {}).get("name")
 
+    def clock_station_name(self) -> str:
+        """The station name the clockwheel asks for while it picks the songs, or ``""`` (#472).
+
+        Only while the station picks by clockwheel and the wheel can play,
+        as the announcer context counts a wheel on the air.
+        """
+        if getattr(self._cfg.playback, "pick_mode", None) != "clock" or self._clock is None:
+            return ""
+        return str(getattr(self, "_clock_station_name", "") or "")
+
     def _forget_other_clock_place(self) -> None:
         """Drop the render cursor's clock place and resync time if another clockwheel's.
 
@@ -1506,6 +1518,7 @@ class Player:
             self._clock_fallback_reason: str | None = status
             self._pending_clock_update = None
             self._clock = None
+            self._clock_station_name = ""
             self._clock_has_ad_steps = False
             self._clock_has_pending_ad_steps = False
             self._seed_clock_following = None
@@ -1545,7 +1558,9 @@ class Player:
         from datetime import datetime
 
         from autodj.clockwheel import next_boundary
+        from autodj.clockwheel_store import split_station_name
 
+        clock, station_name = split_station_name(clock)
         boundary = next_boundary(
             datetime.fromtimestamp(self._now()).astimezone(), clock["resync_minutes"]
         )
@@ -1562,6 +1577,7 @@ class Player:
                 self._pending_clock_cursor = None
                 self._pending_clock_boundary = None
             self._clock_definition = clock
+            self._clock_station_name = station_name
             self._clock_steps = clock["steps"]
             self._clock_step_hours = step_hours
             self._pending_clock_cursor_revision = self._clock_revision
@@ -1583,9 +1599,18 @@ class Player:
             self._clock_next_boundary = boundary.timestamp() if boundary else None
 
     def apply_clockwheel_update(self, name: str, timing: str = "immediate") -> None:
-        """Apply a saved active wheel now or at its next restart boundary."""
+        """Apply a saved active wheel now or at its next restart boundary.
+
+        Its station name applies at once whatever *timing* says: it does not
+        change how the wheel picks (#472).
+        """
+        from autodj.clockwheel_store import split_station_name
+
         clock, slots = self._load_clockwheel(name)
+        clock, station_name = split_station_name(clock)
         with self._clock_selection_lock, self._clock_lock, settings_lock(self):
+            if self._clock_name() == name:
+                self._clock_station_name = station_name
             refresh = self._apply_loaded_clockwheel_update(name, timing, clock, slots)
         if refresh:
             self.refresh_playout()

@@ -49,6 +49,7 @@ from autodj.station_log import (
     new_station_scope,
     wait_for_station_threads,
 )
+from autodj.station_name import listener_name, sync_name
 
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
@@ -421,9 +422,10 @@ def start_stream_station(
             cfg.stream.relays.values(),
             stream_out,
             make_output=make_output,
-            station_name=lambda: cfg.stream.station_name,
+            # The name on the air (#472): a relay takes it when it connects.
+            station_name=lambda: listener_name(bridge),
             station_metadata=lambda: {
-                "name": cfg.stream.station_name,
+                "name": listener_name(bridge),
                 "genre": cfg.stream.genre,
                 "description": cfg.stream.description,
                 "url": cfg.stream.url,
@@ -987,6 +989,8 @@ class StationRuntime:
         self.station_list: Callable[[], list[dict[str, Any]]] | None = None
         # Scans in a row that found the liner folder empty (see prune_liner_dates).
         self.liner_folder_empty_scans = 0
+        # Held while relays are reconfigured; the registry shares its own.
+        self.relay_lock: threading.RLock = threading.RLock()
 
     def _playable_liners(self, entries: Sequence[Any], at: float | None = None) -> Sequence[Any]:
         """The liners among *entries* that may play at the expected air time.
@@ -1063,6 +1067,31 @@ class StationRuntime:
             self.nowplaying.refresh()
         except Exception:
             logger.exception("Could not refresh now-playing state")
+
+    def sync_station_name(self, *, reconnect: bool = True) -> bool:
+        """Publish the name the clockwheel or show on the air asks for (#472); blocking.
+
+        Whether the published name changed.  A change refreshes the feed and,
+        with *reconnect*, reconnects the relays, which take a name only when
+        they connect.
+        """
+        return sync_name(
+            self.bridge,
+            getattr(self, "show_runner", None),
+            self.public_state_changed,
+            self._reconnect_relays if reconnect else lambda: None,
+        )
+
+    def _reconnect_relays(self) -> None:
+        bridge = self.bridge
+        relays = getattr(bridge, "relays", None)
+        if not getattr(bridge, "stream_mode", False) or relays is None:
+            return
+        try:
+            with self.relay_lock:
+                relays.reconfigure(self.cfg.stream.relays.values(), restart_all=True)
+        except Exception:
+            logger.exception("Could not reconnect the relays with the new station name")
 
     def live_state(self) -> dict[str, Any]:
         """The live DJ and talkover state for the page's push and ``/api/status``."""
@@ -1193,6 +1222,11 @@ class StationRuntime:
                     loop.call_soon_threadsafe(runner.track_changed)
 
         bridge.scheduler_track_changed = schedule_track_changed
+        # The name of what is on the air after a restart, before relays connect.
+        try:
+            await asyncio.to_thread(self.sync_station_name, reconnect=False)
+        except Exception:
+            logger.exception("Could not set the station name on the air")
         self._schedule_ticker = asyncio.create_task(self._tick_schedule())
         if self.stream_mode:
             from autodj.recorder import Recorder
@@ -1428,6 +1462,12 @@ class StationRuntime:
                     await asyncio.to_thread(intros.upkeep)
             except Exception:
                 logger.exception("Matched intro upkeep failed")
+            try:
+                # Whatever changed the programming (a schedule event, an
+                # operator, a show that ended), the name follows within a second.
+                await asyncio.to_thread(self.sync_station_name)
+            except Exception:
+                logger.exception("Station name update failed")
 
 
 # ---------------------------------------------------------------------------

@@ -146,6 +146,7 @@ from autodj.station_log import (
     install_log_prefix,
     station_thread,
 )
+from autodj.station_name import listener_name
 from autodj.station_routes import (
     STATION_PREFIX,
     StationRouter,
@@ -1841,7 +1842,7 @@ def create_app(
             headers.update(
                 {
                     "icy-metaint": str(METAINT),
-                    "icy-name": _header_text(stream_cfg.station_name),
+                    "icy-name": _header_text(listener_name(sbridge)),
                     "icy-genre": _header_text(stream_cfg.genre),
                     "icy-url": _header_text(stream_cfg.url),
                     "icy-br": str(
@@ -2854,6 +2855,7 @@ def _ad_upload_cap(stations: StationRegistry) -> int:
 
 def _share_station(stations: StationRegistry, station: StationRuntime) -> None:
     """Give *station* what it shares with the other stations."""
+    station.relay_lock = stations.relay_lock
     if len(stations.slugs()) > 1:
         station.station_list = stations.summaries
 
