@@ -1563,11 +1563,8 @@ async function openStationMenu(page, visit) {
   await button.focus();
   await page.keyboard.press("Enter");
   await page.locator("#station-menu").waitFor({ state: "visible" });
-  await page.waitForFunction(() => document.activeElement?.getAttribute("role") === "menuitemradio",
-    null, { timeout: 2000 }).catch(() => {});
   await visit("now/station-menu");
   if (await page.locator("#station-menu").isVisible()) await page.keyboard.press("Escape");
-  await page.locator("#station-menu").waitFor({ state: "hidden", timeout: 2000 }).catch(() => {});
 }
 
 async function openEveryCard(page) {
@@ -2662,16 +2659,12 @@ async function stationSwitcherProblems(page) {
       offAir: !document.getElementById("station-off-air").hidden,
     };
   });
-  // The menu takes focus on its item a frame after it shows.
-  const menuFocused = () => page.waitForFunction(() => document.activeElement?.getAttribute("role") === "menuitemradio",
-    null, { timeout: 2000 }).catch(() => {});
   const size = await button.boundingBox();
   if (!size || size.height < 44 || size.width < 44) {
     problems.push(`station button ${Math.round(size?.width || 0)}x${Math.round(size?.height || 0)} px, under 44 px`);
   }
   await button.focus();
   await page.keyboard.press("Enter");
-  await menuFocused();
   await settle(page);
   let now = await state();
   if (!now.open || now.expanded !== "true") problems.push("Enter did not open the menu");
@@ -2690,9 +2683,6 @@ async function stationSwitcherProblems(page) {
   now = await state();
   if (now.checked !== "true") problems.push("Down Arrow did not wrap to the first station");
   await page.keyboard.press("Escape");
-  // The menu says collapsed at once and hands focus back a frame later.
-  await page.waitForFunction(() => document.getElementById("station-menu").hidden
-    && document.activeElement?.id === "station-button", null, { timeout: 2000 }).catch(() => {});
   now = await state();
   if (now.open || now.id !== "station-button" || now.expanded !== "false") {
     problems.push("Escape did not close the menu and return to the button");
@@ -2702,7 +2692,6 @@ async function stationSwitcherProblems(page) {
     if (index === 0) continue;
     await button.focus();
     await page.keyboard.press("Enter");
-    await menuFocused();
     await page.keyboard.press("Home");
     for (let step = 0; step < index; step += 1) await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
@@ -2724,7 +2713,6 @@ async function stationSwitcherProblems(page) {
   if (stations.length) {
     await button.focus();
     await page.keyboard.press("Enter");
-    await menuFocused();
     await page.keyboard.press("Home");
     await page.keyboard.press("Enter");
     const home = stations[0].name === "AutoDJ" ? "AutoDJ" : `AutoDJ: ${stations[0].name}`;

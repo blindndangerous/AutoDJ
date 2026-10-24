@@ -341,10 +341,8 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
   let typed = "";
   let typedAt = 0;
 
-  // Closing: collapsed and waiting a frame to hand focus back (see close).
-  let closing = false;
   function isOpen() {
-    return !menu.hidden && !closing;
+    return !menu.hidden;
   }
 
   function render() {
@@ -365,13 +363,8 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
         item.dataset.station = station.slug;
         item.className = "station-switcher-item";
       }
-      // A changed count rewrites the item's one text node in place: a new
-      // node leaves the item without a name until the browser has built it,
-      // and NVDA with Firefox once read an item as only "radio menu item".
       const text = stationItemText(station);
-      if (item.childNodes.length === 1 && item.firstChild.nodeType === 3) {
-        if (item.firstChild.data !== text) item.firstChild.data = text;
-      } else if (item.textContent !== text) item.textContent = text;
+      if (item.textContent !== text) item.textContent = text;
       const checked = station.slug === currentStation() ? "true" : "false";
       if (item.getAttribute("aria-checked") !== checked) item.setAttribute("aria-checked", checked);
       return item;
@@ -398,65 +391,25 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
     items[wrapped].focus();
   }
 
-  // A menu just shown gets focus on its item a frame later.  Firefox tells
-  // NVDA that a menu has appeared, and when that came after the item's
-  // focus, NVDA moved to the menu itself ("Station: AutoDJ menu"): the
-  // first arrow read an item without its name, and the first Escape only
-  // left focus mode.  Waiting lets the menu's appearance come first.
-  let opening = 0;
   function open(index) {
     if (wrap.hidden || !items.length) return;
-    closing = false;
-    const shown = menu.hidden;
     menu.hidden = false;
     button.setAttribute("aria-expanded", "true");
-    if (!shown) {
-      focusItem(index);
-      return;
-    }
-    const mine = ++opening;
-    afterNextFrame(() => {
-      if (mine === opening && isOpen()) focusItem(index);
-    });
+    focusItem(index);
   }
 
-  // Collapsed first, then, a frame later, focus on the button and the menu
-  // hidden.  NVDA with Firefox read the button as "expanded" every time
-  // focus reached it in the same task as the change: the browser had not
-  // yet passed the new state on.  Focus stays on the item meanwhile, so it
-  // is never left nowhere.
-  // *then* runs once focus is on the button, so a switch that asks first
-  // (unsaved settings) opens its question from the button.
-  function close(returnFocus = true, then = null) {
+  function close(returnFocus = true) {
     if (!isOpen()) return;
-    opening += 1;
+    menu.hidden = true;
     button.setAttribute("aria-expanded", "false");
     typed = "";
-    if (!returnFocus) {
-      menu.hidden = true;
-      then?.();
-      return;
-    }
-    closing = true;
-    afterNextFrame(() => {
-      if (!closing) return;
-      closing = false;
-      button.focus();
-      menu.hidden = true;
-      then?.();
-    });
-  }
-
-  function afterNextFrame(callback) {
-    const view = doc.defaultView;
-    if (typeof view?.requestAnimationFrame === "function") {
-      view.requestAnimationFrame(() => view.setTimeout(callback, 0));
-    } else setTimeout(callback, 0);
+    if (returnFocus) button.focus();
   }
 
   function choose(item) {
     const slug = item?.dataset?.station;
-    close(true, slug ? () => onChoose(slug) : null);
+    close(true);
+    if (slug) onChoose(slug);
   }
 
   // A letter moves to the next station whose name starts with it; more
@@ -479,10 +432,7 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
   });
   button.addEventListener("keydown", (event) => {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
-    if (event.key === "Escape" && isOpen()) {
-      event.preventDefault();
-      close(true);
-    } else if (["Enter", " ", "ArrowDown"].includes(event.key)) {
+    if (["Enter", " ", "ArrowDown"].includes(event.key)) {
       event.preventDefault();
       open(checkedIndex());
     } else if (event.key === "ArrowUp") {

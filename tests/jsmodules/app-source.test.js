@@ -310,8 +310,6 @@ function cleanupApp() {
 
 afterEach(cleanupApp);
 
-// The Station menu takes focus a frame after it shows.
-const nextFrame = () => new Promise((resolve) => window.requestAnimationFrame(() => setTimeout(resolve, 0)));
 
 describe("app fixture cleanup", () => {
   it("removes microphone permission callbacks from the discarded app", async () => {
@@ -4054,11 +4052,10 @@ describe("several stations (#70)", () => {
     window.history.replaceState(null, "", "/");
   });
 
-  async function chooseOwl() {
+  function chooseOwl() {
     const button = document.getElementById("station-button");
     button.focus();
     button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    await nextFrame();
     // Keys go where focus is: from the checked AutoDJ down to Night Owl.
     const press = (key) => document.activeElement.dispatchEvent(
       new KeyboardEvent("keydown", { key, bubbles: true }));
@@ -4096,7 +4093,7 @@ describe("several stations (#70)", () => {
     expect(document.getElementById("station-button").textContent.replace(/\s+/g, " ").trim())
       .toBe("Station: AutoDJ▾");
 
-    await chooseOwl();
+    chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
 
     // The old socket is closed on purpose and never reconnects.
@@ -4132,7 +4129,7 @@ describe("several stations (#70)", () => {
     const sockets = trackSockets(app.WebSocketImpl);
     const pill = document.getElementById("conn-status");
     pill.textContent = "Off air";
-    await chooseOwl();
+    chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     sockets[0].onopen();
     expect(pill.textContent).toBe("Live");
@@ -4170,7 +4167,7 @@ describe("several stations (#70)", () => {
     new window.MutationObserver(() => { if (song.textContent) songs.push(song.textContent); })
       .observe(song, { childList: true, characterData: true, subtree: true });
 
-    await chooseOwl();
+    chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     await vi.waitFor(() => expect(said.join(" | ")).toContain("Night Owl Radio. Playing Owl — Hoot. On air, 3 listeners."));
     expect(document.getElementById("now-playing-title").textContent).toContain("Owl — Hoot");
@@ -4207,7 +4204,7 @@ describe("several stations (#70)", () => {
   it("says a stopped station is off air and offers to start it", async () => {
     const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
     const sockets = trackSockets(app.WebSocketImpl);
-    await chooseOwl();
+    chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     vi.useFakeTimers();
     sockets[0].onclose({ code: 4409, wasClean: true });
@@ -4238,7 +4235,7 @@ describe("several stations (#70)", () => {
       onRequest,
     });
     const sockets = trackSockets(app.WebSocketImpl);
-    await chooseOwl();
+    chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     sockets[0].onclose({ code: 4409, wasClean: true });
 
@@ -4280,7 +4277,7 @@ describe("several stations (#70)", () => {
       confirm.dispatchEvent(new Event("close"));
     });
 
-    await chooseOwl();
+    chooseOwl();
     await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
     expect(document.getElementById("confirm-title").textContent).toBe("Switch to Night Owl Radio?");
     document.getElementById("confirm-cancel").click();
@@ -4289,7 +4286,7 @@ describe("several stations (#70)", () => {
     expect(sockets).toHaveLength(0);
     expect(document.getElementById("page-heading").textContent).toBe("AutoDJ");
 
-    await chooseOwl();
+    chooseOwl();
     await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
     document.getElementById("confirm-accept").click();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
@@ -4322,7 +4319,7 @@ describe("several stations (#70)", () => {
         confirm.dispatchEvent(new Event("close"));
       });
 
-      await chooseOwl();
+      chooseOwl();
       await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
       // One dialog names both losses: the decks that stop and the work dropped.
       expect(document.getElementById("confirm-title").textContent).toBe("Switch to Night Owl Radio?");
@@ -4336,7 +4333,7 @@ describe("several stations (#70)", () => {
       expect(clockwheel.clearProtectedData).not.toHaveBeenCalled();
       expect(stopAllDecks).not.toHaveBeenCalled();
 
-      await chooseOwl();
+      chooseOwl();
       await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
       document.getElementById("confirm-accept").click();
       await vi.waitFor(() => expect(sockets).toHaveLength(1));
@@ -4362,7 +4359,7 @@ describe("several stations (#70)", () => {
       await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
       const confirm = document.getElementById("confirm-dialog");
       confirm.showModal = vi.fn(() => { confirm.open = true; });
-      await chooseOwl();
+      chooseOwl();
       await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
       expect(document.getElementById("confirm-message").textContent)
         .toBe("Switching discards the clockwheel changes not saved yet.");
@@ -4390,7 +4387,7 @@ describe("several stations (#70)", () => {
       await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
       const confirm = document.getElementById("confirm-dialog");
       confirm.showModal = vi.fn(() => { confirm.open = true; });
-      await chooseOwl();
+      chooseOwl();
       await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledOnce());
       expect(document.getElementById("confirm-message").textContent).toBe(
         "Switching discards the clockwheel changes not saved yet and the voice track not booked yet.");
@@ -4428,7 +4425,7 @@ describe("several stations (#70)", () => {
       });
       const button = document.getElementById("station-button");
 
-      await chooseOwl();
+      chooseOwl();
       await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledOnce());
       expect(opener).toBe(button);
       expect(document.activeElement).toBe(document.getElementById("confirm-cancel"));
@@ -4436,7 +4433,7 @@ describe("several stations (#70)", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(document.activeElement).toBe(button);
 
-      await chooseOwl();
+      chooseOwl();
       await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
       document.getElementById("confirm-accept").click();
       await vi.waitFor(() => expect(sockets).toHaveLength(1));
@@ -4456,7 +4453,7 @@ describe("several stations (#70)", () => {
         : owlRequests(url)),
     });
     const sockets = trackSockets(app.WebSocketImpl);
-    await chooseOwl();
+    chooseOwl();
     await vi.waitFor(() => expect(document.getElementById("station-off-air").hidden).toBe(false));
     expect(document.getElementById("station-off-air-text").textContent).toBe("Night Owl Radio is off air.");
     expect(document.getElementById("conn-status").textContent).toBe("Off air");
@@ -4472,7 +4469,7 @@ describe("several stations (#70)", () => {
     });
     const sockets = trackSockets(app.WebSocketImpl);
     const said = spoken();
-    await chooseOwl();
+    chooseOwl();
     // The socket brings the state when it opens.
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     expect(sockets[0].url).toMatch(/\/api\/stations\/nightowl\/ws$/);
@@ -4486,7 +4483,7 @@ describe("several stations (#70)", () => {
     const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
     const sockets = trackSockets(app.WebSocketImpl);
     app.webSocket.onclose({ code: 1006, wasClean: false });
-    await chooseOwl();
+    chooseOwl();
     await vi.waitFor(() => expect(document.getElementById("sr-status").textContent)
       .toBe("AutoDJ is reconnecting. Choose the station again once it is back."));
     expect(sockets).toHaveLength(0);
@@ -4509,7 +4506,7 @@ describe("several stations (#70)", () => {
     await vi.waitFor(() => expect(audio.play).toHaveBeenCalled());
     expect(audio.src).toMatch(/\/stream\.mp3\?connection=/);
 
-    await chooseOwl();
+    chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     expect(audio.src).toMatch(/\/stream\.mp3\?connection=/);
     expect(document.getElementById("btn-listen").getAttribute("aria-pressed")).toBe("true");
@@ -4586,7 +4583,6 @@ describe("several stations: the first station (#70 review)", () => {
     const button = document.getElementById("station-button");
     button.focus();
     button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    await nextFrame();
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await vi.waitFor(() => expect(storage.values.get("autodj.station")).toBe("nightowl"));
