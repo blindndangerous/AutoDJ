@@ -62,6 +62,7 @@ from pydantic import (
 
 from autodj.beets_query import FIRST_RELEASE_YEAR, Query, QueryError, parse_query
 from autodj.beets_query import first_release_year as _first_release_year
+from autodj.clock_conditions import relative_date_now, uses_relative_dates
 from autodj.fsutil import atomic_write, set_aside
 from autodj.timefmt import clock_text
 
@@ -854,8 +855,12 @@ def resolve_all(
     music_dir: Path | None,
     folder: Path,
     sources_by_id: Mapping[str, Mapping[str, Any]] | None = None,
+    now: float | None = None,
 ) -> list[Resolution]:
-    """Work out every category in *categories*, reading beets once for all of them."""
+    """Work out every category in *categories*, reading beets once for all of them.
+
+    *now* is the time relative date conditions are judged at (now when not given).
+    """
     return resolve_checked(
         categories,
         entries,
@@ -863,6 +868,7 @@ def resolve_all(
         music_dir=music_dir,
         folder=folder,
         sources_by_id=sources_by_id,
+        now=now,
     )[0]
 
 
@@ -882,6 +888,7 @@ def resolve_checked(
     folder: Path,
     sources_by_id: Mapping[str, Mapping[str, Any]] | None = None,
     remember_check: bool = True,
+    now: float | None = None,
 ) -> tuple[list[Resolution], PathCheck | None]:
     """Like :func:`resolve_all`, with how beets' paths matched the library.
 
@@ -952,7 +959,9 @@ def resolve_checked(
                 results.append(Resolution(error=problem))
                 continue
         music_entries = [entry for entry in entries if not getattr(entry, "is_silent", False)]
-        results.append(Resolution(frozenset(condition_paths(slot, music_entries, beets_by_path))))
+        results.append(
+            Resolution(frozenset(condition_paths(slot, music_entries, beets_by_path, now=now)))
+        )
     return results, sources.beets_check
 
 
@@ -994,11 +1003,17 @@ class CategoryIndex:
     whether the library's song list is a new one.  Only when one of them
     changed does it read beets and the playlists again.
 
+    A category with a relative date condition (within the last N days) is
+    also worked out again when the hour changes, as its window moves by the
+    hour (:func:`autodj.clock_conditions.relative_date_now`).
+
     Args:
         cfg: The configuration, for the index folder, beets and the
             playlists folder.
         entries: Returns the library's music entries; a new tuple each time
             the library changes, the same one otherwise.
+        clock: Returns the wall-clock time relative date conditions are
+            judged at.
     """
 
     def __init__(
@@ -1007,10 +1022,14 @@ class CategoryIndex:
         entries: Callable[[], Sequence[Any]],
         folders: Callable[[], Sequence[Mapping[str, Any]]] = lambda: (),
         path: Path | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
+        import time
+
         self._cfg = cfg
         self._entries = entries
         self._folders = folders
+        self._clock = clock or time.time
         # One station's categories: the default station's without *path*.
         self.store = CategoryStore(path or store_path(cfg))
         self._lock = threading.Lock()
@@ -1041,7 +1060,9 @@ class CategoryIndex:
             self._loaded = None
             self._resolved = None
 
-    def _signature(self, categories: Sequence[Category], entries: Sequence[Any]) -> tuple:
+    def _signature(
+        self, categories: Sequence[Category], entries: Sequence[Any], now: float
+    ) -> tuple:
         folder = self.folder
         beets = self._cfg.library.beets_db
         reads_beets = beets is not None and any(uses_beets(c) for c in categories)
@@ -1062,6 +1083,9 @@ class CategoryIndex:
             _stat(Path(beets)) if reads_beets and beets else None,
             _stat(Path(f"{beets}-wal")) if reads_beets and beets else None,
             tuple(playlists),
+            relative_date_now(now)
+            if any(uses_relative_dates(c.conditions) for c in categories)
+            else None,
         )
 
     def cache_signature(self) -> tuple:
@@ -1069,14 +1093,15 @@ class CategoryIndex:
         with self._lock:
             categories = self.categories()
         entries = self._entries()
-        return (id(entries), self._signature(categories, entries))
+        return (id(entries), self._signature(categories, entries, self._clock()))
 
     def resolutions(self) -> tuple[tuple[Category, ...], dict[str, Resolution]]:
         """The saved categories and what each holds, worked out again if a source changed."""
         with self._lock:
             categories = self.categories()
             entries = self._entries()
-            signature = self._signature(categories, entries)
+            now = self._clock()
+            signature = self._signature(categories, entries, now)
             resolved = self._resolved
             if (
                 resolved is not None
@@ -1091,6 +1116,7 @@ class CategoryIndex:
                 music_dir=self._cfg.library.music_dir,
                 folder=self.folder,
                 sources_by_id={source["id"]: source for source in self._folders()},
+                now=now,
             )
             cause = check.cause if check is not None else None
             by_id: dict[str, Resolution] = {}
@@ -1172,4 +1198,5 @@ class CategoryIndex:
             music_dir=self._cfg.library.music_dir,
             folder=self.folder,
             sources_by_id={source["id"]: source for source in self._folders()},
+            now=self._clock(),
         )[0]

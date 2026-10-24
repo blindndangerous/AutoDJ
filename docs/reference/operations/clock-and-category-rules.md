@@ -36,6 +36,16 @@ Available conditions:
 - **Beets field**: a field from the configured Beets database, including custom fields. Choose a
   text or numeric comparison, including the matching exclusions. `original_year` uses the first-release year, falling back to
   `year` when it is missing. Ordinary conditions work without Beets.
+- **Within the last N days**: for a Beets date field, such as `added` (when the song was imported
+  into Beets) or `mtime` (when its file last changed), choose the Beets field, the operator
+  **within the last N days (date)** and a whole number of **Days** from 1 to 3650. For example,
+  Beets field `added`, within the last N days, Days 30 makes a "new music" step or category. The
+  window moves with the clock: it ends at the start of the current hour and reaches back that many
+  days, and a song added since the hour began, or dated slightly ahead, also matches. The days are
+  saved, not a date, so the songs that match change on their own as time passes. Beets keeps these
+  dates as Unix times; a song with no date (Beets stores 0) never matches. AutoDJ's own library
+  has no date added, so this condition needs Beets. In a saved file it is
+  `{"field": "beets", "name": "added", "operator": "within_days", "value": 30}`.
 
 A missing value does not match a condition, including a negative condition. Unknown year, BPM or
 duration values are not treated as zero. Genre exclusions reject a track if any genre label matches.
@@ -109,7 +119,8 @@ clockwheels is simpler.
 A category's songs come from one of three sources:
 
 - **Matching conditions** use the same Match all / Match any filters as a music clockwheel step:
-  registered folders, genre, year, BPM, duration, artist, title, album and available Beets fields.
+  registered folders, genre, year, BPM, duration, artist, title, album and available Beets fields,
+  including a Beets date within the last N days.
   A condition can exclude a folder, genre or text value, or use a numeric not-equal/outside-range
   comparison. Unknown metadata never passes an exclusion; a genre exclusion leaves out a track if
   any of its genre labels matches. Categories cannot refer to other categories.
@@ -148,7 +159,10 @@ that used `year`, so you can fix their tags with beets.
 **When the songs are worked out.** AutoDJ works out each category's songs once and keeps the
 answer until the categories, the beets database, a playlist file or the library changes, which a
 few file-time checks before each clockwheel pick tell it; the songs are never read again for
-every pick. When a playlist is being rewritten or beets is busy importing, a category keeps the
+every pick. A category or clockwheel step with a **within the last N days** condition is also
+worked out again once an hour, when its window moves. A step judges the window for when the song
+is expected to start, as it does its hours, so the rotation tester moves it with its own clock;
+a category judges it at the current time, also in the rotation tester and the Hour preview. When a playlist is being rewritten or beets is busy importing, a category keeps the
 songs it held last time and the server log says why.
 
 **At play time.** An explicit category condition picks from its category members and follows the
