@@ -219,7 +219,7 @@ def _guarded(tmp_path, **saved_fields):
         _station_now=lambda at: datetime.fromtimestamp(at),
         _category_index=lambda: SimpleNamespace(categories=lambda: ()),
         _clock_step_hours=(),
-        _pick_context=lambda dayparts: context,
+        _pick_context=lambda **_options: context,
         show_holds_air=lambda: False,
     )
     return player, entry, context
@@ -334,3 +334,38 @@ def test_only_a_clockwheel_pick_is_kept_for_a_restart(tmp_path):
     assert _saved(player) is None
     restored_pick.remember(player, _render(next_clock_revision=6), NOW)
     assert _saved(player) is None
+
+
+def test_the_station_ticks_before_its_first_wait():
+    """ADR-0004-16. A started station decides on its first set at once, not a second later."""
+    import asyncio
+
+    from autodj.stations import tick_every_second
+
+    events = []
+
+    async def sleep(_seconds):
+        events.append("wait")
+        if events.count("wait") == 2:
+            raise asyncio.CancelledError
+
+    async def main():
+        worker = SimpleNamespace(tick=lambda: events.append("tick"))
+        with pytest.raises(asyncio.CancelledError):
+            await tick_every_second("station", worker, sleep, at_once=True)
+        assert events == ["tick", "wait", "tick", "wait"]
+        events.clear()
+        with pytest.raises(asyncio.CancelledError):
+            await tick_every_second("liner scheduler", worker, sleep)
+        assert events == ["wait", "tick", "wait"]
+
+    asyncio.run(main())
+
+
+def test_the_restore_check_waits_for_neither_hours_nor_song_versions(tmp_path):
+    """ADR-0004-16. The check reads no category members and works out no song versions."""
+    player, entry, context = _guarded(tmp_path)
+    asked = []
+    player._pick_context = lambda **options: asked.append(options) or context
+    assert restored_pick.restore(player, NOW) is entry
+    assert asked == [{"dayparts": False, "with_versions": False}]

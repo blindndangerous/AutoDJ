@@ -3207,6 +3207,7 @@ class Player:
                 queue_reserved=current if current_from_queue else None,
                 at=self._handoff_time(current),
                 dayparts=not deferred,
+                with_versions=not deferred,
             )
             next_entry: IndexEntry | None
             self._forget_other_clock_place()
@@ -5171,6 +5172,7 @@ class Player:
         queue_reserved: IndexEntry | None = None,
         at: float | None = None,
         dayparts: bool = True,
+        with_versions: bool = True,
     ) -> _PickContext:
         """Copy the history a pick reads, under ``_pick_lock``.
 
@@ -5196,6 +5198,10 @@ class Player:
                 reads the station's hours then.  Now when not given.
             dayparts: Read the categories' days and hours.  ``False``
                 leaves no song closed.
+            with_versions: Hold back the other versions of recent songs
+                (Count versions as one song).  ``False`` skips working out
+                every song's versions, which a restored first song must
+                not wait for: it was picked with them held back (#584).
         """
         with self._pick_lock:
             paths, history = self._recent_exclusions(pending, starting)
@@ -5218,7 +5224,7 @@ class Player:
         if minute_paths:
             held = set(paths)
             paths = deque([*paths, *(path for path in minute_paths if path not in held)])
-        versions = self._song_versions()
+        versions = self._song_versions() if with_versions else None
         if versions is not None:
             # The track rule holds back every version of a song that played.
             paths = deque(versions.with_versions(paths))

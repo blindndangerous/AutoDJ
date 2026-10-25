@@ -730,14 +730,18 @@ async def stop_stream_station(bridge: PlayerBridge, stream_out: StreamOutput) ->
 
 
 async def tick_every_second(
-    name: str, worker: Any, sleep: Callable[[float], Awaitable[None]]
+    name: str, worker: Any, sleep: Callable[[float], Awaitable[None]], *, at_once: bool = False
 ) -> None:
     """Call ``worker.tick`` off the event loop about once a second, forever.
 
-    A failed tick is logged and the next one still runs.
+    With *at_once*, the first tick runs before the first wait.  A failed
+    tick is logged and the next one still runs.
     """
+    wait = not at_once
     while True:
-        await sleep(1)
+        if wait:
+            await sleep(1)
+        wait = True
         try:
             await asyncio.to_thread(worker.tick)
         except Exception:
@@ -766,7 +770,8 @@ async def tick_stream_workers(
     async with asyncio.TaskGroup() as group:
         for name, worker in workers:
             if worker is not None:
-                group.create_task(tick_every_second(name, worker, sleep))
+                # The station starts its first set at once, not a second late (#584).
+                group.create_task(tick_every_second(name, worker, sleep, at_once=name == "station"))
 
 
 def quiesce_cache_writers(
