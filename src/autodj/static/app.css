@@ -233,8 +233,10 @@
       border: 1px solid var(--control-border);
       border-radius: var(--radius);
     }
-    /* Each station is a button drawn as a row of the panel, not as a
-       raised button: the panel's border is the boundary. */
+    /* Each station is a button drawn as a row of the panel.  It keeps the
+       control border, so its boundary is 3:1 like every other button's
+       (WCAG 1.4.11), and the rows are spaced so the borders stay apart. */
+    #station-list > li + li { margin-top: 0.25rem; }
     .station-switcher-item {
       display: flex;
       align-items: center;
@@ -244,7 +246,7 @@
       padding: 0.5rem 0.75rem;
       background: transparent;
       color: inherit;
-      border: 0;
+      border: 1px solid var(--control-border);
       border-radius: var(--radius);
       font: inherit;
       text-align: left;
