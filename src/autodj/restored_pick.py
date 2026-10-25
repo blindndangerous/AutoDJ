@@ -139,7 +139,9 @@ def refusal(player: Any, saved: Any, now: float) -> tuple[Any, str | None]:
     then = player._station_now(starts_at if isinstance(starts_at, int | float) else picked_at)
     if _closures(player, then) != _closures(player, player._station_now(now)):
         return None, "a category or step has opened or closed since"
-    context = player._pick_context(dayparts=False)
+    # Picked with the hours and every version of recent songs held back; only
+    # the song it followed has played since, and that one is protected.
+    context = player._pick_context(dayparts=False, with_versions=False)
     if entry.path in context.recent or entry.path in context.protected:
         return None, "the track rule holds it back"
     if not context.repeat(entry):

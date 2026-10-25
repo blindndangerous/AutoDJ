@@ -251,7 +251,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0004-13` | The newly selected stream boundary may emit silence while programme position holds; zero-gap behavior requires manual listening and soak evidence. | manual | Listen through repeated files, short tracks, cuts, overlaps and incoming glides, then run the documented station soak on target hardware; record boundary latency, silence and underruns without claiming a zero-gap guarantee. |
 | `ADR-0004-14` | Server sound-card and stream playback share live playout; local-only output creates no streaming lifecycle, and whole-show preview/export stays offline. | automated | `tests/unit/test_player_stream_mode.py::test_local_soundcard_uses_live_playout_without_stream_lifecycle` |
 | `ADR-0004-15` | While any mix bus runs, the process uses the 0.5 ms thread switch interval, restoring the earlier interval after the last bus stops unless it was changed meanwhile; a shorter interval is kept. Continuity under load on target hardware remains manual soak evidence (ADR-0004-06). | automated | `tests/unit/test_mixbus.py::test_run_shortens_the_switch_interval_until_the_last_bus_stops`; `tests/unit/test_mixbus.py::test_run_leaves_an_interval_someone_else_chose` |
-| `ADR-0004-16` | A streaming station keeps, in its buffered ledger settings, the clockwheel song picked to follow the playing one. After a restart that song starts the set without a successor only when it was picked within 30 minutes, is still a playable library song, has not played since, the wheel and its restart time are unchanged, no show holds the air, no dayparted category or step has opened or closed since, and the repeat rules and DMCA limits allow it; queued songs keep their precedence, and every refusal is logged. Its successor is picked while it plays and spliced in like a queue edit; when the song ends first, the usual start pick follows. | automated | `tests/unit/test_restored_pick.py::test_a_fresh_clock_pick_starts_the_set_once`; `tests/unit/test_restored_pick.py::test_a_saved_song_that_no_longer_fits_falls_back_to_the_usual_pick`; `tests/unit/test_restored_pick.py::test_only_a_clockwheel_pick_is_kept_for_a_restart`; `tests/unit/test_restored_pick.py::test_a_restored_song_starts_alone_and_its_successor_is_spliced_in`; `tests/unit/test_restored_pick.py::test_a_successor_too_late_for_the_restored_song_hands_over_to_a_fresh_pick` |
+| `ADR-0004-16` | A streaming station keeps, in its buffered ledger settings, the clockwheel song picked to follow the playing one. After a restart that song starts the set without a successor only when it was picked within 30 minutes, is still a playable library song, has not played since, the wheel and its restart time are unchanged, no show holds the air, no dayparted category or step has opened or closed since, and the repeat rules and DMCA limits allow it; queued songs keep their precedence, and every refusal is logged. Its successor is picked while it plays and spliced in like a queue edit; when the song ends first, the usual start pick follows. | automated | `tests/unit/test_restored_pick.py::test_a_fresh_clock_pick_starts_the_set_once`; `tests/unit/test_restored_pick.py::test_a_saved_song_that_no_longer_fits_falls_back_to_the_usual_pick`; `tests/unit/test_restored_pick.py::test_only_a_clockwheel_pick_is_kept_for_a_restart`; `tests/unit/test_restored_pick.py::test_a_restored_song_starts_alone_and_its_successor_is_spliced_in`; `tests/unit/test_restored_pick.py::test_a_successor_too_late_for_the_restored_song_hands_over_to_a_fresh_pick`; `tests/unit/test_restored_pick.py::test_the_station_ticks_before_its_first_wait`; `tests/unit/test_restored_pick.py::test_the_restore_check_waits_for_neither_hours_nor_song_versions` |
 
 ## Related proposal — 2026-10-17
 
@@ -330,3 +330,17 @@ full pick does not run beside it. This changes only the first
 handoff after a restart; ADR-0004-12 still governs every later one. Contract
 ADR-0004-16 records this; listening and soak evidence remain those of
 ADR-0004-06 and ADR-0004-13.
+
+## Amendment, 2026-10-25: no wait before the restored first song (#584)
+
+In the field the restored song started about 6 seconds after its station did. A stream
+station decided on its first set only at its first tick, a second after it started, and the
+restore check worked out every song's versions for Count versions as one song before checking
+the saved song: about 1.2 seconds for each station on 80,000 synthetic songs, several times
+that on a low-power host. The station now ticks once as it starts, and the restore check and the
+restored song's first render leave versions out. The song was picked with every version of the
+recent songs held back, and only the song it followed has played since, which is protected. The
+successor's pick works versions out as before. In the restart benchmark, first audio after the
+master started fell from 1.10 to 0.09 to 0.12 seconds, and with Count versions as one song from
+2.26 to 0.11 to 0.13 seconds; the worst delay of the paced probe was the same as before. Contract
+ADR-0004-16 covers this.

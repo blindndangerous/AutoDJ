@@ -34,6 +34,8 @@ class BeetsConditions:
         self._lock = threading.RLock()
         self._key: tuple[Any, ...] | None = None
         self._cached_entries: Sequence[Any] | None = None
+        # The playable paths the values were matched against.
+        self._paths: list[str] | None = None
         self._fields: frozenset[str] = frozenset()
         self._discovered = False
         self._loaded: set[str] = set()
@@ -74,9 +76,10 @@ class BeetsConditions:
 
         ``None`` without a Beets database.  *entries* are the library's
         music entries the values are matched against, the current ones
-        when not given; the values are read again when they or the
-        database change.  The returned mapping stays the same object
-        until then, so caches keyed on it hold.
+        when not given; the values are read again when the database or
+        the entries' paths change, not when only a song's tags or analysis
+        do (#584).  The returned mapping stays the same object until then,
+        so caches keyed on it hold.
 
         Raises:
             OSError, sqlite3.Error: The database could not be read; the
@@ -101,9 +104,18 @@ class BeetsConditions:
                 str(music_dir) if music_dir is not None else None,
                 *self._fingerprint(db_path),
             )
-            if key != self._key or entries is not self._cached_entries:
-                self._key = key
+            paths = (
+                None
+                if entries is None
+                else [e.path for e in entries if not getattr(e, "is_silent", False)]
+            )
+            if entries is not self._cached_entries:
                 self._cached_entries = entries
+                if paths != self._paths:
+                    self._key = None  # Other songs: match the paths again.
+            if key != self._key:
+                self._key = key
+                self._paths = paths
                 self._reset()
 
             requested = self._valid(fields)
@@ -124,10 +136,7 @@ class BeetsConditions:
                     if entries is None:
                         fresh, check = source.items(missing), None
                     else:
-                        fresh, check = source.checked_items(
-                            missing,
-                            [e.path for e in entries if not getattr(e, "is_silent", False)],
-                        )
+                        fresh, check = source.checked_items(missing, paths or [])
                     if self._items:
                         merged = {path: dict(values) for path, values in self._items.items()}
                         for path, values in fresh.items():
