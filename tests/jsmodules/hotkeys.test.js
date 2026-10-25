@@ -559,7 +559,7 @@ describe("spoken status keys", () => {
       expect(stepStation.mock.calls.map(([by]) => by)).toEqual([-1, -1, 1]);
     });
 
-    it("leaves the menu's own type-ahead letters alone", () => {
+    it("leaves an ARIA menu's own type-ahead letters alone", () => {
       const focusStationSwitcher = vi.fn(() => true);
       document.body.innerHTML = '<ul role="menu"><li role="menuitemradio" tabindex="-1">Night</li></ul>';
       const addEventListener = vi.spyOn(window, "addEventListener");
@@ -571,6 +571,30 @@ describe("spoken status keys", () => {
       keydown(event);
       expect(event.preventDefault).not.toHaveBeenCalled();
       expect(focusStationSwitcher).not.toHaveBeenCalled();
+    });
+
+    it("treats a station button in the switcher's list like any other button (#576)", () => {
+      const focusStationSwitcher = vi.fn(() => true);
+      document.body.innerHTML = `<section id="panel-now"></section>
+        <ul id="station-list"><li><button type="button" data-station="nightowl">Night</button></li></ul>`;
+      const addEventListener = vi.spyOn(window, "addEventListener");
+      installHotkeys({ focusStationSwitcher });
+      const keydown = addEventListener.mock.calls.find(([type]) => type === "keydown")[1];
+      addEventListener.mockRestore();
+      const item = document.querySelector("#station-list button");
+      const press = (key) => {
+        const event = { key, repeat: false, target: item, preventDefault: vi.fn() };
+        keydown(event);
+        window.dispatchEvent(new KeyboardEvent("keyup", { key }));
+        return event;
+      };
+      // A letter is the page's shortcut: no type-ahead keeps it.
+      expect(press("c").preventDefault).toHaveBeenCalled();
+      expect(focusStationSwitcher).toHaveBeenCalledOnce();
+      // Space and the arrows stay with the button, as on any button.
+      for (const key of [" ", "ArrowDown", "ArrowUp"]) {
+        expect(press(key).preventDefault, key).not.toHaveBeenCalled();
+      }
     });
   });
 });

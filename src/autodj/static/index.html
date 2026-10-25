@@ -61,15 +61,16 @@
   <!-- With several stations the heading names the one this page controls
        ("AutoDJ: Night Owl Radio"); app.js keeps it current. -->
   <h1 id="page-heading">AutoDJ</h1>
-  <!-- Station switcher (#70): the APG menu button with menuitemradio
-       items, hidden while the server has one station.  The button's name
-       is its text, "Station: <name>", so the current station is heard on
-       every visit; a choice is made only with Enter, Space or a click.
-       See modules/stations.js for the keys. -->
+  <!-- Station switcher (#70, #576): a disclosure, hidden while the server
+       has one station.  The Station button shows or hides the list of
+       station buttons right after it.  Its name is its text, "Station:
+       <name>", so the current station is heard on every visit; a station
+       is chosen only by pressing its button.  See modules/stations.js
+       for the keys. -->
   <div id="station-switcher" class="station-switcher" hidden>
-    <button type="button" id="station-button" aria-haspopup="menu" aria-expanded="false"
-            aria-controls="station-menu"><span>Station:</span> <span class="station-switcher-name">AutoDJ</span><span class="station-switcher-caret" aria-hidden="true">▾</span></button>
-    <ul id="station-menu" role="menu" aria-labelledby="station-button" hidden></ul>
+    <button type="button" id="station-button" aria-expanded="false"
+            aria-controls="station-list"><span>Station:</span> <span class="station-switcher-name">AutoDJ</span><span class="station-switcher-caret" aria-hidden="true">▾</span></button>
+    <ul id="station-list" hidden></ul>
   </div>
   <!-- A description, never shown: "Shared by all stations" for the
        library, cue points and Stations.  Empty while the server has one

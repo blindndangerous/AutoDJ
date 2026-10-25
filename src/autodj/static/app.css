@@ -212,13 +212,14 @@
     #conn-status.connecting  { background: #e67e22; color: #000; }
     #conn-status.error       { background: var(--danger);  color: #fff; }
 
-    /* Station switcher (#70): a menu button in the banner.  The banner
-       wraps so the button never pushes the page sideways at 320 px. */
+    /* Station switcher (#70, #576): a disclosure in the banner, its list
+       of station buttons drawn as a panel under the Station button.  The
+       banner wraps so the button never pushes the page sideways at 320 px. */
     header { flex-wrap: wrap; }
     .station-switcher { position: relative; }
     #station-button .station-switcher-name { font-weight: 600; }
     #station-button .station-switcher-caret { margin-left: 0.25rem; }
-    #station-menu {
+    #station-list {
       position: absolute;
       top: calc(100% + 0.25rem);
       left: 0;
@@ -232,35 +233,44 @@
       border: 1px solid var(--control-border);
       border-radius: var(--radius);
     }
+    /* Each station is a button drawn as a row of the panel, not as a
+       raised button: the panel's border is the boundary. */
     .station-switcher-item {
       display: flex;
       align-items: center;
       gap: 0.5rem;
+      width: 100%;
       min-height: 44px;
       padding: 0.5rem 0.75rem;
+      background: transparent;
+      color: inherit;
+      border: 0;
       border-radius: var(--radius);
+      font: inherit;
+      text-align: left;
       cursor: pointer;
     }
-    /* The checked station is marked by shape as well as by state: a tick
-       before its name, and room for one before the others (WCAG 1.4.1). */
+    /* The current station is marked by shape as well as by state: a tick
+       before its name, and room for one before the others (WCAG 1.4.1).
+       The tick's alt text is empty: aria-current already says it. */
     .station-switcher-item::before {
       content: "";
       flex: 0 0 1rem;
     }
-    .station-switcher-item[aria-checked="true"]::before { content: "\2713" / ""; }
-    .station-switcher-item[aria-checked="true"] { font-weight: 600; }
+    .station-switcher-item[aria-current="true"]::before { content: "\2713" / ""; }
+    .station-switcher-item[aria-current="true"] { font-weight: 600; }
     .station-switcher-item:hover,
     .station-switcher-item:focus {
       background: var(--tab-hover-bg);
       color: var(--tab-hover-text);
     }
     .station-switcher-item:focus-visible { outline-offset: -2px; }
-    /* On a phone the menu spans the banner, so a long station name never
+    /* On a phone the list spans the banner, so a long station name never
        pushes it past the right edge (WCAG 1.4.10). */
     @media (max-width: 40rem) {
       header { position: relative; }
       .station-switcher { position: static; }
-      #station-menu {
+      #station-list {
         top: auto;
         left: 0.75rem;
         right: 0.75rem;

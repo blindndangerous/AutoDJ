@@ -406,15 +406,21 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   politely, when the song changes, and nothing said on a poll that finds the same song; the next
   song shown only while it is allowed. With a station stopped, its page says it is off air, and
   an open page says so once when the station stops and says the song once when it is back.
-- Several stations (#70), with two configured: the Station button read as "Station: AutoDJ",
-  menu button, collapsed; Enter opening the menu on the checked station, read with its state
-  ("AutoDJ, on air, 2 listeners") and checked; the arrows, Home, End and a letter moving without
-  switching; Enter switching, with focus staying on the button (now named after the new
-  station) and the switch said once ("Now controlling ..."), the connection status saying
-  nothing more; Escape closing without switching; Skip, Play or Pause and the queue buttons
-  read by their names alone, without the station; `c` and Shift+C; Listen here still playing the
-  station it started on, with its "Playing ..." line; and a stopped station's "Off air" said
-  once, with Start reachable on Now Playing.
+- Several stations (#70, #576), with two configured: the Station button read as "Station:
+  AutoDJ", button, collapsed, with no menu or submenu announced; Enter expanding it and moving
+  focus to the current station's button, read with its state ("AutoDJ, on air, 2 listeners")
+  and as current; the list read straight after the Station button in browse mode; Up, Down,
+  Home, End, Tab and Shift+Tab moving between the stations without switching, and a letter
+  acting as the page's shortcut, not jumping to a station; a station's listeners updating in
+  place while the list is open, without moving focus; Enter on another station switching, with
+  the list closed, focus on the Station button (now named after the new station) and the switch
+  said once ("Now controlling ..."), the connection status saying nothing more; Enter on the
+  current station only closing the list, saying nothing; the first Escape closing the list
+  without switching, with focus on the Station button, read as collapsed; the Station button
+  pressed again closing it; Tab past the last station leaving the list open; Skip, Play or
+  Pause and the queue buttons read by their names alone, without the station; `c` and Shift+C;
+  Listen here still playing the station it started on, with its "Playing ..." line; and a
+  stopped station's "Off air" said once, with Start reachable on Now Playing.
 - Settings, Stations (#233): browse the station list and read New station fields with their short
   labels. Station ID includes its format hint. Choosing a copy reveals Also copy as a group of
   three checkboxes; choosing AutoDJ defaults hides that group and its help. A refused ID or name

@@ -1704,7 +1704,7 @@ let stationOffAir = false;
 const stationSwitcher = installStationSwitcher({
   wrap: document.getElementById("station-switcher"),
   button: document.getElementById("station-button"),
-  menu: document.getElementById("station-menu"),
+  list: document.getElementById("station-list"),
   onChoose: (slug) => void switchStation(slug),
 });
 

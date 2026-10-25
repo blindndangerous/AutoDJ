@@ -36,9 +36,10 @@ folders are shared: do not import the same folder again or remove it from
 Library tools as cleanup. Categories and clockwheels belong to each station,
 even when they refer to the same shared songs.
 
-Use Tab and Enter or Space for controls. The **Station** button opens a menu:
-use arrow keys to find a station and Enter or Space to choose it. Confirm the
-button and page heading name the intended station before changing its content.
+Use Tab and Enter or Space for controls. The **Station** button shows a list
+of stations: use the arrow keys or Tab to find a station and Enter or Space to
+choose it. Confirm the button and page heading name the intended station before
+changing its content.
 The [keyboard guide](../guides/keyboard-and-screen-reader.md) covers grid navigation.
 
 ## Leave a marker in Practice's queue

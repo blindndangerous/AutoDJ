@@ -4055,13 +4055,12 @@ describe("several stations (#70)", () => {
   function chooseOwl() {
     const button = document.getElementById("station-button");
     button.focus();
-    button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    // Keys go where focus is: from the checked AutoDJ down to Night Owl.
-    const press = (key) => document.activeElement.dispatchEvent(
-      new KeyboardEvent("keydown", { key, bubbles: true }));
-    press("ArrowDown");
+    button.click();
+    // Keys go where focus is: from the current AutoDJ down to Night Owl.
+    document.activeElement.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
     expect(document.activeElement.dataset.station).toBe("nightowl");
-    press("Enter");
+    document.activeElement.click();
   }
 
   it("shows no switcher and changes nothing with one station", async () => {
@@ -4111,13 +4110,36 @@ describe("several stations (#70)", () => {
     // Only the heading names the station; panels and the main region do not repeat it.
     expect(document.getElementById("main-content").hasAttribute("aria-label")).toBe(false);
     expect(document.getElementById("panel-queue").getAttribute("aria-labelledby")).toBe("tab-queue");
-    expect(document.querySelector('[data-station="nightowl"]').getAttribute("aria-checked")).toBe("true");
+    expect(document.querySelector('[data-station="nightowl"]').getAttribute("aria-current")).toBe("true");
+    expect(document.querySelector('[data-station="default"]').hasAttribute("aria-current")).toBe(false);
+    expect(document.getElementById("station-list").hidden).toBe(true);
     expect(location.search).toBe("?station=nightowl");
     // Its own public feed and status page, not the default station's.
     expect(document.getElementById("np-url").value).toMatch(/\/api\/stations\/nightowl\/nowplaying$/);
     expect(document.getElementById("np-status-open").getAttribute("href")).toBe("/stations/nightowl/status");
     await vi.waitFor(() => expect(said.join(" | ")).toContain(
       "Night Owl Radio. Playing Owl — Hoot. On air, 3 listeners."));
+    // Said once.
+    expect(said.filter((text) => text.startsWith("Night Owl Radio."))).toHaveLength(1);
+  });
+
+  it("only closes the list when the current station is chosen (#576)", async () => {
+    const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+    const sockets = trackSockets(app.WebSocketImpl);
+    const said = spoken();
+    const button = document.getElementById("station-button");
+    button.focus();
+    button.click();
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement.dataset.station).toBe("default");
+    document.activeElement.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.getElementById("station-list").hidden).toBe(true);
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(button);
+    expect(sockets).toHaveLength(0);
+    expect(location.search).toBe("");
+    expect(said).toEqual([]);
   });
 
   it("says a dropped link that comes inside the switch's quiet second (#327)", async () => {
@@ -4582,9 +4604,9 @@ describe("several stations: the first station (#70 review)", () => {
     await setupApp({ stations: [AUTODJ, OWL], onRequest: owlStatus });
     const button = document.getElementById("station-button");
     button.focus();
-    button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    button.click();
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    document.activeElement.click();
     await vi.waitFor(() => expect(storage.values.get("autodj.station")).toBe("nightowl"));
   });
 });

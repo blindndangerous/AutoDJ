@@ -3630,11 +3630,11 @@ describe("station switcher and station context contracts (#70)", () => {
   const ids = (element, attribute) => (element.getAttribute(attribute) || "")
     .split(/\s+/).filter(Boolean);
 
-  it("is an APG menu button in the banner, before the Sections tabs", () => {
+  it("is a disclosure in the banner, its list right after the button, before the Sections tabs (#576)", () => {
     installDocument();
     const wrap = document.getElementById("station-switcher");
     const button = document.getElementById("station-button");
-    const menu = document.getElementById("station-menu");
+    const list = document.getElementById("station-list");
     // Hidden until the server lists a second station.
     expect(wrap.hidden).toBe(true);
     expect(wrap.closest('header[role="banner"]')).not.toBeNull();
@@ -3642,9 +3642,10 @@ describe("station switcher and station context contracts (#70)", () => {
       & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(button.tagName).toBe("BUTTON");
     expect(button.getAttribute("type")).toBe("button");
-    expect(button.getAttribute("aria-haspopup")).toBe("menu");
+    // A disclosure: no popup, so no menu role for a screen reader to race.
+    expect(button.hasAttribute("aria-haspopup")).toBe(false);
     expect(button.getAttribute("aria-expanded")).toBe("false");
-    expect(button.getAttribute("aria-controls")).toBe("station-menu");
+    expect(button.getAttribute("aria-controls")).toBe("station-list");
     // Named by its visible text, "Station: <name>"; the caret is not read.
     expect(button.hasAttribute("aria-label")).toBe(false);
     expect(button.querySelector(".station-switcher-caret").getAttribute("aria-hidden")).toBe("true");
@@ -3652,10 +3653,12 @@ describe("station switcher and station context contracts (#70)", () => {
       .filter((node) => !(node instanceof window.Element && node.getAttribute("aria-hidden") === "true"))
       .map((node) => node.textContent).join("").replace(/\s+/g, " ").trim();
     expect(visible).toBe("Station: AutoDJ");
-    expect(menu.tagName).toBe("UL");
-    expect(menu.getAttribute("role")).toBe("menu");
-    expect(menu.getAttribute("aria-labelledby")).toBe("station-button");
-    expect(menu.hidden).toBe(true);
+    // The list comes straight after the button in reading order.
+    expect(button.nextElementSibling).toBe(list);
+    expect(list.tagName).toBe("UL");
+    expect(list.hasAttribute("role")).toBe(false);
+    expect(list.hidden).toBe(true);
+    expect(document.querySelector('[role="menu"], [role="menuitemradio"]')).toBeNull();
   });
 
   it("describes the shared controls as shared by all stations", () => {
@@ -3734,20 +3737,20 @@ describe("station switcher and station context contracts (#70)", () => {
       "station-create-autostart", "station-create-submit"]);
   });
 
-  it("styles the menu with theme tokens, 44 px items and a tick for the checked one", () => {
+  it("styles the list with theme tokens, 44 px items and a tick for the current one", () => {
     const css = stripCssComments(cssSource);
     const rule = (selector) => {
       const start = css.indexOf(`${selector} {`);
       expect(start, selector).toBeGreaterThanOrEqual(0);
       return css.slice(start, css.indexOf("}", start));
     };
-    const menu = rule("#station-menu");
-    expect(menu).toMatch(/background: var\(--bg-card\)/);
-    expect(menu).toMatch(/color: var\(--text\)/);
-    expect(menu).toMatch(/border: 1px solid var\(--control-border\)/);
+    const list = rule("#station-list");
+    expect(list).toMatch(/background: var\(--bg-card\)/);
+    expect(list).toMatch(/color: var\(--text\)/);
+    expect(list).toMatch(/border: 1px solid var\(--control-border\)/);
     const item = rule(".station-switcher-item");
     expect(item).toMatch(/min-height: 44px/);
-    expect(css).toMatch(/\.station-switcher-item\[aria-checked="true"\]::before \{ content: "\\2713" \/ ""; \}/);
+    expect(css).toMatch(/\.station-switcher-item\[aria-current="true"\]::before \{ content: "\\2713" \/ ""; \}/);
     // No literal colours anywhere in the switcher's rules.
     const switcherRules = css.slice(css.indexOf(".station-switcher {"), css.indexOf(".station-off-air[hidden]"));
     expect(switcherRules).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(/i);
