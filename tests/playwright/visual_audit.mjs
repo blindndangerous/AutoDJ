@@ -2761,6 +2761,24 @@ async function stationSwitcherProblems(page) {
     };
   });
   const closedOnButton = (now) => !now.open && now.id === "station-button" && now.expanded === "false";
+  // The list collapses, then focus moves to the Station button a frame
+  // later (#576): wait two frames before reading where focus went.
+  const frames = () => page.evaluate(() => new Promise((resolve) => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+  }));
+  // Focus that left the switcher for nothing, the page body, which NVDA
+  // reads as the whole document.  Read and reset.
+  await page.evaluate(() => {
+    window.__switcherLost = 0;
+    document.getElementById("station-switcher").addEventListener("focusout", (event) => {
+      if (!event.relatedTarget) window.__switcherLost += 1;
+    });
+  });
+  const lostFocus = () => page.evaluate(() => {
+    const lost = window.__switcherLost;
+    window.__switcherLost = 0;
+    return lost;
+  });
   const size = await button.boundingBox();
   if (!size || size.height < 44 || size.width < 44) {
     problems.push(`station button ${Math.round(size?.width || 0)}x${Math.round(size?.height || 0)} px, under 44 px`);
@@ -2803,12 +2821,16 @@ async function stationSwitcherProblems(page) {
   await page.keyboard.press("Shift+Tab");
   now = await state();
   if (now.index !== 0 || !now.open) problems.push(`Shift+Tab went to ${now.id || now.station}, not the first station`);
+  await lostFocus();
   await page.keyboard.press("Escape");
+  await frames();
   now = await state();
   if (!closedOnButton(now)) problems.push("Escape did not close the list and return to the button");
+  if (await lostFocus()) problems.push("Escape let focus fall to the page body");
   // Pressed again, the button closes the list.
   await page.keyboard.press("Enter");
   await button.click();
+  await frames();
   now = await state();
   if (!closedOnButton(now)) problems.push("pressing the button again did not close the list");
   // Focus leaving and a click elsewhere leave the list open.
@@ -2823,9 +2845,12 @@ async function stationSwitcherProblems(page) {
   // Choosing the current station only closes the list.
   await page.locator("#station-list button[aria-current='true']").focus();
   const heading = now.heading;
+  await lostFocus();
   await page.keyboard.press("Enter");
+  await frames();
   await settle(page);
   now = await state();
+  if (await lostFocus()) problems.push("choosing the current station let focus fall to the page body");
   if (!closedOnButton(now) || now.heading !== heading) {
     problems.push(`choosing the current station: open ${now.open}, focus on ${now.id || now.station}, heading ${now.heading}`);
   }
@@ -2833,6 +2858,7 @@ async function stationSwitcherProblems(page) {
   for (const [index, station] of stations.entries()) {
     if (index === 0) continue;
     await button.focus();
+    await lostFocus();
     await page.keyboard.press("Enter");
     await page.keyboard.press("Home");
     for (let step = 0; step < index; step += 1) await page.keyboard.press("ArrowDown");
@@ -2848,6 +2874,7 @@ async function stationSwitcherProblems(page) {
     now = await state();
     if (now.heading !== `AutoDJ: ${station.name}`) problems.push(`switch to ${station.slug}: heading ${now.heading}`);
     if (!closedOnButton(now)) problems.push(`switch to ${station.slug}: focus on ${now.id || now.station}, list open ${now.open}`);
+    if (await lostFocus()) problems.push(`switch to ${station.slug} let focus fall to the page body`);
     if (station.state === "stopped" && !now.offAir) problems.push(`${station.slug} off air not shown`);
     const violations = await axeViolations(page);
     if (violations.length) problems.push(`${station.slug}: ${JSON.stringify(violations)}`);

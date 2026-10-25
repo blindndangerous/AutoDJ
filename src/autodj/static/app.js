@@ -423,7 +423,7 @@ function clearStationViews({ keepSettings = false } = {}) {
   _lastWhyKey = "";
   _lastDuration = 0;
   _betweenTracks = false;
-  document.title = pageTitle([]);
+  setPageTitle(pageTitle([]));
 }
 
 function clearProtectedSessionData() {
@@ -656,7 +656,7 @@ function applyState(s, { announceTrack = true } = {}) {
         { mirror: false, dwellMs: 10000 });
     }
     lastTrackKey = trackKey;
-    document.title = pageTitle(titleSegments(s.current_track));
+    setPageTitle(pageTitle(titleSegments(s.current_track)));
     // Reset lyric tracking — new track may have different lyrics
     resetLyricState(_lyricEls);
     // Refresh cover art and full lyric list for the new track
@@ -1705,7 +1705,8 @@ const stationSwitcher = installStationSwitcher({
   wrap: document.getElementById("station-switcher"),
   button: document.getElementById("station-button"),
   list: document.getElementById("station-list"),
-  onChoose: (slug) => void switchStation(slug),
+  // The switcher keeps its list open until the switch renames it.
+  onChoose: (slug) => switchStation(slug),
 });
 
 // Settings > Stations (#233): the list and New station.  A created station
@@ -1731,6 +1732,12 @@ function pageTitle(segments) {
   return parts.join(" - ");
 }
 
+// Written only when it changes: a station switch wrote the same title
+// twice, a title change for a screen reader that changed nothing (#576).
+function setPageTitle(text) {
+  if (document.title !== text) document.title = text;
+}
+
 function setTextIfChanged(element, text) {
   if (element && element.textContent !== text) element.textContent = text;
 }
@@ -1745,7 +1752,7 @@ function renderStationContext() {
   setTextIfChanged(sharedContext, several ? "Shared by all stations" : "");
   setTextIfChanged(btnStationStart, `Start ${name}`);
   if (stationOffAir) setTextIfChanged(offAirText, `${name} is off air.`);
-  if (_lastState) document.title = pageTitle(titleSegments(_lastState.current_track));
+  if (_lastState) setPageTitle(pageTitle(titleSegments(_lastState.current_track)));
   renderListenContext();
 }
 

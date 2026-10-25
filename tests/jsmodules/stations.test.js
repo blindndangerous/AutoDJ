@@ -261,7 +261,12 @@ describe("requests while switching", () => {
 describe("the station switcher (a disclosure, #576)", () => {
   let chosen;
   let switcher;
+  let frames;
+  // Whether onChoose refuses the switch, as a cancelled confirmation does.
+  let refuse;
 
+  // onChoose stands in for the page's switch: a moment later, the station
+  // changes and the page renders the switcher again.
   function setUp(list = [AUTODJ, OWL, OLDIES]) {
     document.body.innerHTML = `
       <button id="before">Before</button>
@@ -273,11 +278,20 @@ describe("the station switcher (a disclosure, #576)", () => {
       <button id="after">After</button>`;
     setKnownStations(list);
     chosen = [];
+    refuse = false;
+    const listElement = document.getElementById("station-list");
+    vi.spyOn(listElement, "addEventListener");
     switcher = installStationSwitcher({
       wrap: document.getElementById("wrap"),
       button: document.getElementById("station-button"),
-      list: document.getElementById("station-list"),
-      onChoose: (slug) => chosen.push(slug),
+      list: listElement,
+      onChoose: async (slug) => {
+        chosen.push(slug);
+        await Promise.resolve();
+        if (refuse) return;
+        selectStation(slug);
+        switcher.render();
+      },
     });
     switcher.render();
   }
@@ -285,8 +299,9 @@ describe("the station switcher (a disclosure, #576)", () => {
   const button = () => document.getElementById("station-button");
   const list = () => document.getElementById("station-list");
   const items = () => [...list().querySelectorAll("button")];
-  const key = (target, name, init = {}) => {
-    const event = new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init });
+  const name = () => button().textContent.replace(/\s+/g, " ").trim();
+  const key = (target, keyName, init = {}) => {
+    const event = new KeyboardEvent("keydown", { key: keyName, bubbles: true, cancelable: true, ...init });
     target.dispatchEvent(event);
     return event;
   };
@@ -294,15 +309,29 @@ describe("the station switcher (a disclosure, #576)", () => {
     button().focus();
     button().click();
   };
+  // Runs the animation frame callbacks queued so far.
+  const nextFrame = () => {
+    const due = frames.splice(0);
+    for (const callback of due) callback?.();
+  };
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
   beforeEach(() => {
+    frames = [];
+    vi.stubGlobal("requestAnimationFrame", (callback) => frames.push(callback));
+    vi.stubGlobal("cancelAnimationFrame", (id) => { frames[id - 1] = null; });
     reset();
     setUp();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   it("is hidden with one station and names the current one in the button", () => {
     expect(document.getElementById("wrap").hidden).toBe(false);
-    expect(button().textContent.replace(/\s+/g, " ").trim()).toBe("Station: AutoDJ");
+    expect(name()).toBe("Station: AutoDJ");
     setUp([AUTODJ]);
     expect(document.getElementById("wrap").hidden).toBe(true);
   });
@@ -325,6 +354,13 @@ describe("the station switcher (a disclosure, #576)", () => {
     expect(document.querySelector('[role="menu"], [role="menuitemradio"], [aria-haspopup]')).toBeNull();
   });
 
+  it("puts no click listener on the list, so it is not read as clickable", () => {
+    const types = list().addEventListener.mock.calls.map(([type]) => type);
+    expect(types).not.toContain("click");
+    expect(types).not.toContain("mousedown");
+    expect(types).not.toContain("mouseup");
+  });
+
   it("opens on the current station, setting aria-expanded before focus moves", () => {
     selectStation("nightowl");
     switcher.render();
@@ -333,6 +369,8 @@ describe("the station switcher (a disclosure, #576)", () => {
       expandedOnFocus = button().getAttribute("aria-expanded");
     });
     open();
+    // No frame delay on the way in.
+    expect(frames).toEqual([]);
     expect(list().hidden).toBe(false);
     expect(button().getAttribute("aria-expanded")).toBe("true");
     expect(expandedOnFocus).toBe("true");
@@ -358,46 +396,94 @@ describe("the station switcher (a disclosure, #576)", () => {
 
   it("has no first-letter jump: letters and Tab are left to the page", () => {
     open();
-    for (const name of ["n", "o", "Tab"]) {
-      const event = key(items()[0], name);
-      expect(event.defaultPrevented, name).toBe(false);
-      expect(document.activeElement, name).toBe(items()[0]);
+    for (const keyName of ["n", "o", "Tab"]) {
+      const event = key(items()[0], keyName);
+      expect(event.defaultPrevented, keyName).toBe(false);
+      expect(document.activeElement, keyName).toBe(items()[0]);
     }
     const shifted = key(items()[0], "Tab", { shiftKey: true });
     expect(shifted.defaultPrevented).toBe(false);
     expect(list().hidden).toBe(false);
   });
 
-  it("chooses with a press: switches, closes and puts focus on the button", () => {
+  it("switches, then collapses with the new name, then moves focus a frame later", async () => {
     open();
     key(items()[0], "ArrowDown");
-    document.activeElement.click();
+    const owl = document.activeElement;
+    let onFocus = null;
+    button().addEventListener("focus", () => {
+      onFocus = { expanded: button().getAttribute("aria-expanded"), name: name(), hidden: list().hidden };
+    });
+    owl.click();
+    // Under way: the list stays open, with focus on the station chosen.
     expect(chosen).toEqual(["nightowl"]);
-    expect(list().hidden).toBe(true);
+    expect(button().getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(owl);
+    await settle();
+    // Switched: the button is renamed and collapsed, focus not yet moved.
+    expect(name()).toBe("Station: Night Owl Radio");
     expect(button().getAttribute("aria-expanded")).toBe("false");
+    expect(list().hidden).toBe(false);
+    expect(document.activeElement).toBe(owl);
+    nextFrame();
+    expect(list().hidden).toBe(true);
+    expect(document.activeElement).toBe(button());
+    // Focus arrives on a collapsed button that already has its new name.
+    expect(onFocus).toEqual({ expanded: "false", name: "Station: Night Owl Radio", hidden: true });
+  });
+
+  it("leaves the list open on the station when the switch does not happen", async () => {
+    refuse = true;
+    open();
+    key(items()[0], "ArrowDown");
+    const owl = document.activeElement;
+    owl.click();
+    // A second press while the first is under way does nothing.
+    owl.click();
+    await settle();
+    nextFrame();
+    expect(chosen).toEqual(["nightowl"]);
+    expect(list().hidden).toBe(false);
+    expect(button().getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(owl);
+    expect(name()).toBe("Station: AutoDJ");
+    // It can be chosen again.
+    refuse = false;
+    owl.click();
+    await settle();
+    nextFrame();
+    expect(chosen).toEqual(["nightowl", "nightowl"]);
     expect(document.activeElement).toBe(button());
   });
 
-  it("only closes when the current station is chosen", () => {
+  it("only closes when the current station is chosen", async () => {
     open();
     items()[0].click();
+    expect(button().getAttribute("aria-expanded")).toBe("false");
+    nextFrame();
+    await settle();
     expect(chosen).toEqual([]);
     expect(list().hidden).toBe(true);
-    expect(button().getAttribute("aria-expanded")).toBe("false");
     expect(document.activeElement).toBe(button());
   });
 
-  it("closes on Escape with focus back on the button, from a station or the button", () => {
+  it("closes on Escape, moving focus to the button a frame after it collapses", () => {
     open();
     key(items()[0], "ArrowDown");
     const escape = key(items()[1], "Escape");
     expect(escape.defaultPrevented).toBe(true);
-    expect(list().hidden).toBe(true);
     expect(button().getAttribute("aria-expanded")).toBe("false");
+    // Focus stays in the list, still shown, until the next frame.
+    expect(document.activeElement).toBe(items()[1]);
+    expect(list().hidden).toBe(false);
+    nextFrame();
+    expect(list().hidden).toBe(true);
     expect(document.activeElement).toBe(button());
+    // From the Station button itself too.
     open();
     button().focus();
     key(button(), "Escape");
+    nextFrame();
     expect(list().hidden).toBe(true);
     expect(document.activeElement).toBe(button());
     // Closed, Escape is left to the page.
@@ -405,11 +491,23 @@ describe("the station switcher (a disclosure, #576)", () => {
     expect(chosen).toEqual([]);
   });
 
+  it("stays open when reopened before the frame that would hide it", () => {
+    open();
+    key(items()[0], "Escape");
+    open();
+    nextFrame();
+    expect(list().hidden).toBe(false);
+    expect(button().getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(items()[0]);
+  });
+
   it("closes when the button is pressed again, and on nothing else", () => {
     open();
+    button().focus();
     button().click();
-    expect(list().hidden).toBe(true);
     expect(button().getAttribute("aria-expanded")).toBe("false");
+    nextFrame();
+    expect(list().hidden).toBe(true);
     expect(document.activeElement).toBe(button());
     open();
     // Focus leaving and a click elsewhere leave it open.
@@ -419,6 +517,7 @@ describe("the station switcher (a disclosure, #576)", () => {
     after.dispatchEvent(new Event("pointerdown", { bubbles: true }));
     after.click();
     document.getElementById("before").click();
+    nextFrame();
     expect(list().hidden).toBe(false);
     expect(button().getAttribute("aria-expanded")).toBe("true");
     expect(chosen).toEqual([]);
@@ -434,10 +533,12 @@ describe("the station switcher (a disclosure, #576)", () => {
     expect(document.activeElement).toBe(owl);
     expect(owl.textContent).toBe("Night Owl Radio, on air, 5 listeners");
     expect(items()[2].textContent).toBe("Oldies, on air, 2 listeners");
+    // A switch made elsewhere (Shift+]) moves the current mark, not focus.
     selectStation("nightowl");
     switcher.render();
     expect(document.activeElement).toBe(owl);
-    expect(button().textContent).toContain("Night Owl Radio");
+    expect(list().hidden).toBe(false);
+    expect(name()).toBe("Station: Night Owl Radio");
     expect(items().map((item) => item.getAttribute("aria-current"))).toEqual([null, "true", null]);
   });
 

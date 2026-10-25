@@ -72,8 +72,10 @@ page controls has a tick and is read as current.
 
 - **Keyboard:** Enter or Space on the Station button shows the list and moves focus to the
   current station. Up and Down Arrow, Tab and Shift+Tab move through the stations, and Home and
-  End go to the first and last. Enter or Space switches to the station under focus; choosing the
-  current station only closes the list. Escape closes the list without switching, and so does
+  End go to the first and last. Enter or Space switches to the station under focus, and the list
+  closes once the switch is made; choosing the current station only closes the list. If the
+  switch does not happen, for example when you answer No to leaving the station, focus stays on
+  that station in the open list. Escape closes the list without switching, and so does
   pressing the Station button again. All three put focus back on the Station button. The list
   stays open when focus moves on or you click elsewhere. Moving through the list never switches;
   only pressing a station button does. Letters are the page's shortcuts, as on any button.
@@ -88,8 +90,9 @@ page controls has a tick and is read as current.
   song points, Stereo Tool presets and paired devices are shared by all stations.
 - **How it says so:** the heading becomes "AutoDJ: Night Owl Radio", the browser tab's title
   ends with "Night Owl Radio - AutoDJ", the page's main landmark is named after the station, and
-  each station tab's name ends with it. The switch is announced once, for example "Now
-  controlling Night Owl Radio. On air, 3 listeners. Playing Artist – Title." A screen reader says
+  each station tab's name ends with it. The switch is announced once, for example "Night Owl
+  Radio. Playing Artist — Title. On air, 3 listeners.", or "Now controlling Oldies Hour." for a
+  station that is off air. A screen reader says
   "On Night Owl Radio" after each control that changes what is on air (Play or Pause, Skip,
   queue changes, carts, Run now, profile Apply, listener Disconnect and Ban, the stream settings
   and recording) and "Shared by all stations" after the Library tools tab and song points.

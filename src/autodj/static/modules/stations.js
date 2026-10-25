@@ -344,13 +344,20 @@ export function installStationSwitcher({ wrap, button, list, onChoose }) {
   if (!wrap || !button || !list) return null;
   const doc = button.ownerDocument;
   let items = [];
+  let expanded = false;
+  let frame = 0;
+  // The station chosen while its switch is under way: the list stays open,
+  // with focus on it, until the switch has renamed the Station button.
+  let choosing = null;
 
   function isOpen() {
-    return !list.hidden;
+    return expanded;
   }
 
   // Each station is an <li> holding its <button>, kept and updated in
-  // place, so a push while the list is open never moves focus.
+  // place, so a push while the list is open never moves focus.  Each
+  // button has its own click listener: one on the list made NVDA call the
+  // list "clickable".
   function render() {
     const stations = knownStations();
     wrap.hidden = stations.length < 2;
@@ -368,6 +375,8 @@ export function installStationSwitcher({ wrap, button, list, onChoose }) {
         item.type = "button";
         item.dataset.station = station.slug;
         item.className = "station-switcher-item";
+        const chosen = item;
+        item.addEventListener("click", () => choose(chosen));
         const row = doc.createElement("li");
         row.append(item);
       }
@@ -386,10 +395,19 @@ export function installStationSwitcher({ wrap, button, list, onChoose }) {
     rows.forEach((row, index) => {
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
     });
+    if (wrap.hidden) {
+      close(false);
+      return;
+    }
+    // The switch has happened, and the Station button already has its
+    // new name: now the list closes.
+    if (choosing && choosing === currentStation()) {
+      close(true);
+      return;
+    }
     if (isOpen() && focusedSlug && !items.some((item) => item.dataset.station === focusedSlug)) {
       focusItem(currentIndex());
     }
-    if (wrap.hidden && isOpen()) close(false);
   }
 
   function currentIndex() {
@@ -403,27 +421,68 @@ export function installStationSwitcher({ wrap, button, list, onChoose }) {
     items[wrapped].focus();
   }
 
+  function cancelFrame() {
+    if (frame) globalThis.cancelAnimationFrame(frame);
+    frame = 0;
+  }
+
   // The list shows and aria-expanded changes before focus moves, all in
   // one task, with no frame delay: there is no popup for NVDA to race.
   function open() {
     if (wrap.hidden || !items.length) return;
+    cancelFrame();
+    expanded = true;
     list.hidden = false;
     button.setAttribute("aria-expanded", "true");
     focusItem(currentIndex());
   }
 
+  // Collapsed first, focus on the Station button a frame later: moved in
+  // the same task, focus reached NVDA before the state did, and it said
+  // "expanded" on a collapsed button.  The list hides in that later frame
+  // too, as focus leaves it, so focus never falls to the page body, which
+  // NVDA reads as the whole document.
   function close(returnFocus = true) {
-    if (!isOpen()) return;
-    list.hidden = true;
+    choosing = null;
+    if (!expanded) return;
+    expanded = false;
     button.setAttribute("aria-expanded", "false");
-    if (returnFocus) button.focus();
+    cancelFrame();
+    if (!returnFocus) {
+      list.hidden = true;
+      return;
+    }
+    frame = globalThis.requestAnimationFrame(() => {
+      frame = 0;
+      if (expanded) return;
+      const active = doc.activeElement;
+      const returning = !active || active === doc.body || active === button || list.contains(active);
+      list.hidden = true;
+      if (returning && !doc.querySelector("dialog[open]")) button.focus();
+    });
   }
 
-  // The current station only closes the list; another one switches.
+  // The current station only closes the list.  Another one starts the
+  // switch, and the list closes once the switch has renamed the Station
+  // button (in render).  A switch that does not happen, such as one
+  // cancelled in a confirmation, leaves the list open on that station.
   function choose(item) {
     const slug = item?.dataset?.station;
-    close(true);
-    if (slug && slug !== currentStation()) onChoose(slug);
+    if (!slug || !expanded || choosing) return;
+    if (slug === currentStation()) {
+      close(true);
+      return;
+    }
+    choosing = slug;
+    let switching = null;
+    try {
+      switching = onChoose(slug);
+    } catch (_) {
+      switching = null;
+    }
+    Promise.resolve(switching).catch(() => {}).then(() => {
+      if (choosing === slug) choosing = null;
+    });
   }
 
   button.addEventListener("click", () => {
@@ -459,10 +518,6 @@ export function installStationSwitcher({ wrap, button, list, onChoose }) {
     }
     event.preventDefault();
     event.stopPropagation();
-  });
-  list.addEventListener("click", (event) => {
-    const item = event.target.closest?.("button[data-station]");
-    if (item && list.contains(item)) choose(item);
   });
 
   return { render, close, isOpen, focus: () => button.focus() };
