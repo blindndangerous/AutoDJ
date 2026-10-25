@@ -63,7 +63,6 @@ from pydantic import (
 )
 
 from autodj.beets_query import FIRST_RELEASE_YEAR, Columns, Query, QueryError, parse_query
-from autodj.beets_query import first_release_year as _first_release_year
 from autodj.clock_conditions import relative_date_now, uses_relative_dates
 from autodj.date_repeat import DateRepeat, month_day, weekday_name
 from autodj.date_repeat import contains as dates_contain
@@ -670,11 +669,6 @@ def summary(resolution: Resolution) -> str:
     return "; ".join(parts)
 
 
-def library_item(entry: Any) -> dict[str, Any]:
-    """The fields AutoDJ's own library holds for *entry*, as a query reads them."""
-    return {name: getattr(entry, name, None) for name in LIBRARY_FIELDS}
-
-
 @dataclass(frozen=True)
 class BeetsSource:
     """The live beets database, and the folder its relative paths start in."""
@@ -812,22 +806,13 @@ def _unknown_field_error(query: Query, known: AbstractSet[str], beets: bool) -> 
     return f"No song in {where} has a field named {unknown[0]}. Check the spelling; {hint}"
 
 
-def resolve_query(query: Query, items: Sequence[tuple[Any, Mapping[str, Any]]]) -> Resolution:
-    """The songs among *items* (``(entry, fields)`` pairs) that *query* matches."""
-    reads_year = query.uses_first_release_year()
-    paths: set[str] = set()
-    fallback = 0
-    for entry, item in items:
-        if not query.matches(item):
-            continue
-        paths.add(entry.path)
-        if reads_year and _first_release_year(item)[1]:
-            fallback += 1
-    return Resolution(frozenset(paths), fallback=fallback)
-
-
 def resolve_columns(query: Query, songs: Sequence[Any], columns: Columns) -> Resolution:
-    """Like :func:`resolve_query`, matching whole *columns* of *songs* at once (#584)."""
+    """The songs among *songs* that *query* matches, by whole *columns* at once (#584).
+
+    The same songs as :meth:`Query.matches` on each song's fields, and the
+    songs whose first-release year fell back to ``year`` when the query
+    reads ``original_year``.
+    """
     selected = query.select(columns)
     fallback = int((selected & columns.fell_back()).sum()) if query.uses_first_release_year() else 0
     return Resolution(

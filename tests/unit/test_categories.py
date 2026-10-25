@@ -694,15 +694,22 @@ def test_matching_whole_columns_gives_the_same_songs_as_matching_each_song():
     """ADR-0009-10. Column matching agrees with Query.matches on varied library and Beets data."""
     import random
 
-    from autodj.beets_query import parse_query
+    from autodj.beets_query import first_release_year, parse_query
     from autodj.catalog import normalize_path
-    from autodj.categories import (
-        LIBRARY_FIELDS,
-        _Sources,
-        library_item,
-        resolve_columns,
-        resolve_query,
-    )
+    from autodj.categories import LIBRARY_FIELDS, Resolution, _Sources, resolve_columns
+
+    def library_item(entry):
+        return {name: getattr(entry, name, None) for name in LIBRARY_FIELDS}
+
+    def resolve_query(query, items):
+        # Song by song, as the categories were worked out before #584.
+        matched = [(entry, item) for entry, item in items if query.matches(item)]
+        fallback = (
+            sum(first_release_year(item)[1] for _entry, item in matched)
+            if query.uses_first_release_year()
+            else 0
+        )
+        return Resolution(frozenset(entry.path for entry, _item in matched), fallback=fallback)
 
     rng = random.Random(584)
     texts = ["Rock", "rock", "ROCK and Roll", "Pop", "Christmas", "", "  ", "Ünïcode Straße"]
