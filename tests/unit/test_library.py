@@ -4034,6 +4034,41 @@ def test_shutdown_stops_the_scan_before_the_dj_meta_cache_closes(manager_factory
     assert manager._thread is not None and not manager._thread.is_alive()
 
 
+def test_the_library_tick_imports_the_player_off_the_event_loop(monkeypatch):
+    """A first import of the player takes seconds: on the loop it stalls it (#580)."""
+    import asyncio
+    import builtins
+    import contextlib
+    from types import SimpleNamespace
+
+    import autodj.player  # noqa: F401 -- warm, so the tick is quick; the spy still sees it
+    from autodj.stations import SharedLibrary
+
+    real_import = builtins.__import__
+    importers = []
+
+    def spy(name, *args, **kwargs):
+        if name == "autodj.player":
+            importers.append(threading.current_thread())
+        return real_import(name, *args, **kwargs)
+
+    ticked = threading.Event()
+    library = SimpleNamespace(tick=ticked.set)
+
+    async def tick_once() -> None:
+        shared = SharedLibrary(library, SimpleNamespace(all=lambda: []))
+        monkeypatch.setattr(builtins, "__import__", spy)
+        task = asyncio.create_task(shared._tick())
+        assert await asyncio.to_thread(ticked.wait, 5)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(tick_once())
+    assert importers
+    assert threading.main_thread() not in importers
+
+
 def test_stop_scan_is_bounded_for_a_scan_that_has_not_stopped(manager_factory, monkeypatch):
     """ADR-0008-31. Waiting for the scan to stop has a time limit, and no scan starts after."""
     manager = manager_factory()
