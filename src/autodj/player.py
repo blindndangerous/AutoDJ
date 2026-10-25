@@ -4978,8 +4978,12 @@ class Player:
         self._remember_upcoming(rendered)
         if entry is not getattr(self, "_restored_first", None):
             self._restored_first = None
-        elif rendered.next_entry is None:
-            self.refresh_playout()  # Pick its successor now, while it plays.
+        elif rendered.next_entry is None and self.live_mixing:
+            # Pick its successor now, while it plays: the live queue refresh
+            # runs on the playout worker, never on the bus.
+            self._live_queue_dirty = True
+            self._live_queue_revision += 1
+            self._playout.request_plan()
         self._current_sr = SAMPLE_RATE
         self._playback_pos[0] = rendered.start_offset
         self._playback_len = rendered.start_offset + round(
