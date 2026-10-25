@@ -60,6 +60,9 @@ logger = logging.getLogger(__name__)
 
 MUSIC_FADE_DROP_DB_KEY = "music_fade_drop_db"
 DEFAULT_MUSIC_FADE_DROP_DB = 10
+#: A file changed this recently has its fingerprint read even when its size
+#: and time match, since a coarse clock (FAT keeps 2 seconds) may not have moved.
+_MTIME_BLUR_NS = 2_000_000_000
 
 
 def music_fade_drop_db(catalog: LibraryCatalog) -> int:
@@ -969,6 +972,27 @@ class LibraryManager:
                     found.setdefault(normalized, (source["kind"], path))
         return list(found.values())
 
+    @staticmethod
+    def _stat_unchanged(record: dict[str, Any], path: Path) -> bool:
+        """Whether the size and modification time alone show *path* is unchanged.
+
+        They stand for the fingerprint as they do for the loudness stamp, so a
+        rescan opens no unchanged file. A record without a stored size,
+        fingerprint or time, or a file changed in the last
+        :data:`_MTIME_BLUR_NS`, still has its fingerprint read: its time may
+        not have moved yet.
+        """
+        if not (record["size"] and record["fingerprint"] and record["mtime_ns"]):
+            return False
+        try:
+            stat = path.stat()
+        except OSError:
+            return False
+        return (stat.st_size, stat.st_mtime_ns) == (
+            record["size"],
+            record["mtime_ns"],
+        ) and stat.st_mtime_ns < time.time_ns() - _MTIME_BLUR_NS
+
     def _same_identity(self, record: dict[str, Any], path: Path) -> bool:
         size, fingerprint = file_fingerprint(path)
         return bool(
@@ -1374,13 +1398,20 @@ class LibraryManager:
         old = None
         try:
             old = self.catalog.record_for_path(path)
-            same_identity = old is not None and self._same_identity(old, path)
+            # Re-reading tags opens every file anyway, so it checks the bytes too.
+            stat_unchanged = (
+                old is not None and not override_tags and self._stat_unchanged(old, path)
+            )
+            same_identity = old is not None and (stat_unchanged or self._same_identity(old, path))
             unchanged = same_identity and old is not None and old["kind"] == kind
             if old is not None and not same_identity and scan_identity is None:
                 self._tally("changed")
                 self._reset_dj_cache(path)
             mtime_changed = bool(
-                unchanged and old is not None and path.stat().st_mtime_ns != old["mtime_ns"]
+                unchanged
+                and not stat_unchanged
+                and old is not None
+                and path.stat().st_mtime_ns != old["mtime_ns"]
             )
             if (override_tags or mtime_changed) and unchanged:
                 from autodj.audio_meta import read_file_tags

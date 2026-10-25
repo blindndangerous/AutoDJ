@@ -94,6 +94,15 @@ scans publish the new identity. Edits made while that new scan is pending surviv
 completion. Unchanged file identities retain existing manual cues and legacy suggestions.
 This clarifies cache coherence; the record retains its Proposed status.
 
+## Clarification, 2026-10-24: a matching size and time stand for the fingerprint
+
+[Issue #578](https://github.com/blindndangerous/AutoDJ/issues/578): a rescan reads a file's
+fingerprint only when its size or modification time differs from the record, the record has
+no stored time, the time is too recent to trust, or the rescan overrides tags. New bytes under
+the same size and time are seen at the next change of either. Contract `ADR-0008-34` in
+[ADR 8](0008-bound-background-work-outside-playout.md) records the rule; the record retains
+its Proposed status.
+
 ## Verification
 
 Run the following checks for affected changes and record results and platform
