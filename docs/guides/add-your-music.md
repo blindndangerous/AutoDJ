@@ -130,8 +130,10 @@ back without analysing them again.
 
 - **Rescan** looks for new, changed and moved files in every folder. Files you moved inside your
   registered folders keep their analysis and cue points. Each station keeps its own play history.
+  A file counts as changed when its size or modification time changes.
 - **Override with ID3 tags**, ticked before **Rescan**, reads the tags of every file again, not
   only files that changed. BPM and key values you set by hand, and your cue points, are kept.
+  It also finds audio changed by a tool that kept the file's size and time.
 - **Automatic rescan every** runs Rescan on a timer, counted from the end of the last scan. Set
   **Hours** and **Minutes**, then press **Save**. The shortest interval is 5 minutes, and 0 hours
   and 0 minutes turns it off. It is off by default.

@@ -111,6 +111,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0008-31` | Shutdown tells the library scan to stop when it begins; listing folders and the DJ backlog stop at the request; neither a stopping scan nor the tick reloads the catalog, a scan cut short is logged as stopped, and a closing library starts no scan or analysis job. The cache closes only after the scan ends within the shutdown timeout; a scan still running keeps the cache and the library open, logs it and still saves buffered plays. Independent workers stop concurrently within their own timeouts, and each shutdown step logs its duration. | automated | `tests/unit/test_library.py::test_shutdown_stops_the_scan_before_the_dj_meta_cache_closes`; `tests/unit/test_library.py::test_stop_scan_is_bounded_for_a_scan_that_has_not_stopped`; `tests/unit/test_library.py::test_discovery_stops_between_folders_once_the_library_closes`; `tests/unit/test_library.py::test_the_dj_backlog_stops_reading_the_cache_once_the_library_closes`; `tests/unit/test_library.py::test_a_closing_library_starts_no_analysis_job`; `tests/unit/test_library.py::test_the_tick_does_not_reload_a_library_that_is_closing`; `tests/integration/test_stations.py::test_a_scan_that_will_not_stop_keeps_the_cache_and_library_open`; `tests/integration/test_stations.py::test_each_shutdown_step_logs_how_long_it_took`; `tests/integration/test_server.py::TestLifespan::test_independent_shutdown_steps_stop_together_and_are_timed` |
 | `ADR-0008-32` | A prepared worker that cannot reach the server for its idle release, or 10 minutes without one, frees the model and runs its after-command during the retries, logs it once and prepares again, running its before-command, for the next songs, including a song whose download outlasted the outage. | automated | `tests/unit/test_worker.py::test_an_unreachable_server_releases_the_model_and_songs_prepare_it_again`; `tests/unit/test_worker.py::test_an_outage_during_a_download_releases_and_reloads_before_analysis`; `tests/unit/test_worker.py::test_the_after_command_runs_while_the_server_is_down_and_before_runs_again` |
 | `ADR-0008-33` | The DJ backlog reads only stored paths and analysed flags, keeps no song's beats or cues in memory, and agrees with the cache's per-song answer. The server freezes the objects alive once the library and stations have loaded, and again after each refresh that reloads the entries; replaced entries are still freed by reference counting, and the young generations are collected first, so repeated reloads keep the frozen objects flat. | automated | `tests/unit/test_dj_meta.py::TestAnalysedAmong::test_agrees_with_get_and_keeps_no_rows`; `tests/unit/test_library.py::test_the_dj_backlog_finds_unanalysed_songs_without_loading_any_beats`; `tests/unit/test_library.py::test_a_refresh_freezes_the_new_entries_and_frees_the_old_ones`; `tests/unit/test_library.py::test_repeated_refreshes_keep_the_frozen_objects_flat` |
+| `ADR-0008-34` | A rescan opens no file whose size and modification time match its catalog record. A changed size or time, a record without a stored time, a time within 2 seconds of the clock or ahead of it, and a rescan with Override with ID3 tags read the fingerprint; moves still read only the new paths. New bytes under the old size and time wait for the next change of either. | automated | `tests/unit/test_library.py::test_rescan_opens_no_unchanged_file`; `tests/unit/test_library.py::test_rescan_reads_a_file_whose_size_or_time_changed`; `tests/unit/test_library.py::test_same_size_and_time_still_read_when_the_time_cannot_vouch`; `tests/unit/test_library.py::test_same_size_and_time_replacement_waits_for_a_new_time`; `tests/unit/test_library.py::test_moved_file_is_rekeyed_without_opening_unchanged_files` |
 
 ## Verification
 
@@ -534,3 +535,26 @@ benchmark the worst delay fell to 25 to 50 ms during a scan and to about 20 ms w
 arrived, and memory grew by 0.65 GB. A reload still costs about a second of work per result. These are measurements
 on one machine, not a latency guarantee. Running the scan in a child process remains an option if
 the field shows further stalls. Contract ADR-0008-33 records this; the ADR remains Proposed.
+
+## Amendment clarification 2026-10-24: Rescanning without reading unchanged files
+
+Issue #578: every rescan read the 64 KiB fingerprint of every file that already had a catalog
+record, about 5 GB on a library of 80,000 songs, which is slow over a network share. The
+fingerprint was added so that moved files keep their analysis; the stored modification time
+was added later so that a rescan notices tags edited by another program. A tag edit inside
+existing padding does not change the fingerprint, so the time was already what caught it.
+
+A rescan now compares the file's size and modification time with the record first, as the
+stored loudness measurement already does, and reads the fingerprint only when either differs,
+when the record has no stored time (a record from before times were kept), or when the time is
+within 2 seconds of the clock or ahead of it, since a coarse file system clock (FAT keeps
+2 seconds) or a share whose clock runs fast may not show a change yet. A rescan with
+**Override with ID3 tags** opens every file anyway, so it compares the fingerprint too. Move
+detection is unchanged: it reads only new paths whose size matches a missing record.
+
+One case is given up: different bytes in the middle of a file under the same size and the same
+modification time, such as a gain tool that rewrites audio frames and restores the time. Such a
+file is analysed again at its next size or time change, or on a rescan with Override with ID3
+tags. A time that moves without a change, such as after a remount, costs only the old read. In a
+synthetic benchmark the rescan of unchanged files read no fingerprints instead of one per file.
+Contract ADR-0008-34 records this; the ADR remains Proposed.

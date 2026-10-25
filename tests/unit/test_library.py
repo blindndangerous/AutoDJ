@@ -2,6 +2,7 @@ import gc
 import logging
 import os
 import threading
+import time
 import weakref
 from contextlib import contextmanager
 from pathlib import Path
@@ -3048,6 +3049,168 @@ def test_rescan_reads_external_tag_edit_with_unchanged_size(manager_factory, tmp
     assert after_record["energy"] == before_record["energy"]
     assert cache.get(str(song)).cues == [cue]
     assert cache.get(str(song)).beats == [0.3]
+
+
+def _date(*paths: Path, offset_s: int = -60) -> int:
+    """Set the files' modification time *offset_s* from now and return it."""
+    when = time.time_ns() + offset_s * 1_000_000_000
+    for path in paths:
+        os.utime(path, ns=(when, when))
+    return when
+
+
+def _rewrite_middle_keeping_time(path: Path) -> None:
+    """Change the fingerprinted bytes, keeping the size and modification time."""
+    stat = path.stat()
+    with path.open("r+b") as audio:
+        audio.seek(stat.st_size // 2)
+        byte = audio.read(1)
+        audio.seek(stat.st_size // 2)
+        audio.write(bytes([byte[0] ^ 0xFF]))
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert (path.stat().st_size, path.stat().st_mtime_ns) == (stat.st_size, stat.st_mtime_ns)
+
+
+@contextmanager
+def _audio_opens(monkeypatch):
+    """Record each audio file opened through Python while the block runs."""
+    import builtins
+    import io
+
+    real_open = io.open
+    opened: list[str] = []
+
+    def spy(file, *args, **kwargs):
+        if isinstance(file, str | os.PathLike) and Path(file).suffix == ".flac":
+            opened.append(_path(file))
+        return real_open(file, *args, **kwargs)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(io, "open", spy)
+        patched.setattr(builtins, "open", spy)
+        yield opened
+
+
+def _scanned_library(manager_factory, monkeypatch, count: int = 3):
+    manager = manager_factory()
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+    songs = [manager.cfg.library.music_dir / f"song-{i}.flac" for i in range(count)]
+    for i, song in enumerate(songs):
+        sf.write(song, np.ones((4000, 2)) * 0.01 * (i + 1), 22050)
+    liner = manager.cfg.index.stations_dir / "default" / "liners" / "liner.flac"
+    sf.write(liner, np.ones((4000, 2)) * 0.1, 22050)
+    _date(*songs, liner)
+    with patch("autodj.library.analyze_basic", side_effect=fake_basic):
+        manager.scan()
+    return manager, songs, liner
+
+
+def test_rescan_opens_no_unchanged_file(manager_factory, monkeypatch):
+    """ADR-0008-34. A matching size and time stand for the fingerprint on rescan."""
+    manager, songs, liner = _scanned_library(manager_factory, monkeypatch)
+    fingerprint = Mock(wraps=file_fingerprint)
+    monkeypatch.setattr("autodj.library.file_fingerprint", fingerprint)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic) as decode,
+        _audio_opens(monkeypatch) as opened,
+    ):
+        manager.scan()
+    decode.assert_not_called()
+    fingerprint.assert_not_called()
+    assert opened == []
+    assert {entry.path for entry in manager.entries_snapshot()} == {_path(s) for s in songs}
+    assert manager.catalog.record_for_path(liner)["kind"] == "liner"
+
+
+@pytest.mark.parametrize("change", ["size", "time", "bytes_and_time"])
+def test_rescan_reads_a_file_whose_size_or_time_changed(manager_factory, monkeypatch, change):
+    """ADR-0008-34. A changed size or time still has its fingerprint read and compared."""
+    manager, songs, _liner = _scanned_library(manager_factory, monkeypatch)
+    song = songs[0]
+    before = manager.catalog.record_for_path(song)
+    if change == "size":
+        with song.open("ab") as audio:
+            audio.write(b"\0" * 64)
+    elif change == "bytes_and_time":
+        _rewrite_middle_keeping_time(song)
+    if change != "size":
+        _date(song, offset_s=-30)
+    fingerprint = Mock(wraps=file_fingerprint)
+    monkeypatch.setattr("autodj.library.file_fingerprint", fingerprint)
+    with patch("autodj.library.analyze_basic", side_effect=fake_basic) as decode:
+        manager.scan()
+    assert _path(song) in {_path(call.args[0]) for call in fingerprint.call_args_list}
+    assert {_path(call.args[0]) for call in fingerprint.call_args_list} == {_path(song)}
+    after = manager.catalog.record_for_path(song)
+    assert (after["size"], after["fingerprint"]) == file_fingerprint(song)
+    assert after["mtime_ns"] == song.stat().st_mtime_ns
+    # Same bytes at a new time are retagged; new bytes are analysed again.
+    assert (decode.call_count == 1) is (change != "time")
+    assert (after["fingerprint"] == before["fingerprint"]) is (change == "time")
+
+
+@pytest.mark.parametrize("case", ["no_stored_time", "time_ahead_of_clock", "override_tags"])
+def test_same_size_and_time_still_read_when_the_time_cannot_vouch(
+    manager_factory, monkeypatch, case
+):
+    """ADR-0008-34. Old records, recent or future times and Override with ID3 tags check bytes."""
+    manager, songs, _liner = _scanned_library(manager_factory, monkeypatch)
+    song = songs[0]
+    if case == "no_stored_time":
+        # A record from before modification times were stored.
+        manager.catalog._db().execute(
+            "UPDATE catalog_entries SET mtime_ns=0 WHERE path=?", (_path(song),)
+        )
+        manager.catalog._db().commit()
+    elif case == "time_ahead_of_clock":
+        # A share whose clock runs fast; a time within 2 seconds is treated alike.
+        when = _date(song, offset_s=60)
+        manager.catalog._db().execute(
+            "UPDATE catalog_entries SET mtime_ns=? WHERE path=?", (when, _path(song))
+        )
+        manager.catalog._db().commit()
+    _rewrite_middle_keeping_time(song)
+    with patch("autodj.library.analyze_basic", side_effect=fake_basic) as decode:
+        manager.scan(override_tags=case == "override_tags")
+    record = manager.catalog.record_for_path(song)
+    assert (record["size"], record["fingerprint"]) == file_fingerprint(song)
+    assert decode.call_count == 1
+
+
+def test_same_size_and_time_replacement_waits_for_a_new_time(manager_factory, monkeypatch):
+    """ADR-0008-34. The accepted gap: new bytes under the old size and time are not read."""
+    manager, songs, _liner = _scanned_library(manager_factory, monkeypatch)
+    song = songs[0]
+    before = manager.catalog.record_for_path(song)
+    _rewrite_middle_keeping_time(song)
+    with patch("autodj.library.analyze_basic", side_effect=fake_basic) as decode:
+        manager.scan()
+    decode.assert_not_called()
+    assert manager.catalog.record_for_path(song)["fingerprint"] == before["fingerprint"]
+    _date(song, offset_s=-30)
+    with patch("autodj.library.analyze_basic", side_effect=fake_basic) as decode:
+        manager.scan()
+    assert manager.catalog.record_for_path(song)["fingerprint"] == file_fingerprint(song)[1]
+    assert decode.call_count == 1
+
+
+def test_moved_file_is_rekeyed_without_opening_unchanged_files(manager_factory, monkeypatch):
+    """ADR-0008-34. Move detection still reads only the new path's fingerprint."""
+    manager, songs, _liner = _scanned_library(manager_factory, monkeypatch)
+    record_id = manager.catalog.record_for_path(songs[0])["id"]
+    moved = songs[0].parent / "nested" / "moved.flac"
+    moved.parent.mkdir()
+    songs[0].rename(moved)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic) as decode,
+        _audio_opens(monkeypatch) as opened,
+    ):
+        manager.scan()
+    decode.assert_not_called()
+    assert manager.catalog.record_for_path(moved)["id"] == record_id
+    assert manager.catalog.record_for_path(songs[0]) is None
+    assert set(opened) == {_path(moved)}
 
 
 def test_nonfinite_bpm_tags_do_not_drop_tracks_or_break_browse(manager_factory, tmp_path):
