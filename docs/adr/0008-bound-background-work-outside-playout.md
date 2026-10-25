@@ -614,6 +614,11 @@ are freed by reference counting when it ends. Reference cycles that outlive the 
 are rare, so the library tick makes the full pass itself every 10 minutes, and only while no scan,
 reload, category build or Beets read runs, when it walks only the objects that outlived their work.
 A scan measuring loudness, one file at a time and perhaps for hours, does not hold it up.
-In the benchmark the longest gap between two blocks of a bus fell from 104 to 226 ms to 22 to
-38 ms during those phases. These are measurements on one machine, not a latency guarantee.
+In the benchmark, pinned to 4 efficiency cores, where a full category build took about 6 seconds
+against 16.5 in the field, three runs each: the longest gap between two blocks of a bus over the
+first builds, the scan, the update after removed songs and a Beets read fell from 134 to 143 ms
+to 39 to 48 ms; gaps over 50 ms fell from 10 per run to none; the longest collector pause fell
+from 119 to 124 ms to about 20 ms, a young collection. The tick's own full pass took 39 ms there,
+no longer than one of the passes the server made by itself while idle. These are measurements on
+one machine, not a latency guarantee.
 Contract ADR-0008-36 records this; the ADR remains Proposed.
