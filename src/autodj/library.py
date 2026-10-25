@@ -63,6 +63,9 @@ DEFAULT_MUSIC_FADE_DROP_DB = 10
 #: A file changed this recently has its fingerprint read even when its size
 #: and time match, since a coarse clock (FAT keeps 2 seconds) may not have moved.
 _MTIME_BLUR_NS = 2_000_000_000
+#: Seconds between the garbage collector's full passes the tick makes while
+#: running mix buses hold off its own (autodj.mixbus.realtime_switching).
+FULL_PASS_EVERY_S = 600.0
 
 
 def music_fade_drop_db(catalog: LibraryCatalog) -> int:
@@ -293,6 +296,8 @@ class LibraryManager:
         self._clock = clock
         self._auto_rescan_minutes = self.catalog.get_setting("auto_rescan_minutes", 0)
         self._last_scan_end = self._clock()
+        # When the tick last made the collector's full pass (see _full_pass_when_quiet).
+        self._last_full_pass = self._clock()
         # What each station played, and its settings; the default station's
         # first.  tick() writes them all.
         self.ledger = StationLedger(
@@ -672,6 +677,40 @@ class LibraryManager:
         except Exception as exc:
             self._warn_scan_fallback(exc)
         self.schedule_analysis()
+        self._full_pass_when_quiet()
+
+    def _busy(self) -> bool:
+        """Whether a scan, a reload, a category build or a Beets read is running."""
+        with self._category_lock:
+            categories = list(self._category_indexes.values())
+        return (
+            self._scan_lock.locked()
+            or self._refresh_lock.locked()
+            or self.clock_beets.busy()
+            or any(index.busy() for index in categories)
+        )
+
+    def _full_pass_when_quiet(self) -> None:
+        """Make the garbage collector's full pass that running mix buses hold off (#584).
+
+        Every :data:`FULL_PASS_EVERY_S` seconds, and only while no scan,
+        reload, category build or Beets read runs: the pass then walks
+        only the objects that outlived their work, not the hundreds of
+        thousands such work keeps alive, so it stays short.
+        """
+        from autodj.mixbus import full_passes_held
+
+        now = self._clock()
+        if not full_passes_held() or now - self._last_full_pass < FULL_PASS_EVERY_S or self._busy():
+            return
+        self._last_full_pass = now
+        started = time.perf_counter()
+        freed = gc.collect()
+        logger.debug(
+            "Garbage collector full pass: %d objects freed in %.0f ms",
+            freed,
+            (time.perf_counter() - started) * 1000,
+        )
 
     def snapshot(self) -> dict:
         with self._lock:

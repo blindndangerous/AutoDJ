@@ -113,6 +113,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0008-33` | The DJ backlog reads only stored paths and analysed flags, keeps no song's beats or cues in memory, and agrees with the cache's per-song answer. The server freezes the objects alive once the library and stations have loaded, and again after each refresh that reloads the entries; replaced entries are still freed by reference counting, and the young generations are collected first, so repeated reloads keep the frozen objects flat. | automated | `tests/unit/test_dj_meta.py::TestAnalysedAmong::test_agrees_with_get_and_keeps_no_rows`; `tests/unit/test_library.py::test_the_dj_backlog_finds_unanalysed_songs_without_loading_any_beats`; `tests/unit/test_library.py::test_a_refresh_freezes_the_new_entries_and_frees_the_old_ones`; `tests/unit/test_library.py::test_repeated_refreshes_keep_the_frozen_objects_flat` |
 | `ADR-0008-34` | A rescan opens no file whose size and modification time match its catalog record. A changed size or time, a record without a stored time, a time within 2 seconds of the clock or ahead of it, and a rescan with Override with ID3 tags read the fingerprint; moves still read only the new paths. New bytes under the old size and time wait for the next change of either. | automated | `tests/unit/test_library.py::test_rescan_opens_no_unchanged_file`; `tests/unit/test_library.py::test_rescan_reads_a_file_whose_size_or_time_changed`; `tests/unit/test_library.py::test_same_size_and_time_still_read_when_the_time_cannot_vouch`; `tests/unit/test_library.py::test_same_size_and_time_replacement_waits_for_a_new_time`; `tests/unit/test_library.py::test_moved_file_is_rekeyed_without_opening_unchanged_files` |
 | `ADR-0008-35` | The startup scan waits until every station with a mix bus has started its first song, at most 2 minutes, and a shutdown before then starts none. One library-wide Beets reader serves the clockwheel conditions and every station's categories, reading every field announced or asked for in one read after each change. Each time the categories are worked out again it logs the trigger and the time taken. | automated | `tests/integration/test_stations.py::test_the_startup_scan_waits_for_every_station_s_first_song`; `tests/integration/test_stations.py::test_the_startup_scan_starts_anyway_after_the_wait`; `tests/integration/test_stations.py::test_a_shutdown_before_the_first_song_starts_no_scan`; `tests/unit/test_categories.py::test_the_clockwheel_and_every_station_read_beets_once`; `tests/unit/test_categories.py::test_working_categories_out_again_says_why` |
+| `ADR-0008-36` | While any mix bus runs, the garbage collector makes no full pass on its own: the oldest generation's threshold is raised when the first bus starts and put back when the last one stops, unless it was changed meanwhile, and a collector switched off is left alone. The young generations are still collected. The library tick makes the full pass itself every 10 minutes, and never while a scan, a reload, a category build or a Beets read runs. | automated | `tests/unit/test_mixbus.py::test_run_holds_off_full_collections_until_the_last_bus_stops`; `tests/unit/test_mixbus.py::test_run_leaves_a_collector_someone_else_set`; `tests/unit/test_library.py::test_the_tick_makes_the_full_collection_running_buses_hold_off_when_quiet` |
 
 ## Verification
 
@@ -589,3 +590,29 @@ out again; the worst delay then was 103 to 108 ms before and 25 to 27 ms after. 
 rebuilt categories and Beets values out of the collector made no measurable difference, so they
 are not frozen. Making that rebuild incremental is left for later. These are measurements on one machine, not a latency guarantee.
 Contract ADR-0008-35 records this; the ADR remains Proposed.
+
+## Amendment clarification 2026-10-25: No full garbage-collector passes while a bus plays
+
+Issue #584, reopened: on a host with a 4-core Celeron J4125, about 79,000 songs, a Beets database
+of 4.8 million flexible-attribute rows and 21 query categories on two stations, both stations' mix
+buses fell behind together, by up to 0.5 seconds, while the categories were worked out, while the
+library scan ran and while Beets was read. A benchmark of a real two-station server at that shape,
+pinned to 4 cores of a faster machine, showed each stall at the moment of a full collector pass
+that freed nothing. Such a pass walks every tracked object the server has not frozen and holds the
+GIL throughout, so the 0.5 ms switch interval of ADR-0004-15 does not help. The library and
+stations are frozen once loaded (ADR-0008-33), so the old generation is almost empty, and CPython's
+rule of a full pass once the objects aged into it reach a quarter of those already there no longer
+spaces the passes out. A category build, a Beets read, the scan's look for moved files and a
+reload keep hundreds of thousands of new objects alive for a few seconds; as they aged, pass after
+pass walked them, the longest about 190 ms on the benchmark machine.
+
+While any bus runs, the collector now makes no full pass on its own. The oldest generation's
+threshold is raised when the first bus starts and put back when the last stops, as the switch
+interval is, unless something else changed it meanwhile; a collector someone switched off is left
+alone. The young generations are still collected as before, and the objects such work keeps alive
+are freed by reference counting when it ends. Reference cycles that outlive the young generations
+are rare, so the library tick makes the full pass itself every 10 minutes, and only while no scan,
+reload, category build or Beets read runs, when it walks only the objects that outlived their work.
+In the benchmark the longest gap between two blocks of a bus fell from 104 to 226 ms to 22 to
+38 ms during those phases. These are measurements on one machine, not a latency guarantee.
+Contract ADR-0008-36 records this; the ADR remains Proposed.

@@ -4343,6 +4343,53 @@ def test_repeated_refreshes_keep_the_frozen_objects_flat(manager_factory):
     assert gc.get_freeze_count() < start * 1.05
 
 
+def test_the_tick_makes_the_full_collection_running_buses_hold_off_when_quiet(
+    manager_factory, monkeypatch
+):
+    """ADR-0008-36. Every 10 minutes, and never beside a scan, a reload or a category build.
+
+    While no bus holds them off, the collector makes its own full passes.
+    """
+    import autodj.library as library
+    from autodj import mixbus
+
+    manager = manager_factory()
+    now = [5000.0]
+    manager._clock = lambda: now[0]
+    manager._last_full_pass = now[0]
+    passes: list[int] = []
+    real_collect = gc.collect
+
+    def collect(generation: int = 2) -> int:
+        if generation == 2:
+            passes.append(generation)
+        return real_collect(generation)
+
+    monkeypatch.setattr(gc, "collect", collect)
+    now[0] += library.FULL_PASS_EVERY_S + 1
+    manager.tick()
+    assert passes == []  # no bus holds them off
+
+    with mixbus.realtime_switching():
+        manager._last_full_pass = now[0]
+        manager.tick()
+        assert passes == []  # not due yet
+        now[0] += library.FULL_PASS_EVERY_S + 1
+        for busy in (
+            manager._scan_lock,
+            manager._refresh_lock,
+            manager.categories._lock,
+            manager.clock_beets._lock,
+        ):
+            with busy:
+                manager.tick()
+            assert passes == []
+        manager.tick()
+        assert passes == [2]
+        manager.tick()
+        assert passes == [2]  # the next one is 10 minutes away
+
+
 @pytest.mark.dj_analysis
 def test_the_dj_backlog_stops_reading_the_cache_once_the_library_closes(
     manager_factory, monkeypatch

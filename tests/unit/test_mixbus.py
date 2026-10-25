@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import sys
 import threading
 import time
@@ -13,6 +14,7 @@ import pytest
 
 from autodj.mixbus import (
     CATCH_UP_BLOCKS,
+    FULL_PASS_HELD_THRESHOLD,
     REALTIME_SWITCH_INTERVAL,
     BusEvents,
     LinerCue,
@@ -20,6 +22,7 @@ from autodj.mixbus import (
     RenderedTrack,
     SkipTail,
     SystemClock,
+    full_passes_held,
     realtime_switching,
 )
 from tests.unit._fakes import FakeClock
@@ -532,6 +535,59 @@ def test_run_leaves_an_interval_someone_else_chose(switch_interval) -> None:
     sys.setswitchinterval(0.0002)  # already shorter: kept, and not raised afterwards
     assert _run_bus_for(2) == [pytest.approx(0.0002)] * 2
     assert sys.getswitchinterval() == pytest.approx(0.0002)
+
+
+@pytest.fixture
+def gc_thresholds():
+    """Start each test at CPython's default thresholds and put the real ones back."""
+    saved = gc.get_threshold()
+    gc.set_threshold(2000, 10, 10)
+    yield
+    gc.set_threshold(*saved)
+
+
+def test_run_holds_off_full_collections_until_the_last_bus_stops(gc_thresholds) -> None:
+    """ADR-0008-36: the collector's full passes stop every thread, the bus too.
+
+    A category build, a Beets read or a scan keeps hundreds of thousands of
+    new objects alive for seconds; CPython walked them all in pass after pass,
+    and on a small CPU each pass held up every station's bus for up to half a
+    second.  The young generations are still collected.
+    """
+    seen: list[tuple[tuple[int, int, int], bool]] = []
+    _run_bus_for(2, during=lambda _written: seen.append((gc.get_threshold(), full_passes_held())))
+    assert seen == [((2000, 10, FULL_PASS_HELD_THRESHOLD), True)] * 2
+    assert gc.get_threshold() == (2000, 10, 10)
+    assert not full_passes_held()
+
+    with realtime_switching():
+        full = gc.get_stats()[2]["collections"]
+        young = gc.get_stats()[0]["collections"]
+        kept = [[n] for n in range(300_000)]  # objects a build keeps alive while it runs
+        assert gc.get_stats()[2]["collections"] == full
+        assert gc.get_stats()[0]["collections"] > young
+        del kept
+        # Another station's bus still running keeps them held off.
+        _run_bus_for(1)
+        assert full_passes_held()
+    assert gc.get_threshold() == (2000, 10, 10)
+
+
+def test_run_leaves_a_collector_someone_else_set(gc_thresholds) -> None:
+    """ADR-0008-36: thresholds changed during the run, or collection switched off, are kept."""
+
+    def choose(written: int) -> None:
+        if written == 1:
+            gc.set_threshold(700, 10, 10)
+
+    _run_bus_for(2, during=choose)
+    assert gc.get_threshold() == (700, 10, 10)
+
+    gc.set_threshold(0)  # automatic collection off: left off, and no pass is made for it
+    held: list[bool] = []
+    _run_bus_for(1, during=lambda _written: held.append(full_passes_held()))
+    assert held == [False]
+    assert gc.get_threshold() == (0, 10, 10)
 
 
 def test_run_skips_sleep_when_slightly_behind_schedule() -> None:

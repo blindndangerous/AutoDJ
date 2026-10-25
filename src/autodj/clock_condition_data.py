@@ -59,6 +59,10 @@ class BeetsConditions:
     def _valid(fields: Iterable[str]) -> set[str]:
         return {str(name) for name in fields if _FIELD.fullmatch(str(name))} - {"id", "path"}
 
+    def busy(self) -> bool:
+        """Whether a read is running right now."""
+        return self._lock.locked()
+
     def want(self, fields: Iterable[str]) -> None:
         """Announce *fields* a later reader needs, so the next read takes them too."""
         with self._lock:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 import logging
 import math
 import sys
@@ -45,10 +46,22 @@ _LAG_WARNING_SECONDS = 10.0
 # library reload, a scan, an hour preview) left the bus seconds behind on a
 # small CPU; at 0.5 ms they cost it a few milliseconds a block.
 REALTIME_SWITCH_INTERVAL = 0.0005
+# The oldest generation's threshold while any bus runs: the collector makes no
+# full pass on its own (#584).  A full pass walks every tracked object the
+# process has not frozen while holding the GIL, so no switch interval helps.  A
+# category build, a Beets read or a scan keeps hundreds of thousands of new
+# objects alive for seconds, and CPython started pass after pass over them as
+# they aged: on a small CPU each one stopped every bus for up to half a second,
+# and none freed anything.  The young generations are still collected as
+# usual; the library makes the full pass itself while nothing big runs
+# (:meth:`autodj.library.LibraryManager.tick`).
+FULL_PASS_HELD_THRESHOLD = 1_000_000
 _switch_lock = threading.Lock()
 _switch_users = 0
 _switch_saved: float | None = None
 _switch_applied: float | None = None
+_gc_saved: tuple[int, int, int] | None = None
+_gc_applied: tuple[int, int, int] | None = None
 _NO_LINER = np.zeros((0, 2), np.float32)
 # Live source audio buffered before it plays, and again after an underrun,
 # so network jitter does not crackle (#48); a browser talker's, shorter.
@@ -62,9 +75,12 @@ def realtime_switching() -> Iterator[None]:
 
     The interval is process-wide, so it is shortened when the first bus
     starts and put back when the last one stops, unless something else
-    changed it meanwhile.  A shorter interval already set is kept.
+    changed it meanwhile.  A shorter interval already set is kept.  The
+    garbage collector's full passes are held off the same way
+    (:data:`FULL_PASS_HELD_THRESHOLD`); a collector someone switched off,
+    or one already holding them off longer, is left alone.
     """
-    global _switch_users, _switch_saved, _switch_applied
+    global _switch_users, _switch_saved, _switch_applied, _gc_saved, _gc_applied
     with _switch_lock:
         if _switch_users == 0:
             current = sys.getswitchinterval()
@@ -73,6 +89,12 @@ def realtime_switching() -> Iterator[None]:
                 _switch_saved, _switch_applied = current, sys.getswitchinterval()
             else:
                 _switch_saved = _switch_applied = None
+            young, middle, old = gc.get_threshold()
+            if young > 0 and old < FULL_PASS_HELD_THRESHOLD:
+                gc.set_threshold(young, middle, FULL_PASS_HELD_THRESHOLD)
+                _gc_saved, _gc_applied = (young, middle, old), gc.get_threshold()
+            else:
+                _gc_saved = _gc_applied = None
         _switch_users += 1
     try:
         yield
@@ -83,6 +105,19 @@ def realtime_switching() -> Iterator[None]:
                 if sys.getswitchinterval() == _switch_applied:
                     sys.setswitchinterval(_switch_saved)
                 _switch_saved = _switch_applied = None
+            if _switch_users == 0 and _gc_saved is not None:
+                if gc.get_threshold() == _gc_applied:
+                    gc.set_threshold(*_gc_saved)
+                _gc_saved = _gc_applied = None
+
+
+def full_passes_held() -> bool:
+    """Whether running buses hold off the collector's full passes (see :func:`realtime_switching`).
+
+    While they do, the process makes them itself, at a time it chooses.
+    """
+    with _switch_lock:
+        return _gc_applied is not None and gc.get_threshold() == _gc_applied
 
 
 @dataclass(frozen=True)
@@ -1135,7 +1170,8 @@ class MixBus:
         silent block is substituted so pacing continues. An output whose
         ``write`` raises is logged and removed so the rest of the run
         keeps going.  While it runs, the process uses the short
-        :data:`REALTIME_SWITCH_INTERVAL` (see :func:`realtime_switching`).
+        :data:`REALTIME_SWITCH_INTERVAL` and holds off the garbage
+        collector's full passes (see :func:`realtime_switching`).
 
         Args:
             stop: Set by another thread to end the loop.
