@@ -324,7 +324,9 @@ soon as its decoder does. When it becomes current, its handoff counts as stale,
 and the live queue refresh of ADR-0004-09 selects the successor while it plays
 and splices the A to B transition into its unheard tail. If the song ends before
 that is ready, the worker makes the usual start pick and the set goes on; in the
-unit test that cost one bus block of silence. This changes only the first
+unit test that cost one bus block of silence. The startup scan of ADR-0008-35
+waits until the successor is spliced in, not only for the first audio, so the
+full pick does not run beside it. This changes only the first
 handoff after a restart; ADR-0004-12 still governs every later one. Contract
 ADR-0004-16 records this; listening and soak evidence remain those of
 ADR-0004-06 and ADR-0004-13.

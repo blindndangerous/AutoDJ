@@ -1005,8 +1005,9 @@ class Player:
         self._live_queue_target: Any = None
         self._live_queue_edits: dict[int, Any] = {}
         self._server_audio_too = server_audio_too
-        # Set when the first song starts on the mix bus; the library's
-        # startup scan waits for it (see autodj.stations.SharedLibrary).
+        # Set when the first song starts on the mix bus with its successor
+        # picked; the library's startup scan waits for it (see
+        # autodj.stations.SharedLibrary).
         self.first_song_started = threading.Event()
         # Picker settings.  They start off (discovery at the configured
         # rate) and the web page's settings routes change them.
@@ -4692,6 +4693,7 @@ class Player:
                 self._playing_render = replacement
                 self._state.next_track = replacement.next_entry
                 self._remember_upcoming(replacement)
+                self.first_song_started.set()
                 self._playback_len = replacement.start_offset + round(
                     len(replacement.audio) * replacement.playback_rate
                 )
@@ -4947,7 +4949,8 @@ class Player:
         if finished is not None:
             getattr(self, "_live_queue_edits", {}).pop(id(finished.entry), None)
         self._playing_render = rendered
-        self.first_song_started.set()
+        if rendered.next_entry is not None or entry is not getattr(self, "_restored_first", None):
+            self.first_song_started.set()
         self._playback_output_pos[0] = 0
         self._heard_liner_events: set[int] = set()
         self._heard_break_starts = set()

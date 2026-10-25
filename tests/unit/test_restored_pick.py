@@ -80,6 +80,8 @@ def test_a_restored_song_starts_alone_and_its_successor_is_spliced_in(tmp_path, 
             lambda: player._playing_render is not first and player._playing_render.next_entry is b
         )
         assert picks == [a]
+        # The startup scan waits until the successor is picked, not just the first audio.
+        assert player.first_song_started.is_set()
         spliced = player._playing_render
         assert spliced.overlap_frames > 0
         mixed = silent = 0
