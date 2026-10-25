@@ -917,6 +917,11 @@ class ShowRunner:
                 return None
             return air.name, air.songs[air.next_index :]
 
+    def holds_air(self) -> bool:
+        """Whether a show is on the air or waits to resume after a restart (any thread)."""
+        with self._state_lock:
+            return self._on_air is not None or self._resume is not None
+
     def on_air_name(self) -> str | None:
         """The name of the show on the air, or ``None`` (any thread)."""
         with self._state_lock:

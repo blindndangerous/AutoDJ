@@ -1274,6 +1274,8 @@ def equip_station(station: Any, publish: Callable[[dict[str, Any]], Awaitable[No
             station.show_runner.prepared_handoff, report_omissions=False
         )
         bridge.player.prepared_speech_failed = station.show_runner.prepared_speech_failed
+        # A song kept from before a restart never starts a set a show holds (#584).
+        bridge.player.show_holds_air = station.show_runner.holds_air
 
     def show_starts_within(within_s: float) -> str | None:
         # Called from the request desk's threads: only show events, copied
