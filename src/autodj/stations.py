@@ -2324,12 +2324,14 @@ class SharedLibrary:
         return cache_closed
 
     async def _tick(self) -> None:
-        from autodj.player import apply_repeat_windows
-
         library = self.library
         assert library is not None
 
         def tick() -> None:
+            # On the worker thread: a first import of the player takes
+            # seconds, which would stall the event loop (#580).
+            from autodj.player import apply_repeat_windows
+
             library.tick()
             for station in self._stations.all():
                 apply_repeat_windows(station.player)
