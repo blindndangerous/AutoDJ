@@ -334,6 +334,7 @@ class LibraryManager:
                     self.entries_snapshot,
                     lambda: self.catalog.sources(),
                     path=state / FILE_NAME,
+                    beets=self.clock_beets,
                 )
                 self._category_indexes[state] = found
         return found

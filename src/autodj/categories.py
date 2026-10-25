@@ -40,6 +40,7 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
@@ -840,6 +841,8 @@ class _Sources:
     beets_items: dict[str, dict[str, Any]] = field(default_factory=dict)
     beets_check: PathCheck | None = None
     remember_check: bool = True
+    # The library's shared Beets reader (autodj.clock_condition_data), if any.
+    shared: Any = None
 
     def lookup(self) -> dict[str, Any]:
         if self.by_path is None:
@@ -854,7 +857,16 @@ class _Sources:
 
         known = set(LIBRARY_FIELDS) | {FIRST_RELEASE_YEAR}
         overlay: dict[str, dict[str, Any]] = {}
-        if self.beets is not None:
+        if self.beets is not None and self.shared is not None:
+            try:
+                found = self.shared.read(fields, self.entries)
+            except (OSError, sqlite3.Error) as exc:
+                self.beets_error = f"The beets database could not be read: {exc}"
+            else:
+                if found is not None:
+                    names, overlay, self.beets_check = found
+                    known |= names
+        elif self.beets is not None:
             try:
                 known |= self.beets.fields()
                 library = [
@@ -921,12 +933,18 @@ def resolve_checked(
     sources_by_id: Mapping[str, Mapping[str, Any]] | None = None,
     remember_check: bool = True,
     now: float | None = None,
+    shared_beets: Any = None,
 ) -> tuple[list[Resolution], PathCheck | None]:
     """Like :func:`resolve_all`, with how beets' paths matched the library.
 
-    The check is ``None`` when no category read beets.
+    The check is ``None`` when no category read beets.  With
+    *shared_beets* (:class:`~autodj.clock_condition_data.BeetsConditions`),
+    beets is read through it, so the clockwheel and every station share
+    one read.
     """
-    sources = _Sources(entries, beets, music_dir, folder, remember_check=remember_check)
+    sources = _Sources(
+        entries, beets, music_dir, folder, remember_check=remember_check, shared=shared_beets
+    )
     queries = [spec.parsed_query() if spec.source == "query" else None for spec in categories]
     fields: set[str] = set()
     for query in queries:
@@ -1022,6 +1040,26 @@ class _Resolved:
     results: dict[str, Resolution]
 
 
+def _rebuild_reason(previous: _Resolved | None, signature: tuple, entries: Sequence[Any]) -> str:
+    """Why the categories were worked out again, in words, for the log (#584)."""
+    if previous is None:
+        return "first time since the start"
+    old = previous.signature
+    reasons = [
+        text
+        for changed, text in (
+            (old[0] != signature[0], "the categories changed"),
+            (previous.entries is not entries, "the library changed"),
+            (old[2] != signature[2], "the music folders changed"),
+            (old[3:5] != signature[3:5], "the Beets database changed"),
+            (old[5] != signature[5], "a playlist file changed"),
+            (old[6] != signature[6], "the hour moved on for relative dates"),
+        )
+        if changed
+    ]
+    return ", ".join(reasons) or "asked again"
+
+
 #: What :meth:`CategoryIndex.closed_now` last worked out: the results it read,
 #: the minute, the closed songs and why.
 _Closed = tuple[dict[str, Resolution], datetime, frozenset[str], dict[str, str]]
@@ -1046,6 +1084,8 @@ class CategoryIndex:
             the library changes, the same one otherwise.
         clock: Returns the wall-clock time relative date conditions are
             judged at.
+        beets: The library's :class:`~autodj.clock_condition_data.BeetsConditions`,
+            which beets is read through when given.
     """
 
     def __init__(
@@ -1055,13 +1095,14 @@ class CategoryIndex:
         folders: Callable[[], Sequence[Mapping[str, Any]]] = lambda: (),
         path: Path | None = None,
         clock: Callable[[], float] | None = None,
+        beets: Any = None,
     ) -> None:
-        import time
-
         self._cfg = cfg
         self._entries = entries
         self._folders = folders
         self._clock = clock or time.time
+        # The library's shared Beets reader, so stations share one read.
+        self._beets = beets
         # One station's categories: the default station's without *path*.
         self.store = CategoryStore(path or store_path(cfg))
         self._lock = threading.Lock()
@@ -1141,6 +1182,7 @@ class CategoryIndex:
                 and resolved.entries is entries
             ):
                 return resolved.categories, resolved.results
+            started = time.perf_counter()
             results, check = resolve_checked(
                 categories,
                 entries,
@@ -1149,6 +1191,7 @@ class CategoryIndex:
                 folder=self.folder,
                 sources_by_id={source["id"]: source for source in self._folders()},
                 now=now,
+                shared_beets=self._beets,
             )
             cause = check.cause if check is not None else None
             by_id: dict[str, Resolution] = {}
@@ -1176,6 +1219,13 @@ class CategoryIndex:
                 elif not result.paths:
                     logger.warning("Category %s has no songs in the library", category.name)
             self._resolved = _Resolved(signature, entries, categories, by_id)
+            if categories:
+                logger.info(
+                    "Categories worked out for %d songs in %.2f s (%s)",
+                    len(entries),
+                    time.perf_counter() - started,
+                    _rebuild_reason(resolved, signature, entries),
+                )
             return categories, by_id
 
     def members(self) -> dict[str, tuple[str, frozenset[str]]]:

@@ -66,6 +66,10 @@ audio prefetch. `--no-enrich` skips the optional beets refresh.
 The import status in Library tools gives counts. Files that could not be read or decoded are
 errors; open **Import errors** below the summary for the list.
 
+When the server starts, it rescans the library once every streaming or server-audio station has
+started its first song, or after 2 minutes, so the scan does not slow the first songs. Files added
+while the server was stopped appear after that scan.
+
 The old published-index format, including `index-manifest.json`, is deprecated. Stop AutoDJ
 and run `autodj migrate-index` to preview the upgrade, then add `--apply` to import the old
 data with a recovery copy. Startup and indexing use the catalog only; `index --force` does

@@ -112,6 +112,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0008-32` | A prepared worker that cannot reach the server for its idle release, or 10 minutes without one, frees the model and runs its after-command during the retries, logs it once and prepares again, running its before-command, for the next songs, including a song whose download outlasted the outage. | automated | `tests/unit/test_worker.py::test_an_unreachable_server_releases_the_model_and_songs_prepare_it_again`; `tests/unit/test_worker.py::test_an_outage_during_a_download_releases_and_reloads_before_analysis`; `tests/unit/test_worker.py::test_the_after_command_runs_while_the_server_is_down_and_before_runs_again` |
 | `ADR-0008-33` | The DJ backlog reads only stored paths and analysed flags, keeps no song's beats or cues in memory, and agrees with the cache's per-song answer. The server freezes the objects alive once the library and stations have loaded, and again after each refresh that reloads the entries; replaced entries are still freed by reference counting, and the young generations are collected first, so repeated reloads keep the frozen objects flat. | automated | `tests/unit/test_dj_meta.py::TestAnalysedAmong::test_agrees_with_get_and_keeps_no_rows`; `tests/unit/test_library.py::test_the_dj_backlog_finds_unanalysed_songs_without_loading_any_beats`; `tests/unit/test_library.py::test_a_refresh_freezes_the_new_entries_and_frees_the_old_ones`; `tests/unit/test_library.py::test_repeated_refreshes_keep_the_frozen_objects_flat` |
 | `ADR-0008-34` | A rescan opens no file whose size and modification time match its catalog record. A changed size or time, a record without a stored time, a time within 2 seconds of the clock or ahead of it, and a rescan with Override with ID3 tags read the fingerprint; moves still read only the new paths. New bytes under the old size and time wait for the next change of either. | automated | `tests/unit/test_library.py::test_rescan_opens_no_unchanged_file`; `tests/unit/test_library.py::test_rescan_reads_a_file_whose_size_or_time_changed`; `tests/unit/test_library.py::test_same_size_and_time_still_read_when_the_time_cannot_vouch`; `tests/unit/test_library.py::test_same_size_and_time_replacement_waits_for_a_new_time`; `tests/unit/test_library.py::test_moved_file_is_rekeyed_without_opening_unchanged_files` |
+| `ADR-0008-35` | The startup scan waits until every station with a mix bus has started its first song, at most 2 minutes, and a shutdown before then starts none. One library-wide Beets reader serves the clockwheel conditions and every station's categories, reading every field announced or asked for in one read after each change. Each time the categories are worked out again it logs the trigger and the time taken. | automated | `tests/integration/test_stations.py::test_the_startup_scan_waits_for_every_station_s_first_song`; `tests/integration/test_stations.py::test_the_startup_scan_starts_anyway_after_the_wait`; `tests/integration/test_stations.py::test_a_shutdown_before_the_first_song_starts_no_scan`; `tests/unit/test_categories.py::test_the_clockwheel_and_every_station_read_beets_once`; `tests/unit/test_categories.py::test_working_categories_out_again_says_why` |
 
 ## Verification
 
@@ -558,3 +559,33 @@ file is analysed again at its next size or time change, or on a rescan with Over
 tags. A time that moves without a change, such as after a remount, costs only the old read. In a
 synthetic benchmark the rescan of unchanged files read no fingerprints instead of one per file.
 Contract ADR-0008-34 records this; the ADR remains Proposed.
+
+## Amendment clarification 2026-10-25: Starting the first songs sooner after a restart
+
+Issue #584: after a restart, a station with a clockwheel of category and Beets conditions was
+silent for about a minute on a large library. A station's first pick works out every category
+and every Beets value over the whole library before it chooses a song, and the first song also
+waits for the pick that follows it. That work ran beside the library scan, which the server
+started at once, and beside the other station's first pick. Each station's categories and the
+clockwheel also read the Beets database separately, so two stations read it three times. The
+new objects set off full garbage-collector passes, which held up the mix bus.
+
+The startup scan now waits until every station with a mix bus has started its first song, for
+at most 2 minutes; a station that plays nothing on its own, such as one driven by the browser,
+is not waited for, and a shutdown before then starts no scan. The library keeps one Beets reader
+for the clockwheel conditions and every station's categories. Each read takes every field asked
+for since the start, and a clockwheel announces its fields when it loads, so after the database
+or the library changes, the first reader reads Beets once for all of them. When the categories
+are worked out again, one line at info level says why (first time, the library, the Beets
+database, the categories, a playlist, the folders, or the hour for relative dates) and how long it
+took.
+
+In a benchmark of a real two-station server on 80,000 synthetic songs, pinned to 4 cores, the
+time from each station's start to its first audio fell from 15.1 to 15.7 seconds to 4.5 to
+4.7 seconds, and the worst delay of a paced 20 ms thread from 166 to 178 ms to 64 to 66 ms.
+Without the scan wait it was about 8.1 seconds, and without the shared Beets read about 7.0 to
+7.4 seconds. While songs played, a change to one song made the next picks work every category
+out again; the worst delay then was 103 to 108 ms before and 25 to 27 ms after. Freezing the
+rebuilt categories and Beets values out of the collector made no measurable difference, so they
+are not frozen. Making that rebuild incremental is left for later. These are measurements on one machine, not a latency guarantee.
+Contract ADR-0008-35 records this; the ADR remains Proposed.

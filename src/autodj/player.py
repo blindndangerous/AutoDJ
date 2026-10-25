@@ -1005,6 +1005,9 @@ class Player:
         self._live_queue_target: Any = None
         self._live_queue_edits: dict[int, Any] = {}
         self._server_audio_too = server_audio_too
+        # Set when the first song starts on the mix bus; the library's
+        # startup scan waits for it (see autodj.stations.SharedLibrary).
+        self.first_song_started = threading.Event()
         # Picker settings.  They start off (discovery at the configured
         # rate) and the web page's settings routes change them.
         # Anchored mode: when True, every similarity query uses the SEED
@@ -1764,6 +1767,15 @@ class Player:
                 )
             else:
                 raise ValueError(f"Step {number} has type {kind!r}, which the player cannot play")
+        want = getattr(getattr(library, "clock_beets", None), "want", None)
+        if callable(want):
+            # Read with the categories' fields, in one read of Beets (#584).
+            want(
+                condition["name"]
+                for slot in slots
+                for condition in slot.conditions
+                if condition["field"] == "beets"
+            )
         return clock, validate_clock(slots)
 
     def _clock_pick(self, context: _PickContext, cursor: int | None) -> Any:
@@ -4896,6 +4908,7 @@ class Player:
         if finished is not None:
             getattr(self, "_live_queue_edits", {}).pop(id(finished.entry), None)
         self._playing_render = rendered
+        self.first_song_started.set()
         self._playback_output_pos[0] = 0
         self._heard_liner_events: set[int] = set()
         self._heard_break_starts = set()
