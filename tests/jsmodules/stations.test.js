@@ -8,6 +8,7 @@ import {
   staleActionText,
 } from "../../src/autodj/static/modules/api-client.js";
 import {
+  CLOSE_FOCUS_DELAY_MS,
   DEFAULT_STATION,
   STATION_ROUTES,
   controllingText,
@@ -261,7 +262,6 @@ describe("requests while switching", () => {
 describe("the station switcher (a disclosure, #576)", () => {
   let chosen;
   let switcher;
-  let frames;
   // Whether onChoose refuses the switch, as a cancelled confirmation does.
   let refuse;
 
@@ -309,23 +309,21 @@ describe("the station switcher (a disclosure, #576)", () => {
     button().focus();
     button().click();
   };
-  // Runs the animation frame callbacks queued so far.
-  const nextFrame = () => {
-    const due = frames.splice(0);
-    for (const callback of due) callback?.();
+  // Runs out the pending close: focus to the Station button, then hidden.
+  const nextFrame = () => vi.advanceTimersByTime(CLOSE_FOCUS_DELAY_MS);
+  // Lets the stand-in switch's promises run.
+  const settle = async () => {
+    for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
   };
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
   beforeEach(() => {
-    frames = [];
-    vi.stubGlobal("requestAnimationFrame", (callback) => frames.push(callback));
-    vi.stubGlobal("cancelAnimationFrame", (id) => { frames[id - 1] = null; });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     reset();
     setUp();
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -369,8 +367,8 @@ describe("the station switcher (a disclosure, #576)", () => {
       expandedOnFocus = button().getAttribute("aria-expanded");
     });
     open();
-    // No frame delay on the way in.
-    expect(frames).toEqual([]);
+    // No delay on the way in.
+    expect(vi.getTimerCount()).toBe(0);
     expect(list().hidden).toBe(false);
     expect(button().getAttribute("aria-expanded")).toBe("true");
     expect(expandedOnFocus).toBe("true");
@@ -406,7 +404,7 @@ describe("the station switcher (a disclosure, #576)", () => {
     expect(list().hidden).toBe(false);
   });
 
-  it("switches, then collapses with the new name, then moves focus a frame later", async () => {
+  it("switches, then collapses with the new name, then moves focus after the delay", async () => {
     open();
     key(items()[0], "ArrowDown");
     const owl = document.activeElement;
@@ -428,8 +426,9 @@ describe("the station switcher (a disclosure, #576)", () => {
     nextFrame();
     expect(list().hidden).toBe(true);
     expect(document.activeElement).toBe(button());
-    // Focus arrives on a collapsed button that already has its new name.
-    expect(onFocus).toEqual({ expanded: "false", name: "Station: Night Owl Radio", hidden: true });
+    // Focus arrives on a collapsed button that already has its new name,
+    // while the list is still shown: it never falls to the page body.
+    expect(onFocus).toEqual({ expanded: "false", name: "Station: Night Owl Radio", hidden: false });
   });
 
   it("leaves the list open on the station when the switch does not happen", async () => {
@@ -467,16 +466,22 @@ describe("the station switcher (a disclosure, #576)", () => {
     expect(document.activeElement).toBe(button());
   });
 
-  it("closes on Escape, moving focus to the button a frame after it collapses", () => {
+  it("closes on Escape: collapsed at once, then focus on the button, then hidden", () => {
     open();
     key(items()[0], "ArrowDown");
+    const order = [];
+    button().addEventListener("focus", () => order.push(`focus, hidden ${list().hidden}`));
     const escape = key(items()[1], "Escape");
     expect(escape.defaultPrevented).toBe(true);
     expect(button().getAttribute("aria-expanded")).toBe("false");
-    // Focus stays in the list, still shown, until the next frame.
+    // Focus stays in the list, still shown, until the delay is over.
+    vi.advanceTimersByTime(CLOSE_FOCUS_DELAY_MS - 1);
     expect(document.activeElement).toBe(items()[1]);
     expect(list().hidden).toBe(false);
-    nextFrame();
+    // A second Escape while the close is pending does nothing more.
+    expect(key(items()[1], "Escape").defaultPrevented).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(order).toEqual(["focus, hidden false"]);
     expect(list().hidden).toBe(true);
     expect(document.activeElement).toBe(button());
     // From the Station button itself too.
@@ -491,7 +496,7 @@ describe("the station switcher (a disclosure, #576)", () => {
     expect(chosen).toEqual([]);
   });
 
-  it("stays open when reopened before the frame that would hide it", () => {
+  it("stays open when reopened before the delayed close", () => {
     open();
     key(items()[0], "Escape");
     open();

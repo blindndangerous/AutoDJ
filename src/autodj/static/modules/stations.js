@@ -340,12 +340,18 @@ export function rememberStationInAddress(slug, { location: loc = globalThis.loca
 // moving.  The current station's button has aria-current="true".
 // ----------------------------------------------------------------
 
+// How long the list stays shown, collapsed, before focus goes back to the
+// Station button.  NVDA with Firefox reads the old state if focus moves
+// sooner: after one animation frame it still said "expanded" on the
+// collapsed button, and after 60 ms it said "collapsed" (#576).
+export const CLOSE_FOCUS_DELAY_MS = 100;
+
 export function installStationSwitcher({ wrap, button, list, onChoose }) {
   if (!wrap || !button || !list) return null;
   const doc = button.ownerDocument;
   let items = [];
   let expanded = false;
-  let frame = 0;
+  let closeTimer = 0;
   // The station chosen while its switch is under way: the list stays open,
   // with focus on it, until the switch has renamed the Station button.
   let choosing = null;
@@ -421,45 +427,48 @@ export function installStationSwitcher({ wrap, button, list, onChoose }) {
     items[wrapped].focus();
   }
 
-  function cancelFrame() {
-    if (frame) globalThis.cancelAnimationFrame(frame);
-    frame = 0;
+  function cancelPendingClose() {
+    if (closeTimer) globalThis.clearTimeout(closeTimer);
+    closeTimer = 0;
   }
 
   // The list shows and aria-expanded changes before focus moves, all in
-  // one task, with no frame delay: there is no popup for NVDA to race.
+  // one task, with no delay: there is no popup for NVDA to race.  Pressed
+  // while a close is pending, the Station button keeps the list open.
   function open() {
     if (wrap.hidden || !items.length) return;
-    cancelFrame();
+    cancelPendingClose();
     expanded = true;
     list.hidden = false;
     button.setAttribute("aria-expanded", "true");
     focusItem(currentIndex());
   }
 
-  // Collapsed first, focus on the Station button a frame later: moved in
-  // the same task, focus reached NVDA before the state did, and it said
-  // "expanded" on a collapsed button.  The list hides in that later frame
-  // too, as focus leaves it, so focus never falls to the page body, which
-  // NVDA reads as the whole document.
+  // Collapsed at once, with the list still shown; CLOSE_FOCUS_DELAY_MS
+  // later, focus goes to the Station button and then the list hides, in
+  // the same task.  Moved sooner, focus reached NVDA before the collapsed
+  // state did.  Hidden first, the list dropped focus on the page body for
+  // a moment, and after a switch's title change NVDA read the whole
+  // document again.  A second Escape or choice while the close is pending
+  // does nothing, as the list is already collapsed.
   function close(returnFocus = true) {
     choosing = null;
     if (!expanded) return;
     expanded = false;
     button.setAttribute("aria-expanded", "false");
-    cancelFrame();
+    cancelPendingClose();
     if (!returnFocus) {
       list.hidden = true;
       return;
     }
-    frame = globalThis.requestAnimationFrame(() => {
-      frame = 0;
+    closeTimer = globalThis.setTimeout(() => {
+      closeTimer = 0;
       if (expanded) return;
       const active = doc.activeElement;
       const returning = !active || active === doc.body || active === button || list.contains(active);
-      list.hidden = true;
       if (returning && !doc.querySelector("dialog[open]")) button.focus();
-    });
+      list.hidden = true;
+    }, CLOSE_FOCUS_DELAY_MS);
   }
 
   // The current station only closes the list.  Another one starts the

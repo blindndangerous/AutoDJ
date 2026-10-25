@@ -1575,7 +1575,10 @@ async function openStationList(page, visit) {
   await page.keyboard.press("Enter");
   await page.locator("#station-list").waitFor({ state: "visible" });
   await visit("now/station-list");
-  if (await page.locator("#station-list").isVisible()) await button.click();
+  if (await page.locator("#station-list").isVisible()) {
+    await button.click();
+    await page.locator("#station-list").waitFor({ state: "hidden" });
+  }
 }
 
 async function openEveryCard(page) {
@@ -2761,11 +2764,12 @@ async function stationSwitcherProblems(page) {
     };
   });
   const closedOnButton = (now) => !now.open && now.id === "station-button" && now.expanded === "false";
-  // The list collapses, then focus moves to the Station button a frame
-  // later (#576): wait two frames before reading where focus went.
-  const frames = () => page.evaluate(() => new Promise((resolve) => {
-    window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
-  }));
+  // The list collapses at once; focus moves to the Station button, and the
+  // list hides, CLOSE_FOCUS_DELAY_MS later (#576).  Wait for the list to
+  // hide, or to stay open, before reading where focus went.
+  const frames = () => page.waitForFunction(() => document.getElementById("station-list").hidden
+    || document.getElementById("station-button").getAttribute("aria-expanded") === "true",
+  null, { timeout: 2000 }).catch(() => {});
   // Focus that left the switcher for nothing, the page body, which NVDA
   // reads as the whole document.  Read and reset.
   await page.evaluate(() => {
@@ -2870,6 +2874,7 @@ async function stationSwitcherProblems(page) {
       ? page.locator("#station-off-air").waitFor({ state: "visible", timeout: 10000 })
       : page.waitForFunction(() => document.getElementById("conn-status").className === "connected",
         null, { timeout: 10000 })).catch(() => {});
+    await frames();
     await settle(page);
     now = await state();
     if (now.heading !== `AutoDJ: ${station.name}`) problems.push(`switch to ${station.slug}: heading ${now.heading}`);

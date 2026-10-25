@@ -4106,8 +4106,9 @@ describe("several stations (#70)", () => {
     first.onclose({ code: 1000, wasClean: true });
     expect(document.getElementById("conn-status").textContent).not.toMatch(/Disconnected/);
 
-    // Named everywhere a reader looks; focus stays on the switcher.
-    expect(document.activeElement.id).toBe("station-button");
+    // Named everywhere a reader looks; focus goes back to the switcher
+    // once the list's delayed close has run.
+    await vi.waitFor(() => expect(document.activeElement.id).toBe("station-button"));
     expect(document.getElementById("page-heading").textContent).toBe("AutoDJ: Night Owl Radio");
     expect(document.title).toBe("Owl - Hoot - Night Owl Radio - AutoDJ");
     expect(document.getElementById("shared-context").textContent).toBe("Shared by all stations");
@@ -4137,9 +4138,8 @@ describe("several stations (#70)", () => {
     expect(button.getAttribute("aria-expanded")).toBe("true");
     expect(document.activeElement.dataset.station).toBe("default");
     document.activeElement.click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(document.getElementById("station-list").hidden).toBe(true);
     expect(button.getAttribute("aria-expanded")).toBe("false");
+    await vi.waitFor(() => expect(document.getElementById("station-list").hidden).toBe(true));
     expect(document.activeElement).toBe(button);
     expect(sockets).toHaveLength(0);
     expect(location.search).toBe("");
