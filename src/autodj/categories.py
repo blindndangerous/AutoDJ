@@ -62,7 +62,7 @@ from pydantic import (
     model_validator,
 )
 
-from autodj.beets_query import FIRST_RELEASE_YEAR, Query, QueryError, parse_query
+from autodj.beets_query import FIRST_RELEASE_YEAR, Columns, Query, QueryError, parse_query
 from autodj.beets_query import first_release_year as _first_release_year
 from autodj.clock_conditions import relative_date_now, uses_relative_dates
 from autodj.date_repeat import DateRepeat, month_day, weekday_name
@@ -826,6 +826,16 @@ def resolve_query(query: Query, items: Sequence[tuple[Any, Mapping[str, Any]]]) 
     return Resolution(frozenset(paths), fallback=fallback)
 
 
+def resolve_columns(query: Query, songs: Sequence[Any], columns: Columns) -> Resolution:
+    """Like :func:`resolve_query`, matching whole *columns* of *songs* at once (#584)."""
+    selected = query.select(columns)
+    fallback = int((selected & columns.fell_back()).sum()) if query.uses_first_release_year() else 0
+    return Resolution(
+        frozenset(song.path for song, chosen in zip(songs, selected, strict=True) if chosen),
+        fallback=fallback,
+    )
+
+
 @dataclass
 class _Sources:
     """What a run of :func:`resolve_all` reads once and shares between categories."""
@@ -835,7 +845,8 @@ class _Sources:
     music_dir: Path | None
     folder: Path
     by_path: dict[str, Any] | None = None
-    items: list[tuple[Any, dict[str, Any]]] | None = None
+    songs: list[Any] = field(default_factory=list)
+    columns: Columns | None = None
     known: frozenset[str] = field(default_factory=frozenset)
     beets_error: str | None = None
     beets_items: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -879,16 +890,23 @@ class _Sources:
                 self.beets_error = f"The beets database could not be read: {exc}"
         self.known = frozenset(known)
         self.beets_items = overlay
-        items = []
-        for entry in self.entries:
-            if getattr(entry, "is_silent", False):
-                continue
-            item = library_item(entry)
-            extra = overlay.get(normalize_path(entry.path)) if overlay else None
-            if extra:
-                item.update(extra)
-            items.append((entry, item))
-        self.items = items
+        songs = [entry for entry in self.entries if not getattr(entry, "is_silent", False)]
+        extras = [overlay.get(normalize_path(song.path)) for song in songs] if overlay else []
+        self.songs = songs
+
+        def raw(name: str) -> list[Any]:
+            # As item.get(name) on the library's fields with beets' laid over them.
+            values = (
+                [getattr(song, name, None) for song in songs]
+                if name in LIBRARY_FIELDS
+                else [None] * len(songs)
+            )
+            for index, extra in enumerate(extras):
+                if extra and name in extra:
+                    values[index] = extra[name]
+            return values
+
+        self.columns = Columns(len(songs), raw)
 
 
 def resolve_all(
@@ -978,7 +996,8 @@ def resolve_checked(
             if problem:
                 results.append(Resolution(error=problem))
                 continue
-            results.append(resolve_query(query, sources.items or []))
+            assert sources.columns is not None
+            results.append(resolve_columns(query, sources.songs, sources.columns))
             continue
         from autodj.clockwheel import ClockSlot, condition_paths
         from autodj.clockwheel_store import resolve_conditions
@@ -1038,6 +1057,46 @@ class _Resolved:
     entries: Sequence[Any]
     categories: tuple[Category, ...]
     results: dict[str, Resolution]
+
+
+#: The most changed songs, as a share of the library, worked out one by one;
+#: beyond it the whole library is worked out again.
+_CHANGED_SHARE = 0.02
+
+
+def _changed_songs(old: Sequence[Any], new: Sequence[Any]) -> tuple[list[Any], list[Any]] | None:
+    """The songs of *new* added or changed since *old*, and the old versions of those
+    changed or removed; ``None`` when too many changed to work out one by one."""
+    limit = max(100, int(len(new) * _CHANGED_SHARE))
+    previous = {song.path: song for song in old}
+    changed: list[Any] = []
+    before: list[Any] = []
+    seen: set[str] = set()
+    for song in new:
+        seen.add(song.path)
+        was = previous.get(song.path)
+        if was is song or (was is not None and was == song):
+            continue
+        changed.append(song)
+        if was is not None:
+            before.append(was)
+        if len(changed) > limit:
+            return None
+    before.extend(song for path, song in previous.items() if path not in seen)
+    if len(before) > 2 * limit:
+        return None
+    return changed, before
+
+
+class _WholeLibrary:
+    """The shared Beets reader, matched against the whole library, not a few songs."""
+
+    def __init__(self, beets: Any, entries: Sequence[Any]) -> None:
+        self._beets = beets
+        self._entries = entries
+
+    def read(self, fields: Iterable[str], _entries: Sequence[Any]) -> Any:
+        return self._beets.read(fields, self._entries)
 
 
 def _rebuild_reason(previous: _Resolved | None, signature: tuple, entries: Sequence[Any]) -> str:
@@ -1183,6 +1242,17 @@ class CategoryIndex:
             ):
                 return resolved.categories, resolved.results
             started = time.perf_counter()
+            updated = self._update(resolved, categories, entries, signature, now)
+            if updated is not None:
+                partial, songs = updated
+                self._resolved = _Resolved(signature, entries, categories, partial)
+                logger.info(
+                    "Categories worked out for %d songs in %.2f s (%s)",
+                    songs,
+                    time.perf_counter() - started,
+                    _rebuild_reason(resolved, signature, entries),
+                )
+                return categories, partial
             results, check = resolve_checked(
                 categories,
                 entries,
@@ -1227,6 +1297,84 @@ class CategoryIndex:
                     _rebuild_reason(resolved, signature, entries),
                 )
             return categories, by_id
+
+    def _update(
+        self,
+        resolved: _Resolved | None,
+        categories: tuple[Category, ...],
+        entries: Sequence[Any],
+        signature: tuple,
+        now: float,
+    ) -> tuple[dict[str, Resolution], int] | None:
+        """The results again, working out only what changed, or ``None`` to rebuild (#584).
+
+        When only songs changed, each category is worked out for the songs
+        added or changed and their old versions, and the rest is kept; when
+        the hour moved on, only the categories with relative dates are
+        worked out again; a playlist category is read again whenever songs
+        changed.  Anything else -- the categories, the folders, Beets, a
+        playlist file, an error, or many changed songs -- rebuilds all.
+
+        Returns:
+            The results and how many songs were worked out.
+        """
+        if resolved is None or resolved.categories != categories:
+            return None
+        old = resolved.signature
+        if old[0] != signature[0] or old[2:6] != signature[2:6]:
+            return None
+        if any(result.error for result in resolved.results.values()):
+            return None
+        beets = beets_source(self._cfg)
+        if beets is not None and self._beets is None:
+            return None  # Beets read for a few songs alone could match its paths differently.
+        changed: list[Any] = []
+        before: list[Any] = []
+        if resolved.entries is not entries:
+            diff = _changed_songs(resolved.entries, entries)
+            if diff is None:
+                return None
+            changed, before = diff
+        hour_moved = old[6] != signature[6]
+        redo = [
+            category
+            for category in categories
+            if (hour_moved and uses_relative_dates(category.conditions))
+            or (category.source == "m3u" and (changed or before))
+        ]
+        redone = {category.id for category in redo}
+        rest = [category for category in categories if category.id not in redone]
+        common: dict[str, Any] = {
+            "beets": beets,
+            "music_dir": self._cfg.library.music_dir,
+            "folder": self.folder,
+            "sources_by_id": {source["id"]: source for source in self._folders()},
+            "now": now,
+        }
+        by_id = dict(resolved.results)
+        if redo:
+            results, _check = resolve_checked(redo, entries, shared_beets=self._beets, **common)
+            if any(result.error for result in results):
+                return None
+            by_id.update(zip((category.id for category in redo), results, strict=True))
+        if rest and (changed or before):
+            # Beets values come from the whole library's read, kept while its paths hold.
+            whole = _WholeLibrary(self._beets, entries) if self._beets is not None else None
+            new, _check = resolve_checked(rest, changed, shared_beets=whole, **common)
+            gone, _check = resolve_checked(rest, before, shared_beets=whole, **common)
+            touched = {song.path for song in (*changed, *before)}
+            for category, now_in, was_in in zip(rest, new, gone, strict=True):
+                if now_in.error or was_in.error:
+                    return None
+                kept = by_id[category.id]
+                by_id[category.id] = Resolution(
+                    (kept.paths - touched) | now_in.paths,
+                    kept.missing,
+                    kept.missing_count,
+                    kept.fallback - was_in.fallback + now_in.fallback,
+                )
+        songs = len(entries) if redo else len({song.path for song in (*changed, *before)})
+        return by_id, songs
 
     def members(self) -> dict[str, tuple[str, frozenset[str]]]:
         """Each category's ID mapped to its name and the paths of its songs."""

@@ -230,6 +230,15 @@ class Query:
         """Whether *item* passes every term."""
         return all(term.matches(item) for term in self.terms)
 
+    def select(self, columns: Columns) -> Any:
+        """:meth:`matches` for every song of *columns* at once, as a boolean array."""
+        import numpy as np
+
+        selected = np.ones(columns.size, dtype=bool)
+        for term in self.terms:
+            selected &= _term_mask(term, columns)
+        return selected
+
 
 def _range(name: str, value: str, written: str, negate: bool) -> Term:
     low_text, _, high_text = value.partition("..")
@@ -342,3 +351,129 @@ def parse_query(text: str) -> Query:
         if token:
             terms.append(_term(token))
     return Query(tuple(terms))
+
+
+# ---------------------------------------------------------------------------
+# Matching a whole library at once (#584)
+# ---------------------------------------------------------------------------
+
+
+class Columns:
+    """Every song's value of each field, worked out once and shared by many queries.
+
+    :meth:`Query.matches` reads one song at a time, so a category build
+    over a large library parsed every number and folded every text once per
+    query and song.  Here each field becomes a column once: numbers parsed
+    with :func:`number`, text folded as :meth:`Term.matches` folds it.
+    :meth:`Query.select` then matches whole columns, with the same results
+    as :meth:`Query.matches` on each song.
+
+    Args:
+        size: How many songs.
+        raw: Returns a field's values, one per song in order, ``None``
+            where the song does not have the field (``item.get(name)``).
+    """
+
+    def __init__(self, size: int, raw: Any) -> None:
+        self.size = size
+        self._raw = raw
+        self._values: dict[str, list[Any]] = {}
+        self._numbers: dict[str, Any] = {}
+        self._texts: dict[str, list[str | None]] = {}
+        self._contains: dict[tuple[str, str], Any] = {}
+        self._fallback: Any = None
+
+    def _column(self, name: str) -> list[Any]:
+        found = self._values.get(name)
+        if found is None:
+            found = self._values[name] = list(self._raw(name))
+        return found
+
+    def _first_release(self) -> tuple[Any, Any]:
+        import numpy as np
+
+        original = self.numbers_of(FIRST_RELEASE_YEAR, raw=True)
+        release = self.numbers_of("year", raw=True)
+        has_original = original > 0  # NaN compares false
+        has_release = release > 0
+        years = np.where(
+            has_original, np.trunc(original), np.where(has_release, np.trunc(release), np.nan)
+        )
+        return years, ~has_original & has_release
+
+    def numbers_of(self, name: str, *, raw: bool = False) -> Any:
+        """The field as floats, NaN where :func:`number` gives ``None``.
+
+        ``original_year`` is the first-release year (see
+        :func:`first_release_year`) unless *raw*.
+        """
+        import numpy as np
+
+        key = f"raw:{name}" if raw and name == FIRST_RELEASE_YEAR else name
+        found = self._numbers.get(key)
+        if found is None:
+            if name == FIRST_RELEASE_YEAR and not raw:
+                found, self._fallback = self._first_release()
+            else:
+                found = np.fromiter(
+                    (
+                        math.nan if value is None or (got := number(value)) is None else got
+                        for value in self._column(name)
+                    ),
+                    dtype=np.float64,
+                    count=self.size,
+                )
+            self._numbers[key] = found
+        return found
+
+    def fell_back(self) -> Any:
+        """Whether each song's first-release year is its release year."""
+        if self._fallback is None:
+            self.numbers_of(FIRST_RELEASE_YEAR)
+        return self._fallback
+
+    def contains(self, name: str, text: str) -> Any:
+        """Whether each song's folded value of *name* contains *text*."""
+        import numpy as np
+
+        found = self._contains.get((name, text))
+        if found is None:
+            folded = self._texts.get(name)
+            if folded is None:
+                folded = self._texts[name] = [
+                    None if value is None else _text(value).casefold()
+                    for value in self._column(name)
+                ]
+            found = self._contains[(name, text)] = np.fromiter(
+                (each is not None and text in each for each in folded),
+                dtype=bool,
+                count=self.size,
+            )
+        return found
+
+
+def _term_mask(term: Term, columns: Columns) -> Any:
+    """:meth:`Term.matches` for every song of *columns*, as a boolean array."""
+    import numpy as np
+
+    if term.field is None:
+        positive = np.zeros(columns.size, dtype=bool)
+        for name in DEFAULT_FIELDS:
+            positive |= columns.contains(name, term.text)
+    elif term.is_range:
+        found = columns.numbers_of(term.field)
+        positive = ~np.isnan(found)
+        if term.low is not None:
+            positive &= found >= term.low
+        if term.high is not None:
+            positive &= found <= term.high
+    elif term.field in NUMERIC_FIELDS:
+        wanted = number(term.text)
+        positive = (
+            np.zeros(columns.size, dtype=bool)
+            if wanted is None
+            else columns.numbers_of(term.field) == wanted
+        )
+    else:
+        positive = columns.contains(term.field, term.text)
+    return ~positive if term.negate else positive
