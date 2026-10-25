@@ -78,6 +78,9 @@ _THREAD_JOIN_TIMEOUT_S = 5.0
 #: (#472): changes close together, such as a clockwheel switch just before a
 #: show at the top of the hour, cost relay listeners one gap, not two.
 RELAY_SETTLE_S = 1.5
+#: The longest the library's startup scan waits for every station's first
+#: song (see :meth:`SharedLibrary.start`).
+FIRST_SONG_WAIT_S = 120.0
 
 # A station's name: lower-case letters, digits and inner hyphens, at most 32
 # characters.  It names a folder and a URL path segment.
@@ -2243,9 +2246,17 @@ class SharedLibrary:
         self._ticker: asyncio.Task[None] | None = None
         self._scan_stopped: asyncio.Future[bool] | None = None
         self._scan_timeout_s = 0.0
+        self._scan_starter: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        """Start the library's scan and its two-second tick."""
+        """Start the library's two-second tick, and its scan once the stations play.
+
+        The scan starts once every station with a mix bus has started its
+        first song, or after :data:`FIRST_SONG_WAIT_S` seconds.  A first
+        pick works out the categories and clockwheel conditions for the
+        whole library, and a scan running beside it made that several
+        times slower, so a restarted station stayed silent longer (#584).
+        """
         if self.library is not None:
             from autodj.library import freeze_long_lived
 
@@ -2253,8 +2264,33 @@ class SharedLibrary:
             # lives as long as the server, so full collections skip it.
             freeze_long_lived()
             self.library.on_scan_done = self._scan_done
-            self.library.start_scan()
+            if self._first_songs_pending():
+                self._scan_starter = asyncio.create_task(self._scan_after_first_songs())
+            else:
+                self.library.start_scan()
             self._ticker = asyncio.create_task(self._tick())
+
+    def _first_songs_pending(self) -> bool:
+        """Whether a station with a mix bus has not started its first song yet."""
+        for station in self._stations.all():
+            player = getattr(station, "player", None)
+            started = getattr(player, "first_song_started", None)
+            if (
+                getattr(player, "bus", None) is not None
+                and isinstance(started, threading.Event)
+                and not started.is_set()
+            ):
+                return True
+        return False
+
+    async def _scan_after_first_songs(self) -> None:
+        library = self.library
+        assert library is not None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + FIRST_SONG_WAIT_S
+        while self._first_songs_pending() and loop.time() < deadline:
+            await asyncio.sleep(0.25)
+        library.start_scan()
 
     def _scan_done(self) -> None:
         """After a clean scan (on its thread): forget liner dates and song intros now gone."""
@@ -2273,6 +2309,9 @@ class SharedLibrary:
 
         :meth:`close` then waits for it, up to *timeout_s* seconds from now.
         """
+        if self._scan_starter is not None:
+            # Shutdown began before the stations played: no scan starts now.
+            self._scan_starter.cancel()
         if self.library is None or self._scan_stopped is not None:
             return
         self._scan_timeout_s = timeout_s

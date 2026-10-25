@@ -621,3 +621,63 @@ def test_a_category_without_relative_dates_ignores_the_hour(tmp_path):
     signature = index.cache_signature()
     now[0] += 7 * 86400
     assert index.cache_signature() == signature
+
+
+def test_the_clockwheel_and_every_station_read_beets_once(tmp_path, monkeypatch):
+    """ADR-0008-35. One read of Beets per change serves the clock and each station's categories."""
+    import autodj.beets as beets
+    from autodj.clock_condition_data import BeetsConditions
+
+    music = tmp_path / "music"
+    songs = [song(music / f"{n}.flac") for n in range(3)]
+    db = make_beets(
+        tmp_path / "library.db",
+        [(1, b"0.flac", "Zero", "Rock", 1985, 1985), (2, b"1.flac", "One", "Pop", 1995, 1995)],
+        [(1, "mood", "happy"), (2, "mood", "sad")],
+    )
+    cfg = config(tmp_path, beets_db=db)
+    entries = Entries(songs)
+    reads = []
+    real = beets.read_items
+    monkeypatch.setattr(
+        beets, "read_items", lambda path, fields: reads.append(set(fields)) or real(path, fields)
+    )
+    shared = BeetsConditions(cfg, entries)
+    shared.want(["mood"])  # the clockwheel's Beets conditions, announced when it loads
+    stations = [
+        CategoryIndex(cfg, entries, path=tmp_path / name / "categories.json", beets=shared)
+        for name in ("one", "two")
+    ]
+    for index in stations:
+        index.save([query("Rock", "genre:rock")])
+        assert index.members() == {"c1": ("Rock", frozenset({songs[0].path}))}
+    _names, values, error = shared.snapshot(["mood"])
+    from autodj.catalog import normalize_path
+
+    assert error is None and values[normalize_path(songs[0].path)]["mood"] == "happy"
+    assert len(reads) == 1 and {"genre", "mood"} <= reads[0]
+
+    # The library changed: the first reader reads every field again, once.
+    entries.value = (*entries.value,)
+    for index in stations:
+        index.members()
+    assert shared.snapshot(["mood"])[1] is not values
+    assert len(reads) == 2 and {"genre", "mood"} <= reads[1]
+
+
+def test_working_categories_out_again_says_why(tmp_path, caplog):
+    """ADR-0008-35. Each full rebuild is logged with its trigger and how long it took."""
+    songs = [song(tmp_path / "music" / "0.flac", genre="Rock")]
+    entries = Entries(songs)
+    index = CategoryIndex(config(tmp_path), entries)
+    index.save([query("Rock", "genre:rock")])
+    with caplog.at_level(logging.INFO, logger="autodj.categories"):
+        index.members()
+        index.members()  # nothing changed: nothing worked out or logged
+        entries.value = (*entries.value, song(tmp_path / "music" / "1.flac", genre="Rock"))
+        index.members()
+    lines = [r.getMessage() for r in caplog.records if "Categories worked out" in r.getMessage()]
+    assert len(lines) == 2
+    assert lines[0].startswith("Categories worked out for 1 songs in ")
+    assert lines[0].endswith("(first time since the start)")
+    assert lines[1].endswith("(the library changed)")

@@ -414,3 +414,59 @@ async def test_each_shutdown_step_logs_how_long_it_took(
         "Shutdown step stopping something quick": logging.DEBUG,
         "Shutdown step stopping something slow": logging.INFO,
     }
+
+
+def _scan_rig(monkeypatch: pytest.MonkeyPatch, players: list[Any]) -> tuple[SharedLibrary, list]:
+    scans: list[str] = []
+    monkeypatch.setattr("autodj.player.apply_repeat_windows", lambda _player: None)
+    library: Any = SimpleNamespace(
+        start_scan=lambda: scans.append("scan"),
+        tick=lambda: None,
+        stop_scan=lambda _timeout: True,
+    )
+    registry: Any = SimpleNamespace(all=lambda: [SimpleNamespace(player=p) for p in players])
+    return SharedLibrary(library, registry), scans
+
+
+async def test_the_startup_scan_waits_for_every_station_s_first_song(monkeypatch) -> None:
+    """ADR-0008-35. The scan starts once each station with a mix bus has started a song."""
+    first, second = (
+        SimpleNamespace(bus=object(), first_song_started=threading.Event()) for _ in range(2)
+    )
+    browser = SimpleNamespace(bus=None, first_song_started=threading.Event())
+    shared, scans = _scan_rig(monkeypatch, [first, second, browser])
+    await shared.start()
+    await asyncio.sleep(0.4)
+    first.first_song_started.set()
+    await asyncio.sleep(0.4)
+    assert scans == []
+    second.first_song_started.set()
+    await asyncio.sleep(0.4)
+    assert scans == ["scan"]
+    assert shared._ticker is not None
+    shared._ticker.cancel()
+
+
+async def test_the_startup_scan_starts_anyway_after_the_wait(monkeypatch) -> None:
+    """ADR-0008-35. A station that never plays delays the scan by the wait at most."""
+    monkeypatch.setattr(stations, "FIRST_SONG_WAIT_S", 0.3)
+    idle = SimpleNamespace(bus=object(), first_song_started=threading.Event())
+    shared, scans = _scan_rig(monkeypatch, [idle])
+    await shared.start()
+    await asyncio.sleep(0.8)
+    assert scans == ["scan"]
+    assert shared._ticker is not None
+    shared._ticker.cancel()
+
+
+async def test_a_shutdown_before_the_first_song_starts_no_scan(monkeypatch) -> None:
+    """ADR-0008-35. Shutdown cancels a scan still waiting for the first songs."""
+    waiting = SimpleNamespace(bus=object(), first_song_started=threading.Event())
+    shared, scans = _scan_rig(monkeypatch, [waiting])
+    await shared.start()
+    shared.stop_scan(1.0)
+    waiting.first_song_started.set()
+    await asyncio.sleep(0.4)
+    assert scans == []
+    assert shared._ticker is not None
+    shared._ticker.cancel()
