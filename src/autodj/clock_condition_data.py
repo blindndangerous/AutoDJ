@@ -6,6 +6,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,31 @@ class BeetsConditions:
         self._discovered = False
         self._check = None
 
+    def _rematch(self, paths: list[str] | None, db_path: Path, music_dir: Any) -> bool:
+        """Count the values read against the library's new *paths*, without reading Beets.
+
+        Beets' values are keyed by the library path each Beets path names,
+        whatever songs the library holds, so when songs were only added or
+        removed they still hold; only the check's counts change.  Not when
+        the paths were matched from a guessed folder, or no song matched
+        before or would now: :func:`autodj.beets_paths.match` then guesses
+        again.  Returns whether the values were kept.
+        """
+        from autodj.beets_paths import remember
+        from autodj.catalog import normalize_path
+
+        check = self._check
+        if paths is None or check is None or not check.matched or check.root != music_dir:
+            return False
+        keys = {normalize_path(path) for path in paths}
+        matched = len(keys & self._items.keys())
+        if not matched:
+            return False
+        self._check = replace(check, library=len(keys), matched=matched)
+        remember(db_path, music_dir, self._check, len(paths))
+        self._paths = paths
+        return True
+
     def read(
         self, fields: Iterable[str] = (), entries: Sequence[Any] | None = None
     ) -> tuple[frozenset[str], dict[str, dict[str, Any]], PathCheck | None] | None:
@@ -80,10 +106,12 @@ class BeetsConditions:
 
         ``None`` without a Beets database.  *entries* are the library's
         music entries the values are matched against, the current ones
-        when not given; the values are read again when the database or
-        the entries' paths change, not when only a song's tags or analysis
-        do (#584).  The returned mapping stays the same object until then,
-        so caches keyed on it hold.
+        when not given; the values are read again when the database
+        changes, not when only a song's tags or analysis do (#584).  When
+        songs were only added or removed, the values read are counted
+        against the new songs again, without reading Beets
+        (:meth:`_rematch`).  The returned mapping stays the same object
+        until Beets is read again, so caches keyed on it hold.
 
         Raises:
             OSError, sqlite3.Error: The database could not be read; the
@@ -115,7 +143,9 @@ class BeetsConditions:
             )
             if entries is not self._cached_entries:
                 self._cached_entries = entries
-                if paths != self._paths:
+                if paths != self._paths and not (
+                    key == self._key and self._rematch(paths, db_path, music_dir)
+                ):
                     self._key = None  # Other songs: match the paths again.
             if key != self._key:
                 self._key = key
