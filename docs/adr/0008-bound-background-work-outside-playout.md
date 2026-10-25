@@ -581,9 +581,11 @@ database, the categories, a playlist, the folders, or the hour for relative date
 took.
 
 In a benchmark of a real two-station server on 80,000 synthetic songs, pinned to 4 cores, the
-time from each station's start to its first audio fell from 15.1 to 15.7 seconds to 4.4 to
-4.6 seconds, and the worst delay of a paced 20 ms thread from 166 to 172 ms to 53 to 60 ms.
+time from each station's start to its first audio fell from 15.1 to 15.7 seconds to 4.5 to
+4.7 seconds, and the worst delay of a paced 20 ms thread from 166 to 178 ms to 64 to 66 ms.
 Without the scan wait it was about 8.1 seconds, and without the shared Beets read about 7.0 to
-7.4 seconds. A pick after a change to one song still works every category out again; making that
-incremental is left for later. These are measurements on one machine, not a latency guarantee.
+7.4 seconds. While songs played, a change to one song made the next picks work every category
+out again; the worst delay then was 103 to 108 ms before and 25 to 27 ms after. Freezing the
+rebuilt categories and Beets values out of the collector made no measurable difference, so they
+are not frozen. Making that rebuild incremental is left for later. These are measurements on one machine, not a latency guarantee.
 Contract ADR-0008-35 records this; the ADR remains Proposed.
