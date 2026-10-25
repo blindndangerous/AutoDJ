@@ -11,12 +11,16 @@
 // the station router's routes: tests/integration/test_station_routes.py
 // compares the two, so a new station route cannot be forgotten here.
 //
-// The switcher is the APG menu button with menuitemradio items, in the
-// banner.  A native <select> was not used: Chrome and Edge on Windows
-// fire change on every arrow key while it is closed, and each change
-// would tear down the socket and reload every panel.  The menu commits
-// only on Enter, Space or a click, and the button's name always says
-// which station the page controls.
+// The switcher is a disclosure in the banner (#576): the Station button
+// shows or hides a list of station buttons right after it.  A native
+// <select> was not used: Chrome and Edge on Windows fire change on every
+// arrow key while it is closed, and each change would tear down the
+// socket and reload every panel.  An APG menu button was used before, but
+// NVDA raced its popup: it announced the menu container and sometimes
+// swallowed the first Escape (#571).  A disclosure has no popup role, so
+// there is no popup event to race.  A switch happens only when a station
+// button is pressed, and the Station button's name always says which
+// station the page controls.
 
 export const DEFAULT_STATION = "default";
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
@@ -281,7 +285,7 @@ function listenerText(count) {
   return `${n} listener${n === 1 ? "" : "s"}`;
 }
 
-// How a station reads in the menu: "Night Owl Radio, on air, 3 listeners".
+// How a station reads in the switcher: "Night Owl Radio, on air, 3 listeners".
 export function stationItemText(entry) {
   if (!isOnAir(entry)) {
     return `${entry.name}, ${entry.state === "stopped" ? "off air" : "stopping"}`;
@@ -321,67 +325,99 @@ export function rememberStationInAddress(slug, { location: loc = globalThis.loca
 }
 
 // ----------------------------------------------------------------
-// The switcher: APG menu button, menuitemradio items.
+// The switcher: a disclosure button and a list of station buttons.
 //
-//   Button: Enter, Space or Down Arrow opens on the checked item; Up Arrow
-//   opens on the last item.
-//   Menu: Up and Down Arrow move (wrapping), Home and End go to the ends,
-//   a letter moves to the next station starting with it.  Enter or Space
-//   chooses and closes; Escape closes; both put focus on the button.  Tab
-//   closes and lets focus move on.  A click outside closes it.
+//   Station button: Enter, Space or a click shows the list and puts focus
+//   on the current station; pressed again, it hides the list.
+//   List: Tab and Shift+Tab move as on any buttons; Up and Down Arrow move
+//   between the stations (wrapping), Home and End go to the ends.  Enter,
+//   Space or a click chooses.  Escape hides the list.  Both put focus on
+//   the Station button.  Nothing else hides it: not focus leaving, not a
+//   click elsewhere.  Letters are the page's shortcuts, as on any button.
 //
-// The button's name is always "Station: <name>", so the current station
-// is heard on every visit and nothing has to be announced while moving.
+// The Station button's name is always "Station: <name>", so the current
+// station is heard on every visit and nothing has to be announced while
+// moving.  The current station's button has aria-current="true".
 // ----------------------------------------------------------------
 
-export function installStationSwitcher({ wrap, button, menu, onChoose }) {
-  if (!wrap || !button || !menu) return null;
+// How long the list stays shown, collapsed, before focus goes back to the
+// Station button.  NVDA with Firefox reads the old state if focus moves
+// sooner: after one animation frame it still said "expanded" on the
+// collapsed button, and after 60 ms it said "collapsed" (#576).
+export const CLOSE_FOCUS_DELAY_MS = 100;
+
+export function installStationSwitcher({ wrap, button, list, onChoose }) {
+  if (!wrap || !button || !list) return null;
   const doc = button.ownerDocument;
   let items = [];
-  let typed = "";
-  let typedAt = 0;
+  let expanded = false;
+  let closeTimer = 0;
+  // The station chosen while its switch is under way: the list stays open,
+  // with focus on it, until the switch has renamed the Station button.
+  let choosing = null;
 
   function isOpen() {
-    return !menu.hidden;
+    return expanded;
   }
 
+  // Each station is an <li> holding its <button>, kept and updated in
+  // place, so a push while the list is open never moves focus.  Each
+  // button has its own click listener: one on the list made NVDA call the
+  // list "clickable".
   function render() {
-    const list = knownStations();
-    wrap.hidden = list.length < 2;
+    const stations = knownStations();
+    wrap.hidden = stations.length < 2;
     // The button's name comes from its text, "Station: <name>", so what
     // is seen is what is heard (WCAG 2.5.3).
     const label = button.querySelector(".station-switcher-name");
     const name = stationName();
     if (label && label.textContent !== name) label.textContent = name;
-    const focusedSlug = isOpen() ? doc.activeElement?.dataset?.station : null;
-    items = list.map((station) => {
-      let item = menu.querySelector(`[data-station="${station.slug}"]`);
+    const focusedSlug = isOpen() && list.contains(doc.activeElement)
+      ? doc.activeElement.dataset.station : null;
+    items = stations.map((station) => {
+      let item = list.querySelector(`button[data-station="${station.slug}"]`);
       if (!item) {
-        item = doc.createElement("li");
-        item.setAttribute("role", "menuitemradio");
-        item.tabIndex = -1;
+        item = doc.createElement("button");
+        item.type = "button";
         item.dataset.station = station.slug;
         item.className = "station-switcher-item";
+        const chosen = item;
+        item.addEventListener("click", () => choose(chosen));
+        const row = doc.createElement("li");
+        row.append(item);
       }
       const text = stationItemText(station);
       if (item.textContent !== text) item.textContent = text;
-      const checked = station.slug === currentStation() ? "true" : "false";
-      if (item.getAttribute("aria-checked") !== checked) item.setAttribute("aria-checked", checked);
+      if (station.slug === currentStation()) {
+        if (item.getAttribute("aria-current") !== "true") item.setAttribute("aria-current", "true");
+      } else if (item.hasAttribute("aria-current")) {
+        item.removeAttribute("aria-current");
+      }
       return item;
     });
-    const stale = [...menu.children].filter((child) => !items.includes(child));
+    const rows = items.map((item) => item.parentElement);
+    const stale = [...list.children].filter((child) => !rows.includes(child));
     for (const child of stale) child.remove();
-    items.forEach((item, index) => {
-      if (menu.children[index] !== item) menu.insertBefore(item, menu.children[index] || null);
+    rows.forEach((row, index) => {
+      if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
     });
-    if (isOpen() && focusedSlug && !items.some((item) => item.dataset.station === focusedSlug)) {
-      focusItem(checkedIndex());
+    if (wrap.hidden) {
+      close(false);
+      return;
     }
-    if (wrap.hidden && isOpen()) close(false);
+    // The switch has happened, and the Station button already has its
+    // new name: now the list closes.
+    if (choosing && choosing === currentStation()) {
+      close(true);
+      return;
+    }
+    if (isOpen() && focusedSlug && !items.some((item) => item.dataset.station === focusedSlug)) {
+      focusItem(currentIndex());
+    }
   }
 
-  function checkedIndex() {
-    const index = items.findIndex((item) => item.getAttribute("aria-checked") === "true");
+  function currentIndex() {
+    const index = items.findIndex((item) => item.getAttribute("aria-current") === "true");
     return index < 0 ? 0 : index;
   }
 
@@ -391,58 +427,88 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
     items[wrapped].focus();
   }
 
-  function open(index) {
+  function cancelPendingClose() {
+    if (closeTimer) globalThis.clearTimeout(closeTimer);
+    closeTimer = 0;
+  }
+
+  // The list shows and aria-expanded changes before focus moves, all in
+  // one task, with no delay: there is no popup for NVDA to race.  Pressed
+  // while a close is pending, the Station button keeps the list open.
+  function open() {
     if (wrap.hidden || !items.length) return;
-    menu.hidden = false;
+    cancelPendingClose();
+    expanded = true;
+    list.hidden = false;
     button.setAttribute("aria-expanded", "true");
-    focusItem(index);
+    focusItem(currentIndex());
   }
 
+  // Collapsed at once, with the list still shown; CLOSE_FOCUS_DELAY_MS
+  // later, focus goes to the Station button and then the list hides, in
+  // the same task.  Moved sooner, focus reached NVDA before the collapsed
+  // state did.  Hidden first, the list dropped focus on the page body for
+  // a moment, and after a switch's title change NVDA read the whole
+  // document again.  A second Escape or choice while the close is pending
+  // does nothing, as the list is already collapsed.
   function close(returnFocus = true) {
-    if (!isOpen()) return;
-    menu.hidden = true;
+    choosing = null;
+    if (!expanded) return;
+    expanded = false;
     button.setAttribute("aria-expanded", "false");
-    typed = "";
-    if (returnFocus) button.focus();
+    cancelPendingClose();
+    if (!returnFocus) {
+      list.hidden = true;
+      return;
+    }
+    closeTimer = globalThis.setTimeout(() => {
+      closeTimer = 0;
+      if (expanded) return;
+      const active = doc.activeElement;
+      const returning = !active || active === doc.body || active === button || list.contains(active);
+      if (returning && !doc.querySelector("dialog[open]")) button.focus();
+      list.hidden = true;
+    }, CLOSE_FOCUS_DELAY_MS);
   }
 
+  // The current station only closes the list.  Another one starts the
+  // switch, and the list closes once the switch has renamed the Station
+  // button (in render).  A switch that does not happen, such as one
+  // cancelled in a confirmation, leaves the list open on that station.
   function choose(item) {
     const slug = item?.dataset?.station;
-    close(true);
-    if (slug) onChoose(slug);
-  }
-
-  // A letter moves to the next station whose name starts with it; more
-  // letters typed quickly spell out a longer start, from the item focused.
-  function typeAhead(key) {
-    const now = Date.now();
-    typed = now - typedAt > 700 ? key : typed + key;
-    typedAt = now;
-    const at = items.indexOf(doc.activeElement);
-    const from = typed.length > 1 ? at : at + 1;
-    const order = [...items.slice(from), ...items.slice(0, from)];
-    const match = order.find((item) =>
-      stationName(item.dataset.station).toLowerCase().startsWith(typed));
-    if (match) match.focus();
+    if (!slug || !expanded || choosing) return;
+    if (slug === currentStation()) {
+      close(true);
+      return;
+    }
+    choosing = slug;
+    let switching = null;
+    try {
+      switching = onChoose(slug);
+    } catch (_) {
+      switching = null;
+    }
+    Promise.resolve(switching).catch(() => {}).then(() => {
+      if (choosing === slug) choosing = null;
+    });
   }
 
   button.addEventListener("click", () => {
     if (isOpen()) close(true);
-    else open(checkedIndex());
+    else open();
   });
-  button.addEventListener("keydown", (event) => {
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
-    if (["Enter", " ", "ArrowDown"].includes(event.key)) {
-      event.preventDefault();
-      open(checkedIndex());
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      open(items.length - 1);
-    }
+  wrap.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !isOpen()) return;
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    close(true);
   });
-  menu.addEventListener("keydown", (event) => {
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
+  list.addEventListener("keydown", (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
     const index = items.indexOf(doc.activeElement);
+    if (index < 0) return;
     switch (event.key) {
       case "ArrowDown":
         focusItem(index + 1);
@@ -456,35 +522,11 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
       case "End":
         focusItem(items.length - 1);
         break;
-      case "Enter":
-      case " ":
-        choose(doc.activeElement);
-        break;
-      case "Escape":
-        close(true);
-        break;
-      case "Tab":
-        close(false);
-        return;
       default:
-        if (event.key.length === 1 && /\S/.test(event.key)) {
-          typeAhead(event.key.toLowerCase());
-          break;
-        }
         return;
     }
     event.preventDefault();
     event.stopPropagation();
-  });
-  menu.addEventListener("click", (event) => {
-    const item = event.target.closest?.('[role="menuitemradio"]');
-    if (item && menu.contains(item)) choose(item);
-  });
-  doc.addEventListener("pointerdown", (event) => {
-    if (isOpen() && !wrap.contains(event.target)) close(false);
-  }, true);
-  menu.addEventListener("focusout", (event) => {
-    if (isOpen() && event.relatedTarget && !wrap.contains(event.relatedTarget)) close(false);
   });
 
   return { render, close, isOpen, focus: () => button.focus() };

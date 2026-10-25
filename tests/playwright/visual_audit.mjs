@@ -118,17 +118,20 @@
 //     focus to Switch.  /api/stations never receives a create: the stand-in
 //     answers every POST, so no audit run adds a station to the server.
 //
-//   - the station switcher (#70), a menu button in the banner: with its
-//     menu open it is measured like a view in every theme mode (axe-core,
-//     non-text contrast, focus rings) and at 320 px and 200 % text; and
-//     in the System light mode it opens with Enter on the checked item,
-//     draws a 2 px focus ring 3:1 on each item and 44 px targets, closes
-//     with Escape back on the button, and, when the server really has
-//     several stations, switches to each other station (the heading and
-//     the socket follow; a stopped one shows its off-air note and Start)
-//     and back.  A server with one station gets a stand-in second station
-//     in /api/stations, so the menu is always measured; it is never
-//     switched to.
+//   - the station switcher (#70, #576), a disclosure in the banner: with
+//     its list open it is measured like a view in every theme mode
+//     (axe-core, non-text contrast, focus rings) and at 320 px and 200 %
+//     text; and in the System light mode it opens with Enter on the
+//     current station's button, draws a 2 px focus ring 3:1 on each
+//     station and 44 px targets, moves with the arrows, Home, End, Tab
+//     and Shift+Tab, closes with Escape or the button pressed again back
+//     on the button, stays open when focus leaves or a click lands
+//     elsewhere, only closes when the current station is chosen, and,
+//     when the server really has several stations, switches to each
+//     other station (the heading and the socket follow; a stopped one
+//     shows its off-air note and Start) and back.  A server with one
+//     station gets a stand-in second station in /api/stations, so the
+//     list is always measured; it is never switched to.
 //
 //   - the public status pages: /status, and each station's
 //     /stations/<slug>/status that /api/stations lists (a stopped
@@ -1563,15 +1566,19 @@ function realStations(page) {
   return list.length >= 2 ? list : [];
 }
 
-// The switcher's menu, open on the checked station, as a state of Now Playing.
-async function openStationMenu(page, visit) {
+// The switcher's list, open on the current station, as a state of Now Playing.
+// Only the Station button closes it once focus has moved on.
+async function openStationList(page, visit) {
   const button = page.locator("#station-button");
   await button.waitFor({ state: "visible", timeout: 5000 });
   await button.focus();
   await page.keyboard.press("Enter");
-  await page.locator("#station-menu").waitFor({ state: "visible" });
-  await visit("now/station-menu");
-  if (await page.locator("#station-menu").isVisible()) await page.keyboard.press("Escape");
+  await page.locator("#station-list").waitFor({ state: "visible" });
+  await visit("now/station-list");
+  if (await page.locator("#station-list").isVisible()) {
+    await button.click();
+    await page.locator("#station-list").waitFor({ state: "hidden" });
+  }
 }
 
 async function openEveryCard(page) {
@@ -1665,7 +1672,7 @@ async function eachTarget(page, measure) {
       if (view === "voice") await openVoiceStates(page, visit);
       if (view === "ads") await openAdsStates(page, visit);
       if (view === "now") {
-        await openStationMenu(page, visit);
+        await openStationList(page, visit);
         await openTalkState(page, visit);
       }
       continue;
@@ -2720,9 +2727,12 @@ async function liveDjProblems(page) {
   return problems;
 }
 
-// The station switcher by keyboard (#70): the APG menu button pattern,
-// focus rings and target sizes on the items, and with real stations the
-// switch itself, there and back.
+// The station switcher by keyboard (#70, #576): a disclosure.  Enter on
+// the Station button shows the list on the current station; Up, Down,
+// Home, End, Tab and Shift+Tab move between the station buttons; focus
+// rings and target sizes on each; Escape, the button pressed again and
+// choosing the current station close it, and nothing else does.  With
+// real stations, the switch itself, there and back.
 async function stationSwitcherProblems(page) {
   const problems = [];
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
@@ -2735,13 +2745,16 @@ async function stationSwitcherProblems(page) {
     const { parse, over, ratio, behind } = window.__contrast;
     const back = behind(element);
     const rect = element.getBoundingClientRect();
+    const list = document.getElementById("station-list");
     return {
       id: element.id,
+      tag: element.tagName,
       role: element.getAttribute("role"),
       station: element.dataset.station || null,
-      checked: element.getAttribute("aria-checked"),
+      current: element.getAttribute("aria-current"),
+      index: [...list.querySelectorAll("button")].indexOf(element),
       expanded: document.getElementById("station-button").getAttribute("aria-expanded"),
-      open: !document.getElementById("station-menu").hidden,
+      open: !list.hidden,
       ring: style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2
         ? ratio(over(parse(style.outlineColor), back), back) : 0,
       height: rect.height,
@@ -2750,19 +2763,42 @@ async function stationSwitcherProblems(page) {
       offAir: !document.getElementById("station-off-air").hidden,
     };
   });
+  const closedOnButton = (now) => !now.open && now.id === "station-button" && now.expanded === "false";
+  // The list collapses at once; focus moves to the Station button, and the
+  // list hides, CLOSE_FOCUS_DELAY_MS later (#576).  Wait for the list to
+  // hide, or to stay open, before reading where focus went.
+  const frames = () => page.waitForFunction(() => document.getElementById("station-list").hidden
+    || document.getElementById("station-button").getAttribute("aria-expanded") === "true",
+  null, { timeout: 2000 }).catch(() => {});
+  // Focus that left the switcher for nothing, the page body, which NVDA
+  // reads as the whole document.  Read and reset.
+  await page.evaluate(() => {
+    window.__switcherLost = 0;
+    document.getElementById("station-switcher").addEventListener("focusout", (event) => {
+      if (!event.relatedTarget) window.__switcherLost += 1;
+    });
+  });
+  const lostFocus = () => page.evaluate(() => {
+    const lost = window.__switcherLost;
+    window.__switcherLost = 0;
+    return lost;
+  });
   const size = await button.boundingBox();
   if (!size || size.height < 44 || size.width < 44) {
     problems.push(`station button ${Math.round(size?.width || 0)}x${Math.round(size?.height || 0)} px, under 44 px`);
   }
+  const roles = await page.locator("#station-switcher [role], #station-switcher [aria-haspopup]").count();
+  if (roles) problems.push(`${roles} elements in the switcher carry a role or aria-haspopup`);
   await button.focus();
   await page.keyboard.press("Enter");
   await settle(page);
   let now = await state();
-  if (!now.open || now.expanded !== "true") problems.push("Enter did not open the menu");
-  if (now.role !== "menuitemradio" || now.checked !== "true") {
-    problems.push(`Enter opened on ${now.station} (${now.checked}), not the checked station`);
+  if (!now.open || now.expanded !== "true") problems.push("Enter did not open the list");
+  if (now.tag !== "BUTTON" || now.role !== null || now.current !== "true") {
+    problems.push(`Enter opened on ${now.station} (${now.tag} ${now.role} ${now.current}), not the current station's button`);
   }
-  const items = await page.locator("#station-menu [role='menuitemradio']").count();
+  const items = await page.locator("#station-list button").count();
+  const start = now.index;
   for (let step = 0; step < items; step += 1) {
     now = await state();
     if (now.ring < 3) problems.push(`${now.station} focus ring ${now.ring.toFixed(2)}:1`);
@@ -2772,16 +2808,61 @@ async function stationSwitcherProblems(page) {
     await settle(page);
   }
   now = await state();
-  if (now.checked !== "true") problems.push("Down Arrow did not wrap to the first station");
-  await page.keyboard.press("Escape");
+  if (now.index !== start) problems.push("Down Arrow did not wrap round to the current station");
+  await page.keyboard.press("End");
   now = await state();
-  if (now.open || now.id !== "station-button" || now.expanded !== "false") {
-    problems.push("Escape did not close the menu and return to the button");
+  if (now.index !== items - 1) problems.push(`End went to station ${now.index}, not the last`);
+  await page.keyboard.press("Home");
+  now = await state();
+  if (now.index !== 0) problems.push(`Home went to station ${now.index}, not the first`);
+  await page.keyboard.press("ArrowUp");
+  now = await state();
+  if (now.index !== items - 1) problems.push("Up Arrow did not wrap round to the last station");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Tab");
+  now = await state();
+  if (now.index !== 1 || !now.open) problems.push(`Tab from the first station went to ${now.id || now.station}`);
+  await page.keyboard.press("Shift+Tab");
+  now = await state();
+  if (now.index !== 0 || !now.open) problems.push(`Shift+Tab went to ${now.id || now.station}, not the first station`);
+  await lostFocus();
+  await page.keyboard.press("Escape");
+  await frames();
+  now = await state();
+  if (!closedOnButton(now)) problems.push("Escape did not close the list and return to the button");
+  if (await lostFocus()) problems.push("Escape let focus fall to the page body");
+  // Pressed again, the button closes the list.
+  await page.keyboard.press("Enter");
+  await button.click();
+  await frames();
+  now = await state();
+  if (!closedOnButton(now)) problems.push("pressing the button again did not close the list");
+  // Focus leaving and a click elsewhere leave the list open.
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Tab");
+  now = await state();
+  if (!now.open || now.index >= 0) problems.push(`Tab past the last station: list open ${now.open}, focus on ${now.station}`);
+  await page.locator("#page-heading").click();
+  now = await state();
+  if (!now.open || now.expanded !== "true") problems.push("a click outside closed the list");
+  // Choosing the current station only closes the list.
+  await page.locator("#station-list button[aria-current='true']").focus();
+  const heading = now.heading;
+  await lostFocus();
+  await page.keyboard.press("Enter");
+  await frames();
+  await settle(page);
+  now = await state();
+  if (await lostFocus()) problems.push("choosing the current station let focus fall to the page body");
+  if (!closedOnButton(now) || now.heading !== heading) {
+    problems.push(`choosing the current station: open ${now.open}, focus on ${now.id || now.station}, heading ${now.heading}`);
   }
   const stations = realStations(page);
   for (const [index, station] of stations.entries()) {
     if (index === 0) continue;
     await button.focus();
+    await lostFocus();
     await page.keyboard.press("Enter");
     await page.keyboard.press("Home");
     for (let step = 0; step < index; step += 1) await page.keyboard.press("ArrowDown");
@@ -2793,10 +2874,12 @@ async function stationSwitcherProblems(page) {
       ? page.locator("#station-off-air").waitFor({ state: "visible", timeout: 10000 })
       : page.waitForFunction(() => document.getElementById("conn-status").className === "connected",
         null, { timeout: 10000 })).catch(() => {});
+    await frames();
     await settle(page);
     now = await state();
     if (now.heading !== `AutoDJ: ${station.name}`) problems.push(`switch to ${station.slug}: heading ${now.heading}`);
-    if (now.id !== "station-button") problems.push(`switch to ${station.slug}: focus on ${now.id || now.role}`);
+    if (!closedOnButton(now)) problems.push(`switch to ${station.slug}: focus on ${now.id || now.station}, list open ${now.open}`);
+    if (await lostFocus()) problems.push(`switch to ${station.slug} let focus fall to the page body`);
     if (station.state === "stopped" && !now.offAir) problems.push(`${station.slug} off air not shown`);
     const violations = await axeViolations(page);
     if (violations.length) problems.push(`${station.slug}: ${JSON.stringify(violations)}`);

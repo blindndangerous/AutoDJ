@@ -8,6 +8,7 @@ import {
   staleActionText,
 } from "../../src/autodj/static/modules/api-client.js";
 import {
+  CLOSE_FOCUS_DELAY_MS,
   DEFAULT_STATION,
   STATION_ROUTES,
   controllingText,
@@ -126,7 +127,7 @@ describe("the current station", () => {
     expect(() => selectStation("../x")).toThrow(TypeError);
   });
 
-  it("names the station in the menu, the description and the announcement", () => {
+  it("names the station in the switcher, the description and the announcement", () => {
     expect(stationItemText(AUTODJ)).toBe("AutoDJ, on air, 3 listeners");
     expect(stationItemText(OWL)).toBe("Night Owl Radio, on air, 1 listener");
     expect(stationItemText(OLDIES)).toBe("Oldies, off air");
@@ -258,143 +259,310 @@ describe("requests while switching", () => {
   });
 });
 
-describe("the station switcher (APG menu button)", () => {
+describe("the station switcher (a disclosure, #576)", () => {
   let chosen;
   let switcher;
+  // Whether onChoose refuses the switch, as a cancelled confirmation does.
+  let refuse;
 
+  // onChoose stands in for the page's switch: a moment later, the station
+  // changes and the page renders the switcher again.
   function setUp(list = [AUTODJ, OWL, OLDIES]) {
     document.body.innerHTML = `
+      <button id="before">Before</button>
       <div id="wrap" hidden>
-        <button type="button" id="station-button" aria-haspopup="menu" aria-expanded="false"
-          aria-controls="station-menu"><span>Station:</span> <span class="station-switcher-name"></span></button>
-        <ul id="station-menu" role="menu" aria-labelledby="station-button" hidden></ul>
+        <button type="button" id="station-button" aria-expanded="false"
+          aria-controls="station-list"><span>Station:</span> <span class="station-switcher-name"></span></button>
+        <ul id="station-list" hidden></ul>
       </div>
       <button id="after">After</button>`;
     setKnownStations(list);
     chosen = [];
+    refuse = false;
+    const listElement = document.getElementById("station-list");
+    vi.spyOn(listElement, "addEventListener");
     switcher = installStationSwitcher({
       wrap: document.getElementById("wrap"),
       button: document.getElementById("station-button"),
-      menu: document.getElementById("station-menu"),
-      onChoose: (slug) => chosen.push(slug),
+      list: listElement,
+      onChoose: async (slug) => {
+        chosen.push(slug);
+        await Promise.resolve();
+        if (refuse) return;
+        selectStation(slug);
+        switcher.render();
+      },
     });
     switcher.render();
   }
 
   const button = () => document.getElementById("station-button");
-  const menu = () => document.getElementById("station-menu");
-  const items = () => [...menu().querySelectorAll('[role="menuitemradio"]')];
-  const key = (target, name, init = {}) => target.dispatchEvent(
-    new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init }));
+  const list = () => document.getElementById("station-list");
+  const items = () => [...list().querySelectorAll("button")];
+  const name = () => button().textContent.replace(/\s+/g, " ").trim();
+  const key = (target, keyName, init = {}) => {
+    const event = new KeyboardEvent("keydown", { key: keyName, bubbles: true, cancelable: true, ...init });
+    target.dispatchEvent(event);
+    return event;
+  };
+  const open = () => {
+    button().focus();
+    button().click();
+  };
+  // Runs out the pending close: focus to the Station button, then hidden.
+  const nextFrame = () => vi.advanceTimersByTime(CLOSE_FOCUS_DELAY_MS);
+  // Lets the stand-in switch's promises run.
+  const settle = async () => {
+    for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+  };
 
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     reset();
     setUp();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
   it("is hidden with one station and names the current one in the button", () => {
     expect(document.getElementById("wrap").hidden).toBe(false);
-    expect(button().textContent.replace(/\s+/g, " ").trim()).toBe("Station: AutoDJ");
+    expect(name()).toBe("Station: AutoDJ");
     setUp([AUTODJ]);
     expect(document.getElementById("wrap").hidden).toBe(true);
   });
 
-  it("lists every station as a menuitemradio, the current one checked", () => {
+  it("lists every station as a plain button in a list item, the current one aria-current", () => {
+    expect(list().getAttribute("role")).toBeNull();
+    expect([...list().children].map((child) => child.tagName)).toEqual(["LI", "LI", "LI"]);
     expect(items().map((item) => item.textContent)).toEqual([
       "AutoDJ, on air, 3 listeners", "Night Owl Radio, on air, 1 listener", "Oldies, off air",
     ]);
-    expect(items().map((item) => item.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
-    expect(items().every((item) => item.tabIndex === -1)).toBe(true);
+    expect(items().map((item) => item.getAttribute("aria-current"))).toEqual(["true", null, null]);
+    for (const item of items()) {
+      expect(item.getAttribute("type")).toBe("button");
+      expect(item.hasAttribute("role")).toBe(false);
+      expect(item.hasAttribute("aria-pressed")).toBe(false);
+      expect(item.hasAttribute("aria-checked")).toBe(false);
+      // In the tab order, like any button.
+      expect(item.tabIndex).toBe(0);
+    }
+    expect(document.querySelector('[role="menu"], [role="menuitemradio"], [aria-haspopup]')).toBeNull();
   });
 
-  it.each(["Enter", " ", "ArrowDown"])("opens on the checked item with %j", (name) => {
+  it("puts no click listener on the list, so it is not read as clickable", () => {
+    const types = list().addEventListener.mock.calls.map(([type]) => type);
+    expect(types).not.toContain("click");
+    expect(types).not.toContain("mousedown");
+    expect(types).not.toContain("mouseup");
+  });
+
+  it("opens on the current station, setting aria-expanded before focus moves", () => {
     selectStation("nightowl");
     switcher.render();
-    button().focus();
-    key(button(), name);
-    expect(menu().hidden).toBe(false);
+    let expandedOnFocus = null;
+    list().addEventListener("focusin", () => {
+      expandedOnFocus = button().getAttribute("aria-expanded");
+    });
+    open();
+    // No delay on the way in.
+    expect(vi.getTimerCount()).toBe(0);
+    expect(list().hidden).toBe(false);
     expect(button().getAttribute("aria-expanded")).toBe("true");
+    expect(expandedOnFocus).toBe("true");
     expect(document.activeElement).toBe(items()[1]);
     expect(chosen).toEqual([]);
   });
 
-  it("opens on the last item with Up Arrow", () => {
-    key(button(), "ArrowUp");
-    expect(document.activeElement).toBe(items()[2]);
-  });
-
-  it("moves with the arrows (wrapping), Home, End and a typed letter", () => {
-    key(button(), "Enter");
-    key(items()[0], "ArrowUp");
+  it("moves with Up and Down (wrapping), Home and End, without choosing", () => {
+    open();
+    expect(key(items()[0], "ArrowUp").defaultPrevented).toBe(true);
     expect(document.activeElement).toBe(items()[2]);
     key(items()[2], "ArrowDown");
     expect(document.activeElement).toBe(items()[0]);
-    key(items()[0], "End");
+    key(items()[0], "ArrowDown");
+    expect(document.activeElement).toBe(items()[1]);
+    key(items()[1], "End");
     expect(document.activeElement).toBe(items()[2]);
     key(items()[2], "Home");
     expect(document.activeElement).toBe(items()[0]);
-    const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
-    key(items()[0], "n");
-    expect(document.activeElement).toBe(items()[1]);
-    // Typed quickly, the letters spell a longer start from the same item.
-    key(items()[1], "i");
-    expect(document.activeElement).toBe(items()[1]);
-    clock.mockReturnValue(20_000);
-    key(items()[1], "o");
-    expect(document.activeElement).toBe(items()[2]);
-    clock.mockRestore();
-    // Nothing is chosen by moving.
+    expect(list().hidden).toBe(false);
     expect(chosen).toEqual([]);
   });
 
-  it("chooses with Enter or Space and puts focus back on the button", () => {
-    key(button(), "Enter");
+  it("has no first-letter jump: letters and Tab are left to the page", () => {
+    open();
+    for (const keyName of ["n", "o", "Tab"]) {
+      const event = key(items()[0], keyName);
+      expect(event.defaultPrevented, keyName).toBe(false);
+      expect(document.activeElement, keyName).toBe(items()[0]);
+    }
+    const shifted = key(items()[0], "Tab", { shiftKey: true });
+    expect(shifted.defaultPrevented).toBe(false);
+    expect(list().hidden).toBe(false);
+  });
+
+  it("switches, then collapses with the new name, then moves focus after the delay", async () => {
+    open();
     key(items()[0], "ArrowDown");
-    key(items()[1], "Enter");
+    const owl = document.activeElement;
+    let onFocus = null;
+    button().addEventListener("focus", () => {
+      onFocus = { expanded: button().getAttribute("aria-expanded"), name: name(), hidden: list().hidden };
+    });
+    owl.click();
+    // Under way: the list stays open, with focus on the station chosen.
     expect(chosen).toEqual(["nightowl"]);
-    expect(menu().hidden).toBe(true);
+    expect(button().getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(owl);
+    await settle();
+    // Switched: the button is renamed and collapsed, focus not yet moved.
+    expect(name()).toBe("Station: Night Owl Radio");
     expect(button().getAttribute("aria-expanded")).toBe("false");
+    expect(list().hidden).toBe(false);
+    expect(document.activeElement).toBe(owl);
+    nextFrame();
+    expect(list().hidden).toBe(true);
     expect(document.activeElement).toBe(button());
-    key(button(), "Enter");
-    key(document.activeElement, " ");
-    expect(chosen).toEqual(["nightowl", "default"]);
+    // Focus arrives on a collapsed button that already has its new name,
+    // while the list is still shown: it never falls to the page body.
+    expect(onFocus).toEqual({ expanded: "false", name: "Station: Night Owl Radio", hidden: false });
   });
 
-  it("closes without choosing on Escape, and on Tab without taking focus back", () => {
-    key(button(), "Enter");
+  it("leaves the list open on the station when the switch does not happen", async () => {
+    refuse = true;
+    open();
     key(items()[0], "ArrowDown");
-    key(items()[1], "Escape");
-    expect(menu().hidden).toBe(true);
+    const owl = document.activeElement;
+    owl.click();
+    // A second press while the first is under way does nothing.
+    owl.click();
+    await settle();
+    nextFrame();
+    expect(chosen).toEqual(["nightowl"]);
+    expect(list().hidden).toBe(false);
+    expect(button().getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(owl);
+    expect(name()).toBe("Station: AutoDJ");
+    // It can be chosen again.
+    refuse = false;
+    owl.click();
+    await settle();
+    nextFrame();
+    expect(chosen).toEqual(["nightowl", "nightowl"]);
     expect(document.activeElement).toBe(button());
-    key(button(), "Enter");
-    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
-    items()[0].dispatchEvent(tab);
-    expect(tab.defaultPrevented).toBe(false);
-    expect(menu().hidden).toBe(true);
+  });
+
+  it("only closes when the current station is chosen", async () => {
+    open();
+    items()[0].click();
+    expect(button().getAttribute("aria-expanded")).toBe("false");
+    nextFrame();
+    await settle();
+    expect(chosen).toEqual([]);
+    expect(list().hidden).toBe(true);
+    expect(document.activeElement).toBe(button());
+  });
+
+  it("closes on Escape: collapsed at once, then focus on the button, then hidden", () => {
+    open();
+    key(items()[0], "ArrowDown");
+    const order = [];
+    button().addEventListener("focus", () => order.push(`focus, hidden ${list().hidden}`));
+    const escape = key(items()[1], "Escape");
+    expect(escape.defaultPrevented).toBe(true);
+    expect(button().getAttribute("aria-expanded")).toBe("false");
+    // Focus stays in the list, still shown, until the delay is over.
+    vi.advanceTimersByTime(CLOSE_FOCUS_DELAY_MS - 1);
+    expect(document.activeElement).toBe(items()[1]);
+    expect(list().hidden).toBe(false);
+    // A second Escape while the close is pending does nothing more.
+    expect(key(items()[1], "Escape").defaultPrevented).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(order).toEqual(["focus, hidden false"]);
+    expect(list().hidden).toBe(true);
+    expect(document.activeElement).toBe(button());
+    // From the Station button itself too.
+    open();
+    button().focus();
+    key(button(), "Escape");
+    nextFrame();
+    expect(list().hidden).toBe(true);
+    expect(document.activeElement).toBe(button());
+    // Closed, Escape is left to the page.
+    expect(key(button(), "Escape").defaultPrevented).toBe(false);
     expect(chosen).toEqual([]);
   });
 
-  it("works with the mouse: the button toggles, an item chooses, outside closes", () => {
-    button().click();
-    expect(menu().hidden).toBe(false);
-    items()[2].click();
-    expect(chosen).toEqual(["oldies"]);
-    button().click();
-    document.getElementById("after").dispatchEvent(new Event("pointerdown", { bubbles: true }));
-    expect(menu().hidden).toBe(true);
+  it("stays open when reopened before the delayed close", () => {
+    open();
+    key(items()[0], "Escape");
+    open();
+    nextFrame();
+    expect(list().hidden).toBe(false);
+    expect(button().getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(items()[0]);
   });
 
-  it("keeps the items in step with pushes, without stealing focus", () => {
-    key(button(), "Enter");
+  it("closes when the button is pressed again, and on nothing else", () => {
+    open();
+    button().focus();
+    button().click();
+    expect(button().getAttribute("aria-expanded")).toBe("false");
+    nextFrame();
+    expect(list().hidden).toBe(true);
+    expect(document.activeElement).toBe(button());
+    open();
+    // Focus leaving and a click elsewhere leave it open.
+    const after = document.getElementById("after");
+    after.focus();
+    items()[1].dispatchEvent(new window.FocusEvent("focusout", { bubbles: true, relatedTarget: after }));
+    after.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    after.click();
+    document.getElementById("before").click();
+    nextFrame();
+    expect(list().hidden).toBe(false);
+    expect(button().getAttribute("aria-expanded")).toBe("true");
+    expect(chosen).toEqual([]);
+  });
+
+  it("updates each station in place while open, keeping focus", () => {
+    open();
     key(items()[0], "ArrowDown");
-    setKnownStations([AUTODJ, { ...OWL, listeners: 5 }, OLDIES]);
+    const owl = items()[1];
+    setKnownStations([AUTODJ, { ...OWL, listeners: 5 }, { ...OLDIES, state: "playing", listeners: 2 }]);
     switcher.render();
-    expect(document.activeElement).toBe(items()[1]);
-    expect(items()[1].textContent).toBe("Night Owl Radio, on air, 5 listeners");
+    expect(items()[1]).toBe(owl);
+    expect(document.activeElement).toBe(owl);
+    expect(owl.textContent).toBe("Night Owl Radio, on air, 5 listeners");
+    expect(items()[2].textContent).toBe("Oldies, on air, 2 listeners");
+    // A switch made elsewhere (Shift+]) moves the current mark, not focus.
     selectStation("nightowl");
     switcher.render();
-    expect(button().textContent).toContain("Night Owl Radio");
-    expect(items()[1].getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(owl);
+    expect(list().hidden).toBe(false);
+    expect(name()).toBe("Station: Night Owl Radio");
+    expect(items().map((item) => item.getAttribute("aria-current"))).toEqual([null, "true", null]);
+  });
+
+  it("moves focus to the current station when the focused one leaves the list", () => {
+    open();
+    key(items()[0], "End");
+    setKnownStations([AUTODJ, OWL]);
+    switcher.render();
+    expect(items()).toHaveLength(2);
+    expect(document.activeElement).toBe(items()[0]);
+  });
+
+  it("closes when the server is down to one station", () => {
+    open();
+    setKnownStations([AUTODJ]);
+    switcher.render();
+    expect(document.getElementById("wrap").hidden).toBe(true);
+    expect(list().hidden).toBe(true);
+    expect(button().getAttribute("aria-expanded")).toBe("false");
   });
 
   it("names a station not yet listed by its slug", () => {

@@ -66,15 +66,19 @@ station, stop AutoDJ and move its station folder away. There is no delete button
 
 With more than one station configured, the banner of the web page has a **Station** button after
 the AutoDJ heading, for example "Station: AutoDJ". It is hidden while the server has one station.
-It opens a menu that lists every station with its state, such as "Night Owl Radio, on air, 3
-listeners" or "Oldies Hour, off air"; the station the page controls has a tick and is checked.
+Pressing it shows a list of station buttons right after it, one for every station with its
+state, such as "Night Owl Radio, on air, 3 listeners" or "Oldies Hour, off air". The station the
+page controls has a tick and is read as current.
 
-- **Keyboard:** Enter, Space or Down Arrow opens the menu on the checked station, and Up Arrow on
-  the last one. Up and Down Arrow move through the stations, Home and End go to the first and
-  last, and typing a letter moves to the next station whose name starts with it. Enter or Space
-  switches to the station under focus; Escape closes the menu without switching. Both put focus
-  back on the Station button. Tab closes the menu and moves on. Moving through the menu never
-  switches; only Enter, Space or a click does.
+- **Keyboard:** Enter or Space on the Station button shows the list and moves focus to the
+  current station. Up and Down Arrow, Tab and Shift+Tab move through the stations, and Home and
+  End go to the first and last. Enter or Space switches to the station under focus, and the list
+  closes once the switch is made; choosing the current station only closes the list. If the
+  switch does not happen, for example when you answer No to leaving the station, focus stays on
+  that station in the open list. Escape closes the list without switching, and so does
+  pressing the Station button again. All three put focus back on the Station button. The list
+  stays open when focus moves on or you click elsewhere. Moving through the list never switches;
+  only pressing a station button does. Letters are the page's shortcuts, as on any button.
 - **Shortcuts:** `c` moves focus to the Station button, Shift+C says which station the page
   controls, whether it is on air, its listeners and its song, and Shift+[ and Shift+] switch to the
   previous and next station.
@@ -86,8 +90,9 @@ listeners" or "Oldies Hour, off air"; the station the page controls has a tick a
   song points, Stereo Tool presets and paired devices are shared by all stations.
 - **How it says so:** the heading becomes "AutoDJ: Night Owl Radio", the browser tab's title
   ends with "Night Owl Radio - AutoDJ", the page's main landmark is named after the station, and
-  each station tab's name ends with it. The switch is announced once, for example "Now
-  controlling Night Owl Radio. On air, 3 listeners. Playing Artist – Title." A screen reader says
+  each station tab's name ends with it. The switch is announced once, for example "Night Owl
+  Radio. Playing Artist — Title. On air, 3 listeners.", or "Now controlling Oldies Hour." for a
+  station that is off air. A screen reader says
   "On Night Owl Radio" after each control that changes what is on air (Play or Pause, Skip,
   queue changes, carts, Run now, profile Apply, listener Disconnect and Ban, the stream settings
   and recording) and "Shared by all stations" after the Library tools tab and song points.
