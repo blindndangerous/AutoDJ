@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -664,10 +665,27 @@ def test_the_clockwheel_and_every_station_read_beets_once(tmp_path, monkeypatch)
     assert shared.snapshot(["mood"])[1] is values
     assert len(reads) == 1
 
-    # A song was added: the first reader reads every field again, once.
-    entries.value = (*entries.value, song(music / "3.flac"))
+    # Songs were added and removed: the values read are counted against the
+    # new songs, and Beets is not read again (a removal cost a full read before).
+    entries.value = (*entries.value[1:], song(music / "3.flac"))
     for index in stations:
-        index.members()
+        assert index.members() == {"c1": ("Rock", frozenset())}
+    assert shared.snapshot(["mood"])[1] is values
+    assert len(reads) == 1
+    check = shared.read()[2]
+    assert check is not None and (check.library, check.matched) == (3, 1)
+    from autodj.beets_paths import latest
+
+    assert latest(cfg) == check  # what the library page shows, without a read of its own
+
+    # The database changed: the first reader reads every field again, once.
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE items SET genre = 'Rock' WHERE id = 2")
+    conn.commit()
+    conn.close()
+    os.utime(db, ns=(time.time_ns() + 10**9, time.time_ns() + 10**9))
+    for index in stations:
+        assert index.members() == {"c1": ("Rock", frozenset({songs[1].path}))}
     assert shared.snapshot(["mood"])[1] is not values
     assert len(reads) == 2 and {"genre", "mood"} <= reads[1]
 

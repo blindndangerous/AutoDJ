@@ -344,3 +344,11 @@ successor's pick works versions out as before. In the restart benchmark, first a
 master started fell from 1.10 to 0.09 to 0.12 seconds, and with Count versions as one song from
 2.26 to 0.11 to 0.13 seconds; the worst delay of the paced probe was the same as before. Contract
 ADR-0004-16 covers this.
+
+## Related amendment, 2026-10-25: no full collector passes while a bus plays (#584)
+
+The 2026-10-24 amendment left garbage-collector passes over a large heap as a long hold that the
+switch interval cannot shorten. While any bus runs, the collector now makes no full pass on its
+own, and the library makes it at a quiet time; the thresholds follow the bus lifetime as the switch
+interval does. [ADR 8](0008-bound-background-work-outside-playout.md) records this as
+ADR-0008-36. This cross-reference does not change ADR-0004-15.

@@ -1159,6 +1159,10 @@ class CategoryIndex:
     def folder(self) -> Path:
         return playlists_folder(self._cfg)
 
+    def busy(self) -> bool:
+        """Whether the categories are being worked out right now."""
+        return self._lock.locked()
+
     def categories(self) -> tuple[Category, ...]:
         """The saved categories, read again only when the file changed."""
         stamp = _stat(self.store.path)
