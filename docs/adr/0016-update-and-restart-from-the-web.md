@@ -143,7 +143,7 @@ rebuilt with Compose, this amendment applies to published images.
 
 - The [image workflow](../../.github/workflows/image.yml) publishes
   `ghcr.io/<owner>/autodj`, with the owner taken from the repository. A push to `master` publishes
-  `:development` and `:sha-<short commit>`. A `vX.Y.Z` tag on `master`, after the release workflow
+  `:dev` and `:sha-<short commit>`. A `vX.Y.Z` tag on `master`, after the release workflow
   has checked the tag, version and changelog, publishes `:X.Y.Z`, `:stable` and `:latest`; any
   other ref is refused, because no tag ruleset limits who may push a tag. `:latest` is the same
   image as `:stable`, so a pull without a tag never gets a development build. The GitHub release,
@@ -173,7 +173,7 @@ rebuilt with Compose, this amendment applies to published images.
 
 Consequences: an installation that built `autodj:local` and updates its checkout gets the
 published Stable image from its old `docker compose up -d --build`. A development-channel
-installation must set `AUTODJ_IMAGE` to `:development` or opt into the build file first; the
+installation must set `AUTODJ_IMAGE` to `:dev` or opt into the build file first; the
 [container guide](../guides/operations/containers-and-windows.md#move-an-installation-that-builds-its-own-image)
 says so. The package must be public. GitHub's documentation says both that a package created by
 a workflow inherits the repository's visibility and that a new package is private, so the

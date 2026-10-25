@@ -613,16 +613,17 @@ def test_a_container_on_another_channel_or_pinned_is_told_which_image_to_name() 
 
     assert switch(f"{repository}:stable", "stable", release) is None
     assert switch(f"{repository}:latest", "stable", release) is None
-    assert switch(f"{repository}:development", "development", development) is None
+    assert switch(f"{repository}:dev", "development", development) is None
     assert switch(None, "stable", release) is None
+    assert switch(None, "development", development) is None
     assert switch(f"{repository}:0.21.0", "stable", release) == f"{repository}:0.22.0"
     assert switch(f"{repository}@sha256:{'c' * 64}", "stable", release) == f"{repository}:0.22.0"
-    assert switch(f"{repository}:stable", "stable", development) == f"{repository}:development"
-    assert switch(f"{repository}:development", "development", release) == f"{repository}:stable"
+    assert switch(f"{repository}:stable", "stable", development) == f"{repository}:dev"
+    assert switch(f"{repository}:dev", "development", release) == f"{repository}:stable"
     assert switch(f"{repository}:sha-abcdef0", "development", development) == (
         f"{repository}:sha-1234567"
     )
-    assert switch(None, "stable", development) == updates.IMAGE_REPOSITORY + ":development"
+    assert switch(None, "stable", development) == updates.IMAGE_REPOSITORY + ":dev"
 
 
 # ---------------------------------------------------------------------------

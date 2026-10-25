@@ -87,7 +87,7 @@ request, then push it. The tags:
 To choose one, set `AUTODJ_IMAGE` in `.env` beside `compose.yaml`, then pull and start it:
 
 ```dotenv
-AUTODJ_IMAGE=ghcr.io/blindndangerous/autodj:development
+AUTODJ_IMAGE=ghcr.io/blindndangerous/autodj:dev
 ```
 
 ```bash
@@ -154,7 +154,7 @@ from it. The library, settings and models stay in their folders. With Podman, us
 `podman compose` in place of `docker compose`. `docker image prune` removes the replaced image.
 
 A version or `sha-` tag never changes, so pulling it changes nothing: set `AUTODJ_IMAGE` in `.env`
-to the new tag first. To switch channels, set `AUTODJ_IMAGE` to the `stable` or `development` tag
+to the new tag first. To switch channels, set `AUTODJ_IMAGE` to the `stable` or `dev` tag
 the same way.
 
 Pulling updates AutoDJ itself. Keep the checkout matched to the image too, so `compose.yaml` and
@@ -187,7 +187,7 @@ than what you ran, and an older AutoDJ may read newer settings differently (see
 before you run it:
 
 - **Use the published image.** Make a backup and update the checkout. For the development
-  channel, add `AUTODJ_IMAGE=ghcr.io/blindndangerous/autodj:development` to `.env`. Then run
+  channel, add `AUTODJ_IMAGE=ghcr.io/blindndangerous/autodj:dev` to `.env`. Then run
   `docker compose pull` and `docker compose up -d`, and remove the old image with
   `docker image rm autodj:local`.
 - **Keep building it yourself.** Add `COMPOSE_FILE=compose.yaml:compose.build.yaml` to `.env`,

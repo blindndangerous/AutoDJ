@@ -17,7 +17,7 @@
 #
 # The image: by default the published release image (tag :stable), which
 # `docker compose pull` updates. For the newest code on master, set
-# AUTODJ_IMAGE in .env to the same image with the tag :development; to stay on
+# AUTODJ_IMAGE in .env to the same image with the tag :dev; to stay on
 # one release, use its version as the tag, such as :0.22.0. To build the image
 # on this computer instead, see compose.build.yaml. Details:
 # docs/guides/operations/containers-and-windows.md#choose-an-image

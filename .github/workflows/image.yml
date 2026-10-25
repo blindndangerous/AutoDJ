@@ -1,6 +1,6 @@
 name: Container image
 
-# Publishes ghcr.io/<owner>/autodj. A push to master publishes :development
+# Publishes ghcr.io/<owner>/autodj. A push to master publishes :dev
 # and :sha-<short commit>; release.yml calls this for a vX.Y.Z tag on master,
 # after its checks, to publish :X.Y.Z, :stable and :latest.
 #
@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 concurrency:
-  # One publish per ref at a time, in push order, so :development ends on the
+  # One publish per ref at a time, in push order, so :dev ends on the
   # newest commit.
   group: image-${{ github.ref }}
   cancel-in-progress: false
@@ -45,7 +45,7 @@ jobs:
           # A release needs master's history to check where its tag points.
           fetch-depth: ${{ inputs.release && '0' || '1' }}
       # :stable and :latest move only for a vX.Y.Z tag on master, and
-      # :development only for master itself, whoever pushed the ref.
+      # :dev only for master itself, whoever pushed the ref.
       - name: Check the ref
         env:
           RELEASE: ${{ inputs.release == true }}
@@ -76,7 +76,7 @@ jobs:
           images: ${{ steps.name.outputs.image }}
           flavor: latest=false
           tags: |
-            type=raw,value=development,enable=${{ !inputs.release }}
+            type=raw,value=dev,enable=${{ !inputs.release }}
             type=sha,prefix=sha-,format=short,enable=${{ !inputs.release }}
             type=semver,pattern={{version}},enable=${{ inputs.release == true }}
             type=raw,value=stable,enable=${{ inputs.release == true }}

@@ -73,8 +73,10 @@ CONTAINER_MARKERS = (Path("/.dockerenv"), Path("/run/.containerenv"))
 RESTART_POLICY_ENV = "AUTODJ_RESTART_POLICY"
 _CONTAINER_POLICIES = frozenset({"always", "unless-stopped", "on-failure"})
 #: The published container image, without a tag: ``:stable`` follows the
-#: releases, ``:development`` follows ``master``, ``:X.Y.Z`` is one release.
+#: releases, ``:dev`` follows ``master``, ``:X.Y.Z`` is one release.
 IMAGE_REPOSITORY = "ghcr.io/blindndangerous/autodj"
+#: The tag each channel's moving image has.
+CHANNEL_IMAGE_TAGS = {"stable": "stable", "development": "dev"}
 #: Set by compose.yaml: the image the container runs, for its update commands.
 IMAGE_ENV = "AUTODJ_IMAGE"
 #: Set in a published image by the workflow that publishes it: ``stable`` or
@@ -602,19 +604,20 @@ def _split_image(image: str) -> tuple[str, str | None]:
 def _image_switch(installation: Installation, result: UpdateCheck) -> list[str]:
     """A line saying which image to name in ``.env``, when pulling is not enough.
 
-    Pulling updates a tag that moves (``:stable``, ``:latest``,
-    ``:development``) on the channel the image follows.  A container on the
-    other channel, or pinned to one release or commit, names a new image.
+    Pulling updates a tag that moves (``:stable``, ``:latest``, ``:dev``) on
+    the channel the image follows.  A container on the other channel, or
+    pinned to one release or commit, names a new image.
     """
     if installation.image is not None:
         repository, tag = _split_image(installation.image)
     else:
-        repository, tag = IMAGE_REPOSITORY, installation.image_channel
+        repository = IMAGE_REPOSITORY
+        tag = CHANNEL_IMAGE_TAGS.get(installation.image_channel or "")
     if result.channel == "development":
         if tag is not None and tag.startswith("sha-") and result.latest:
             wanted = f"sha-{result.latest}"
         else:
-            wanted = "development"
+            wanted = CHANNEL_IMAGE_TAGS["development"]
     elif tag in ("stable", "latest"):
         wanted = tag
     elif (tag is None or TAG_PATTERN.fullmatch(f"v{tag}")) and result.target:
