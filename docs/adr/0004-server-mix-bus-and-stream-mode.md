@@ -251,6 +251,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0004-13` | The newly selected stream boundary may emit silence while programme position holds; zero-gap behavior requires manual listening and soak evidence. | manual | Listen through repeated files, short tracks, cuts, overlaps and incoming glides, then run the documented station soak on target hardware; record boundary latency, silence and underruns without claiming a zero-gap guarantee. |
 | `ADR-0004-14` | Server sound-card and stream playback share live playout; local-only output creates no streaming lifecycle, and whole-show preview/export stays offline. | automated | `tests/unit/test_player_stream_mode.py::test_local_soundcard_uses_live_playout_without_stream_lifecycle` |
 | `ADR-0004-15` | While any mix bus runs, the process uses the 0.5 ms thread switch interval, restoring the earlier interval after the last bus stops unless it was changed meanwhile; a shorter interval is kept. Continuity under load on target hardware remains manual soak evidence (ADR-0004-06). | automated | `tests/unit/test_mixbus.py::test_run_shortens_the_switch_interval_until_the_last_bus_stops`; `tests/unit/test_mixbus.py::test_run_leaves_an_interval_someone_else_chose` |
+| `ADR-0004-16` | A streaming station keeps, in its buffered ledger settings, the clockwheel song picked to follow the playing one. After a restart that song starts the set without a successor only when it was picked within 30 minutes, is still a playable library song, has not played since, the wheel and its restart time are unchanged, no show holds the air, no dayparted category or step has opened or closed since, and the repeat rules and DMCA limits allow it; queued songs keep their precedence, and every refusal is logged. Its successor is picked while it plays and spliced in like a queue edit; when the song ends first, the usual start pick follows. | automated | `tests/unit/test_restored_pick.py::test_a_fresh_clock_pick_starts_the_set_once`; `tests/unit/test_restored_pick.py::test_a_saved_song_that_no_longer_fits_falls_back_to_the_usual_pick`; `tests/unit/test_restored_pick.py::test_only_a_clockwheel_pick_is_kept_for_a_restart`; `tests/unit/test_restored_pick.py::test_a_restored_song_starts_alone_and_its_successor_is_spliced_in`; `tests/unit/test_restored_pick.py::test_a_successor_too_late_for_the_restored_song_hands_over_to_a_fresh_pick` |
 
 ## Related proposal — 2026-10-17
 
@@ -294,3 +295,38 @@ A scheduled switch to a clockwheel while the station already picks by clockwheel
 now plans the next song once, when the wheel is selected.
 Contract ADR-0004-15 records the interval rule; continuity on target hardware
 remains the manual soak evidence of ADR-0004-06.
+
+## Amendment, 2026-10-25: start a restarted station with the song it had picked (#584)
+
+After a restart, a station's first pick works out every category and clockwheel
+condition over the whole library, and the first song waits for that pick and
+then for the pick of its successor. On a large library with many Beets query
+categories that kept a station silent for about half a minute.
+
+The clockwheel song chosen to follow the playing one has already passed the
+wheel, the hours and the repeat rules. A streaming station now keeps it in its
+ledger settings, which are buffered and written on the library's tick, together
+with when it was picked and expected to start, the wheel's name, a fingerprint of
+its definition, the place in the wheel after it, the wheel's next restart time,
+and whether a show held the air. A song from the queue (a request or a show) is
+never kept. The first start pick after a restart uses it once, and only when it
+was picked within 30 minutes, is still a playable song in the library whose file
+exists, has not played since, the wheel and its definition are the same and its
+restart time has not passed, no show is on the air or waiting to resume, every
+dayparted category and step-hours window is open or closed now as it was at the
+song's expected start, and the repeat rules and the DMCA limits allow it. These
+checks read no category members, so they do not wait for the work the pick
+avoids. A play-now song, the queue and waiting requests still come first, as for
+any start pick. One info line says the song was restored or why it was not.
+
+The restored song's first render selects no successor, so its audio starts as
+soon as its decoder does. When it becomes current, its handoff counts as stale,
+and the live queue refresh of ADR-0004-09 selects the successor while it plays
+and splices the A to B transition into its unheard tail. If the song ends before
+that is ready, the worker makes the usual start pick and the set goes on; in the
+unit test that cost one bus block of silence. The startup scan of ADR-0008-35
+waits until the successor is spliced in, not only for the first audio, so the
+full pick does not run beside it. This changes only the first
+handoff after a restart; ADR-0004-12 still governs every later one. Contract
+ADR-0004-16 records this; listening and soak evidence remain those of
+ADR-0004-06 and ADR-0004-13.

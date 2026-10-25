@@ -59,6 +59,13 @@ to keep the next step number when it still exists in the edited wheel; otherwise
 step 1. Reordering or deleting steps can shift which step that position refers to. A server restart
 loads the latest saved clockwheel definition. API clients that omit `apply_timing` keep the immediate behavior.
 
+After a restart, a streaming station starts with the song the clockwheel had picked to follow the
+song that was playing, so it does not stay silent while the next pick is worked out. It does this
+only when that song was picked within the last 30 minutes, has not played since, the clockwheel is
+unchanged and its restart time has not passed, no show is on the air, the category and step hours
+are as they were, and the repeat rules and DMCA limits still allow it. Otherwise the station picks
+as usual. The log says which.
+
 **Station name while active** (optional, up to 100 characters) is the station name listeners see
 while this clockwheel picks the songs. Leave it empty for the station's normal name. A show on
 the air with its own name comes first. Saving a new name applies at once and does not restart

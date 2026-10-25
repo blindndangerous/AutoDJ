@@ -1005,8 +1005,9 @@ class Player:
         self._live_queue_target: Any = None
         self._live_queue_edits: dict[int, Any] = {}
         self._server_audio_too = server_audio_too
-        # Set when the first song starts on the mix bus; the library's
-        # startup scan waits for it (see autodj.stations.SharedLibrary).
+        # Set when the first song starts on the mix bus with its successor
+        # picked; the library's startup scan waits for it (see
+        # autodj.stations.SharedLibrary).
         self.first_song_started = threading.Event()
         # Picker settings.  They start off (discovery at the configured
         # rate) and the web page's settings routes change them.
@@ -1312,6 +1313,11 @@ class Player:
         self._seed_clock_following = None
         self._seed_clock_step = None
         self._chosen_clock_ad_steps = ()
+        from autodj import restored_pick
+
+        restored = restored_pick.restore(self, self._now())
+        if restored is not None:
+            return restored
         chosen: IndexEntry | None
         dmca = self._pick_context() if self._state.dmca_enabled else None
         if self._library is not None:
@@ -1433,6 +1439,17 @@ class Player:
     @_ledger.setter
     def _ledger(self, ledger: Any) -> None:
         self._station_ledger = ledger
+
+    def _clock_fingerprint(self) -> str:
+        """A fingerprint of the active clockwheel's definition, kept per definition."""
+        from autodj.restored_pick import clock_hash
+
+        definition = getattr(self, "_clock_definition", None)
+        cached = getattr(self, "_clock_fingerprint_cache", None)
+        if cached is None or cached[0] is not definition:
+            cached = (definition, clock_hash(definition))
+            self._clock_fingerprint_cache = cached
+        return cached[1]
 
     def _clock_name(self) -> str | None:
         """The name of the loaded clockwheel, or ``None`` without one."""
@@ -3176,12 +3193,20 @@ class Player:
             liners: tuple[tuple[IndexEntry, bool], ...] = ()
             next_cursor, liner_key = None, ""
             next_clock_step = None
+            # A song restored after a restart starts without a successor;
+            # the live queue refresh picks one while it plays (#584).
+            deferred = (
+                current is getattr(self, "_restored_first", None)
+                and self.bus is not None
+                and self.bus.current_render() is None
+            )
             context = self._pick_context(
                 pending=current,
                 starting=previous,
                 peek_queue=True,
                 queue_reserved=current if current_from_queue else None,
                 at=self._handoff_time(current),
+                dayparts=not deferred,
             )
             next_entry: IndexEntry | None
             self._forget_other_clock_place()
@@ -3277,6 +3302,8 @@ class Player:
                         liners, liner_key, intro = self._transition_voice(
                             current, next_entry, liners, breaks, context.at
                         )
+                elif deferred:
+                    next_entry, next_mode = None, "clock"
                 elif station_mode:
                     next_entry, next_mode, liners, next_cursor, liner_key = (
                         self._choose_station_next(current, context, auto_liner=False)
@@ -4457,6 +4484,7 @@ class Player:
                     if swapped:
                         self._playing_render = replacement
                         self._state.next_track = replacement.next_entry
+                        self._remember_upcoming(replacement)
             self._playout.reset(lambda: self._skip_past_render(replacement if swapped else track))
             if not swapped:
                 committed_notice = getattr(self, "prepared_audio_committed", None)
@@ -4664,6 +4692,8 @@ class Player:
             if swapped:
                 self._playing_render = replacement
                 self._state.next_track = replacement.next_entry
+                self._remember_upcoming(replacement)
+                self.first_song_started.set()
                 self._playback_len = replacement.start_offset + round(
                     len(replacement.audio) * replacement.playback_rate
                 )
@@ -4820,6 +4850,8 @@ class Player:
         has anything, because the queue takes priority.  A render with
         announcer breaks is never stale: the breaks name its next track.
         """
+        if track.next_entry is None and track.entry is getattr(self, "_restored_first", None):
+            return True  # A restored first song: its successor is picked while it plays.
         if track.next_pick_mode == "clock" and track.next_clock_revision != self._clock_revision:
             return True
         # A booked break has already committed its next track.
@@ -4897,6 +4929,15 @@ class Player:
         if self.on_track_started is not None:
             self.on_track_started(entry)
 
+    def _remember_upcoming(self, rendered: RenderedTrack) -> None:
+        """Keep the song *rendered* hands over to, for a restart (buffered, #584)."""
+        from autodj.restored_pick import remember
+
+        try:
+            remember(self, rendered, self._now())
+        except Exception:
+            logger.debug("Could not keep the upcoming song for a restart", exc_info=True)
+
     def _start_playing(self, rendered: RenderedTrack) -> None:
         """Make *rendered* the playing track and record it (hold ``_set_lock``)."""
         entry = rendered.entry
@@ -4908,7 +4949,8 @@ class Player:
         if finished is not None:
             getattr(self, "_live_queue_edits", {}).pop(id(finished.entry), None)
         self._playing_render = rendered
-        self.first_song_started.set()
+        if rendered.next_entry is not None or entry is not getattr(self, "_restored_first", None):
+            self.first_song_started.set()
         self._playback_output_pos[0] = 0
         self._heard_liner_events: set[int] = set()
         self._heard_break_starts = set()
@@ -4933,6 +4975,15 @@ class Player:
             self._previous_track = self._state.current_track
         self._state.current_track = entry
         self._state.next_track = rendered.next_entry
+        self._remember_upcoming(rendered)
+        if entry is not getattr(self, "_restored_first", None):
+            self._restored_first = None
+        elif rendered.next_entry is None and self.live_mixing:
+            # Pick its successor now, while it plays: the live queue refresh
+            # runs on the playout worker, never on the bus.
+            self._live_queue_dirty = True
+            self._live_queue_revision += 1
+            self._playout.request_plan()
         self._current_sr = SAMPLE_RATE
         self._playback_pos[0] = rendered.start_offset
         self._playback_len = rendered.start_offset + round(
@@ -5119,6 +5170,7 @@ class Player:
         peek_queue: bool = False,
         queue_reserved: IndexEntry | None = None,
         at: float | None = None,
+        dayparts: bool = True,
     ) -> _PickContext:
         """Copy the history a pick reads, under ``_pick_lock``.
 
@@ -5142,6 +5194,8 @@ class Player:
             at: When the picked song is expected to start (see
                 :meth:`_handoff_time`), in wall-clock seconds; dayparting
                 reads the station's hours then.  Now when not given.
+            dayparts: Read the categories' days and hours.  ``False``
+                leaves no song closed.
         """
         with self._pick_lock:
             paths, history = self._recent_exclusions(pending, starting)
@@ -5172,7 +5226,9 @@ class Player:
         protected = {e.path for e in (pending, starting, playing) if e is not None}
         if latest is not None:
             protected.add(latest)
-        closed, closed_categories = self._dayparts(at)
+        # Without *dayparts*, no category hours are read: they need every
+        # category worked out, which a restored first song must not wait for.
+        closed, closed_categories = self._dayparts(at) if dayparts else (frozenset(), {})
         warned = getattr(self, "_all_closed_warned", None)
         if warned is not None and warned is not closed and warned != closed:
             self._all_closed_warned = None  # The hours changed: warn again if it recurs.

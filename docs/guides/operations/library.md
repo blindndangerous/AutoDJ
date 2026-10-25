@@ -67,7 +67,7 @@ The import status in Library tools gives counts. Files that could not be read or
 errors; open **Import errors** below the summary for the list.
 
 When the server starts, it rescans the library once every streaming or server-audio station has
-started its first song, or after 2 minutes, so the scan does not slow the first songs. Files added
+started its first song and picked the one after it, or after 2 minutes, so the scan does not slow the first songs. Files added
 while the server was stopped appear after that scan.
 
 The old published-index format, including `index-manifest.json`, is deprecated. Stop AutoDJ
