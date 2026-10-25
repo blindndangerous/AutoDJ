@@ -680,11 +680,17 @@ class LibraryManager:
         self._full_pass_when_quiet()
 
     def _busy(self) -> bool:
-        """Whether a scan, a reload, a category build or a Beets read is running."""
+        """Whether a scan, a reload, a category build or a Beets read is running.
+
+        A scan measuring loudness, one file at a time and possibly for
+        hours, does not count.
+        """
         with self._category_lock:
             categories = list(self._category_indexes.values())
+        with self._lock:
+            scanning = self._scan_lock.locked() and self._state["phase"] != "measuring loudness"
         return (
-            self._scan_lock.locked()
+            scanning
             or self._refresh_lock.locked()
             or self.clock_beets.busy()
             or any(index.busy() for index in categories)

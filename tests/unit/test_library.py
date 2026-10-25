@@ -4388,6 +4388,12 @@ def test_the_tick_makes_the_full_collection_running_buses_hold_off_when_quiet(
         assert passes == [2]
         manager.tick()
         assert passes == [2]  # the next one is 10 minutes away
+        # A scan measuring loudness, one file at a time for hours maybe, does not hold it up.
+        now[0] += library.FULL_PASS_EVERY_S + 1
+        manager._state["phase"] = "measuring loudness"
+        with manager._scan_lock:
+            manager.tick()
+        assert passes == [2, 2]
 
 
 @pytest.mark.dj_analysis
