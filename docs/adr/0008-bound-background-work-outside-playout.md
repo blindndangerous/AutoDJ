@@ -114,6 +114,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0008-34` | A rescan opens no file whose size and modification time match its catalog record. A changed size or time, a record without a stored time, a time within 2 seconds of the clock or ahead of it, and a rescan with Override with ID3 tags read the fingerprint; moves still read only the new paths. New bytes under the old size and time wait for the next change of either. | automated | `tests/unit/test_library.py::test_rescan_opens_no_unchanged_file`; `tests/unit/test_library.py::test_rescan_reads_a_file_whose_size_or_time_changed`; `tests/unit/test_library.py::test_same_size_and_time_still_read_when_the_time_cannot_vouch`; `tests/unit/test_library.py::test_same_size_and_time_replacement_waits_for_a_new_time`; `tests/unit/test_library.py::test_moved_file_is_rekeyed_without_opening_unchanged_files` |
 | `ADR-0008-35` | The startup scan waits until every station with a mix bus has started its first song, at most 2 minutes, and a shutdown before then starts none. One library-wide Beets reader serves the clockwheel conditions and every station's categories, reading every field announced or asked for in one read after each change. Each time the categories are worked out again it logs the trigger and the time taken. | automated | `tests/integration/test_stations.py::test_the_startup_scan_waits_for_every_station_s_first_song`; `tests/integration/test_stations.py::test_the_startup_scan_starts_anyway_after_the_wait`; `tests/integration/test_stations.py::test_a_shutdown_before_the_first_song_starts_no_scan`; `tests/unit/test_categories.py::test_the_clockwheel_and_every_station_read_beets_once`; `tests/unit/test_categories.py::test_working_categories_out_again_says_why` |
 | `ADR-0008-36` | While any mix bus runs, the garbage collector makes no full pass on its own: the oldest generation's threshold is raised when the first bus starts and put back when the last one stops, unless it was changed meanwhile, and a collector switched off is left alone. The young generations are still collected. The library tick makes the full pass itself every 10 minutes, and never while a scan (other than its loudness measurement), a reload, a category build or a Beets read runs. | automated | `tests/unit/test_mixbus.py::test_run_holds_off_full_collections_until_the_last_bus_stops`; `tests/unit/test_mixbus.py::test_run_leaves_a_collector_someone_else_set`; `tests/unit/test_library.py::test_the_tick_makes_the_full_collection_running_buses_hold_off_when_quiet` |
+| `ADR-0008-37` | Songs a scan finds gone from a folder that is there are saved in the catalog, so a restarted server leaves them out of the library, its vectors, categories and totals before its first scan, and a scan counts only newly gone songs. The record stays until its file returns or the user removes missing tracks; it follows a move. A folder that is missing or could not be read marks nothing gone and keeps what was saved. | automated | `tests/unit/test_library.py::test_gone_songs_stay_gone_after_a_restart_and_are_reported_once`; `tests/unit/test_library.py::test_a_share_away_at_restart_neither_wipes_nor_forgets_gone_songs`; `tests/unit/test_catalog.py::test_gone_records_are_saved_follow_a_move_and_leave_with_their_record` |
 
 ## Verification
 
@@ -622,3 +623,25 @@ from 119 to 124 ms to about 20 ms, a young collection. The tick's own full pass 
 no longer than one of the passes the server made by itself while idle. These are measurements on
 one machine, not a latency guarantee.
 Contract ADR-0008-36 records this; the ADR remains Proposed.
+
+## Amendment clarification 2026-10-25: Gone songs stay gone after a restart
+
+Issue #589: on a library of about 79,000 songs, every scan after a restart reported the same 739
+songs gone, and the server held 79,079 songs at startup where Beets held 78,340, the difference
+being exactly those songs. A scan already kept a gone song's record, since only the confirmed
+Remove missing tracks action deletes records, and left the song out of the playable library. But
+it kept the list of gone songs in memory only. After each restart the gone songs loaded as
+playable again, the categories were worked out for them, they could be picked until the startup
+scan ran, and that scan counted all of them gone again and loaded the library a second time.
+
+The list is now saved in the catalog, as a table of the records found gone, which a record
+leaves when it is removed and which follows a record when the scan finds it moved. A restarted
+server reads it before it first loads the library, so gone songs stay out of the playable songs,
+the vector index, the categories and the library totals, and a scan counts only songs newly
+gone. The table changes no catalog change counter, as it is the library's reading of the folders,
+not a change to a record. It is written only when a scan changes the set. A song whose file
+returns comes back at the next scan. The safety rules are unchanged: a source folder that is
+missing, such as an unmounted share, or a folder the scan could not read marks nothing gone, and
+the songs saved as gone under it stay gone. The first scan after this update still counts the
+songs gone before it once, as nothing was saved yet. Contract ADR-0008-37 records this; the ADR
+remains Proposed.
