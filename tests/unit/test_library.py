@@ -3523,6 +3523,94 @@ def test_missing_removal_rejects_an_empty_but_mounted_source(manager_factory, tm
     assert all(manager.catalog.record_for_path(song) is not None for song in songs)
 
 
+def _names(manager):
+    return sorted(Path(entry.path).name for entry in manager.entries_snapshot())
+
+
+def test_gone_songs_stay_gone_after_a_restart_and_are_reported_once(
+    manager_factory, tmp_path, caplog
+):
+    """ADR-0008-37. A restarted server leaves gone songs out, and its scan does not count them again.
+
+    The record stays until the operator removes missing tracks, and comes back with its file.
+    """
+    music = tmp_path / "Music"
+    music.mkdir()
+    kept, gone = music / "kept.flac", music / "gone.flac"
+    for path in (kept, gone):
+        path.write_bytes(path.name.encode())
+    first = manager_factory(music=music)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+        caplog.at_level(logging.DEBUG, logger="autodj.library"),
+    ):
+        first.scan()
+        caplog.clear()
+        gone.unlink()
+        first.scan()
+        [summary] = _scan_summaries(caplog)
+        assert summary.endswith(": 1 gone")
+        first.close()
+
+        second = manager_factory(music=music)
+        # Left out from the start, before the restarted server's first scan.
+        assert _names(second) == ["kept.flac"]
+        assert second.is_gone(gone)
+        assert second.catalog.record_for_path(gone) is not None
+        second.scan()
+        assert _scan_summaries(caplog, logging.DEBUG) == [
+            "Library scan finished in 0 s: nothing changed"
+        ]
+        assert _names(second) == ["kept.flac"]
+
+        gone.write_bytes(gone.name.encode())
+        second.scan()
+        assert _names(second) == ["gone.flac", "kept.flac"]
+        assert not second.is_gone(gone)
+        second.close()
+
+    third = manager_factory(music=music)
+    assert _names(third) == ["gone.flac", "kept.flac"]
+
+
+def test_a_share_away_at_restart_neither_wipes_nor_forgets_gone_songs(manager_factory, tmp_path):
+    """ADR-0008-37. A share away when the server starts marks nothing gone and keeps what was."""
+    music, share = tmp_path / "Music", tmp_path / "Share"
+    music.mkdir()
+    share.mkdir()
+    kept, gone = share / "kept.flac", share / "gone.flac"
+    local = music / "local.flac"
+    for path in (kept, gone, local):
+        path.write_bytes(path.name.encode())
+    first = manager_factory(music=music)
+    first.catalog.add_source(share)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        first.scan()
+        gone.unlink()
+        first.scan()
+        assert _names(first) == ["kept.flac", "local.flac"]
+        first.close()
+
+        away = tmp_path / "Share-unmounted"
+        share.rename(away)
+        second = manager_factory(music=music)
+        second.scan()
+        assert _names(second) == ["local.flac"]
+        assert not second.is_gone(kept)
+        assert second.is_gone(gone)
+        assert second.catalog.record_for_path(kept) is not None
+
+        away.rename(share)
+        second.catalog.update_source(second.catalog.sources("music")[-1]["id"], True, True)
+        second.scan()
+    assert _names(second) == ["kept.flac", "local.flac"]
+    assert second.is_gone(gone)
+
+
 @pytest.mark.parametrize("processing", [None, "off", "replaygain"])
 def test_scan_measures_loudness_only_for_smooth_and_stereo_tool(
     manager_factory, tmp_path, processing

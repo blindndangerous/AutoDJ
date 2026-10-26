@@ -128,6 +128,11 @@ _SCHEMA = """
         entry_id TEXT PRIMARY KEY REFERENCES catalog_entries(id) ON DELETE CASCADE,
         vector BLOB NOT NULL
     );
+    -- Records the latest scan found gone from a folder that is there; kept
+    -- until the files return or the user removes missing tracks (#589).
+    CREATE TABLE IF NOT EXISTS catalog_gone (
+        entry_id TEXT PRIMARY KEY REFERENCES catalog_entries(id) ON DELETE CASCADE
+    );
 """
 
 # What the playable library is built from, each with a counter that SQLite
@@ -911,6 +916,36 @@ class LibraryCatalog:
                 removed = cursor.rowcount
                 db.commit()
                 return removed
+            except BaseException:
+                db.rollback()
+                raise
+
+    def gone_paths(self) -> frozenset[str]:
+        """Paths of the records the latest scan found gone (see :meth:`save_gone`)."""
+        with self._lock:
+            rows = self._db().execute(
+                "SELECT e.path FROM catalog_gone g JOIN catalog_entries e ON e.id=g.entry_id"
+            )
+            return frozenset(row[0] for row in rows)
+
+    def save_gone(self, paths: Collection[str]) -> None:
+        """Save *paths* (normalized) as the records now gone, in place of the saved set.
+
+        A restarted server then leaves them out of the library before its
+        first scan.  The set changes no change counter: it is the library's
+        own reading of the folders, not a change to the records.
+        """
+        with self._lock:
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("DELETE FROM catalog_gone")
+                db.executemany(
+                    "INSERT OR IGNORE INTO catalog_gone "
+                    "SELECT id FROM catalog_entries WHERE path=?",
+                    ((path,) for path in paths),
+                )
+                db.commit()
             except BaseException:
                 db.rollback()
                 raise

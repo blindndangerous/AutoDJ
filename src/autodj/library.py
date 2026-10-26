@@ -318,6 +318,8 @@ class LibraryManager:
         try:
             if not existing_catalog:
                 self.catalog.seed_sources(None, liner_root)
+            # Songs a scan found gone before a restart stay out (#589).
+            self._missing = self.catalog.gone_paths()
             self.refresh()
         except BaseException:
             self.analysis_queue.close()
@@ -1160,11 +1162,15 @@ class LibraryManager:
                 finally:
                     missing.discard(source)
         with self._lock:
-            kept = {path for path in self._missing if not coverage.covered(path)}
-            self._tally("gone", len(missing - self._missing))
-            self._missing = frozenset(kept | missing)
-            changed = self._missing != self._loaded_missing
+            before = self._missing
+            kept = {path for path in before if not coverage.covered(path)}
+            self._tally("gone", len(missing - before))
+            now_missing = self._missing = frozenset(kept | missing)
+            changed = now_missing != self._loaded_missing
             self._reconciled = True
+        if now_missing != before:
+            # Saved, so a restart neither plays them nor counts them gone again.
+            self.catalog.save_gone(now_missing)
         if changed or moved:
             # Gone and moved tracks change now, not after the scan.
             self.refresh()

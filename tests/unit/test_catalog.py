@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from autodj import catalog as catalog_module
-from autodj.catalog import _SCHEMA, LibraryCatalog
+from autodj.catalog import _SCHEMA, LibraryCatalog, normalize_path
 from autodj.indexer import FEATURE_DIM, IndexEntry
 from tests.unit._catalog_vectors import set_vector, vectors_snapshot
 
@@ -807,6 +807,32 @@ def test_removing_entry_cascades_to_vector(tmp_path: Path) -> None:
         assert catalog.remove_entries([str(song)]) == 1
         assert catalog._db().execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert catalog._db().execute("SELECT COUNT(*) FROM catalog_vectors").fetchone()[0] == 0
+
+
+def test_gone_records_are_saved_follow_a_move_and_leave_with_their_record(tmp_path: Path) -> None:
+    """ADR-0008-37. The saved gone set changes no counter, follows a move, leaves with its record."""
+    one, two, moved = tmp_path / "one.flac", tmp_path / "two.flac", tmp_path / "moved.flac"
+    for song in (one, two):
+        song.write_bytes(song.name.encode())
+    with LibraryCatalog(tmp_path / "library.db") as catalog:
+        for song in (one, two):
+            catalog.put_entry(entry(song))
+        versions = catalog.change_versions()
+        catalog.save_gone(
+            [normalize_path(one), normalize_path(two), normalize_path(tmp_path / "unknown.flac")]
+        )
+        assert catalog.gone_paths() == {normalize_path(one), normalize_path(two)}
+        assert catalog.change_versions() == versions
+        catalog.save_gone([normalize_path(one), normalize_path(two)])
+        two.rename(moved)
+        assert catalog.rekey(two, moved)
+        assert catalog.gone_paths() == {normalize_path(one), normalize_path(moved)}
+        catalog.remove_entries([str(one)])
+        assert catalog.gone_paths() == {normalize_path(moved)}
+    with LibraryCatalog(tmp_path / "library.db") as catalog:
+        assert catalog.gone_paths() == {normalize_path(moved)}
+        catalog.save_gone([])
+        assert catalog.gone_paths() == frozenset()
 
 
 def test_pending_iterator_advances_past_rejected_pages_without_holding_lock(tmp_path, monkeypatch):
