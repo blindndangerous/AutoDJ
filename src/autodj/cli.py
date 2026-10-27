@@ -2041,9 +2041,11 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")
         return
-    if requested is not None:
-        from autodj.updates import UPDATE_EXIT_CODE
+    from autodj.updates import RESTART_EXIT_CODE, UPDATE_EXIT_CODE
 
+    # Only a restart or an update asked for from the web page exits with its
+    # status; anything else serve returns ends as before.
+    if isinstance(requested, int) and requested in (RESTART_EXIT_CODE, UPDATE_EXIT_CODE):
         # The launcher, a systemd service or the container starts it again;
         # for an update, the checkout's launcher updates it first.
         if requested == UPDATE_EXIT_CODE:
