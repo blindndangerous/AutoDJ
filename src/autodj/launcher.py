@@ -375,6 +375,7 @@ def _supervise(arguments: list[str], selected: tuple[Path, str]) -> int:
         return [*base, *arguments], environment
 
     updater = CheckoutUpdater(ROOT, global_options(arguments), current)
+    updater.hold_serving()
     updater.recover_interrupted()
     base, child_environment = _child_plan(selected)
     return run_supervised([*base, *arguments], child_environment, updater=updater, plan=plan)

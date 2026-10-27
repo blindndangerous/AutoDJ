@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installIndexMarkup as installIndex } from "./helpers.js";
 
 import {
-  checkWords, installationWords, installUpdates, notesWords, RESTART_WAIT_MS,
+  checkWords, installationWords, installUpdates, notesWords, RESTART_WAIT_MS, UPDATE_WAIT_MS,
 } from "../../src/autodj/static/modules/updates.js";
 
 // The real Settings markup, so the ids, labels and live region the module
@@ -91,20 +91,25 @@ function open() {
   panel.dispatchEvent(new Event("toggle"));
 }
 
-function install({ initial, confirm = confirmYes, probeAnswers = [false, true] } = {}) {
+function install({
+  initial, confirm = confirmYes, probeAnswers = [false, true], stepMs = 0,
+} = {}) {
   const { request, state } = server(initial);
   let clock = 0;
   const answers = [...probeAnswers];
+  const progressSeen = [];
   const probe = vi.fn(async () => {
+    progressSeen.push(byId("updates-progress").hidden ? "" : byId("updates-progress").textContent);
     if (answers.length && !answers.shift()) throw new Error("Could not reach AutoDJ.");
     return { version: "0.21.0" };
   });
+  const reload = vi.fn();
   installUpdates({
-    request, confirm, probe,
-    sleep: async (ms) => { clock += ms; },
+    request, confirm, probe, reload,
+    sleep: async (ms) => { clock += ms + stepMs; },
     now: () => clock,
   });
-  return { request, state, probe };
+  return { request, state, probe, reload, progressSeen };
 }
 
 // The result the updater leaves for the page, as GET /api/updates returns it.
@@ -235,6 +240,46 @@ describe("Updates panel", () => {
     expect(byId("updates-how").hidden).toBe(true);
   });
 
+  // ADR-0016-21
+  it("leaves the guide link out when there is no guide", async () => {
+    install({
+      initial: view({
+        installation: { kind: "package", version: "0.21.0" },
+        check: RELEASE,
+        update: { available: false, mechanism: null, message: "Update it the way you installed it.",
+          guide_url: null },
+      }),
+    });
+    open();
+    await vi.waitFor(() => expect(byId("updates-install-note").hidden).toBe(false));
+    expect(byId("updates-guide-link").hidden).toBe(true);
+    expect(byId("updates-guide-link").hasAttribute("href")).toBe(false);
+  });
+
+  // ADR-0016-21
+  it("says quietly that a long update is still working, and waits up to 3 hours", async () => {
+    const { state, progressSeen } = install({
+      initial: view({ check: RELEASE }),
+      probeAnswers: Array(60).fill(false),
+      stepMs: 58000,
+    });
+    state.after = view({ check: CURRENT, last_update: finished("updated", "Updated to 0.22.0.") });
+    open();
+    await vi.waitFor(() => expect(byId("updates-update").hidden).toBe(false));
+    byId("updates-update").click();
+    await vi.waitFor(() => expect(byId("updates-status").textContent).toBe("Updated to 0.22.0."));
+    expect(byId("updates-progress").getAttribute("aria-live")).toBe("off");
+    expect(progressSeen[0]).toBe(
+      "AutoDJ is updating.  The stream is off the air until it is back.  "
+      + "It started less than a minute ago.",
+    );
+    expect(progressSeen).toContain(
+      "AutoDJ is updating.  The stream is off the air until it is back.  "
+      + "It has been working for 30 minutes.",
+    );
+    expect(UPDATE_WAIT_MS).toBe(3 * 3600000);
+  });
+
   it("hides the notes, Update and commands when nothing is available", async () => {
     install({ initial: view({ check: { status: "current", message: "This is the latest." } }) });
     open();
@@ -334,7 +379,7 @@ describe("Update and Go back", () => {
   // ADR-0016-21
   it("asks before Update, says the stream goes off the air, and says once how it went", async () => {
     const confirm = vi.fn(confirmYes);
-    const { state } = install({ initial: view({ check: RELEASE }), confirm });
+    const { state, reload } = install({ initial: view({ check: RELEASE }), confirm });
     state.after = view({
       installation: { kind: "git", version: "0.22.0", commit: "2222222", tag: "v0.22.0" },
       check: CURRENT,
@@ -351,9 +396,14 @@ describe("Update and Go back", () => {
     expect(options.message).toMatch(/off the air/);
     expect(options.confirmLabel).toBe("Update");
     expect(state.posted).toEqual(["/api/server/update"]);
-    // Nothing left to update: focus moves to Check now rather than a hidden button.
+    // Nothing left to update: focus moves to the button that loads the new
+    // version's page, rather than a hidden button.
     expect(byId("updates-update").hidden).toBe(true);
-    expect(document.activeElement).toBe(byId("updates-check"));
+    expect(byId("updates-reload").hidden).toBe(false);
+    expect(document.activeElement).toBe(byId("updates-reload"));
+    expect(byId("updates-progress").hidden).toBe(true);
+    byId("updates-reload").click();
+    expect(reload).toHaveBeenCalledTimes(1);
     expect(byId("updates-last").hidden).toBe(false);
     expect(byId("updates-result").textContent).toBe("Updated to 0.22.0.");
     expect(byId("updates-how").hidden).toBe(true);
@@ -370,7 +420,12 @@ describe("Update and Go back", () => {
     await vi.waitFor(() => expect(byId("updates-update").hidden).toBe(false));
     byId("updates-update").click();
     await vi.waitFor(() => expect(byId("updates-status").textContent).toBe(message));
+    // The old version is back: there is no new page to load.
+    expect(byId("updates-reload").hidden).toBe(true);
     expect(byId("updates-how").hidden).toBe(false);
+    const heading = byId("updates-how-heading");
+    expect(heading.tagName).toBe("H5");
+    expect(heading.closest("#updates-last").querySelector("h4").textContent).toBe("Last update");
     expect([...byId("updates-commands").querySelectorAll("li > code")].map((code) => code.textContent))
       .toEqual(commands);
     expect(byId("updates-commands").getAttribute("aria-labelledby")).toBe("updates-how-heading");

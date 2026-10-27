@@ -871,3 +871,36 @@ def test_only_a_checkout_under_an_updating_launcher_can_update(tmp_path: Path) -
     assert package.guide_url.endswith("backups-and-updates.md#update-a-wheel-installation")
     assert support.to_dict()["available"] is True
     assert updates.UPDATE_EXIT_CODE not in (0, updates.RESTART_EXIT_CODE)
+
+
+@pytest.mark.parametrize(
+    ("ancestor", "merged", "words"),
+    [
+        (0, "v0.20.0\nv0.21.0\n", None),
+        (0, "v0.21.0\nv0.22.0\n", "has reached release v0.22.0 since"),
+        (1, "", "has moved away from 0.21.0"),
+        (128, "", "cannot tell whether"),
+    ],
+)
+def test_go_back_fits_only_while_the_checkout_came_from_that_release(
+    tmp_path: Path, ancestor: int, merged: str, words: str | None
+) -> None:
+    """ADR-0016-20: a checkout moved by hand drops the offer, with one sentence."""
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(command[1:])
+        if command[1:3] == ["merge-base", "--is-ancestor"]:
+            return _done(returncode=ancestor)
+        if command[1:3] == ["tag", "--merged"]:
+            return _done(merged)
+        raise AssertionError(command)
+
+    reason = updates.go_back_moved(_git_checkout(tmp_path), LOCAL_SHA, "0.21.0", runner=run)
+    assert calls[0] == ["merge-base", "--is-ancestor", LOCAL_SHA, "HEAD"]
+    if words is None:
+        assert reason is None
+    else:
+        assert reason is not None and words in reason
+    package = Installation(kind="package", version="0.22.0")
+    assert "cannot tell" in (updates.go_back_moved(package, LOCAL_SHA, "0.21.0", runner=run) or "")

@@ -1376,13 +1376,15 @@ only) and works out the target itself with its own check, so a request cannot ch
 a command. git and AutoDJ's own commands run from argument lists with timeouts that end their
 process trees, git without prompts and without passing its messages on. It refuses a changed or
 untracked file, an older or the same version, and a library that needs a migration, and puts the
-checkout back on any later failure. The health check asks only this computer or the bound address,
-without a proxy; over HTTPS it does not check the certificate, which is safe because it sends
+checkout back on any later failure. The health check asks only loopback or an address this computer can
+bind, with a Host header the server's own policy accepts, without a proxy; over HTTPS it does not check the certificate, which is safe because it sends
 nothing and reads only `{"status": "ok"}`. Go back restores only a backup the updater made in its
 own folder, named by its own pattern, when it moved that release to development; it backs up the
 current data first. Update and Go back are audited as `server-update` and `server-go-back`, share
 a limit of one a minute and six an hour in `<index_dir>/logs/update-requests.json` that fails
-closed, and run one at a time, with a lock file against a second launcher on the same checkout.
+closed, and run one at a time: they share one pending claim with Restart, an operating-system
+lock keeps a second launcher's update away, and no update runs while another launcher serves
+from the same checkout. A branch someone moved during an update is never reset.
 Anyone who can write the update folder or the checkout can already change what AutoDJ runs. The
 remaining risk is a stolen browser session taking the stations off air for an update, or going
 back and replacing recent settings and history with the kept backup, which the confirmation names.

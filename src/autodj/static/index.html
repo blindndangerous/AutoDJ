@@ -2821,7 +2821,10 @@
          updater can install it (#552).  Otherwise the note says to update
          it the way it was installed, with a link to its guide. -->
     <button type="button" id="updates-update" hidden>Update AutoDJ</button>
-    <p id="updates-install-note" class="setting-desc" hidden><span id="updates-install-words"></span> <a id="updates-guide-link" href="#"></a></p>
+    <p id="updates-install-note" class="setting-desc" hidden><span id="updates-install-words"></span> <a id="updates-guide-link" hidden></a></p>
+    <!-- While an update runs: how long AutoDJ has been away, quietly. -->
+    <p id="updates-progress" aria-live="off" hidden></p>
+    <button type="button" id="updates-reload" hidden>Load the new version of this page</button>
     <!-- Shown on the Stable channel when the updater kept the backup of the
          release it moved this installation to Development from. -->
     <div id="updates-go-back" hidden>
@@ -2834,7 +2837,7 @@
       <h4>Last update</h4>
       <p id="updates-result" aria-live="off"></p>
       <div id="updates-how" hidden>
-        <h4 id="updates-how-heading">Commands to finish by hand</h4>
+        <h5 id="updates-how-heading">Commands to finish by hand</h5>
         <p id="updates-how-note" class="setting-desc">Run these in order in the AutoDJ folder.</p>
         <ol id="updates-commands" aria-labelledby="updates-how-heading"></ol>
       </div>

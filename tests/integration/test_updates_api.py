@@ -510,6 +510,8 @@ def _with_go_back(
         latest="v0.21.0",
     )
     client = _updatable(tmp_path, monkeypatch, waiting)
+    # The checkout still came from that release (git is a stand-in here).
+    monkeypatch.setattr(updates_api, "go_back_moved", lambda *_args, **_kwargs: None)
     client.app.state.update_checker._installation = lambda: Installation(
         kind="git", version="0.22.0", commit="3" * 40, branch="master", root=tmp_path / "checkout"
     )
@@ -587,4 +589,140 @@ def test_go_back_is_not_offered_off_the_stable_channel_or_without_a_record(
     client.app.state.update_checker.save(updates.UpdateSettings(check=True, channel="stable"))
     contract.remove(client.app.state.update_dir / contract.GO_BACK)
     assert client.get("/api/updates").json()["go_back"] is None
+    assert client.post("/api/server/go-back", json={}).status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Review fixes
+# ---------------------------------------------------------------------------
+
+
+def test_the_health_probe_passes_the_servers_own_host_check(tmp_path: Path) -> None:
+    """ADR-0016-13: bound to every interface, with only a LAN name and address allowed."""
+    from autodj.update_contract import health_for
+
+    player = _make_player_mock()
+    cfg = player._cfg
+    point_index(cfg.index, tmp_path)
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    cfg.server.host = "0.0.0.0"  # nosec B104 -- a configuration value, nothing binds
+    cfg.server.allowed_hosts = ["radio.example.lan", "192.168.1.10"]
+    client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
+    policy = client.app.state.security_policy
+    probe = health_for(
+        "0.0.0.0",  # nosec B104
+        8080,
+        https=False,
+        host_allowed=policy.host_allowed,
+        allowed_hosts=policy.config.effective_allowed_hosts(),
+    )
+    assert probe is not None
+    assert probe.url == "http://127.0.0.1:8080/healthz"
+    assert probe.host == "radio.example.lan:8080"
+    answer = client.get("/healthz", headers={"host": probe.host})
+    assert answer.status_code == 200
+    assert answer.json()["status"] == "ok"
+    # The bare loopback address, as before this fix, is refused by the same check.
+    assert client.get("/healthz", headers={"host": "127.0.0.1:8080"}).status_code == 403
+
+
+def test_update_is_not_offered_without_a_health_check_the_updater_accepts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0016-11: refused before the server exits, never after."""
+    client = _updatable(tmp_path, monkeypatch)
+    for probe in (None, HealthProbe("http", "192.0.2.10", 8080, "192.0.2.10:8080")):
+        client.app.state.health_probe = probe
+        view = client.get("/api/updates").json()
+        assert view["update"]["available"] is False
+        assert view["update"]["message"] == updates_api.NO_HEALTH_CHECK
+        assert client.post("/api/server/update", json={}).status_code == 409
+    client.app.state.server_exit.assert_not_called()
+    assert contract.read_request(client.app.state.update_dir) is None
+
+
+def test_update_is_not_offered_while_another_server_runs_from_this_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0016-18: another launcher's lock, not this server's own launcher's."""
+    import os
+
+    client = _updatable(tmp_path, monkeypatch)
+    folder = client.app.state.update_dir
+    own = contract.try_lock(contract.serving_path(folder, os.getppid()))
+    assert client.get("/api/updates").json()["update"]["available"] is True
+    other = contract.try_lock(contract.serving_path(folder, 424242))
+    try:
+        view = client.get("/api/updates").json()
+        assert view["update"]["available"] is False
+        assert "launcher process 424242" in view["update"]["message"]
+        assert client.post("/api/server/update", json={}).status_code == 409
+    finally:
+        contract.unlock(other)
+        contract.unlock(own)
+    client.app.state.server_exit.assert_not_called()
+
+
+def test_only_one_of_restart_and_update_is_ever_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0016-18: the pending check and the claim have no await between them."""
+    import threading
+
+    monkeypatch.setattr(updates_api, "restart_support", lambda: _SUPPORTED)
+    client = _updatable(tmp_path, monkeypatch)
+    inside = threading.Event()
+    release = threading.Event()
+    real_take = updates_api.RestartLimiter.take
+
+    def slow_take(self: updates_api.RestartLimiter) -> int | None:
+        if self._action == "restart":
+            inside.set()
+            release.wait(5)
+        return real_take(self)
+
+    monkeypatch.setattr(updates_api.RestartLimiter, "take", slow_take)
+    answers: list[int] = []
+    with client:
+        restart = threading.Thread(
+            target=lambda: answers.append(client.post("/api/server/restart", json={}).status_code)
+        )
+        restart.start()
+        assert inside.wait(5)
+        # The restart is still waiting for its count, yet it already holds the claim.
+        update = client.post("/api/server/update", json={})
+        release.set()
+        restart.join(10)
+    assert update.status_code == 409
+    assert update.json()["detail"] == updates_api.BUSY
+    assert answers == [202]
+
+
+def test_a_refused_request_gives_the_claim_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0016-18: a rate-limited restart does not block the next update."""
+    monkeypatch.setattr(updates_api, "restart_support", lambda: _SUPPORTED)
+    client = _updatable(tmp_path, monkeypatch)
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    (tmp_path / "logs" / "restart-requests.json").write_text(json.dumps([time.time()]), "utf-8")
+    assert client.post("/api/server/restart", json={}).status_code == 429
+    assert client.app.state.restart_requested is False
+    assert client.post("/api/server/update", json={}).status_code == 202
+
+
+def test_go_back_moved_by_hand_is_explained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0016-20: the offer drops, with the updater's sentence."""
+    client = _with_go_back(tmp_path, monkeypatch)
+    reason = (
+        "This checkout has reached release v0.22.0 since, so going back to 0.21.0 is not offered."
+    )
+    monkeypatch.setattr(updates_api, "go_back_moved", lambda *_args, **_kwargs: reason)
+    offer = client.get("/api/updates").json()["go_back"]
+    assert offer["available"] is False
+    assert offer["message"] == reason
     assert client.post("/api/server/go-back", json={}).status_code == 409

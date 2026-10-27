@@ -89,6 +89,8 @@ DOCTOR_TIMEOUT_SECONDS = 600.0
 #: How long a new server has to answer ``/healthz`` before it is rolled back.
 HEALTH_TIMEOUT_SECONDS = 180.0
 HEALTH_POLL_SECONDS = 1.0
+#: How often a running step looks for a stop signal.
+STEP_POLL_SECONDS = 0.5
 #: How long an unhealthy new server has to stop before it is killed.
 STOP_GRACE_SECONDS = 30.0
 SETUP_STATE = Path(".uv") / "setup.json"
@@ -203,6 +205,7 @@ class CheckoutUpdater:
         self._setup_python = setup_python
         self._windows = windows
         self._stopped: list[int] = []
+        self._serving: Any = None
         self._current: tuple[subprocess.Popen[str], int | None, bool] | None = None
         self._reset()
 
@@ -221,6 +224,9 @@ class CheckoutUpdater:
         #: The new version has started, so it may have changed the data.
         self._started = False
         self._go_back: GoBack | None = None
+        #: Where the update left the previous branch; rollback resets it only from there.
+        self._branch_left: str | None = None
+        self._branch_moved = False
         self._lock_handle: Any = None
         #: After :meth:`watch`: True when the new server was healthy, else None.
         self.started_ok: bool | None = None
@@ -242,9 +248,13 @@ class CheckoutUpdater:
     ) -> subprocess.CompletedProcess[str]:
         """Run *argv* (no shell) in its own process tree, which a stop or timeout ends.
 
-        An *interruptible* step (fetch, backup, setup, Doctor) is asked to stop
-        when a stop signal arrives; ``git switch`` and ``git merge`` are left
-        to finish, so a stop never leaves one half done.
+        The launcher waits in short slices, so a stop signal is seen within
+        STEP_POLL_SECONDS on every platform (on Windows a signal handler runs
+        only when the main thread wakes).  An *interruptible* step (fetch,
+        backup, setup, restore, Doctor) is then ended with its whole process
+        tree and answers exit status -1, never success; ``git`` commands that
+        change or read the checkout are left to finish, so a stop never leaves
+        one half done or misread.
         """
         options: dict[str, Any] = {}
         if sys.platform == "win32":
@@ -266,19 +276,43 @@ class CheckoutUpdater:
         )
         job = autodj.child_jobs.job_for_tree(process)
         self._current = (process, job, interruptible)
+        deadline = self._monotonic() + timeout
+        ended = False
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            updates._kill_tree(process, job)
-            job = None
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=5)
-            raise
+            while True:
+                try:
+                    stdout, stderr = process.communicate(timeout=STEP_POLL_SECONDS)
+                    break
+                except subprocess.TimeoutExpired:
+                    if self._stopped and interruptible and not ended:
+                        self._end_step(process, job)
+                        ended = True
+                    elif self._monotonic() >= deadline:
+                        updates._kill_tree(process, job)
+                        job = None
+                        with contextlib.suppress(subprocess.TimeoutExpired):
+                            process.wait(timeout=5)
+                        raise subprocess.TimeoutExpired(argv, timeout) from None
         finally:
             self._current = None
             if job is not None:
                 autodj.child_jobs.end_job(job)
-        return subprocess.CompletedProcess(argv, process.returncode, stdout or "", stderr or "")
+        # A step ended for a stop did not succeed, whatever status it was killed with.
+        status = -1 if ended else process.returncode
+        return subprocess.CompletedProcess(argv, status, stdout or "", stderr or "")
+
+    @staticmethod
+    def _end_step(process: subprocess.Popen[str], job: int | None) -> None:
+        """Ask a step's process tree to stop: SIGTERM to its group, or close its job."""
+        if sys.platform == "win32":
+            if job is not None:
+                autodj.child_jobs.end_job(job)
+            else:
+                with contextlib.suppress(OSError):
+                    process.kill()
+        else:
+            with contextlib.suppress(OSError):
+                os.killpg(process.pid, signal.SIGTERM)
 
     def _step(self, argv: list[str], **options: Any) -> subprocess.CompletedProcess[str]:
         """Run one command; one that cannot start or times out answers exit status -1."""
@@ -294,7 +328,7 @@ class CheckoutUpdater:
         return self._run(argv, **options)
 
     def _git(
-        self, *args: str, timeout: float = GIT_TIMEOUT_SECONDS, interruptible: bool = True
+        self, *args: str, timeout: float = GIT_TIMEOUT_SECONDS, interruptible: bool = False
     ) -> subprocess.CompletedProcess[str]:
         fetching = args[:1] == ("fetch",)
         ssh = updates._batch_ssh_command(self.root, runner=self._runner) if fetching else None
@@ -387,45 +421,29 @@ class CheckoutUpdater:
 
     def _try_lock(self) -> bool:
         """Lock the checkout for this update; False when another launcher holds it."""
-        if self._lock_handle is not None:
-            return True
-        path = self.folder / LOCK
-        path.parent.mkdir(parents=True, exist_ok=True)
-        handle = path.open("a+b")
-        try:
-            if sys.platform == "win32":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            handle.close()
-            return False
-        self._lock_handle = handle
-        return True
-
-    def _lock(self) -> None:
-        if not self._try_lock():
-            raise _Refuse("Another AutoDJ launcher is updating this checkout, so this one did not.")
+        if self._lock_handle is None:
+            self._lock_handle = contract.try_lock(self.folder / LOCK)
+        return self._lock_handle is not None
 
     def _unlock(self) -> None:
         handle, self._lock_handle = self._lock_handle, None
-        if handle is None:
-            return
-        with contextlib.suppress(OSError):
-            if sys.platform == "win32":
-                import msvcrt
+        contract.unlock(handle)
 
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
+    def hold_serving(self, pid: int | None = None) -> None:
+        """Show, for as long as this launcher runs, that it serves from this checkout.
 
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+        Another launcher's update refuses while this lock is held
+        (:func:`autodj.update_contract.other_servers`).
+        *pid* is this launcher's process id, by default its own.
+        """
+        if self._serving is None:
+            owner = os.getpid() if pid is None else pid
+            self._serving = contract.try_lock(contract.serving_path(self.folder, owner))
+
+    @property
+    def serving(self) -> bool:
+        """Whether this launcher holds its serving lock."""
+        return self._serving is not None
 
     @property
     def locked(self) -> bool:
@@ -437,20 +455,8 @@ class CheckoutUpdater:
     # ------------------------------------------------------------------
 
     def _note_stop(self, signum: int, _frame: object) -> None:
+        # The running step sees it within STEP_POLL_SECONDS (see _spawn).
         self._stopped.append(signum)
-        current = self._current
-        if current is None or not current[2]:
-            return
-        process, job, _interruptible = current
-        if sys.platform == "win32":
-            if job is not None:
-                autodj.child_jobs.end_job(job)
-            else:
-                with contextlib.suppress(OSError):
-                    process.kill()
-        else:
-            with contextlib.suppress(OSError):
-                os.killpg(process.pid, signal.SIGTERM)
 
     @contextlib.contextmanager
     def _signals(self) -> Iterator[None]:
@@ -576,10 +582,36 @@ class CheckoutUpdater:
 
     def _fetch(self, target: str) -> None:
         if TAG_PATTERN.fullmatch(target):
-            done = self._git("fetch", "--tags", "origin", timeout=FETCH_TIMEOUT_SECONDS)
+            # Only that tag: another tag moved on the remote must not stop the update.
+            done = self._git(
+                "fetch",
+                "--no-tags",
+                "origin",
+                f"refs/tags/{target}:refs/tags/{target}",
+                timeout=FETCH_TIMEOUT_SECONDS,
+                interruptible=True,
+            )
         else:
-            done = self._git("fetch", "origin", DEVELOPMENT_BRANCH, timeout=FETCH_TIMEOUT_SECONDS)
+            done = self._git(
+                "fetch",
+                "origin",
+                DEVELOPMENT_BRANCH,
+                timeout=FETCH_TIMEOUT_SECONDS,
+                interruptible=True,
+            )
         self._check_stop()
+        if (
+            done.returncode != 0
+            and TAG_PATTERN.fullmatch(target)
+            and ("clobber" in done.stderr or "rejected" in done.stderr)
+        ):
+            raise _Refuse(
+                f"The release tag {target} on the origin remote is not the {target} in this "
+                "checkout, so AutoDJ changed nothing. Compare the two with these commands; if "
+                f"the remote's is right, delete this checkout's with git tag -d {target} and try "
+                "again.",
+                [f"git ls-remote origin refs/tags/{target}", f"git rev-parse {target}"],
+            )
         if done.returncode != 0:
             # git's own message is not passed on: it can hold the remote's address.
             raise _Refuse(
@@ -720,7 +752,7 @@ class CheckoutUpdater:
         previous = self._previous
         if previous is None:
             return "git status --short"
-        if previous.branch:
+        if previous.branch and not self._branch_moved:
             return f"git switch --force-create {previous.branch} {previous.commit}"
         return f"git switch --detach {previous.commit}"
 
@@ -729,10 +761,22 @@ class CheckoutUpdater:
         previous = self._previous
         if previous is None:
             return None
+        moved: str | None = None
+        where = ["--detach", previous.commit]
         if previous.branch:
-            where = ["--force-create", previous.branch, previous.commit]
-        else:
-            where = ["--detach", previous.commit]
+            tip = self._git_value(
+                "rev-parse", "--verify", "--quiet", f"refs/heads/{previous.branch}"
+            )
+            if tip is not None and tip not in {previous.commit, self._branch_left}:
+                # Someone committed on it from another shell meanwhile: keep their
+                # work, and only detach the checkout at the old commit.
+                self._branch_moved = True
+                moved = (
+                    f"The branch {previous.branch} moved while AutoDJ was updating (it is "
+                    f"at {tip[:7]} now), so AutoDJ left that branch as it is."
+                )
+            else:
+                where = ["--force-create", previous.branch, previous.commit]
         done = self._git("switch", *where, interruptible=False)
         if done.returncode != 0:
             # The tree was clean before the update: anything changed now is ours.
@@ -750,7 +794,7 @@ class CheckoutUpdater:
                 autodj.fsutil.atomic_write(state, previous.setup_state)
         except OSError as exc:
             return f"AutoDJ could not restore {state}: {exc}."
-        return None
+        return moved
 
     def _failed(self, reason: str, problem: str) -> Attempt:
         head = self._head()
@@ -877,10 +921,20 @@ class CheckoutUpdater:
             "backup": None,
         }
         with self._signals():
+            if not self._try_lock():
+                # Another launcher's update owns the files: leave them alone.
+                print(
+                    "AutoDJ: another AutoDJ launcher is updating this checkout, so this one "
+                    "did not.",
+                    file=sys.stderr,
+                )
+                return Attempt()
             try:
                 if request is None:
                     raise _Refuse("AutoDJ could not read the update request the server wrote.")
-                self._lock()
+                others = contract.other_servers(self.folder, {os.getpid()})
+                if others:
+                    raise _Refuse(contract.other_servers_reason(others))
                 if request.action == "go-back":
                     return self._go_back_now()
                 return self._update(request)
@@ -908,6 +962,7 @@ class CheckoutUpdater:
         self._record["from"] = {
             "version": installation.version,
             "commit": installation.commit,
+            "branch": installation.branch,
             "label": self._previous_label,
         }
 
@@ -936,6 +991,8 @@ class CheckoutUpdater:
         self._check_stop()
         self._begin("switch", f"switching to {target}.")
         self._switched = True
+        # A release leaves the branch alone; master is fast-forwarded to commit.
+        self._branch_left = commit if target == DEVELOPMENT_BRANCH else installation.commit
         self._switch(target, commit)
         self._check_stop()
         self._switched_to(target, commit, None if TAG_PATTERN.fullmatch(target) else "master")
@@ -963,6 +1020,11 @@ class CheckoutUpdater:
         self._start_from(installation)
         if installation.tag is not None:
             raise _Refuse(f"AutoDJ already runs the release {installation.tag}.")
+        moved = updates.go_back_moved(
+            installation, record.commit, record.version, runner=self._runner
+        )
+        if moved is not None:
+            raise _Refuse(moved)
         if self._tag_commit(record.tag) != record.commit:
             raise _Refuse(
                 f"The release tag {record.tag} no longer points at the commit AutoDJ moved "
@@ -975,6 +1037,7 @@ class CheckoutUpdater:
         self._backup_now(installation)
         self._begin("switch", f"switching to {record.tag}.")
         self._switched = True
+        self._branch_left = installation.commit
         self._switch(record.tag, record.commit)
         self._check_stop()
         self._switched_to(record.tag, record.commit, None)
@@ -1115,14 +1178,20 @@ class CheckoutUpdater:
             f"The checkout is at {head[:7] if head else 'an unknown commit'}."
         )
         commands = ["git status --short"]
+        old_branch = before.get("branch") if isinstance(before, dict) else None
         if (
             isinstance(old_commit, str)
             and head
             and old_commit != head
             and re.fullmatch(r"[0-9a-f]{40}", old_commit)
         ):
-            message += f" Before the update it was at {old_commit[:7]}."
-            commands += [f"git switch --detach {old_commit}", self._cli("setup")]
+            if isinstance(old_branch, str) and re.fullmatch(r"[A-Za-z0-9._/-]{1,200}", old_branch):
+                message += f" Before the update it was at {old_commit[:7]} on {old_branch}."
+                switch = f"git switch --force-create {old_branch} {old_commit}"
+            else:
+                message += f" Before the update it was at {old_commit[:7]}."
+                switch = f"git switch --detach {old_commit}"
+            commands += [switch, self._cli("setup")]
         self._record = {
             key: state.get(key) for key in ("id", "action", "channel", "from", "to", "backup")
         }

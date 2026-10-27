@@ -1277,6 +1277,49 @@ def update_support(
     return UpdateSupport(None, "Update it the way you installed it.", guide)
 
 
+def go_back_moved(
+    installation: Installation, commit: str, version: str, *, runner: Runner = run_bounded
+) -> str | None:
+    """Why Go back to release *version* (at *commit*) no longer fits this checkout, or ``None``.
+
+    It fits while that release's commit is an ancestor of ``HEAD`` (the
+    checkout still came from it) and ``HEAD`` has not reached a newer
+    release since.  A checkout moved by hand drops the offer.
+    """
+    root = installation.root
+    unknown = (
+        f"AutoDJ cannot tell whether this checkout still came from {version}, so going back "
+        "to it is not offered."
+    )
+    if installation.kind != "git" or root is None:
+        return unknown
+    try:
+        ancestor = git(
+            root, "merge-base", "--is-ancestor", commit, "HEAD", runner=runner, timeout=5.0
+        ).returncode
+        merged = git(root, "tag", "--merged", "HEAD", runner=runner, timeout=5.0)
+    except (OSError, subprocess.SubprocessError):
+        return unknown
+    if ancestor == 1:
+        return (
+            f"This checkout has moved away from {version}, so going back to it with its backup "
+            "is not offered."
+        )
+    if ancestor != 0 or merged.returncode != 0:
+        return unknown
+    newer = [
+        tag
+        for tag in merged.stdout.split()
+        if TAG_PATTERN.fullmatch(tag) and version_key(tag) > version_key(version)
+    ]
+    if newer:
+        return (
+            f"This checkout has reached release {max(newer, key=version_key)} since, so going "
+            f"back to {version} is not offered."
+        )
+    return None
+
+
 def channel_label(channel: str) -> str:
     """``Stable`` or ``Development``."""
     return "Development" if channel == "development" else "Stable"

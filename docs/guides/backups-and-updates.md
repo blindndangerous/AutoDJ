@@ -53,14 +53,14 @@ Otherwise the page says to restart AutoDJ the way you started it. AutoDJ exits w
 
 1. Read the release notes the page links.
 2. Choose **Update AutoDJ**. The confirmation says every station's stream goes off the air while AutoDJ updates, usually for a few minutes. Choose **Update**.
-3. Wait. The page says once how it went: "Updated to X", or "The update failed, so AutoDJ went back to Y" and the reason. **Last update** keeps that sentence for a day.
+3. Wait. The page says quietly how long the update has been working, for up to 3 hours, then says once how it went: "Updated to X", or "The update failed, so AutoDJ went back to Y" and the reason. **Last update** keeps that sentence for a day. After an update, **Load the new version of this page** loads the new version's page.
 
 While no server runs, the launcher follows the [upgrade checklist](operations/upgrade.md#upgrade-checklist) for you, in the window AutoDJ runs in, where it prints each step:
 
-1. It checks again for your channel. It refuses an older version, or the same one.
+1. It checks again for your channel. It refuses an older version, or the same one. It refuses while another AutoDJ server runs from the same folder: stop that one first.
 2. It refuses when `git status --porcelain` lists anything: a changed file, or a file git does not track. Save those changes on a branch, or move the files out of the AutoDJ folder, then try again.
 3. It makes a backup with `autodj backup` in `.uv/update/backups` in the AutoDJ folder. It keeps the three newest of these.
-4. For Stable it runs `git fetch --tags origin` and `git switch --detach vX.Y.Z`. For Development it runs `git fetch origin master`, `git switch master` and `git merge --ff-only origin/master`.
+4. For Stable it fetches only that release's tag and runs `git switch --detach vX.Y.Z`; if that tag differs from the one in your AutoDJ folder, it stops and says so. For Development it runs `git fetch origin master`, `git switch master` and `git merge --ff-only origin/master`.
 5. It runs `setup --yes`, which checks the saved runtime without changing its packages.
 6. It runs Doctor. If the library needs a migration, it does not migrate: it goes back, and the page lists the commands that migrate by hand.
 7. It starts the new version. The new version must answer `/healthz` within 3 minutes, or AutoDJ goes back.
@@ -79,7 +79,7 @@ From Stable to Development, choose **Development** and update: `master` is newer
 
 When **Update AutoDJ** moved this installation from a release to Development, it kept the backup it made just before. On the Stable channel, **Go back to Stable now** offers to go back to that release with that backup. The confirmation names the version and the day of the backup: settings, play history and library changes made since that day are lost. AutoDJ backs up the data as it is now, switches to the release, runs its setup, restores the backup with `autodj restore`, runs Doctor and starts it, and goes back to Development with the new backup if that fails.
 
-The page offers it only for that backup. When the backup is missing or cannot be read, the page says so in one sentence and does not offer it. A later release reached from Development forgets it.
+The page offers it only for that backup, and only while your AutoDJ folder still came from that release and has not reached a newer one; after you switch versions by hand, it says it is no longer offered. When the backup is missing or cannot be read, the page says so in one sentence and does not offer it. A later release reached from Development forgets it.
 
 ## Update a source checkout
 

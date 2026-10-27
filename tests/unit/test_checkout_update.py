@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import signal
 import subprocess
@@ -59,6 +60,11 @@ class FakeCheckout:
         self.fail = fail or set()
         self.calls: list[list[str]] = []
         self.on: dict[str, Callable[[], None]] = {}
+        #: The release tags ``git tag --merged HEAD`` lists.
+        self.merged: list[str] = []
+        #: Where each local branch points, and the options of every command.
+        self.tips: dict[str, str] = {}
+        self.options: list[dict[str, Any]] = []
         self._move(head, branch, tag)
 
     def installation(self) -> Installation:
@@ -73,10 +79,13 @@ class FakeCheckout:
 
     def _move(self, commit: str, branch: str | None, tag: str | None = None) -> None:
         self.head, self.branch, self.tag = commit, branch, tag
+        if branch:
+            self.tips[branch] = commit
         (self.root / "pyproject.toml").write_text(_pyproject(self.versions[commit]), "utf-8")
 
-    def run(self, argv: list[str], **_options: Any) -> subprocess.CompletedProcess[str]:
+    def run(self, argv: list[str], **options: Any) -> subprocess.CompletedProcess[str]:
         self.calls.append(list(argv))
+        self.options.append(options)
         name = self._name(argv)
         if name in self.on:
             self.on[name]()
@@ -108,9 +117,16 @@ class FakeCheckout:
         if args == ["status", "--porcelain"]:
             return ok(self.dirty)
         if args[0] == "fetch":
+            if "fetch-clobber" in self.fail:
+                return subprocess.CompletedProcess(
+                    argv, 1, "", " ! [rejected] v0.22.0 -> v0.22.0  (would clobber existing tag)"
+                )
             return ok()
         if args[:3] == ["rev-parse", "--verify", "--quiet"]:
             ref = args[3]
+            if ref.startswith("refs/heads/"):
+                tip = self.tips.get(ref.removeprefix("refs/heads/"))
+                return ok(f"{tip}\n") if tip else ok(code=1)
             found = {f"refs/tags/{tag}^{{commit}}": sha for tag, sha in self.tags.items()}.get(ref)
             if ref.startswith("refs/remotes/origin/master"):
                 found = MASTER
@@ -119,6 +135,8 @@ class FakeCheckout:
             return ok(f"{self.head}\n")
         if args[:2] == ["merge-base", "--is-ancestor"]:
             return ok(code=1 if "not-ancestor" in self.fail else 0)
+        if args[:2] == ["tag", "--merged"]:
+            return ok("\n".join(self.merged))
         if args[0] == "show":
             return ok(_pyproject(self.versions[MASTER]))
         if args[0] == "switch":
@@ -275,7 +293,14 @@ def test_a_stable_update_follows_the_upgrade_checklist(tmp_path: Path) -> None:
     backup = checkout.calls[1]
     assert backup[:6] == [*BASE, "--config", "night owl.toml", "backup"]
     assert Path(backup[6]).parent == _folder(checkout) / contract.BACKUPS
-    assert ["git", "fetch", "--tags", "origin"] in checkout.calls
+    # Only the target tag: another tag moved on the remote cannot stop it.
+    assert [
+        "git",
+        "fetch",
+        "--no-tags",
+        "origin",
+        "refs/tags/v0.22.0:refs/tags/v0.22.0",
+    ] in checkout.calls
     assert ["git", "switch", "--detach", "v0.22.0"] in checkout.calls
     assert checkout.calls[7] == ["setup-py", str(checkout.root / "scripts" / "setup.py"), "--yes"]
     assert checkout.calls[8] == [
@@ -598,17 +623,20 @@ def test_only_one_update_runs_on_a_checkout_at_a_time(tmp_path: Path) -> None:
     assert first.update().switched is True
     assert first.locked
     checkout.calls.clear()
+    state = (_folder(checkout) / contract.STATE).read_bytes()
     second = _updater(checkout)
 
     assert second.update() == checkout_update.Attempt()
     assert checkout.calls == []
-    assert "Another AutoDJ launcher is updating" in _result(checkout)["reason"]
+    # The first update's files are left alone, and it still owns the result.
+    assert (_folder(checkout) / contract.STATE).read_bytes() == state
+    assert contract.read_result(_folder(checkout)) is None
     # The first one finishes and lets go; a lock file left behind holds nothing.
     first.watch(_Server(), lambda: False)  # type: ignore[arg-type]
     assert not first.locked
+    assert _result(checkout)["outcome"] == "updated"
     assert (_folder(checkout) / checkout_update.LOCK).exists()
     assert _updater(checkout, _available("v0.22.0")).update() == checkout_update.Attempt()
-    assert "already the latest" not in _result(checkout)["reason"]
     assert "Another AutoDJ launcher" not in _result(checkout)["reason"]
 
 
@@ -744,6 +772,8 @@ def test_go_back_restores_the_backup_with_the_release_it_came_from(tmp_path: Pat
 
     assert attempt == checkout_update.Attempt(switched=True)
     assert checkout.names() == [
+        "git merge-base",  # the checkout still came from v0.21.0 ...
+        "git tag",  # ... and has reached no newer release
         "git rev-parse",
         "git status",
         "backup",
@@ -971,3 +1001,150 @@ def test_a_new_version_that_cannot_even_start_is_rolled_back() -> None:
     )
     assert stub.events == ["update", "rollback"]
     assert status == 0
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: other servers, fetching one tag, branch guard, stops
+# ---------------------------------------------------------------------------
+
+
+def test_an_update_is_refused_while_another_launcher_serves_from_this_checkout(
+    tmp_path: Path,
+) -> None:
+    """ADR-0016-18: launcher B's server would keep running the old files under A's update."""
+    checkout = FakeCheckout(tmp_path / "checkout")
+    other = _updater(checkout, ask=False)
+    other.hold_serving(pid=424242)
+    assert other.serving
+    updater = _updater(checkout)
+    updater.hold_serving()  # its own does not count
+
+    assert updater.update() == checkout_update.Attempt()
+    assert checkout.calls == []
+    result = _result(checkout)
+    assert result["outcome"] == "refused"
+    assert result["reason"] == (
+        "Another AutoDJ server runs from this AutoDJ folder (launcher process 424242). "
+        "Stop it before updating."
+    )
+    # Once that launcher has ended, its lock file holds nothing and is cleared.
+    contract.unlock(other._serving)
+    other._serving = None
+    assert contract.other_servers(_folder(checkout), {os.getpid()}) == []
+    assert not contract.serving_path(_folder(checkout), 424242).exists()
+
+
+def test_a_moved_release_tag_is_named_instead_of_blaming_the_network(tmp_path: Path) -> None:
+    """ADR-0016-14: only the target tag is fetched; a clash over it says so."""
+    checkout = FakeCheckout(tmp_path / "checkout", fail={"fetch-clobber"})
+    updater = _updater(checkout)
+
+    assert updater.update() == checkout_update.Attempt()
+    assert "git switch" not in checkout.names()
+    result = _result(checkout)
+    assert result["outcome"] == "refused"
+    assert "The release tag v0.22.0 on the origin remote is not the v0.22.0" in result["reason"]
+    assert "network" not in result["reason"]
+    assert result["commands"] == ["git ls-remote origin refs/tags/v0.22.0", "git rev-parse v0.22.0"]
+
+
+def test_a_branch_moved_during_the_update_is_never_reset(tmp_path: Path) -> None:
+    """ADR-0016-16: someone committed on master meanwhile; rollback keeps their commit."""
+    checkout = FakeCheckout(tmp_path / "checkout", branch="master", tag=None, version="0.20.0")
+    updater = _updater(checkout, _available("master", "development"), channel="development")
+    assert updater.update().switched is True
+    checkout.tips["master"] = "9" * 40  # a commit made from another shell
+    updater.watch(_Server(exits=1), lambda: False)  # type: ignore[arg-type]
+
+    assert updater.failed_start() == checkout_update.Attempt(failed=True)
+    assert not any("--force-create" in call for call in checkout.calls)
+    assert checkout.tips["master"] == "9" * 40
+    result = _result(checkout)
+    assert result["outcome"] == "failed"
+    assert (
+        "The branch master moved while AutoDJ was updating (it is at 9999999 now)"
+        in result["message"]
+    )
+    assert f"git switch --detach {OLD}" in result["commands"]
+
+
+def test_reading_the_checkout_is_never_cut_short_by_a_stop(tmp_path: Path) -> None:
+    """ADR-0016-17: a second signal during rollback cannot fake a failed restore."""
+    checkout = FakeCheckout(tmp_path / "checkout")
+    updater = _updater(checkout)
+    updater.update()
+    for call, options in zip(checkout.calls, checkout.options, strict=True):
+        # Reading the ssh setting goes through the update check's runner, before
+        # anything changes; every other git command is read or written in full.
+        if call[0] == "git" and call[1] not in {"fetch", "config"}:
+            assert options.get("interruptible") is False, call
+    fetch = checkout.calls.index(
+        next(call for call in checkout.calls if call[:2] == ["git", "fetch"])
+    )
+    assert checkout.options[fetch]["interruptible"] is True
+
+
+def test_go_back_is_refused_when_the_checkout_moved_by_hand(tmp_path: Path) -> None:
+    """ADR-0016-20: a newer release reached since, or a checkout that left that release."""
+    checkout = _moved_to_development(tmp_path)
+    checkout.merged = ["v0.21.0", "v0.22.0"]
+    updater = _updater(checkout, action="go-back")
+
+    assert updater.update() == checkout_update.Attempt()
+    assert "git switch" not in checkout.names()
+    assert _result(checkout)["reason"] == (
+        "This checkout has reached release v0.22.0 since, so going back to 0.21.0 is not offered."
+    )
+    checkout.merged = []
+    checkout.fail.add("not-ancestor")
+    assert _updater(checkout, action="go-back").update() == checkout_update.Attempt()
+    assert "has moved away from 0.21.0" in _result(checkout)["reason"]
+
+
+def test_an_interrupted_update_suggests_its_branch(tmp_path: Path) -> None:
+    """ADR-0016-17: the branch is in state.json, so the switch back keeps it."""
+    checkout = FakeCheckout(tmp_path / "checkout", head=NEW, tag=None)
+    contract.write(
+        _folder(checkout) / contract.STATE,
+        {
+            "id": "abcdef12",
+            "action": "update",
+            "step": "setup",
+            "from": {"commit": OLD, "branch": "master"},
+            "steps": contract.new_steps(),
+        },
+    )
+    _updater(checkout, ask=False).recover_interrupted()
+    result = _result(checkout)
+    assert "on master" in result["message"]
+    assert f"git switch --force-create master {OLD}" in result["commands"]
+
+
+def test_a_stop_ends_a_running_step_within_a_moment(tmp_path: Path) -> None:
+    """ADR-0016-17: a real process; a step ended by a stop is a failure, not success."""
+    import sys
+    import threading
+    import time
+
+    updater = CheckoutUpdater(tmp_path, [], lambda: ([], {}))
+    timer = threading.Timer(0.5, lambda: updater._stopped.append(signal.SIGTERM))
+    started = time.monotonic()
+    timer.start()
+    try:
+        done = updater._step(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout=60,
+            capture=False,
+            interruptible=True,
+        )
+    finally:
+        timer.cancel()
+    assert time.monotonic() - started < 10
+    assert done.returncode == -1
+    # A step that must not be cut short finishes, and reports its own status.
+    kept = updater._step(
+        [sys.executable, "-c", "import time; time.sleep(1); raise SystemExit(3)"],
+        timeout=60,
+        interruptible=False,
+    )
+    assert kept.returncode == 3

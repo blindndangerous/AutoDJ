@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import secrets
 import threading
 import time
@@ -60,6 +61,7 @@ from autodj.updates import (
     UpdateSettings,
     UpdateSupport,
     channel_for,
+    go_back_moved,
     restart_support,
     update_support,
 )
@@ -83,6 +85,11 @@ RESTART_MAX_PER_HOUR = 6
 EXIT_DELAY_SECONDS = 1.0
 #: How long the page shows the last update's result.
 UPDATE_RESULT_SECONDS = 24 * 3600.0
+#: Why Update is not offered when the updater could not check the new server.
+NO_HEALTH_CHECK = (
+    "AutoDJ cannot check its own health at the address it listens on, so it cannot update. "
+    "Listen on an IP address, or a name this computer resolves, and allow a host name for it."
+)
 #: The answer while a restart or update is already on its way.
 BUSY = "AutoDJ is already restarting or updating."
 
@@ -215,17 +222,21 @@ def go_back_offer(
 ) -> dict[str, Any] | None:
     """Whether the page offers Go back, or ``None`` when there is nothing to say.
 
-    Only on the stable channel, for a checkout not on a release, with the
-    updater that recorded the backup when it moved that release to
-    development.  A recorded backup that is missing or unreadable is not
-    offered, with one sentence saying why.
+    Only on the stable channel, with the updater that recorded the backup
+    when it moved that release to development, while the checkout still
+    came from that release and has not reached a newer one
+    (:func:`autodj.updates.go_back_moved`).  A recorded backup that is
+    missing or unreadable, or a checkout moved by hand, is not offered,
+    with one sentence saying why.
     """
     record = contract.read_go_back(folder) if folder is not None else None
-    if record is None or channel != "stable" or installation.tag is not None:
+    if record is None or channel != "stable" or installation.tag == record.tag:
         return None
     if not update.available:
         return None
-    problem = contract.go_back_problem(record)
+    problem = contract.go_back_problem(record) or go_back_moved(
+        installation, record.commit, record.version
+    )
     return {
         "available": problem is None,
         "tag": record.tag,
@@ -327,6 +338,17 @@ def install_updates(
             audit(request, action, "rejected", route, 403)
             raise HTTPException(status_code=403, detail="Only a paired browser can do this")
 
+    def claim(request: Request, audited: str, route: str) -> None:
+        """Take the one pending restart or update, with no await before it is taken.
+
+        Restart, Update and Go back share it, so only one is ever accepted;
+        a request that is refused afterwards gives it back.
+        """
+        if app.state.restart_requested:
+            audit(request, audited, "rejected", route, 409)
+            raise HTTPException(status_code=409, detail=BUSY)
+        app.state.restart_requested = True
+
     def current_support() -> RestartSupport:
         found = (support or restart_support)()
         if found.available and getattr(app.state, "server_exit", None) is None:
@@ -341,13 +363,19 @@ def install_updates(
 
     def current_update_support() -> UpdateSupport:
         found = update_support(checker.installation())
-        if found.available and (
-            getattr(app.state, "server_exit", None) is None
-            or not isinstance(getattr(app.state, "health_probe", None), HealthProbe)
-        ):
+        if not found.available:
+            return found
+        if getattr(app.state, "server_exit", None) is None:
             return UpdateSupport(
                 None, "This server cannot stop itself, so it cannot update.", found.guide_url
             )
+        probe = getattr(app.state, "health_probe", None)
+        # The updater checks the probe again; one it would refuse is not offered.
+        if not isinstance(probe, HealthProbe) or contract.parse_health(probe.to_dict()) is None:
+            return UpdateSupport(None, NO_HEALTH_CHECK, found.guide_url)
+        others = contract.other_servers(folder(), {os.getppid()})
+        if others:
+            return UpdateSupport(None, contract.other_servers_reason(others), found.guide_url)
         return found
 
     def view(found: RestartSupport, result: UpdateCheck | None) -> dict[str, Any]:
@@ -423,26 +451,31 @@ def install_updates(
         if not found.available:
             audit(request, "server-restart", "rejected", route, 409)
             raise HTTPException(status_code=409, detail=found.message)
-        if app.state.restart_requested:
-            audit(request, "server-restart", "rejected", route, 409)
-            raise HTTPException(status_code=409, detail=BUSY)
+        claim(request, "server-restart", route)
+        accepted = False
         try:
-            wait = await asyncio.to_thread(limiter.take)
-        except LimitUnavailable as exc:
-            audit(request, "server-restart", "failed", route, 503)
-            raise HTTPException(status_code=503, detail=str(exc)) from None
-        if wait is not None:
-            audit(request, "server-restart", "rejected", route, 429)
-            return JSONResponse(
-                {"detail": f"AutoDJ restarted a moment ago. Try again in {seconds_text(wait)}."},
-                status_code=429,
-                headers={"Retry-After": str(wait)},
-            )
-        audit(request, "server-restart", "accepted", route, 202)
-        logger.warning("Restart requested from the web page; AutoDJ is restarting.")
-        app.state.restart_requested = True
-        background.add_task(schedule_exit, app)
-        return {"restarting": True, "message": found.message}
+            try:
+                wait = await asyncio.to_thread(limiter.take)
+            except LimitUnavailable as exc:
+                audit(request, "server-restart", "failed", route, 503)
+                raise HTTPException(status_code=503, detail=str(exc)) from None
+            if wait is not None:
+                audit(request, "server-restart", "rejected", route, 429)
+                return JSONResponse(
+                    {
+                        "detail": f"AutoDJ restarted a moment ago. Try again in {seconds_text(wait)}."
+                    },
+                    status_code=429,
+                    headers={"Retry-After": str(wait)},
+                )
+            audit(request, "server-restart", "accepted", route, 202)
+            logger.warning("Restart requested from the web page; AutoDJ is restarting.")
+            background.add_task(schedule_exit, app)
+            accepted = True
+            return {"restarting": True, "message": found.message}
+        finally:
+            if not accepted:
+                app.state.restart_requested = False
 
     async def ask_updater(
         request: Request, background: BackgroundTasks, action: str, route: str, audited: str
@@ -453,68 +486,71 @@ def install_updates(
         if not found.available:
             audit(request, audited, "rejected", route, 409)
             raise HTTPException(status_code=409, detail=found.message)
-        if app.state.restart_requested:
-            audit(request, audited, "rejected", route, 409)
-            raise HTTPException(status_code=409, detail=BUSY)
-        result = await shared_check(force=False)
-        installation = await asyncio.to_thread(checker.installation)
-        where = await asyncio.to_thread(folder)
-        if action == "update":
-            if result.status != "available" or result.target is None:
+        claim(request, audited, route)
+        accepted = False
+        try:
+            result = await shared_check(force=False)
+            installation = await asyncio.to_thread(checker.installation)
+            where = await asyncio.to_thread(folder)
+            if action == "update":
+                if result.status != "available" or result.target is None:
+                    audit(request, audited, "rejected", route, 409)
+                    raise HTTPException(
+                        status_code=409, detail=f"No update is available. {result.message}".strip()
+                    )
+                channel, target = result.channel, result.target
+            else:
+                channel = channel_for(installation, checker.settings())[0]
+                offer = await asyncio.to_thread(go_back_offer, where, installation, channel, found)
+                if offer is None or not offer["available"]:
+                    audit(request, audited, "rejected", route, 409)
+                    detail = (offer or {}).get("message") or "There is no release to go back to."
+                    raise HTTPException(status_code=409, detail=detail)
+                target = offer["tag"]
+            probe = app.state.health_probe
+            if where is None or not isinstance(probe, HealthProbe):
                 audit(request, audited, "rejected", route, 409)
-                raise HTTPException(
-                    status_code=409, detail=f"No update is available. {result.message}".strip()
+                raise HTTPException(status_code=409, detail="This server cannot update itself.")
+            try:
+                wait = await asyncio.to_thread(update_limiter.take)
+            except LimitUnavailable as exc:
+                audit(request, audited, "failed", route, 503)
+                raise HTTPException(status_code=503, detail=str(exc)) from None
+            if wait is not None:
+                audit(request, audited, "rejected", route, 429)
+                return JSONResponse(
+                    {"detail": f"AutoDJ updated a moment ago. Try again in {seconds_text(wait)}."},
+                    status_code=429,
+                    headers={"Retry-After": str(wait)},
                 )
-            channel, target = result.channel, result.target
-        else:
-            channel = channel_for(installation, checker.settings())[0]
-            offer = await asyncio.to_thread(go_back_offer, where, installation, channel, found)
-            if offer is None or not offer["available"]:
-                audit(request, audited, "rejected", route, 409)
-                detail = (offer or {}).get("message") or "There is no release to go back to."
-                raise HTTPException(status_code=409, detail=detail)
-            target = offer["tag"]
-        probe = app.state.health_probe
-        if where is None or not isinstance(probe, HealthProbe):
-            audit(request, audited, "rejected", route, 409)
-            raise HTTPException(status_code=409, detail="This server cannot update itself.")
-        try:
-            wait = await asyncio.to_thread(update_limiter.take)
-        except LimitUnavailable as exc:
-            audit(request, audited, "failed", route, 503)
-            raise HTTPException(status_code=503, detail=str(exc)) from None
-        if wait is not None:
-            audit(request, audited, "rejected", route, 429)
-            return JSONResponse(
-                {"detail": f"AutoDJ updated a moment ago. Try again in {seconds_text(wait)}."},
-                status_code=429,
-                headers={"Retry-After": str(wait)},
-            )
-        update_id = secrets.token_hex(8)
-        record = {
-            "id": update_id,
-            "action": action,
-            "channel": channel,
-            "requested_at": time.time(),
-            # For the record only: the updater works out the target itself.
-            "target": target,
-            "from": {"version": installation.version, "commit": installation.commit},
-            "health": probe.to_dict(),
-        }
-        path = where / contract.REQUEST
-        try:
-            await asyncio.to_thread(contract.write, path, record)
-        except OSError as exc:
-            logger.warning("Could not write the update request %s: %s", path, exc)
-            audit(request, audited, "failed", route, 503)
-            raise HTTPException(
-                status_code=503, detail=f"AutoDJ could not write {path}, so it did not update."
-            ) from None
-        audit(request, audited, "accepted", route, 202)
-        logger.warning("%s requested from the web page; AutoDJ is stopping.", action)
-        app.state.restart_requested = True
-        background.add_task(schedule_exit, app, None, UPDATE_EXIT_CODE)
-        return {"updating": True, "id": update_id, "action": action, "target": target}
+            update_id = secrets.token_hex(8)
+            record = {
+                "id": update_id,
+                "action": action,
+                "channel": channel,
+                "requested_at": time.time(),
+                # For the record only: the updater works out the target itself.
+                "target": target,
+                "from": {"version": installation.version, "commit": installation.commit},
+                "health": probe.to_dict(),
+            }
+            path = where / contract.REQUEST
+            try:
+                await asyncio.to_thread(contract.write, path, record)
+            except OSError as exc:
+                logger.warning("Could not write the update request %s: %s", path, exc)
+                audit(request, audited, "failed", route, 503)
+                raise HTTPException(
+                    status_code=503, detail=f"AutoDJ could not write {path}, so it did not update."
+                ) from None
+            audit(request, audited, "accepted", route, 202)
+            logger.warning("%s requested from the web page; AutoDJ is stopping.", action)
+            background.add_task(schedule_exit, app, None, UPDATE_EXIT_CODE)
+            accepted = True
+            return {"updating": True, "id": update_id, "action": action, "target": target}
+        finally:
+            if not accepted:
+                app.state.restart_requested = False
 
     @app.post("/api/server/update", status_code=202)
     async def api_server_update(

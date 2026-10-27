@@ -26,9 +26,12 @@ import { announceStatus } from "./live-region.js";
 
 const RESTART_POLL_MS = 2000;
 export const RESTART_WAIT_MS = 180000;
-// An update makes a backup, fetches, runs setup and Doctor, and waits for
-// the new version: it can take much longer than a restart.
-const UPDATE_WAIT_MS = 1800000;
+// An update makes a backup, fetches, runs setup and Doctor, waits for the
+// new version and may roll back, restoring the backup: each step has its own
+// time limit in the launcher (autodj.checkout_update), which add up to under
+// three hours.  The page waits that long, saying quietly how long so far.
+export const UPDATE_WAIT_MS = 3 * 3600000;
+const MINUTE_MS = 60000;
 // After AutoDJ is back, how long the page waits for the updater's result.
 const RESULT_WAIT_MS = 60000;
 // A server that answers this long after Restart without ever having been
@@ -108,6 +111,7 @@ export function installUpdates({
   probe = (url) => requestJson(url, { cache: "no-store" }),
   sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
   now = () => Date.now(),
+  reload = () => globalThis.location.reload(),
 } = {}) {
   const get = (id) => doc.getElementById(id);
   const panel = get("spanel-updates");
@@ -134,9 +138,12 @@ export function installUpdates({
   const result = get("updates-result");
   const how = get("updates-how");
   const commands = get("updates-commands");
+  const progress = get("updates-progress");
+  const reloadButton = get("updates-reload");
   const parts = [panel, status, current, latest, check, enabled, channel, automatic, save,
     restartNote, restartButton, notes, notesLink, updateButton, installNote, installWords,
-    guideLink, goBack, goBackNote, goBackButton, last, result, how, commands];
+    guideLink, goBack, goBackNote, goBackButton, last, result, how, commands, progress,
+    reloadButton];
   if (parts.some((part) => !part)) return { load: async () => false };
 
   let view = null;
@@ -191,7 +198,14 @@ export function installUpdates({
     installNote.hidden = !(available && !update.available);
     installWords.textContent = update.message || "Update it the way you installed it.";
     guideLink.textContent = guideWords(next.installation?.kind);
-    guideLink.href = update.guide_url || "#";
+    // No guide, no link: never a link that goes nowhere.
+    if (update.guide_url) {
+      guideLink.href = update.guide_url;
+      guideLink.hidden = false;
+    } else {
+      guideLink.removeAttribute("href");
+      guideLink.hidden = true;
+    }
     showGoBack(next.go_back);
     showLast(next);
     const restart = next.restart || {};
@@ -251,7 +265,8 @@ export function installUpdates({
 
   // True once AutoDJ has gone away and answered again, or answered after
   // RESTART_UNSEEN_MS; false when it is still away after *waitMs*.
-  async function waitForServer(waitMs = RESTART_WAIT_MS) {
+  // *onAway* hears how long AutoDJ has been away, after each poll.
+  async function waitForServer(waitMs = RESTART_WAIT_MS, onAway = () => {}) {
     const started = now();
     let away = false;
     while (now() - started < waitMs) {
@@ -264,8 +279,18 @@ export function installUpdates({
       }
       if (!answered) away = true;
       else if (away || now() - started >= RESTART_UNSEEN_MS) return true;
+      onAway(now() - started);
     }
     return false;
+  }
+
+  // The quiet line while an update runs: it is still working, and for how long.
+  function showProgress(words, elapsed) {
+    const minutes = Math.floor(elapsed / MINUTE_MS);
+    progress.hidden = false;
+    progress.textContent = minutes < 1
+      ? `${words}  It started less than a minute ago.`
+      : `${words}  It has been working for ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
   }
 
   // The updater's result for update *id*, once AutoDJ is back and it has
@@ -284,12 +309,13 @@ export function installUpdates({
     }
   }
 
-  // Focus stays on the button that started it, or moves to Check now when
-  // that button is gone: an update that worked has nothing left to offer.
+  // Focus stays on the button that started it.  When that button is gone
+  // (an update that worked has nothing left to offer), it moves to the button
+  // that loads the new version's page, else to Check now.
   function steadyFocus(button) {
     const active = doc.activeElement;
     if (active && active !== doc.body && !active.hidden) return;
-    const target = [button, check, restartButton].find((each) => !each.hidden);
+    const target = [button, reloadButton, check, restartButton].find((each) => !each.hidden);
     target?.focus();
   }
 
@@ -319,12 +345,18 @@ export function installUpdates({
       return;
     }
     say(away);
-    if (!(await waitForServer(UPDATE_WAIT_MS))) {
-      say("AutoDJ has not come back after 30 minutes.  Check the computer it runs on; the "
+    reloadButton.hidden = true;
+    showProgress(away, 0);
+    const back = await waitForServer(UPDATE_WAIT_MS, (elapsed) => showProgress(away, elapsed));
+    progress.hidden = true;
+    if (!back) {
+      say("AutoDJ has not come back after 3 hours.  Check the computer it runs on; the "
         + "window AutoDJ runs in says what happened.", "error");
       return;
     }
     const done = await resultFor(started?.id);
+    // A new version's page may differ from this one: offer to load it.
+    reloadButton.hidden = done?.outcome !== "updated";
     steadyFocus(button);
     if (!done) {
       say("AutoDJ is back, but it did not say how the update went.  Look under Last update, "
@@ -410,6 +442,7 @@ export function installUpdates({
   updateButton.addEventListener("click", () => void withDisabled(updateButton, update));
   goBackButton.addEventListener("click", () => void withDisabled(goBackButton, goBackNow));
   restartButton.addEventListener("click", () => void withDisabled(restartButton, restart));
+  reloadButton.addEventListener("click", () => reload());
   panel.addEventListener("toggle", () => {
     if (panel.open) void load();
   });
