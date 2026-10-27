@@ -582,10 +582,16 @@ def test_go_back_without_its_backup_is_explained_and_refused(
 def test_go_back_is_not_offered_off_the_stable_channel_or_without_a_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ADR-0016-20: never for a backup made by anything other than this flow."""
+    """ADR-0016-20: Stable only, and never for a backup made by anything other than this flow."""
     client = _with_go_back(tmp_path, monkeypatch)
     client.app.state.update_checker.save(updates.UpdateSettings(check=True, channel="development"))
-    assert client.get("/api/updates").json()["go_back"] is None
+    offer = client.get("/api/updates").json()["go_back"]
+    assert offer["available"] is False
+    assert offer["message"] == "Choose the Stable channel to go back to v0.21.0."
+    refused = client.post("/api/server/go-back", json={})
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "Choose the Stable channel to go back to v0.21.0."
+    client.app.state.server_exit.assert_not_called()
     client.app.state.update_checker.save(updates.UpdateSettings(check=True, channel="stable"))
     contract.remove(client.app.state.update_dir / contract.GO_BACK)
     assert client.get("/api/updates").json()["go_back"] is None

@@ -396,6 +396,7 @@ class CheckoutUpdater:
 
     def _finish(self, outcome: str, message: str, commands: list[str], reason: str) -> None:
         """Write ``result.json`` once, with every step that did not run as skipped."""
+        self._prune_backups()
         running = self._running()
         if running is not None:
             self._mark(running, "done" if outcome in {"updated", "rolled-back"} else "failed")
@@ -620,10 +621,21 @@ class CheckoutUpdater:
             )
         self._backup = path
         self._record["backup"] = str(path)
-        backups = sorted(folder.glob("autodj-update-*.zip"), key=lambda item: item.stat().st_mtime)
-        for old in backups[:-KEEP_BACKUPS]:
-            with contextlib.suppress(OSError):
-                old.unlink()
+
+    def _prune_backups(self) -> None:
+        """Keep the KEEP_BACKUPS newest ordinary backups; Go back's is not one of them.
+
+        Run as the update ends, after this update's backup may have become
+        Go back's, so it is never counted among the ordinary ones.
+        """
+        folder = self.folder / contract.BACKUPS
+        with contextlib.suppress(OSError):
+            backups = sorted(
+                folder.glob("autodj-update-*.zip"), key=lambda item: item.stat().st_mtime
+            )
+            for old in backups[:-KEEP_BACKUPS]:
+                with contextlib.suppress(OSError):
+                    old.unlink()
 
     def _fetch(self, target: str) -> None:
         if TAG_PATTERN.fullmatch(target):

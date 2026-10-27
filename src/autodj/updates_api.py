@@ -229,13 +229,14 @@ def go_back_offer(
     with one sentence saying why.
     """
     record = contract.read_go_back(folder) if folder is not None else None
-    if record is None or channel != "stable" or installation.tag == record.tag:
+    if record is None or installation.tag == record.tag or not update.available:
         return None
-    if not update.available:
-        return None
-    problem = contract.go_back_problem(record) or go_back_moved(
-        installation, record.commit, record.version
-    )
+    if channel != "stable":
+        problem: str | None = f"Choose the Stable channel to go back to {record.tag}."
+    else:
+        problem = contract.go_back_problem(record) or go_back_moved(
+            installation, record.commit, record.version
+        )
     return {
         "available": problem is None,
         "tag": record.tag,

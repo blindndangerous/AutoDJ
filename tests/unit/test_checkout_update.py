@@ -768,6 +768,31 @@ def test_moving_a_release_to_development_keeps_its_backup_for_go_back(tmp_path: 
     assert len(ordinary) <= checkout_update.KEEP_BACKUPS
 
 
+def test_the_go_back_backup_is_kept_beside_three_ordinary_ones(tmp_path: Path) -> None:
+    """ADR-0016-20: Go back's backup is never counted among the ones kept."""
+    import os
+    import zipfile
+
+    checkout = FakeCheckout(tmp_path / "checkout")
+    backups = _folder(checkout) / contract.BACKUPS
+    backups.mkdir(parents=True)
+    for number in range(5):
+        old = backups / f"autodj-update-0.20.0-2026100{number}-000000.zip"
+        with zipfile.ZipFile(old, "w") as archive:
+            archive.writestr("manifest.json", "{}")
+        os.utime(old, (1_000_000.0 + number, 1_000_000.0 + number))
+    updater = _updater(checkout, _available("master", "development"), channel="development")
+    assert updater.update().switched is True
+    updater.watch(_Server(), lambda: False)  # type: ignore[arg-type]
+
+    ordinary = sorted(path.name for path in backups.glob("autodj-update-*.zip"))
+    kept = list(backups.glob("autodj-go-back-*.zip"))
+    assert len(kept) == 1
+    assert len(ordinary) == checkout_update.KEEP_BACKUPS == 3
+    # The newest three of the older ones stay; the two oldest go.
+    assert ordinary == [f"autodj-update-0.20.0-2026100{number}-000000.zip" for number in (2, 3, 4)]
+
+
 def test_go_back_restores_the_backup_with_the_release_it_came_from(tmp_path: Path) -> None:
     """ADR-0016-20: switch to the tag, its setup, restore that backup, Doctor, then healthy."""
     checkout = _moved_to_development(tmp_path)
