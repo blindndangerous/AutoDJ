@@ -75,7 +75,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | --- | --- | --- | --- |
 | `ADR-0011-01` | The visual status mirror does not add a second automatic announcement path. | automated | `tests/jsmodules/live-region.test.js::keeps the visible mirror out of the accessibility tree` |
 | `ADR-0011-02` | An unchanged status does not rewrite its live region during passive updates. | automated | `tests/jsmodules/live-region.test.js::does not rewrite a region that already carries the message` |
-| `ADR-0011-03` | Cancel returns focus to the opener after the dialog closes. | automated | `tests/jsmodules/confirm-dialog.test.js::puts focus back on the opener only once the dialog has closed, after Cancel` |
+| `ADR-0011-03` | Cancel returns focus to the opener after the dialog closes. | automated | `tests/jsmodules/confirm-dialog.test.js::puts focus back on the opener only once the dialog has closed, after Cancel`; `tests/jsmodules/confirm-dialog.test.js::leaves focus on a control chosen before the late close event` |
 | `ADR-0011-04` | A release records the required real-browser and screen-reader sample with scope and limitations. | manual | Follow docs/accessibility-testing.md; record exact engine, screen reader, flows, defects, and whether a person listened. |
 
 ## Verification
