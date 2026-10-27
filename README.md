@@ -68,7 +68,7 @@ Start with [Contributing](CONTRIBUTING.md) and the [architecture decision index]
 
 ## Credits and licensing
 
-AutoDJ is copyright © 2026 blindndangerous, jage9, and contributors. It is licensed under [AGPL version 3 or later](LICENSE). If you change AutoDJ and offer it over a network, that licence requires you to offer the changed source. Releases up to and including 0.19.1 remain available under MIT. AutoDJ is provided as is, without warranty; use it at your own risk.
+AutoDJ is copyright © 2026 blindndangerous, jage9, chrisnestrud, and contributors. It is licensed under [AGPL version 3 or later](LICENSE). If you change AutoDJ and offer it over a network, that licence requires you to offer the changed source. AutoDJ is provided as is, without warranty; use it at your own risk.
 
 Third-party credits:
 
@@ -80,11 +80,8 @@ Third-party credits:
 
 ## Contributors
 
-- [blindndangerous](https://github.com/blindndangerous): project vision, library design, requirements, web UI direction, accessibility decisions, testing on a 10,000-track library, and release decisions.
-- [jage9](https://github.com/jage9): station playout, folder libraries, cue editing, clockwheel rotation, play history, Smooth and Stereo Tool processing, doctor and launcher repairs, Windows AMD and MuQ work, keyboard shortcuts, the accessibility audit, CI, and testing.
-- Claude (Anthropic): implementation across MuQ and librosa analysis, FAISS picking, audio mixing and effects, FastAPI and WebSocket controls, the web page, and tests.
-- Codex (OpenAI): reviews, automated verification, model research, and documentation corrections.
+- [blindndangerous](https://github.com/blindndangerous) leads the project and makes its design, accessibility and release decisions.
+- [jage9](https://github.com/jage9) built much of station playout, rotation and audio processing, and leads the accessibility audit and CI.
+- [chrisnestrud](https://github.com/chrisnestrud) built the speech studio, programme reviews and optional model analysis, and organized the documentation and architecture decision records.
 
-If you contribute, add your name and the work you contributed.
-
-AutoDJ and this documentation were developed with AI assistance. See [Contributing](CONTRIBUTING.md) to help.
+AutoDJ and its documentation were developed with AI assistance from Claude (Anthropic) and Codex (OpenAI). To contribute, see [Contributing](CONTRIBUTING.md).
