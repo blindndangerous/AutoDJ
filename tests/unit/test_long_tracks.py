@@ -195,7 +195,8 @@ def test_long_track_cues_survive_silent_windows(
 def test_long_track_beats_and_cues_come_from_its_ends(monkeypatch) -> None:
     calls = []
 
-    def analyse(audio, sr, intro_end_s=None, outro_start_s=None):
+    def analyse(audio, sr, intro_end_s=None, outro_start_s=None, beats=None):
+        assert beats is None
         calls.append((len(audio), intro_end_s, outro_start_s))
         return DjMeta(
             intro_start_s=0.5,

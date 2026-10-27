@@ -61,7 +61,6 @@ SHARED = frozenset(
         "/api/library/browse",
         "/api/library/rescan",
         "/api/library/auto-rescan",
-        "/api/library/dj-analysis",
         "/api/library/advanced-length",
         "/api/library/music-fade",
         "/api/library/points",
