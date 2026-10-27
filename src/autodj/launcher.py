@@ -27,6 +27,9 @@ BACKENDS = {"amd", "nvidia", "cpu", "no-model"}
 #: More restarts than this within RESTART_WINDOW_SECONDS stop the loop.
 MAX_RESTARTS = 5
 RESTART_WINDOW_SECONDS = 60.0
+UPDATE_RUNNING = (
+    "AutoDJ: an update is running from this AutoDJ folder; start AutoDJ again when it finishes."
+)
 
 
 def _python_path(environment: Path) -> Path:
@@ -377,10 +380,26 @@ def _supervise(arguments: list[str], selected: tuple[Path, str]) -> int:
 
     updater = CheckoutUpdater(ROOT, global_options(arguments), current)
     updater.hold_serving()
+
+    def end_with_signal(signum: int) -> int:
+        # Dying of the signal skips the finally below: let go first.
+        updater.release_serving()
+        return _end_with_signal(signum)
+
     try:
+        if updater.update_running():
+            # Its checkout is half switched until it finishes.
+            print(UPDATE_RUNNING, file=sys.stderr)
+            return 1
         updater.recover_interrupted()
         base, child_environment = _child_plan(selected)
-        return run_supervised([*base, *arguments], child_environment, updater=updater, plan=plan)
+        return run_supervised(
+            [*base, *arguments],
+            child_environment,
+            updater=updater,
+            plan=plan,
+            end_with_signal=end_with_signal,
+        )
     finally:
         updater.release_serving()
 

@@ -409,6 +409,36 @@ def other_servers(folder: Path | None, own: Iterable[int]) -> list[int]:
     return found
 
 
+def holds(handle: Any, path: Path) -> bool:
+    """Whether the locked *handle* is still the file at *path*.
+
+    On POSIX another process could delete a free lock file between this one
+    opening and locking it, leaving a lock nobody can see; the file at the
+    path must be the one locked.  Windows cannot delete an open file.
+    """
+    if sys.platform == "win32":
+        return True
+    try:
+        return os.fstat(handle.fileno()).st_ino == os.stat(path).st_ino
+    except OSError:
+        return False
+
+
+def clear_dead_servers(folder: Path, own: int) -> None:
+    """Delete serving lock files nobody holds: their launchers have ended.
+
+    Called by a launcher as it starts, for every file but its own.  One that
+    another launcher takes a moment later is re-made by that launcher, which
+    checks with :func:`holds`.
+    """
+    for path in sorted(Path(folder).glob(f"{SERVING}*.lock")):
+        if path.name == serving_path(folder, own).name:
+            continue
+        handle = try_lock(path)
+        if handle is not None:
+            release_serving(handle, path)
+
+
 def release_serving(handle: Any, path: Path) -> None:
     """Let go of this launcher's serving lock and delete its file: only the owner deletes it.
 

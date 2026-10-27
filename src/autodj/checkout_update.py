@@ -89,6 +89,10 @@ DOCTOR_TIMEOUT_SECONDS = 600.0
 #: How long a new server has to answer ``/healthz`` before it is rolled back.
 HEALTH_TIMEOUT_SECONDS = 180.0
 HEALTH_POLL_SECONDS = 1.0
+#: Tries, and the pause between them, to take a lock another process may be
+#: looking at that very moment.
+LOCK_ATTEMPTS = 5
+LOCK_PAUSE_SECONDS = 0.05
 #: How often a running step looks for a stop signal.
 STEP_POLL_SECONDS = 0.5
 #: How long an unhealthy new server has to stop before it is killed.
@@ -421,10 +425,26 @@ class CheckoutUpdater:
         self._unlock()
 
     def _try_lock(self) -> bool:
-        """Lock the checkout for this update; False when another launcher holds it."""
-        if self._lock_handle is None:
-            self._lock_handle = contract.try_lock(self.folder / LOCK)
-        return self._lock_handle is not None
+        """Lock the checkout for this update; False when another launcher holds it.
+
+        A few short tries: another launcher may be looking at the lock that
+        very moment (:meth:`update_running`).
+        """
+        for attempt in range(LOCK_ATTEMPTS):
+            if self._lock_handle is None:
+                self._lock_handle = contract.try_lock(self.folder / LOCK)
+            if self._lock_handle is not None:
+                return True
+            if attempt + 1 < LOCK_ATTEMPTS:
+                self._sleep(LOCK_PAUSE_SECONDS)
+        return False
+
+    def update_running(self) -> bool:
+        """Whether another launcher is updating this checkout right now."""
+        if self._try_lock():
+            self._unlock()
+            return False
+        return True
 
     def _unlock(self) -> None:
         handle, self._lock_handle = self._lock_handle, None
@@ -437,10 +457,28 @@ class CheckoutUpdater:
         (:func:`autodj.update_contract.other_servers`).
         *pid* is this launcher's process id, by default its own.
         """
-        if self._serving is None:
-            owner = os.getpid() if pid is None else pid
-            self._serving_path = contract.serving_path(self.folder, owner)
-            self._serving = contract.try_lock(self._serving_path)
+        if self._serving is not None:
+            return
+        owner = os.getpid() if pid is None else pid
+        self._serving_path = contract.serving_path(self.folder, owner)
+        # Another process may be looking at it that very moment; or, on POSIX,
+        # may have deleted it as free between opening and locking.
+        for attempt in range(LOCK_ATTEMPTS):
+            handle = contract.try_lock(self._serving_path)
+            if handle is not None and contract.holds(handle, self._serving_path):
+                self._serving = handle
+                break
+            contract.unlock(handle)
+            if attempt + 1 < LOCK_ATTEMPTS:
+                self._sleep(LOCK_PAUSE_SECONDS)
+        else:
+            print(
+                f"AutoDJ: could not lock {self._serving_path}; another launcher's update "
+                "would not see that this one serves from this folder.",
+                file=sys.stderr,
+            )
+        # Lock files nobody holds belong to launchers that have ended.
+        contract.clear_dead_servers(self.folder, owner)
 
     def release_serving(self) -> None:
         """This launcher stops serving: let go of its lock and delete its file."""

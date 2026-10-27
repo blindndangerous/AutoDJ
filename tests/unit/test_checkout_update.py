@@ -1173,3 +1173,49 @@ def test_a_stop_ends_a_running_step_within_a_moment(tmp_path: Path) -> None:
         interruptible=False,
     )
     assert kept.returncode == 3
+
+
+def test_a_starting_launcher_clears_serving_files_of_ended_launchers(tmp_path: Path) -> None:
+    """ADR-0016-18: a file nobody holds is an ended launcher's; a held one stays."""
+    checkout = FakeCheckout(tmp_path / "checkout")
+    folder = _folder(checkout)
+    folder.mkdir(parents=True, exist_ok=True)
+    ended = contract.serving_path(folder, 111111)
+    ended.write_text("", encoding="utf-8")
+    alive = contract.try_lock(contract.serving_path(folder, 222222))
+    updater = _updater(checkout, ask=False)
+    try:
+        updater.hold_serving()
+        assert updater.serving
+        assert not ended.exists()
+        assert contract.serving_path(folder, 222222).exists()
+    finally:
+        contract.unlock(alive)
+        updater.release_serving()
+
+
+def test_the_serving_lock_is_tried_again_while_someone_looks_at_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ADR-0016-18: another process's check holds it a moment; a lasting failure is said."""
+    checkout = FakeCheckout(tmp_path / "checkout")
+    real = contract.try_lock
+    busy = [2]
+
+    def flaky(path: Path) -> object:
+        if path.name.startswith(contract.SERVING) and busy[0] > 0:
+            busy[0] -= 1
+            return None
+        return real(path)
+
+    monkeypatch.setattr(contract, "try_lock", flaky)
+    updater = _updater(checkout, ask=False)
+    updater.hold_serving()
+    assert updater.serving
+    updater.release_serving()
+
+    busy[0] = 99
+    again = _updater(checkout, ask=False)
+    again.hold_serving()
+    assert not again.serving
+    assert "could not lock" in capsys.readouterr().err
