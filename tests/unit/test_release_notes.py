@@ -65,6 +65,21 @@ def test_images_point_at_the_file_and_code_spans_are_left_alone():
     assert "`[not a link](docs/x.md)`" in notes
 
 
+def test_a_lone_backtick_does_not_hide_the_next_paragraphs_links():
+    text = "Run `autodj, then see\n\n[the guide](docs/setup.md) and `code`."
+    notes = release_notes.absolute_links(text, "v1.2.0")
+    assert f"[the guide]({BLOB}/docs/setup.md)" in notes
+
+
+def test_a_heading_inside_a_code_block_does_not_end_the_section():
+    changelog = CHANGELOG.replace(
+        "- Older.", "- Older.\n\n```markdown\n## Not a heading\n```\n\n- Still 1.1.0."
+    )
+    notes = release_notes.release_notes(changelog, "v1.1.0")
+    assert "## Not a heading" in notes and "- Still 1.1.0." in notes
+    assert "A note on this file" not in notes
+
+
 def test_the_last_release_stops_before_notes_and_link_definitions():
     assert release_notes.release_notes(CHANGELOG, "v1.1.0") == "### Fixed\n\n- Older.\n"
 

@@ -24,7 +24,10 @@ _RELEASE_HEADING = re.compile(r"## \[(?P<version>[^\]]+)\]")
 # Anything that ends a release's section: the next level-2 heading, or the
 # link reference definitions at the bottom of the file.
 _SECTION_END = re.compile(r"## |\[[^\]]+\]:\s")
-_CODE_SPAN = re.compile(r"(`+).+?\1", re.DOTALL)
+# A code span never crosses a blank line, so a lone backtick in one paragraph
+# cannot hide the links of the next.
+_CODE_SPAN = re.compile(r"(`+)(?:(?!\n[ \t]*\n).)+?\1", re.DOTALL)
+_FENCE = re.compile(r" {0,3}(```|~~~)")
 _INLINE_LINK = re.compile(
     r"(?P<image>!?)\[(?P<text>[^\]]*)\]\((?P<target>[^)\s]+)(?P<title>\s+\"[^\"]*\")?\)"
 )
@@ -35,8 +38,11 @@ def section(changelog: str, version: str) -> str:
     """The text under ``## [version]``, without its heading; raise if missing or empty."""
     lines: list[str] = []
     found = False
+    fenced = False
     for line in changelog.splitlines():
-        if found and _SECTION_END.match(line):
+        if found and _FENCE.match(line):
+            fenced = not fenced
+        if found and not fenced and _SECTION_END.match(line):
             break
         heading = _RELEASE_HEADING.match(line)
         if heading is not None:
