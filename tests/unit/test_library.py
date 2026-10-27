@@ -63,6 +63,27 @@ class Similarity:
         return True
 
 
+def _set_music_analysis(manager, analysis: str) -> None:
+    for source in manager.catalog.sources("music"):
+        manager.catalog.update_source(
+            source["id"], source["recursive"], source["advanced"], analysis=analysis
+        )
+
+
+def _audio_analysis_result():
+    from autodj.audio_analysis import ANALYSIS_VERSION, AudioAnalysis
+
+    return AudioAnalysis(
+        version=ANALYSIS_VERSION,
+        features=[0.1, *([0.0] * 15)],
+        energy=0.1,
+        key=1,
+        mode=1,
+        bpm=120.0,
+        tempo_confidence=0.8,
+    )
+
+
 def make_config(
     root: Path,
     *,
@@ -214,7 +235,12 @@ def test_touched_nonpending_song_preserves_dj_cues_with_invalid_points(
         manager.analysis_queue.seen("worker", "Worker", scan_decode=True)
     song = manager.cfg.library.music_dir / "song.flac"
     sf.write(song, np.ones((100, 2)) * 0.1, 22050)
-    manager.catalog.put_entry(make_entry(song), "music")
+    entry = make_entry(song)
+    entry.size, entry.fingerprint = file_fingerprint(song)
+    manager.catalog.put_entry(entry, "music")
+    assert manager.catalog.store_audio_analysis(
+        song, entry.size, entry.fingerprint, _audio_analysis_result()
+    )
     manager.catalog.set_intro_lift(song, 1.0)
     cache = manager._dj_cache()
     cue = Cue(0.3, type="user", label="Saved cue", source="user")
@@ -258,6 +284,7 @@ def test_scan_dj_keeps_current_imported_markers(manager_factory, monkeypatch, fl
     song = manager.cfg.library.music_dir / "My Song.flac"
     song.write_bytes(b"audio")
     entry, points = fake_basic(song)
+    entry.size, entry.fingerprint = file_fingerprint(song)
     manager.catalog.put_entry(entry, points=points, point_source="analysis")
     before = manager.catalog.record_for_path(song)
     # Use the catalog's runtime path and the importers' normalized keys on both OSes.
@@ -282,7 +309,10 @@ def test_scan_dj_keeps_current_imported_markers(manager_factory, monkeypatch, fl
     assert cache is not None
     assert manager.dj_analysis_enabled()
     if flow == "local":
-        with patch("autodj.dj_meta.analyse_audio", return_value=meta):
+        with patch(
+            "autodj.audio_analysis.analyse_audio_features",
+            return_value=(_audio_analysis_result(), meta),
+        ):
             manager._dj_analyse(path, np.zeros(22050 * 180, np.float32))
     else:
         manager._refresh_scan_cues()
@@ -326,6 +356,7 @@ def test_scan_dj_cached_markers_follow_import_setting(
     cache.set(str(song), DjMeta(analysed=True, cues=saved))
     song.write_bytes(b"replacement recording")
     entry, points = fake_basic(song)
+    entry.size, entry.fingerprint = file_fingerprint(song)
     manager.catalog.put_entry(entry, points=points, point_source="analysis")
     monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", lambda **kwargs: {})
     meta = DjMeta(
@@ -336,7 +367,10 @@ def test_scan_dj_cached_markers_follow_import_setting(
         cues=[Cue(0.0, "intro_start"), Cue(10.0, "intro_end"), Cue(165.0, "outro_start")],
     )
     if flow == "local":
-        with patch("autodj.dj_meta.analyse_audio", return_value=meta):
+        with patch(
+            "autodj.audio_analysis.analyse_audio_features",
+            return_value=(_audio_analysis_result(), meta),
+        ):
             manager._dj_analyse(song, np.zeros(22050 * 180, np.float32), force=True)
     else:
         manager._refresh_scan_cues()
@@ -1236,13 +1270,15 @@ def test_external_cues_load_once_per_long_scan_or_drain(abandoned_scan, monkeypa
     imported = Mock(return_value={})
     monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", imported)
 
-    def decode(path):
+    def decode(path, audio_analysis=None):
+        del audio_analysis
         now[0] += 61
         return np.ones(22050)
 
     monkeypatch.setattr("autodj.library.load_for_analysis", decode)
     monkeypatch.setattr(
-        "autodj.dj_meta.analyse_decoded", lambda *args, **kwargs: DjMeta(analysed=True)
+        "autodj.audio_analysis.analyse_audio_features",
+        lambda *args, **kwargs: (_audio_analysis_result(), DjMeta(analysed=True)),
     )
     if recovery:
         tick_and_wait(manager)
@@ -1635,10 +1671,14 @@ def test_tick_scan_uses_local_dj_path(abandoned_scan, monkeypatch, measured):
     if measured:
         # A remote result can store basic measurements before DJ storage fails.
         entry, points = fake_basic(songs[0])
+        entry.size, entry.fingerprint = file_fingerprint(songs[0])
         manager.catalog.put_entry(entry, points=points)
     monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
     monkeypatch.setattr("autodj.library.load_for_analysis", lambda path: np.zeros(22050))
-    monkeypatch.setattr("autodj.dj_meta.analyse_audio", lambda *a, **kw: DjMeta(analysed=True))
+    monkeypatch.setattr(
+        "autodj.audio_analysis.analyse_audio_features",
+        lambda *a, **kw: (_audio_analysis_result(), DjMeta(analysed=True)),
+    )
     imports = Mock(return_value={})
     monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", imports)
     try:
@@ -2756,8 +2796,10 @@ def test_advanced_worker_adds_vector_without_publishing_legacy_index(tmp_path: P
 
     vector = np.full(FEATURE_DIM, 0.5, dtype=np.float32)
 
-    def embed(tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None):
-        del wrapper, workers, throttle_ms, report
+    def embed(
+        tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None, feature_for=None
+    ):
+        del wrapper, workers, throttle_ms, report, feature_for
         advanced = make_entry(tracks[0].path)
         advanced.bpm, advanced.key, advanced.mode = 121.0, 7, 1
         advanced.size, advanced.fingerprint = file_fingerprint(advanced.path)
@@ -2786,7 +2828,8 @@ def test_analysis_keeps_tag_edits_and_user_cues_during_decode(tmp_path, change_f
         catalog.put_entry(make_entry(song, title="Old title"), points={"start": 0, "end": 180})
         catalog.set_points(song, {"intro": 12.5}, source="user")
 
-    def decode(path):
+    def decode(path, audio_analysis=None):
+        del audio_analysis
         with LibraryCatalog(cfg.index.library_dir / "library.db") as other:
             assert other.retag(path, {"title": "New title"})
         if change_file == "size":
@@ -2807,6 +2850,11 @@ def test_analysis_keeps_tag_edits_and_user_cues_during_decode(tmp_path, change_f
     with (
         patch("autodj.indexer._extract_librosa_features", side_effect=decode),
         patch("autodj.indexer.finish_analysis", return_value=analysis),
+        patch.object(
+            LibraryManager,
+            "ensure_audio_analysis",
+            return_value=_audio_analysis_result().model_dump(),
+        ),
     ):
         # Size and fingerprint stand for the audio bytes; a change they do
         # not see (same_fingerprint) still stores the analysis, but the tag
@@ -2828,7 +2876,7 @@ def test_liner_source_takes_over_scanned_music(manager_factory, tmp_path):
     clip = voice / "id.flac"
     clip.write_bytes(b"station id" * 50)
     manager = manager_factory(music=music)
-    manager.set_dj_analysis_enabled(False)
+    _set_music_analysis(manager, "basic")
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
         patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
@@ -2865,6 +2913,7 @@ def test_changed_file_recalculates_cues_without_inheriting_dj_cache(
         point_source="user",
     )
     original_identity = file_fingerprint(song)
+    _set_music_analysis(manager, "audio" if dj_enabled else "basic")
     cache = manager._dj_cache()
     cache.set(
         str(song),
@@ -2877,7 +2926,6 @@ def test_changed_file_recalculates_cues_without_inheriting_dj_cache(
         ),
     )
     cache.flush(force=True)
-    manager.set_dj_analysis_enabled(dj_enabled)
     song.write_bytes(b"b" * (1200 if change == "size" else 1000))
     assert file_fingerprint(song) != original_identity
     if stale_pending:
@@ -2903,7 +2951,10 @@ def test_changed_file_recalculates_cues_without_inheriting_dj_cache(
             "autodj.library.load_for_analysis", return_value=np.zeros((24 * 44100, 2), np.float32)
         ) as decode,
         patch.object(manager, "_legacy_point_suggestions", side_effect=AssertionError("old cues")),
-        patch("autodj.dj_meta.analyse_decoded", return_value=fresh_meta) as analyse,
+        patch(
+            "autodj.audio_analysis.analyse_audio_features",
+            return_value=(_audio_analysis_result(), fresh_meta),
+        ) as analyse,
         patch("autodj.intro_lift.measure_source_intro", return_value=0),
     ):
         assert manager._read_track("music", song, override_tags=False)
@@ -2923,7 +2974,7 @@ def test_changed_file_recalculates_cues_without_inheriting_dj_cache(
                 assert disk.get(str(song)) == DjMeta()
             finally:
                 disk.close()
-            manager.set_dj_analysis_enabled(True)
+            _set_music_analysis(manager, "audio")
             manager._dj_backlog()
         analyse.assert_called_once()
         assert analyse.call_args.kwargs["intro_end_s"] == 0
@@ -2942,7 +2993,7 @@ def test_deferred_replacement_clears_old_dj_cache_before_publishing_identity(
     from autodj.dj_meta import Cue, DjMeta, DjMetaCache
 
     manager = manager_factory()
-    manager.set_dj_analysis_enabled(False)
+    _set_music_analysis(manager, "basic")
     song = manager.cfg.library.music_dir / "song.flac"
     song.write_bytes(b"a" * 1000)
     original = make_entry(song)
@@ -3005,7 +3056,7 @@ def test_rescan_reads_external_tag_edit_with_unchanged_size(manager_factory, tmp
     audio["title"] = "Old title"
     audio.save()
     manager = manager_factory(music=song.parent, processing="smooth")
-    manager.set_dj_analysis_enabled(False)
+    _set_music_analysis(manager, "basic")
     with patch("autodj.library.analyze_loudness", side_effect=fake_loudness):
         manager.scan()
         assert manager.entry_for_path(song).title == "Old title"
@@ -3032,7 +3083,6 @@ def test_rescan_reads_external_tag_edit_with_unchanged_size(manager_factory, tmp
             os.utime(song, ns=(song.stat().st_atime_ns, before_mtime + 1_000_000_000))
         assert file_fingerprint(song) == before
         before_record = manager.catalog.record_for_path(song)
-        manager.set_dj_analysis_enabled(True)
         with (
             patch("autodj.library.analyze_basic", side_effect=AssertionError("basic analysis")),
             patch("autodj.library.load_for_analysis", side_effect=AssertionError("DJ analysis")),
@@ -3249,14 +3299,18 @@ def test_dj_backlog_finds_imported_cues_for_case_folded_catalog_path(manager_fac
     )
     manager = manager_factory(music=music)
     manager.catalog.add_source(music)
-    manager.catalog.put_entry(make_entry(song), points={"start": 0, "end": 180})
-    manager.set_dj_analysis_enabled(True)
+    entry = make_entry(song)
+    entry.size, entry.fingerprint = file_fingerprint(song)
+    manager.catalog.put_entry(entry, points={"start": 0, "end": 180})
     object.__setattr__(manager.cfg.playback, "import_external_cues", True)
     catalog_path = manager.catalog.all_entries("music")[0]["path"]
     try:
         with (
             patch("autodj.dj_cues_import._default_search_paths", return_value=[]),
-            patch("autodj.dj_meta.analyse_audio", return_value=DjMeta(analysed=True)),
+            patch(
+                "autodj.audio_analysis.analyse_audio_features",
+                return_value=(_audio_analysis_result(), DjMeta(analysed=True)),
+            ),
         ):
             manager._dj_analyse(Path(catalog_path), np.zeros(22050 * 5, np.float32))
         meta = manager._dj_cache().get(catalog_path)
@@ -4018,35 +4072,41 @@ def test_scan_finds_beats_from_the_same_decode_and_catches_up_older_songs(
     old.write_bytes(b"old")
     manager = manager_factory(music=music)
     manager.cfg.playback.import_external_cues = False
-    manager.catalog.put_entry(make_entry(old))
+    old_entry = make_entry(old)
+    old_entry.size, old_entry.fingerprint = file_fingerprint(old)
+    manager.catalog.put_entry(old_entry)
     manager.catalog.set_points(old, {"start": 0, "intro": 4.0, "outro": 170, "end": 179}, "user")
     new.write_bytes(b"new")
     decoded = np.zeros((44100 * 2, 2), dtype=np.float32)
     calls = []
 
     def analyse(audio, sr, intro_end_s=None, outro_start_s=None):
-        calls.append((len(audio), intro_end_s, outro_start_s))
-        return DjMeta(analysed=True)
+        calls.append((audio, intro_end_s, outro_start_s))
+        return _audio_analysis_result(), DjMeta(analysed=True)
 
     with (
         patch("autodj.library.load_for_analysis", return_value=decoded) as load,
         patch("autodj.library.analyze_basic", side_effect=fake_basic) as basic,
         patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
-        patch("autodj.dj_meta.analyse_audio", side_effect=analyse),
+        patch("autodj.audio_analysis.analyse_audio_features", side_effect=analyse),
     ):
         manager.scan()
         # The new song is decoded once, for its cue points and its beats.
         assert basic.call_args.kwargs["audio"] is decoded
         assert load.call_count == 2  # the new song, then the older one catching up
         # Beats and cues are placed from the saved Intro and Outro.
-        assert (len(decoded), 10.0, 165.0) in calls
-        assert (len(decoded), 4.0, 170) in calls
+        assert any(
+            audio is decoded and intro == 10.0 and outro == 165.0 for audio, intro, outro in calls
+        )
+        assert any(
+            audio is decoded and intro == 4.0 and outro == 170 for audio, intro, outro in calls
+        )
         cache = get_cache()
         assert cache.get(str(new)).analysed and cache.get(str(old)).analysed
         manager.scan()
         assert load.call_count == 2
 
-        manager.set_dj_analysis_enabled(False)
+        _set_music_analysis(manager, "basic")
         new.write_bytes(b"new bytes")
         manager.scan()
         assert basic.call_args.kwargs["audio"] is None
@@ -4371,7 +4431,13 @@ def test_the_dj_backlog_finds_unanalysed_songs_without_loading_any_beats(
     done, todo = music / "done.flac", music / "todo.flac"
     for song in (done, todo):
         song.write_bytes(b"x" * 100)
-        manager.catalog.put_entry(make_entry(song))
+        entry = make_entry(song)
+        entry.size, entry.fingerprint = file_fingerprint(song)
+        manager.catalog.put_entry(entry)
+        if song == done:
+            assert manager.catalog.store_audio_analysis(
+                song, entry.size, entry.fingerprint, _audio_analysis_result()
+            )
     cache = manager._dj_cache()
     cache.set(str(done), DjMeta(beats=[0.5] * 400, cues=[Cue(time_s=8.0)], analysed=True))
     cache.flush(force=True)

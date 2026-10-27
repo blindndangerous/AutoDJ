@@ -11,7 +11,6 @@ import logging
 import os
 import sqlite3
 import time
-import warnings
 from collections import deque
 from collections.abc import Callable, Collection
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -20,7 +19,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import faiss
-import librosa
 import numpy as np
 
 from autodj.beets import Track
@@ -447,6 +445,7 @@ def _apply_analysis_metadata(
 
 def _extract_librosa_features(
     audio_path: Path,
+    audio_analysis: Any | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int, dict]:
     """Extract 16 audio features from a track using librosa, plus extra metadata.
 
@@ -479,59 +478,23 @@ def _extract_librosa_features(
     if len(audio) == 0:
         raise ValueError("audio file contains no samples")
 
-    with warnings.catch_warnings():
-        # Suppress warnings that fire on short or silent tracks — they are
-        # handled gracefully by librosa (clipped n_fft, zero chroma, etc.).
-        warnings.filterwarnings("ignore", message=".*n_fft.*too large.*", category=UserWarning)
-        warnings.filterwarnings("ignore", message=".*empty frequency set.*", category=UserWarning)
+    if audio_analysis is not None:
+        from autodj.audio_analysis import AudioAnalysis
 
-        rms = float(np.mean(librosa.feature.rms(y=audio)))
-        spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(y=audio, sr=sr)))
-        zcr = float(np.mean(librosa.feature.zero_crossing_rate(y=audio)))
-        chroma = np.mean(librosa.feature.chroma_stft(y=audio, sr=sr), axis=1)  # (12,)
-        onset_strength = float(np.mean(librosa.onset.onset_strength(y=audio, sr=sr)))
+        shared = AudioAnalysis.model_validate(audio_analysis)
+        return np.asarray(shared.features, dtype=np.float32), audio, sr, shared.model_dump()
 
-        # --- Extra metadata (IndexEntry only, not included in FAISS vectors) ---
+    from autodj.audio_analysis import analyse_audio_features
 
-        # energy = reuse already-computed RMS
-        energy = rms
-
-        key, mode = _estimate_key_from_chroma(chroma)
-
-        # tempo confidence: detected beats / expected beats at estimated tempo
-        tempo_val = 0.0
-        try:
-            tempo_arr, beat_frames = librosa.beat.beat_track(y=audio, sr=sr)
-            tempo_val = float(np.atleast_1d(tempo_arr)[0])
-            if not np.isfinite(tempo_val) or tempo_val <= 0:
-                tempo_val = 0.0
-                tempo_confidence = 0.0
-            else:
-                duration_sec = len(audio) / max(1, sr)
-                expected = (tempo_val / 60.0) * duration_sec
-                tempo_confidence = float(min(1.0, len(beat_frames) / max(1.0, expected)))
-        except Exception:
-            tempo_confidence = 0.0
-
-    features = np.array(
-        [rms, spectral_centroid, zcr, *chroma, onset_strength],
-        dtype=np.float32,
-    )
-    extra_meta = {
-        "energy": float(energy),
-        "key": key,
-        "mode": mode,
-        "bpm": tempo_val,
-        "tempo_confidence": tempo_confidence,
-    }
-    return features, audio, sr, extra_meta
+    shared, _ = analyse_audio_features(audio, sr)
+    return np.asarray(shared.features, dtype=np.float32), audio, sr, shared.model_dump()
 
 
 #: Names how a song's vector is made: MuQ mean-pooled over 30-second chunks
 #: at 24 kHz, then the 16 librosa features, each part and the whole
 #: L2-normalized.  A change to any of that changes this, and the server then
 #: refuses results from workers still running the old code.
-ANALYSIS_VERSION = "muq-mean-30s-24k+librosa16/1"
+ANALYSIS_VERSION = "muq-mean-30s-24k+librosa16+dj-meta-shared-beats/2"
 
 
 def analysis_identity(model_name: str, model_commit: str | None) -> dict[str, object]:
@@ -607,9 +570,11 @@ def finish_analysis(
     )
 
 
-def analyse_file(path: Path, wrapper: MuqWrapper) -> TrackAnalysis:
+def analyse_file(
+    path: Path, wrapper: MuqWrapper, audio_analysis: Any | None = None
+) -> TrackAnalysis:
     """Decode one audio file and analyse it the way ``autodj index`` does."""
-    return finish_analysis(wrapper, _extract_librosa_features(path))
+    return finish_analysis(wrapper, _extract_librosa_features(path, audio_analysis))
 
 
 def _combine_features(
@@ -1078,6 +1043,7 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
     throttle_ms: float,
     report: Any,
     gate: Callable[[Track], bool | None] | None = None,
+    feature_for: Callable[[Path], dict | None] | None = None,
 ) -> tuple[list[IndexEntry], list[np.ndarray]]:
     """Embed *new_tracks*, decoding the next ones on a prefetch pool meanwhile.
 
@@ -1099,6 +1065,9 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
     pending: deque[tuple[Track, float, tuple[int, str], Future]] = deque()
 
     with ThreadPoolExecutor(max_workers=prefetch) as pool:
+
+        def _features_for_track(path: Path) -> tuple[np.ndarray, np.ndarray, int, dict]:
+            return _extract_librosa_features(path, feature_for(path) if feature_for else None)
 
         def _next_track() -> Track | None:
             nonlocal track_iter
@@ -1124,7 +1093,7 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
                     t,
                     source_mtime(t.path),
                     file_fingerprint(t.path),
-                    pool.submit(_extract_librosa_features, t.path),
+                    pool.submit(_features_for_track, t.path),
                 )
             )
 

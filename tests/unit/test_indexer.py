@@ -53,6 +53,9 @@ def _random_embedding(dim: int = EMBEDDING_DIM) -> np.ndarray:
 class TestExtractLibrosaFeatures:
     def _setup_librosa_mock(self, mock_librosa, fake_audio, fake_sr) -> None:
         """Configure a librosa mock to return plausible shapes."""
+        mock_librosa.resample.side_effect = lambda y, orig_sr, target_sr: np.repeat(
+            y, target_sr // orig_sr
+        )
         mock_librosa.feature.rms.return_value = np.array([[[0.1]]])
         mock_librosa.feature.spectral_centroid.return_value = np.array([[[500.0]]])
         mock_librosa.feature.zero_crossing_rate.return_value = np.array([[[0.05]]])
@@ -66,8 +69,11 @@ class TestExtractLibrosaFeatures:
 
         with (
             patch("autodj.indexer._load_audio", return_value=(fake_audio, fake_sr)),
-            patch("autodj.indexer.librosa") as mock_librosa,
+            patch("autodj.audio_analysis.librosa") as mock_librosa,
         ):
+            mock_librosa.resample.side_effect = lambda y, orig_sr, target_sr: np.repeat(
+                y, target_sr // orig_sr
+            )
             self._setup_librosa_mock(mock_librosa, fake_audio, fake_sr)
 
             vec, audio, sr, _ = _extract_librosa_features(tmp_path / "song.flac")
@@ -82,7 +88,7 @@ class TestExtractLibrosaFeatures:
 
         with (
             patch("autodj.indexer._load_audio", return_value=(fake_audio, fake_sr)),
-            patch("autodj.indexer.librosa") as mock_librosa,
+            patch("autodj.audio_analysis.librosa") as mock_librosa,
         ):
             self._setup_librosa_mock(mock_librosa, fake_audio, fake_sr)
 
@@ -101,7 +107,7 @@ class TestExtractLibrosaFeatures:
 
         with (
             patch("autodj.indexer._load_audio", return_value=(fake_audio, fake_sr)),
-            patch("autodj.indexer.librosa") as mock_librosa,
+            patch("autodj.audio_analysis.librosa") as mock_librosa,
         ):
             self._setup_librosa_mock(mock_librosa, fake_audio, fake_sr)
 

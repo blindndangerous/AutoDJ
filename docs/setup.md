@@ -78,10 +78,10 @@ Fresh no-model setup omits sound-card output packages. Browser playback and
 server streaming are included; server sound-card output needs the `play` extra
 and platform audio support. Existing sound-card packages are not removed.
 
-Basic imports and previously saved analysis remain usable. `autodj index` imports
-playable songs successfully and reports pending analysis without loading a model
-or downloading weights. Automatic local MuQ analysis is disabled; explicit
-advanced-analysis and worker commands explain how to enable it.
+Basic scanning, shared Audio analysis and previously saved vectors remain usable.
+`autodj index` imports playable songs and reports pending Similarity work without
+loading a model or downloading weights. Similarity adds a MuQ vector to the shared
+audio-feature cache; local MuQ analysis needs a model-capable runtime and weights.
 Queue, random, least-recently-played and category/clockwheel operation do not
 require local model weights. Similarity needs compatible saved or remote vectors.
 

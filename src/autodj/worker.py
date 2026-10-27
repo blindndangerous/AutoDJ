@@ -589,7 +589,7 @@ class Worker:
     def __init__(
         self,
         api: ServerApi,
-        analyse: Callable[[Path], TrackAnalysis],
+        analyse: Callable[..., TrackAnalysis],
         identity: dict[str, object],
         *,
         batch: int = 4,
@@ -872,15 +872,29 @@ class Worker:
             self._prepare()
             try:
                 scan = None
+                preparation = None
                 if song.get("scan") is not None:
                     from autodj.scan_analysis import analyse_scan
 
                     scan = analyse_scan(path, song["scan"])
+                elif song.get("audio_options") is not None:
+                    from autodj.scan_analysis import analyse_scan
+
+                    preparation = analyse_scan(path, song["audio_options"])
+                audio_analysis = (scan or preparation or {}).get("audio_analysis") or song.get(
+                    "audio_analysis"
+                )
                 embed = song.get("embed", True)
                 maximum = song.get("advanced_max_seconds", 0)
                 if scan is not None and maximum and scan["length"] > maximum:
                     embed = False
-                analysis = self.analyse(path) if embed else None
+                analysis = None
+                if embed:
+                    analysis = (
+                        self.analyse(path, audio_analysis=audio_analysis)
+                        if audio_analysis is not None
+                        else self.analyse(path)
+                    )
                 if analysis is not None:
                     energy = analysis.energy
                 elif scan is not None:
@@ -909,6 +923,8 @@ class Worker:
         }
         if scan is not None:
             result["scan"] = scan
+        if preparation is not None:
+            result["preparation"] = preparation
         try:
             stored = self._call(lambda: self.api.submit(result), give_up_on_stop=False)
         except ApiError as exc:

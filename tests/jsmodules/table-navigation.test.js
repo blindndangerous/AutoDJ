@@ -13,6 +13,21 @@ describe("native table grid navigation", () => {
     expect(body.querySelector("td").tabIndex).toBe(0);
   });
 
+  it("focuses a native select in its grid cell and preserves its arrow keys", () => {
+    document.body.innerHTML = '<table><tbody id="rows"><tr><td role="gridcell">Music</td><td role="gridcell"><select><option>Basic</option><option>Similarity</option></select></td></tr></tbody></table>';
+    const body = document.getElementById("rows");
+    installTableNavigation(body);
+    const [name, cell] = body.querySelectorAll("td");
+    name.focus();
+    name.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    const select = cell.querySelector("select");
+    expect(document.activeElement).toBe(select);
+    const down = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
+    select.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(select);
+  });
+
   it("keeps one tab stop and moves by row, action, and row edge", () => {
     document.body.innerHTML = `<table><tbody id="rows">
       <tr><td role="rowheader" tabindex="-1">One</td><td role="gridcell" tabindex="-1"><button tabindex="-1">Two</button></td></tr>

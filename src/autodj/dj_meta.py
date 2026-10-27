@@ -136,6 +136,8 @@ def detect_intro_outro(
 
     duration = len(audio) / max(1, sr)
     win = max(1, int(rms_window_s * sr))
+    if len(audio) < win:
+        return (0.0, duration)
     # Block-mean RMS — fast, no librosa import needed for this part
     n_blocks = max(1, len(audio) // win)
     blocks = audio[: n_blocks * win].reshape(n_blocks, win)
@@ -1506,6 +1508,7 @@ def analyse_audio(
     sr: int,
     intro_end_s: float | None = None,
     outro_start_s: float | None = None,
+    beats: list[float] | None = None,
 ) -> DjMeta:
     """Run all DJ-meta detectors on *audio* and return a :class:`DjMeta`.
 
@@ -1524,7 +1527,7 @@ def analyse_audio(
         if intro_end_s is not None and outro_start_s is not None
         else detect_intro_outro(audio, sr)
     )
-    beats = detect_beat_grid(audio, sr)
+    beats = detect_beat_grid(audio, sr) if beats is None else beats
     cues = detect_cues(audio, sr, intro_end, outro_start, beats)
     return DjMeta(
         intro_start_s=detect_intro_start(audio, sr),
@@ -1547,6 +1550,7 @@ def analyse_windows(
     sr: int,
     intro_end_s: float | None = None,
     outro_start_s: float | None = None,
+    beats: tuple[list[float], list[float]] | None = None,
 ) -> DjMeta:
     """Analyse a long track from its first and last minutes.
 
@@ -1574,8 +1578,8 @@ def analyse_windows(
     outro_in_tail = None if outro_start_s is None else outro_start_s - tail_start_s
     if outro_in_tail is None or not 0 < outro_in_tail <= tail_s:
         outro_in_tail = detect_intro_outro(tail, sr)[1]
-    first = analyse_audio(head, sr, intro_end_s, head_s)
-    last = analyse_audio(tail, sr, 0.0, outro_in_tail)
+    first = analyse_audio(head, sr, intro_end_s, head_s, None if beats is None else beats[0])
+    last = analyse_audio(tail, sr, 0.0, outro_in_tail, None if beats is None else beats[1])
     cues = [cue for cue in first.cues if cue.type != "outro_downbeat"] + [
         replace(cue, time_s=cue.time_s + tail_start_s)
         for cue in last.cues

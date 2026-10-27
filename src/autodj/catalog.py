@@ -90,6 +90,7 @@ _SCHEMA = """
     CREATE TABLE IF NOT EXISTS catalog_sources (
         id TEXT PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL,
         recursive INTEGER NOT NULL, advanced INTEGER NOT NULL,
+        analysis TEXT NOT NULL DEFAULT 'similarity',
         UNIQUE(kind, path)
     );
     CREATE TABLE IF NOT EXISTS catalog_entries (
@@ -127,6 +128,11 @@ _SCHEMA = """
     CREATE TABLE IF NOT EXISTS catalog_vectors (
         entry_id TEXT PRIMARY KEY REFERENCES catalog_entries(id) ON DELETE CASCADE,
         vector BLOB NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS catalog_audio_analysis (
+        entry_id TEXT PRIMARY KEY REFERENCES catalog_entries(id) ON DELETE CASCADE,
+        size INTEGER NOT NULL, fingerprint TEXT NOT NULL, version TEXT NOT NULL,
+        result TEXT NOT NULL
     );
     -- Records the latest scan found gone from a folder that is there; kept
     -- until the files return or the user removes missing tracks (#589).
@@ -424,6 +430,24 @@ class LibraryCatalog:
         db = self._db()
         db.execute("BEGIN IMMEDIATE")
         try:
+            sources = {row[1] for row in db.execute("PRAGMA table_info(catalog_sources)")}
+            if "analysis" not in sources:
+                db.execute(
+                    "ALTER TABLE catalog_sources ADD COLUMN analysis TEXT NOT NULL DEFAULT 'similarity'"
+                )
+                dj_analysis = db.execute(
+                    "SELECT value FROM catalog_settings WHERE key='dj_analysis'"
+                ).fetchone()
+                try:
+                    enabled = True if dj_analysis is None else json.loads(dj_analysis[0])
+                except (TypeError, json.JSONDecodeError):
+                    enabled = True
+                fallback = "basic" if enabled is False else "audio"
+                db.execute(
+                    "UPDATE catalog_sources SET analysis=CASE WHEN kind='liner' THEN 'basic' WHEN advanced THEN 'similarity' "
+                    "ELSE ? END",
+                    (fallback,),
+                )
             entries = {row[1] for row in db.execute("PRAGMA table_info(catalog_entries)")}
             if "allow_outro" not in entries:
                 db.execute(
@@ -826,10 +850,19 @@ class LibraryCatalog:
             return str(source["id"])
 
     def _add_source(
-        self, path: Path | str, kind: str, recursive: bool, advanced: bool, *, validate: bool = True
+        self,
+        path: Path | str,
+        kind: str,
+        recursive: bool,
+        advanced: bool,
+        *,
+        analysis: str | None = None,
+        validate: bool = True,
     ) -> dict:
         if kind not in {"music", "liner"}:
             raise ValueError("kind must be 'music' or 'liner'")
+        if analysis is not None and analysis not in {"basic", "audio", "similarity"}:
+            raise ValueError("analysis must be 'basic', 'audio', or 'similarity'")
         normalized = _path(path)
         if validate and not Path(normalized).is_dir():
             raise ValueError(f"source directory does not exist: {path}")
@@ -837,17 +870,28 @@ class LibraryCatalog:
         row = db.execute(
             "SELECT * FROM catalog_sources WHERE kind=? AND path=?", (kind, normalized)
         ).fetchone()
+        if kind == "liner":
+            analysis = "basic"
+        elif analysis is None:
+            analysis = (
+                row["analysis"]
+                if row is not None and bool(row["advanced"]) == bool(advanced)
+                else "similarity"
+                if advanced
+                else "audio"
+            )
+        advanced = analysis == "similarity"
         if row:
             db.execute(
-                "UPDATE catalog_sources SET recursive=?, advanced=? WHERE id=?",
-                (int(recursive), int(advanced), row["id"]),
+                "UPDATE catalog_sources SET recursive=?, advanced=?, analysis=? WHERE id=?",
+                (int(recursive), int(advanced), analysis, row["id"]),
             )
             sid = row["id"]
         else:
             sid = uuid.uuid4().hex
             db.execute(
-                "INSERT INTO catalog_sources VALUES (?, ?, ?, ?, ?)",
-                (sid, normalized, kind, int(recursive), int(advanced)),
+                "INSERT INTO catalog_sources (id,path,kind,recursive,advanced,analysis) VALUES (?, ?, ?, ?, ?, ?)",
+                (sid, normalized, kind, int(recursive), int(advanced), analysis),
             )
         db.commit()
         return {
@@ -856,13 +900,20 @@ class LibraryCatalog:
             "kind": kind,
             "recursive": bool(recursive),
             "advanced": bool(advanced),
+            "analysis": analysis,
         }
 
     def add_source(
-        self, path: Path | str, kind: str = "music", recursive: bool = True, advanced: bool = True
+        self,
+        path: Path | str,
+        kind: str = "music",
+        recursive: bool = True,
+        advanced: bool = True,
+        *,
+        analysis: str | None = None,
     ) -> dict:
         with self._lock:
-            return self._add_source(path, kind, recursive, advanced)
+            return self._add_source(path, kind, recursive, advanced, analysis=analysis)
 
     def sources(self, kind: str | None = None) -> list[dict]:
         with self._lock:
@@ -878,15 +929,37 @@ class LibraryCatalog:
                     "kind": r["kind"],
                     "recursive": bool(r["recursive"]),
                     "advanced": bool(r["advanced"]),
+                    "analysis": r["analysis"],
                 }
                 for r in rows
             ]
 
-    def update_source(self, source_id: str, recursive: bool, advanced: bool) -> bool:
+    def update_source(
+        self, source_id: str, recursive: bool, advanced: bool, *, analysis: str | None = None
+    ) -> bool:
         with self._lock:
+            if analysis is not None and analysis not in {"basic", "audio", "similarity"}:
+                raise ValueError("analysis must be 'basic', 'audio', or 'similarity'")
+            row = (
+                self._db()
+                .execute("SELECT kind,analysis FROM catalog_sources WHERE id=?", (source_id,))
+                .fetchone()
+            )
+            if row is None:
+                return False
+            if row["kind"] == "liner":
+                analysis = "basic"
+            elif analysis is None:
+                analysis = (
+                    row["analysis"]
+                    if bool(row["analysis"] == "similarity") == bool(advanced)
+                    else "similarity"
+                    if advanced
+                    else "audio"
+                )
             cur = self._db().execute(
-                "UPDATE catalog_sources SET recursive=?, advanced=? WHERE id=?",
-                (int(recursive), int(advanced), source_id),
+                "UPDATE catalog_sources SET recursive=?, advanced=?, analysis=? WHERE id=?",
+                (int(recursive), int(analysis == "similarity"), analysis, source_id),
             )
             self._db().commit()
             return cur.rowcount > 0
@@ -1405,6 +1478,131 @@ class LibraryCatalog:
             if _under(normalized, source["path"], source["recursive"])
         ]
 
+    def analysis_for_path(self, path: str | Path) -> str:
+        """The strongest policy among matching music sources; liners always use basic."""
+        matches = self.sources_for_path(path)
+        if any(source["kind"] == "liner" for source in matches):
+            return "basic"
+        rank = {"basic": 0, "audio": 1, "similarity": 2}
+        return max(
+            (s["analysis"] for s in matches if s["kind"] == "music"),
+            key=lambda mode: rank[mode],
+            default="basic",
+        )
+
+    @staticmethod
+    def _audio_result(result: Any) -> dict:
+        from autodj.audio_analysis import AudioAnalysis
+
+        if isinstance(result, AudioAnalysis):
+            return result.model_dump(mode="json")
+        return AudioAnalysis.model_validate(result).model_dump(mode="json")
+
+    def get_audio_analysis(self, path: str | Path) -> dict | None:
+        """Return current-version audio features only for the exact catalog file identity."""
+        normalized = _path(path)
+        with self._lock:
+            row = (
+                self._db()
+                .execute(
+                    "SELECT e.id,e.size,e.fingerprint,a.size AS cached_size,"
+                    "a.fingerprint AS cached_fingerprint,a.version,a.result "
+                    "FROM catalog_entries e JOIN catalog_audio_analysis a ON a.entry_id=e.id "
+                    "WHERE e.path=? AND e.kind='music'",
+                    (normalized,),
+                )
+                .fetchone()
+            )
+            if (
+                row is None
+                or row["size"] != row["cached_size"]
+                or row["fingerprint"] != row["cached_fingerprint"]
+            ):
+                return None
+            from autodj.audio_analysis import ANALYSIS_VERSION
+
+            if row["version"] != ANALYSIS_VERSION:
+                return None
+            try:
+                result = self._audio_result(json.loads(row["result"]))
+                if file_fingerprint(normalized) != (row["size"], row["fingerprint"]):
+                    return None
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                return None
+            return result
+
+    def audio_analysed_paths(self) -> set[str]:
+        """Paths with a valid current-version feature cache matching catalog identity."""
+        from autodj.audio_analysis import ANALYSIS_VERSION
+
+        with self._lock:
+            return {
+                row[0]
+                for row in self._db().execute(
+                    "SELECT e.path FROM catalog_entries e JOIN catalog_audio_analysis a "
+                    "ON a.entry_id=e.id WHERE e.kind='music' AND e.size=a.size "
+                    "AND e.fingerprint=a.fingerprint AND a.version=?",
+                    (ANALYSIS_VERSION,),
+                )
+            }
+
+    def store_audio_analysis(
+        self, path: str | Path, size: int, fingerprint: str, result: Any
+    ) -> bool:
+        """Save reusable audio analysis if the catalog and file still have this identity."""
+        normalized = _path(path)
+        value = self._audio_result(result)
+        if not size or not fingerprint or file_fingerprint(normalized) != (size, fingerprint):
+            return False
+        with self._lock:
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT * FROM catalog_entries WHERE path=?", (normalized,)
+                ).fetchone()
+                if (
+                    row is None
+                    or row["kind"] != "music"
+                    or row["size"] != size
+                    or row["fingerprint"] != fingerprint
+                    or normalized in self._editing
+                    or file_fingerprint(normalized) != (size, fingerprint)
+                ):
+                    db.rollback()
+                    return False
+                db.execute(
+                    "INSERT INTO catalog_audio_analysis VALUES (?,?,?,?,?) "
+                    "ON CONFLICT(entry_id) DO UPDATE SET size=excluded.size,"
+                    "fingerprint=excluded.fingerprint,version=excluded.version,result=excluded.result",
+                    (row["id"], size, fingerprint, value["version"], json.dumps(value)),
+                )
+                from autodj.indexer import _apply_analysis_metadata
+
+                entry = self._entry(row)
+                _apply_analysis_metadata(
+                    entry, value, keep=_user_tags(row["user_tags"], fingerprint)
+                )
+                db.execute(
+                    "UPDATE catalog_entries SET energy=?,key=?,mode=?,bpm=?,tempo_confidence=? WHERE id=?",
+                    (
+                        entry.energy,
+                        entry.key,
+                        entry.mode,
+                        entry.bpm,
+                        entry.tempo_confidence,
+                        row["id"],
+                    ),
+                )
+                if file_fingerprint(normalized) != (size, fingerprint):
+                    db.rollback()
+                    return False
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+        return True
+
     def stored_entries(self) -> list[tuple[str, IndexEntry]]:
         """Every stored record as ``(kind, entry)``, missing files included, in one query."""
         with self._lock:
@@ -1536,6 +1734,7 @@ class LibraryCatalog:
         vector: np.ndarray | None,
         *,
         scan: dict | None = None,
+        audio_analysis: Any | None = None,
     ) -> bool:
         """Save a song's advanced analysis if it is still the file it was made from.
 
@@ -1568,6 +1767,9 @@ class LibraryCatalog:
         from autodj.indexer import FEATURE_DIM, _apply_analysis_metadata, source_mtime
 
         value = None if vector is None else np.asarray(vector, dtype=np.float32)
+        if audio_analysis is None and scan is not None:
+            audio_analysis = scan.get("audio_analysis")
+        audio_value = self._audio_result(audio_analysis) if audio_analysis is not None else None
         if value is not None and (value.shape != (FEATURE_DIM,) or not np.isfinite(value).all()):
             raise ValueError(f"vector must be a finite float32 array of shape ({FEATURE_DIM},)")
         if value is None and scan is None:
@@ -1677,6 +1879,33 @@ class LibraryCatalog:
                     db.execute(
                         "UPDATE catalog_entries SET energy=? WHERE id=?",
                         (scan["energy"], row["id"]),
+                    )
+                if audio_value is not None:
+                    db.execute(
+                        "INSERT INTO catalog_audio_analysis VALUES (?,?,?,?,?) "
+                        "ON CONFLICT(entry_id) DO UPDATE SET size=excluded.size,"
+                        "fingerprint=excluded.fingerprint,version=excluded.version,result=excluded.result",
+                        (
+                            row["id"],
+                            size,
+                            fingerprint,
+                            audio_value["version"],
+                            json.dumps(audio_value),
+                        ),
+                    )
+                    _apply_analysis_metadata(
+                        entry, audio_value, keep=_user_tags(row["user_tags"], fingerprint)
+                    )
+                    db.execute(
+                        "UPDATE catalog_entries SET energy=?,key=?,mode=?,bpm=?,tempo_confidence=? WHERE id=?",
+                        (
+                            entry.energy,
+                            entry.key,
+                            entry.mode,
+                            entry.bpm,
+                            entry.tempo_confidence,
+                            row["id"],
+                        ),
                     )
                 if file_fingerprint(normalized) != (size, fingerprint):
                     db.rollback()

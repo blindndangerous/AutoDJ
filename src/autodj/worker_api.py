@@ -178,6 +178,7 @@ class ResultBody(BaseModel):
     bpm: _Finite = Field(ge=0, le=1000)
     tempo_confidence: _Finite = Field(ge=0, le=1)
     scan: ScanResult | None = None
+    preparation: ScanResult | None = None
 
 
 class TokenCreateBody(BaseModel):
@@ -422,7 +423,7 @@ def install_worker_api(
             "scan_version",
             f"Its scan analysis version is {_clean_text(body.scan_analysis_version) or 'unknown'}"
             f" and this server's is {SCAN_ANALYSIS_VERSION}, so this server decodes new music "
-            "itself; the worker still does advanced analysis.  Update AutoDJ on both machines "
+            "itself; the worker still does similarity analysis.  Update AutoDJ on both machines "
             "to the same release.",
         )
         if token.token_id not in scan_mismatches:
@@ -447,7 +448,7 @@ def install_worker_api(
                     "This server has no downloaded copy of the analysis model, so it cannot "
                     "check results. Restore an existing compatible model cache on the server, "
                     "or use a model-capable runtime to run `autodj index` with songs pending "
-                    "advanced analysis. No-model indexing does not download weights."
+                    "similarity analysis. No-model indexing does not download weights."
                 ),
             )
         return found
@@ -590,6 +591,7 @@ def install_worker_api(
             songs = []
             for lease in leases:
                 record = by_path[lease.path]
+                audio_analysis = manager.catalog.get_audio_analysis(lease.path)
                 songs.append(
                     {
                         "lease": lease.lease_id,
@@ -601,6 +603,12 @@ def install_worker_api(
                         "length": record["length"],
                     }
                 )
+                if audio_analysis is not None:
+                    songs[-1]["audio_analysis"] = audio_analysis
+                elif supports_scan and lease.path not in pending:
+                    options = manager.scan_options(Path(lease.path))
+                    if options["dj"]:
+                        songs[-1]["audio_options"] = options
                 if supports_scan and lease.path in pending:
                     songs[-1]["scan"] = manager.scan_options(Path(lease.path))
                     songs[-1]["embed"] = manager.catalog.awaits_analysis(lease.path) or (
@@ -696,15 +704,20 @@ def install_worker_api(
             if held is None:
                 raise HTTPException(status_code=404, detail="That song is not claimed")
             pending = queue.scan_pending(held.path)
+            prepared = body.scan or body.preparation
+            if body.scan is not None and body.preparation is not None:
+                raise HTTPException(status_code=422, detail="Duplicate preparation result")
+            if body.preparation is not None and body.preparation.audio_analysis is None:
+                raise HTTPException(status_code=422, detail="Audio features are required")
             if not pending and body.scan is not None:
                 raise HTTPException(
                     status_code=422, detail="Scan result does not match pending work"
                 )
             if vector is None and body.scan is None:
                 raise HTTPException(status_code=422, detail="A vector is required")
-            if body.scan is not None:
+            if prepared is not None:
                 options = manager.scan_options(Path(held.path))
-                if options["dj"] and body.scan.dj is None:
+                if options["dj"] and (prepared.dj is None or prepared.audio_analysis is None):
                     raise HTTPException(status_code=422, detail="Scan measurements are incomplete")
                 record = manager.catalog.record_for_path(held.path)
                 if record is not None:
@@ -728,7 +741,7 @@ def install_worker_api(
                             lower, upper = length - tolerance, length + tolerance
                         else:
                             lower, upper = length * 0.5 - 3.0, length * 2.0 + 3.0
-                        if not lower <= body.scan.length <= upper:
+                        if not lower <= prepared.length <= upper:
                             raise HTTPException(
                                 status_code=422, detail="Scan duration does not match the song"
                             )
@@ -748,12 +761,13 @@ def install_worker_api(
                 },
                 vector,
                 scan=body.scan.model_dump() if body.scan is not None else None,
+                audio_analysis=prepared.audio_analysis if prepared is not None else None,
             )
-            if stored and body.scan is not None:
-                if body.scan.dj is not None:
+            if stored and prepared is not None:
+                if prepared.dj is not None:
                     from autodj.dj_meta import Cue, DjMeta
 
-                    meta = body.scan.dj.model_dump()
+                    meta = prepared.dj.model_dump()
                     meta["cues"] = [Cue(**cue) for cue in meta["cues"]]
                     try:
                         manager.store_scan_dj(Path(held.path), DjMeta(**meta), force=True)
@@ -763,7 +777,8 @@ def install_worker_api(
                         raise HTTPException(
                             status_code=422, detail="DJ result could not be stored"
                         ) from exc
-                queue.finish_scan(held.path, held.size, held.fingerprint)
+                if body.scan is not None:
+                    queue.finish_scan(held.path, held.size, held.fingerprint)
             queue.finish(held, "done" if stored else "stale")
             return stored
 

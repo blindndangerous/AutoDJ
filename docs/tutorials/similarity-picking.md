@@ -14,19 +14,18 @@ practice pack is not used here.
 
 ## Before you begin
 
-Use at least five of your own music files, each shorter than the configured
-advanced-analysis length limit (15 minutes by default). You need permission to
+Use at least five of your own music files, each shorter than 15 minutes. You need permission to
 use them and to use the analysis model. The current MuQ weights use a
 CC-BY-NC-4.0 license; consult [model details](../contributor/model-selection.md)
 and the [setup guide](../setup.md) before running analysis. This lesson does not
 switch models or establish commercial-use permission.
 
-The preparation steps below run local model analysis. If you chose no-model
+The preparation steps below run local MuQ analysis. If you chose no-model
 setup, first [enable a model-capable runtime](../setup.md#no-model-installation),
 then return to this lesson. Existing compatible analysis remains usable in
 no-model mode, but it does not make that mode able to analyse new songs locally.
 
-**Advanced analysis** saves information about how each song sounds so the picker
+**Similarity analysis** saves information about how each song sounds so the picker
 can compare it with other songs. The first run may download model files and
 requires network access; later cached runs can still be slow. Hardware, library
 size and track length affect time and memory. There is no fixed completion time.
@@ -42,18 +41,19 @@ Use Tab and Enter or Space for controls, and arrow keys in tab strips; see the
 ## Prepare the sound comparisons
 
 1. Open **Library tools** and expand its **Library tools** section.
-2. In the registered folders table, find your practice music folder. Check its
-   **Perform advanced analysis** checkbox. This row setting saves on change;
+2. In the registered folders table, find your practice music folder. Set **Music folder analysis**
+   to **Similarity**. This row setting saves on change;
    wait for “Folder settings saved.”
-3. Under **Library jobs**, leave **Advanced analysis limit (optional)** empty.
+3. Under **Settings**, **Stations**, set the **Similarity analysis maximum song length** to `0`
+   for this exercise, then save it.
 4. Press **Import and analyze** once. Read **Output** and the job status until
    the job finishes.
 5. Open **Queue & Search**, press **Search** with no text, and open **Track info**
-   for each of your five practice songs. Check **Advanced analysis** says
+   for each of your five practice songs. Check **Similarity analysis** says
    **Complete**, using **Return** to go back to the results each time.
 
 Check that analysis has completed for your practice songs, not merely that the
-songs exist in search. Basic import finishes before advanced analysis. A job
+songs exist in search. Basic import finishes before similarity analysis. A job
 that ended with skipped files has not analysed those files successfully.
 
 If a job is already running, let it finish before starting another. If analysis

@@ -630,6 +630,7 @@ class LibraryFolderBody(BaseModel):
     kind: Literal["music", "liner"] = "music"
     recursive: bool = True
     advanced: bool = True
+    analysis: Literal["basic", "audio", "similarity"] | None = None
 
 
 class LibraryFolderUpdateBody(BaseModel):
@@ -638,6 +639,7 @@ class LibraryFolderUpdateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     recursive: bool | None = None
     advanced: bool | None = None
+    analysis: Literal["basic", "audio", "similarity"] | None = None
 
 
 class LibraryRescanBody(BaseModel):
@@ -653,13 +655,6 @@ class LibraryAutoRescanBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     hours: StrictInt = Field(ge=0, le=168)
     minutes: StrictInt = Field(ge=0, le=59)
-
-
-class LibraryDjAnalysisBody(BaseModel):
-    """Whether library scans find beats and song structure."""
-
-    model_config = ConfigDict(extra="forbid")
-    enabled: StrictBool
 
 
 class LibraryMusicFadeBody(BaseModel):
@@ -2276,6 +2271,7 @@ def create_app(
                 body.kind,
                 body.recursive,
                 body.advanced if body.kind == "music" else False,
+                analysis=body.analysis,
             )
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2329,6 +2325,7 @@ def create_app(
             source_id,
             recursive,
             advanced if source["kind"] == "music" else False,
+            analysis=body.analysis,
         )
         library.start_scan({source_id})
         return await asyncio.to_thread(library.snapshot)
@@ -2400,15 +2397,6 @@ def create_app(
             )
         await asyncio.to_thread(library.set_auto_rescan_minutes, total)
         return {"hours": body.hours, "minutes": body.minutes}
-
-    @app.get("/api/library/dj-analysis")
-    async def api_library_dj_analysis() -> dict[str, bool]:
-        return {"enabled": await asyncio.to_thread(_catalog_library().dj_analysis_enabled)}
-
-    @app.put("/api/library/dj-analysis")
-    async def api_library_set_dj_analysis(body: LibraryDjAnalysisBody) -> dict[str, bool]:
-        await asyncio.to_thread(_catalog_library().set_dj_analysis_enabled, body.enabled)
-        return {"enabled": body.enabled}
 
     @app.get("/api/library/music-fade")
     async def api_library_music_fade() -> dict[str, int]:

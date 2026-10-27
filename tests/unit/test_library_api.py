@@ -19,7 +19,6 @@ from autodj.library import LibraryManager
 from autodj.processing import PREPARATION_VERSION, TARGET_LUFS
 from autodj.server import (
     LibraryAutoRescanBody,
-    LibraryDjAnalysisBody,
     LibraryFolderBody,
     LibraryFolderUpdateBody,
     LibraryMusicFadeBody,
@@ -148,15 +147,27 @@ def test_auto_rescan_routes_store_shared_interval(library_api):
     assert manager.auto_rescan_minutes() == 0
 
 
-@pytest.mark.dj_analysis
-def test_dj_analysis_route_saves_the_library_setting(library_api):
+@pytest.mark.parametrize("mode", ["basic", "audio", "similarity"])
+def test_folder_analysis_policy_is_saved_and_recursive_edits_keep_it(library_api, mode):
     manager, call, _app = library_api
-    assert call("GET", "/api/library/dj-analysis") == {"enabled": True}
-    assert call("PUT", "/api/library/dj-analysis", LibraryDjAnalysisBody(enabled=False)) == {
-        "enabled": False
-    }
-    assert manager.dj_analysis_enabled() is False
-    assert call("GET", "/api/library/dj-analysis") == {"enabled": False}
+    source = manager.catalog.sources("music")[0]
+    response = call(
+        "PATCH",
+        "/api/library/folders/{source_id}",
+        source["id"],
+        LibraryFolderUpdateBody(analysis=mode),
+    )
+    saved = next(s for s in response["folders"] if s["id"] == source["id"])
+    assert saved["analysis"] == mode
+    assert saved["advanced"] is (mode == "similarity")
+    call(
+        "PATCH",
+        "/api/library/folders/{source_id}",
+        source["id"],
+        LibraryFolderUpdateBody(recursive=False),
+    )
+    assert manager.catalog.sources("music")[0]["analysis"] == mode
+    assert isinstance(response["similarity_available"], bool)
 
 
 def test_music_fade_route_persists_shared_threshold_and_rejects_invalid_json(library_api):
