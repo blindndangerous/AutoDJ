@@ -303,9 +303,11 @@ def test_stream_selects_successor_only_when_continuation_becomes_current(
         if case == "delayed":
             player.bus.render_block()
             assert entered.wait(1)
+            position = player.bus.live_position(continuation)
             for _ in range(3):
-                assert not np.any(player.bus.render_block())
-            assert player._state.queue == queued
+                np.testing.assert_allclose(player.bus.render_block(), LEVELS[1])
+            assert player.bus.live_position(continuation) == position + 3 * MixBus.BLOCK
+            assert player._state.queue == queued[1:]
             assert opened == [a, b]
             release.set()
 
@@ -313,7 +315,10 @@ def test_stream_selects_successor_only_when_continuation_becomes_current(
 
         def promoted():
             player.bus.render_block()
-            return player._playing_render.entry is expected
+            return (
+                player._playing_render.entry is expected
+                and not player._playing_render.handoff_pending
+            )
 
         assert _wait_for(promoted)
         current = player._playing_render
@@ -346,7 +351,7 @@ def test_stream_selects_successor_only_when_continuation_becomes_current(
         player.end_set()
 
 
-def test_live_cursor_carries_glide_and_reservations_without_rendering(monkeypatch):
+def test_live_cursor_carries_glide_and_reservations_without_selecting_a_successor(monkeypatch):
     player = _player()
     a, b, liner = player._sim.entries[:3]
     glide, source = object(), object()
@@ -361,11 +366,16 @@ def test_live_cursor_carries_glide_and_reservations_without_rendering(monkeypatc
         reserved_liners=(liner,),
         live_source=source,
     )
-    monkeypatch.setattr(
-        player, "_render_track", lambda *_a, **_k: pytest.fail("rendered future music")
-    )
+
+    def render(current, upcoming, offset, *, glide_in):
+        assert current is b and upcoming is None and offset == 12345
+        assert glide_in is glide
+        assert player._render_live_sources == (b, source, None, None)
+        return RenderedTrack(b, LiveAudio(100, ()), None, 0, "", start_offset=offset)
+
+    monkeypatch.setattr(player, "_render_track", render)
     cursor = player._live_continuation()
-    assert cursor.handoff_pending and len(cursor.audio) == 0
+    assert cursor.handoff_pending and len(cursor.audio) == 100
     assert cursor.next_entry is None and cursor.next_live_source is None
     player._set_render_cursor(None, 0, "seed")
     player._rewind_render_cursor(cursor)

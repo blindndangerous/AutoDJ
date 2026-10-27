@@ -3098,17 +3098,25 @@ class Player:
             return self._next_rendered_serial()
 
     def _live_continuation(self) -> RenderedTrack | None:
-        """Carry the incoming cursor without rendering or selecting its successor."""
+        """Keep the incoming deck playable without selecting its successor."""
         current = self._pending_entry
         assert current is not None
-        return RenderedTrack(
-            current,
-            LiveAudio(0, ()),
-            None,
-            0,
-            "",
-            start_offset=self._pending_offset,
+        self._render_live_sources = (current, self._pending_live_source, None, None)
+        try:
+            body = self._render_track(
+                current, None, self._pending_offset, glide_in=self._pending_glide
+            )
+        finally:
+            self._render_live_sources = None
+        # An incoming song exhausted by the overlap still needs cursor promotion.
+        if body is None:
+            body = RenderedTrack(
+                current, LiveAudio(0, ()), None, 0, "", start_offset=self._pending_offset
+            )
+        return replace(
+            body,
             handoff_pending=True,
+            handoff_id=new_id(),
             live_source=self._pending_live_source,
             pick_mode=self._pending_pick_mode,
             from_queue=self._pending_from_queue,
@@ -4354,6 +4362,8 @@ class Player:
         if getattr(track.entry, "_prepared_clip", False):
             return 0
         boundaries = [len(track.audio)]
+        if track.transition_start_frame is not None:
+            boundaries.append(track.transition_start_frame)
         if track.overlap_frames:
             boundaries.append(len(track.audio) - track.overlap_frames)
         boundaries.extend(
@@ -4576,12 +4586,19 @@ class Player:
             self._recheck_slot_plan()
             return
         self._rewind_render_cursor(track)
+        if track.handoff_pending:
+            # Promotion already removed this occurrence from the queue.
+            self._pending_from_queue = False
         replacement = self._next_rendered_serial()
         if replacement is None:
             self._live_queue_dirty = True
             self._playout.request_plan()
             return
-        replacement = replace(replacement, handoff_id=track.handoff_id, ad_steps=track.ad_steps)
+        replacement = replace(
+            replacement,
+            handoff_id=track.handoff_id,
+            ad_steps=replacement.ad_steps if track.handoff_pending else track.ad_steps,
+        )
         incoming_source = None
         incoming_source_start = incoming_source_end = 0
         incoming_rate: float = 1.0
@@ -4609,6 +4626,37 @@ class Player:
             self._live_queue_dirty = False
             self._live_queue_target = None
             boundary = int(self.bus.live_position(track))
+            if track.handoff_pending:
+                before = min(
+                    [
+                        self.prepared_tail_boundary(replacement),
+                        *(at for at, _entry, _queued in replacement.liner_events),
+                        *(at for at, _identity, _end, _label in replacement.intro_events),
+                    ]
+                )
+                if boundary > before or self.bus.current_render() is not track:
+                    # Finish B, then start C at its cue; never join unheard speech mid-word.
+                    self._discard_render(replacement)
+                    replacement = replace(
+                        replacement,
+                        audio=track.audio,
+                        full_audio=track.full_audio,
+                        next_start_offset=replacement.next_entry_offset,
+                        next_glide=None,
+                        overlap_frames=0,
+                        transition_start_frame=None,
+                        transition_fx="",
+                        beatmatch_ratio=1.0,
+                        liner_events=(),
+                        break_events=(),
+                        intro_events=(),
+                        intro_rng_traces=(),
+                        intro_assets=(),
+                        next_reserved_liners=(),
+                        liner_plan_key="",
+                        incoming_intro=None,
+                        voice_breaks=(),
+                    )
             if isinstance(track.audio, LiveAudio) and isinstance(replacement.audio, LiveAudio):
                 speech_started = any(
                     int(event[0]) < boundary
@@ -4703,7 +4751,12 @@ class Player:
             for _at, identity, _end in track.break_events:
                 if identity not in retained_ids:
                     self.break_desk.drop(identity, "discarded from this airing by a queue edit")
-        self._playout.reset(lambda: self._skip_past_render(replacement if swapped else track))
+        following = (
+            replacement
+            if swapped or (track.handoff_pending and self._playing_render is track)
+            else track
+        )
+        self._playout.reset(lambda: self._skip_past_render(following))
 
     def prepare_live_return(self, timeout: float) -> None:
         """Refresh automation after live input, retaining fallback only in local mode."""
@@ -4739,7 +4792,7 @@ class Player:
                 if ready is None:
                     self._playout.request_plan()
                 else:
-                    if ready.handoff_pending:
+                    if ready.handoff_pending and not len(ready.audio):
                         self._playout.request_plan()
                         return None
                     if self._live_queue_dirty:
@@ -4851,6 +4904,8 @@ class Player:
         has anything, because the queue takes priority.  A render with
         announcer breaks is never stale: the breaks name its next track.
         """
+        if track.handoff_pending:
+            return True
         if track.next_entry is None and track.entry is getattr(self, "_restored_first", None):
             return True  # A restored first song: its successor is picked while it plays.
         if track.next_pick_mode == "clock" and track.next_clock_revision != self._clock_revision:
@@ -4979,7 +5034,10 @@ class Player:
         self._remember_upcoming(rendered)
         if entry is not getattr(self, "_restored_first", None):
             self._restored_first = None
-        elif rendered.next_entry is None and self.live_mixing:
+        if self.live_mixing and (
+            rendered.handoff_pending
+            or (entry is getattr(self, "_restored_first", None) and rendered.next_entry is None)
+        ):
             # Pick its successor now, while it plays: the live queue refresh
             # runs on the playout worker, never on the bus.
             self._live_queue_dirty = True

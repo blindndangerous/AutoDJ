@@ -189,8 +189,11 @@ class RenderedTrack:
             voice starts and its speech ends in *audio*, and its label.
         intro_assets: ``(intro_id, path)`` for exact selected audio files;
             paths stay internal unless the catalog identifies one as a liner.
-        handoff_pending: A live cursor awaiting promotion, with no audio or
-            successor prepared. The player must resolve it before bus admission.
+        handoff_pending: A live continuation awaiting successor selection, with no
+            successor prepared. Its existing deck can play during preparation;
+            an exhausted continuation still requires worker-side promotion.
+        transition_start_frame: First output frame changed by a rendered transition
+            window, which can precede the crossfade when an effect is used.
     """
 
     entry: IndexEntry
@@ -244,6 +247,7 @@ class RenderedTrack:
     playback_rate: float = 1.0
     next_playback_rate: float = 1.0
     next_pick_signature: tuple[str, str, bool, int | None, int | None, bool | None] | None = None
+    transition_start_frame: int | None = None
 
 
 @dataclass(frozen=True)

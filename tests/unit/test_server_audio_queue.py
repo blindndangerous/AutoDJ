@@ -49,14 +49,20 @@ class Harness:
 
     def play_next_track(self) -> str:
         """Render blocks until the bus starts another track; return its path."""
-        before = self.player._playing_render
+        before = len(self.queue_at_start)
         for _ in range(400):
             if self.bus._current is None:
                 assert self.worker.wait_ready(WAIT)
             self.bus.render_block()
             playing = self.player._playing_render
-            if playing is not before:
+            if len(self.queue_at_start) != before:
                 assert playing is not None
+                # The song starts before its successor is selected; a tail splice
+                # changes render identity without starting another occurrence.
+                deadline = time.monotonic() + WAIT
+                while self.player._playing_render.handoff_pending:
+                    assert time.monotonic() < deadline
+                    time.sleep(0.001)
                 return playing.entry.path
             # Yield to the worker, as the real bus does between clock-paced blocks.
             time.sleep(0.001)

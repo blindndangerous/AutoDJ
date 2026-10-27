@@ -133,11 +133,15 @@ See [Take and moderate listener requests — Listener requests](guides/operation
 See [Listen through Sonos, VLC and other stream players — Radio stream (Sonos, VLC and other players)](guides/operations/stream-listening.md#radio-stream-sonos-vlc-and-other-players).
 
 Live mixing uses progressive decoder buffers capped at two seconds each. While
-A plays into B, streaming keeps B's decoder cursor and source position for
-continuation; it selects and prepares B→C only when B becomes current. If that
-source is not ready, the programme position holds and the stream may emit
-silence. There is no zero-gap or hardware timing guarantee, and the additional
-selection step needs manual listening and soak evidence on deployment hardware.
+A plays into B, both server outputs keep B's existing decoder and a playable
+continuation. B continues at the carried source position while the worker selects
+C and prepares B→C; whole songs are not prewarmed. The unheard transition is
+installed while B plays. If preparation misses the transition's admission point,
+B finishes alone and the selected next song starts at its cue; the missed
+transition's unheard speech is discarded rather than joined partway through.
+An unavailable decoder or exhausted continuation
+can still cause silence. There is no zero-gap or hardware timing guarantee;
+listening and soak evidence are still required on deployment hardware.
 Queue edits affect the current/imminent transition and ask the operator to keep
 affected speech with its changed music pair, discard it from that transition,
 or cancel the change. A pending continuation cursor is not a speech target.
@@ -145,7 +149,7 @@ Future approved speech remains attached to its occurrence until selected as the
 current upcoming change. Started voice or liner layers keep their original
 timing while unheard incoming music changes at its original boundary, so speech
 does not repeat. Local `RenderAhead` refresh and whole-show preview/export keep
-their separate behavior. See [ADR 4](adr/0004-server-mix-bus-and-stream-mode.md#amendment-2026-10-22-select-the-next-stream-handoff-at-promotion-537).
+their separate behavior. See [ADR 4](adr/0004-server-mix-bus-and-stream-mode.md#amendment-2026-10-27-play-the-continuation-during-handoff-preparation-591).
 
 ### Finding the stream address
 
