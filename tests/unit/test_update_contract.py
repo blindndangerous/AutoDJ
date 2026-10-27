@@ -100,30 +100,69 @@ def test_a_result_has_generic_steps_and_commands_only_on_failure(tmp_path: Path)
 
 
 def test_the_health_check_asks_this_computer_with_an_allowed_host() -> None:
-    """ADR-0016-13: plain HTTP a host script can make too."""
+    """ADR-0016-13: plain HTTP a host script can make too, to this computer only."""
     everywhere = contract.health_for(
-        "0.0.0.0", 8080, https=False, host_allowed=lambda name: name == "localhost"
+        "0.0.0.0", 8080, https=False, host_allowed=lambda header: header == "localhost:8080"
     )
+    assert everywhere is not None
     assert everywhere.url == "http://127.0.0.1:8080/healthz"
     assert everywhere.host == "localhost:8080"
-    six = contract.health_for("::", 8443, https=True, host_allowed=lambda _name: False)
-    assert six.url == "https://[::1]:8443/healthz"
-    assert six.host == "[::1]:8443"
-    lan = contract.health_for(
-        "192.0.2.10", 8080, https=False, host_allowed=lambda name: name == "192.0.2.10"
+    # Neither loopback nor the address is allowed: an allowed name, still sent to loopback.
+    named = contract.health_for(
+        "0.0.0.0",
+        8080,
+        https=False,
+        host_allowed=lambda header: header == "radio.example.lan:8080",
+        allowed_hosts=["radio.example.lan", "192.168.1.10"],
     )
-    assert lan.url == "http://192.0.2.10:8080/healthz"
-    assert contract.parse_health(lan.to_dict()) == lan
+    assert named is not None
+    assert named.url == "http://127.0.0.1:8080/healthz"
+    assert named.host == "radio.example.lan:8080"
+    six = contract.health_for("::", 8443, https=True, host_allowed=lambda h: h == "[::1]:8443")
+    assert six is not None
+    assert six.url == "https://[::1]:8443/healthz"
+    # Nothing the server would accept, an address of another computer, a zone
+    # address or a name that does not resolve: no probe, so no Update.
+    assert contract.health_for("0.0.0.0", 8080, https=False, host_allowed=lambda _h: False) is None
+    assert (
+        contract.health_for("192.0.2.10", 8080, https=False, host_allowed=lambda _h: True) is None
+    )
+    assert (
+        contract.health_for("fe80::1%eth0", 8080, https=False, host_allowed=lambda _h: True) is None
+    )
+
+    def nowhere(*_args: object, **_kwargs: object) -> list[object]:
+        raise OSError("no such name")
+
+    assert (
+        contract.health_for(
+            "radio.example.lan", 8080, https=False, host_allowed=lambda _h: True, resolve=nowhere
+        )
+        is None
+    )
+    resolved = contract.health_for(
+        "radio.example.lan",
+        8080,
+        https=False,
+        host_allowed=lambda h: h == "radio.example.lan:8080",
+        resolve=lambda *_args, **_kwargs: [(2, 1, 6, "", ("127.0.0.1", 8080))],
+    )
+    assert resolved is not None
+    assert (resolved.address, resolved.host) == ("127.0.0.1", "radio.example.lan:8080")
+    assert contract.parse_health(everywhere.to_dict()) == everywhere
     for bad in (
         None,
-        {**lan.to_dict(), "scheme": "file"},
-        {**lan.to_dict(), "address": "example.com"},
-        {**lan.to_dict(), "port": 0},
-        {**lan.to_dict(), "port": True},
-        {**lan.to_dict(), "host": "a b"},
-        {**lan.to_dict(), "path": "/api/devices"},
+        {**everywhere.to_dict(), "scheme": "file"},
+        {**everywhere.to_dict(), "address": "example.com"},
+        # Not this computer: an updater never asks another one.
+        {**everywhere.to_dict(), "address": "192.0.2.10"},
+        {**everywhere.to_dict(), "address": "fe80::1%eth0"},
+        {**everywhere.to_dict(), "port": 0},
+        {**everywhere.to_dict(), "port": True},
+        {**everywhere.to_dict(), "host": "a b"},
+        {**everywhere.to_dict(), "path": "/api/devices"},
     ):
-        assert contract.parse_health(bad) is None
+        assert contract.parse_health(bad) is None, bad
 
 
 def test_the_health_probe_needs_200_and_ok_from_healthz() -> None:

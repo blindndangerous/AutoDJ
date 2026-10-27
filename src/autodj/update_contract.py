@@ -44,11 +44,13 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import ssl
+import sys
 import time
 import urllib.request
 import zipfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -65,6 +67,10 @@ RESULT = "result.json"
 GO_BACK = "go-back.json"
 #: Where an updater keeps the backups it makes, inside the update folder.
 BACKUPS = "backups"
+#: Each supervising launcher holds an operating-system lock on
+#: ``serving-<its process id>.lock`` in the update folder while it runs, so an
+#: update can tell that another server runs from the same checkout.
+SERVING = "serving-"
 #: The name of the backup an updater keeps for Go back.
 GO_BACK_BACKUP = re.compile(r"autodj-go-back-[0-9A-Za-z.-]{1,80}\.zip\Z")
 
@@ -179,22 +185,46 @@ class HealthProbe:
         return asdict(self)
 
 
+def this_computer(address: str) -> bool:
+    """Whether *address* is a loopback address or one this computer can bind to.
+
+    Binding works only for an address of this computer's own interfaces, so
+    nothing here ever reaches another computer.  A zone-scoped IPv6 address
+    (``fe80::1%eth0``) is refused.
+    """
+    if address == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    if "%" in address:
+        return False
+    if ip.is_loopback:
+        return True
+    family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((address, 0))
+    except OSError:
+        return False
+    return True
+
+
 def parse_health(raw: object) -> HealthProbe | None:
     """A probe from a request, or ``None`` unless every part is valid.
 
-    The address must be an IP address or ``localhost``, so an updater only
-    ever asks this computer or the address the server was bound to.
+    The address must be ``localhost``, a loopback address or an address of
+    this computer (:func:`this_computer`), so an updater only ever asks this
+    computer.
     """
     if not isinstance(raw, dict):
         return None
     scheme, address, port, host = (raw.get(key) for key in ("scheme", "address", "port", "host"))
     if scheme not in {"http", "https"} or not isinstance(address, str):
         return None
-    if address != "localhost":
-        try:
-            ipaddress.ip_address(address)
-        except ValueError:
-            return None
+    if not this_computer(address):
+        return None
     if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
         return None
     if not isinstance(host, str) or not _HOST.fullmatch(host):
@@ -204,27 +234,65 @@ def parse_health(raw: object) -> HealthProbe | None:
     return HealthProbe(scheme, address, port, host)
 
 
-def health_for(
-    host: str, port: int, *, https: bool, host_allowed: Callable[[str], bool]
-) -> HealthProbe:
-    """How to reach a server bound to *host*:*port* from this computer.
+def _connect_address(bound: str, port: int, resolve: Callable[..., Any]) -> str | None:
+    """The IP address to ask for a server bound to *bound*; ``None`` when there is none."""
+    if bound in {"", "0.0.0.0"}:  # nosec B104 -- compares the bind address, binds nothing
+        return "127.0.0.1"
+    if bound == "::":
+        return "::1"
+    if bound == "localhost":
+        return "127.0.0.1"
+    if "%" in bound:
+        return None  # a zone-scoped address cannot be written in a URL plainly
+    try:
+        ipaddress.ip_address(bound)
+    except ValueError:
+        pass
+    else:
+        return bound
+    # A host name: the address it resolves to, which the server bound.
+    try:
+        found = resolve(bound, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        return None
+    for _family, _type, _proto, _name, sockaddr in found:
+        address = str(sockaddr[0])
+        if "%" not in address:
+            return address
+    return None
 
-    A server bound to every interface is asked on loopback.  The Host header
-    is the first of the address, ``localhost``, the loopback addresses and
-    *host* that *host_allowed* accepts, so the server's own Host check lets
-    the probe through; with none, the address itself.
+
+def health_for(
+    host: str,
+    port: int,
+    *,
+    https: bool,
+    host_allowed: Callable[[str], bool],
+    allowed_hosts: Iterable[str] = (),
+    resolve: Callable[..., Any] = socket.getaddrinfo,
+) -> HealthProbe | None:
+    """How to reach a server bound to *host*:*port* from this computer; ``None`` if it can't.
+
+    A server bound to every interface is asked on loopback, one bound to a
+    name at the address the name resolves to.  The Host header is the
+    first of the address, ``localhost``, the loopback addresses, *host* and
+    *allowed_hosts* that *host_allowed* accepts as a whole header, so the
+    server's own Host check lets the probe through while it still connects
+    to this computer.  ``None`` when no address or no Host header works:
+    then the page offers no Update and says why.
     """
     bound = host.strip("[]")
-    if bound in {"", "0.0.0.0"}:  # nosec B104 -- compares the bind address, binds nothing
-        address = "127.0.0.1"
-    elif bound == "::":
-        address = "::1"
-    else:
-        address = bound
-    candidates = [address, "localhost", "127.0.0.1", "::1", bound]
-    header = next((name for name in candidates if name and host_allowed(name)), address)
-    rendered = f"[{header}]" if ":" in header else header
-    return HealthProbe("https" if https else "http", address, port, f"{rendered}:{port}")
+    address = _connect_address(bound, port, resolve)
+    if address is None or not this_computer(address):
+        return None
+    for name in (address, "localhost", "127.0.0.1", "::1", bound, *allowed_hosts):
+        if not name or "%" in name:
+            continue
+        rendered = f"[{name}]" if ":" in name else name
+        header = f"{rendered}:{port}"
+        if _HOST.fullmatch(header) and host_allowed(header):
+            return HealthProbe("https" if https else "http", address, port, header)
+    return None
 
 
 def probe_health(probe: HealthProbe, timeout: float = 2.0) -> bool:
@@ -250,6 +318,89 @@ def probe_health(probe: HealthProbe, timeout: float = 2.0) -> bool:
     except (OSError, ValueError, http.client.HTTPException):
         return False
     return isinstance(body, dict) and body.get("status") == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Locks
+# ---------------------------------------------------------------------------
+
+
+def try_lock(path: Path) -> Any | None:
+    """An exclusive lock on *path*, or ``None`` when another process holds it.
+
+    The operating system releases it when the holder ends, however it ends.
+    Keep the returned handle open while the lock is needed.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+def unlock(handle: Any) -> None:
+    """Release a lock from :func:`try_lock`."""
+    if handle is None:
+        return
+    with contextlib.suppress(OSError):
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    handle.close()
+
+
+def serving_path(folder: Path, pid: int) -> Path:
+    """The lock file a supervising launcher with process id *pid* holds."""
+    return Path(folder) / f"{SERVING}{pid}.lock"
+
+
+def other_servers(folder: Path | None, own: Iterable[int]) -> list[int]:
+    """Process ids of other launchers serving from this checkout right now.
+
+    A lock file whose launcher has ended is free, and is deleted.  *own* are
+    the process ids not to count: the caller's own launcher.
+    """
+    if folder is None:
+        return []
+    mine = set(own)
+    found: list[int] = []
+    for path in sorted(Path(folder).glob(f"{SERVING}*.lock")):
+        text = path.name.removeprefix(SERVING).removesuffix(".lock")
+        if not text.isdigit() or int(text) in mine:
+            continue
+        handle = try_lock(path)
+        if handle is None:
+            found.append(int(text))
+            continue
+        unlock(handle)
+        with contextlib.suppress(OSError):
+            path.unlink()
+    return found
+
+
+def other_servers_reason(pids: list[int]) -> str:
+    """One sentence for the page and the result when other servers run here."""
+    return (
+        "Another AutoDJ server runs from this AutoDJ folder (launcher process "
+        f"{', '.join(str(pid) for pid in pids)}). Stop it before updating."
+    )
 
 
 # ---------------------------------------------------------------------------

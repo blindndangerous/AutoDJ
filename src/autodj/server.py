@@ -3375,8 +3375,14 @@ def serve(
 
     # Where the checkout's launcher asks a new version whether it is up,
     # after Update (autodj.checkout_update).
+    # The Host header is one the server's own policy accepts, even when
+    # loopback is not among its allowed hosts; None offers no Update.
     app.state.health_probe = health_for(
-        host, port, https=secure_cookie, host_allowed=startup_policy.host_allowed
+        host,
+        port,
+        https=secure_cookie,
+        host_allowed=startup_policy.host_allowed,
+        allowed_hosts=startup_policy.config.effective_allowed_hosts(),
     )
     interrupted = False
     try:
