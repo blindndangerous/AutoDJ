@@ -534,6 +534,12 @@ def read_result(folder: Path) -> dict[str, Any] | None:
         return None
     if commands and record["outcome"] not in FAILURES:
         return None
+    steps = record.get("steps", [])
+    if not isinstance(steps, list) or not all(
+        isinstance(step, dict) and step.get("name") in STEPS and step.get("status") in STEP_STATUSES
+        for step in steps
+    ):
+        return None
     return record
 
 

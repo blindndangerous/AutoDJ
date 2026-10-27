@@ -1271,7 +1271,7 @@ def update_support(
         installation.kind == "git"
         and installation.root is not None
         and environment.get(SUPERVISOR_ENV) == "1"
-        and environment.get(UPDATER_ENV) == "launcher"
+        and environment.get(UPDATER_ENV) in UPDATERS
     ):
         return UpdateSupport("launcher", "The AutoDJ launcher updates this checkout.", guide)
     return UpdateSupport(None, "Update it the way you installed it.", guide)

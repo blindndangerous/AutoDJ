@@ -233,8 +233,6 @@ class CheckoutUpdater:
         self._branch_left: str | None = None
         self._branch_moved = False
         self._lock_handle: Any = None
-        #: After :meth:`watch`: True when the new server was healthy, else None.
-        self.started_ok: bool | None = None
         self._start_failure = ""
 
     # ------------------------------------------------------------------
@@ -485,11 +483,6 @@ class CheckoutUpdater:
         """This launcher stops serving: let go of its lock and delete its file."""
         handle, self._serving = self._serving, None
         contract.release_serving(handle, self._serving_path)
-
-    @property
-    def serving(self) -> bool:
-        """Whether this launcher holds its serving lock."""
-        return self._serving is not None
 
     @property
     def locked(self) -> bool:
@@ -1191,8 +1184,8 @@ class CheckoutUpdater:
         """Wait for the new server to be healthy; stop it if it is not in time.
 
         Healthy: still running, and ``/healthz`` answers 200 ``"ok"`` within
-        HEALTH_TIMEOUT_SECONDS.  Afterwards :attr:`started_ok` is True, or
-        :meth:`failed_start` rolls back.
+        HEALTH_TIMEOUT_SECONDS.  Afterwards :attr:`pending` is False when it
+        was healthy; otherwise :meth:`failed_start` rolls back.
         """
         self._begin("health", "waiting for the new version to answer.")
         deadline = self._monotonic() + HEALTH_TIMEOUT_SECONDS
@@ -1205,7 +1198,6 @@ class CheckoutUpdater:
                 )
                 return
             if probe is not None and self._probe_fn(probe):
-                self.started_ok = True
                 self._succeeded()
                 return
             if self._monotonic() >= deadline:

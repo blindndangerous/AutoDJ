@@ -319,7 +319,6 @@ def test_a_stable_update_follows_the_upgrade_checklist(tmp_path: Path) -> None:
 
     updater.watch(_Server(), lambda: False)  # type: ignore[arg-type]
 
-    assert updater.started_ok is True
     assert updater.pending is False
     result = _result(checkout)
     assert result["outcome"] == "updated"
@@ -435,7 +434,7 @@ def test_a_new_version_that_is_not_healthy_is_rolled_back(tmp_path: Path, how: s
 
     updater.watch(server, lambda: False)  # type: ignore[arg-type]
 
-    assert updater.started_ok is None
+    assert updater.pending is True
     if how == "never-answers":
         assert server.signals == [signal.SIGTERM]
     attempt = updater.failed_start()
@@ -1048,7 +1047,7 @@ def test_an_update_is_refused_while_another_launcher_serves_from_this_checkout(
     checkout = FakeCheckout(tmp_path / "checkout")
     other = _updater(checkout, ask=False)
     other.hold_serving(pid=424242)
-    assert other.serving
+    assert other._serving is not None
     updater = _updater(checkout)
     updater.hold_serving()  # its own does not count
 
@@ -1068,7 +1067,7 @@ def test_an_update_is_refused_while_another_launcher_serves_from_this_checkout(
     assert contract.serving_path(_folder(checkout), 424242).exists()
     # Its owner does, when it stops serving.
     updater.release_serving()
-    assert not updater.serving
+    assert updater._serving is None
     assert not contract.serving_path(_folder(checkout), os.getpid()).exists()
 
 
@@ -1211,7 +1210,7 @@ def test_a_starting_launcher_clears_serving_files_of_ended_launchers(tmp_path: P
     updater = _updater(checkout, ask=False)
     try:
         updater.hold_serving()
-        assert updater.serving
+        assert updater._serving is not None
         assert not ended.exists()
         assert contract.serving_path(folder, 222222).exists()
     finally:
@@ -1236,11 +1235,11 @@ def test_the_serving_lock_is_tried_again_while_someone_looks_at_it(
     monkeypatch.setattr(contract, "try_lock", flaky)
     updater = _updater(checkout, ask=False)
     updater.hold_serving()
-    assert updater.serving
+    assert updater._serving is not None
     updater.release_serving()
 
     busy[0] = 99
     again = _updater(checkout, ask=False)
     again.hold_serving()
-    assert not again.serving
+    assert again._serving is None
     assert "could not lock" in capsys.readouterr().err
