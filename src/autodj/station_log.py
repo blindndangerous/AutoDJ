@@ -10,6 +10,11 @@ each log line in a station context with ``[slug]``, and
 :func:`thread_name` adds the slug to its threads' names
 (``autodj-player-nightowl``).  Default station thread names are unchanged;
 its log lines include ``[default]``.
+
+A station may have a log label (``station.log_label``), such as ``nor``
+for Night Owl Radio.  Only the visible prefix uses it (``[nor]``): the
+context variable, ``record.station``, thread names and scopes keep the
+slug.  :func:`set_log_label` changes a label at once, without a restart.
 """
 
 from __future__ import annotations
@@ -36,6 +41,11 @@ _UNPREFIXED = frozenset({"autodj.audit"})
 _install_lock = threading.Lock()
 _installed = False
 _threads_lock = threading.Lock()
+
+# Slug -> log label, for stations that have one.  Replaced whole under the
+# lock and read without it: the log-record factory runs on every thread.
+_labels_lock = threading.Lock()
+_log_labels: dict[str, str] = {}
 
 
 class StationThreadScope:
@@ -166,8 +176,32 @@ def enter_station(slug: str | None, scope: StationThreadScope | None = None) -> 
     track_station_thread(threading.current_thread(), slug)
 
 
+def log_label(slug: str) -> str:
+    """What *slug*'s log lines show in brackets: its log label, else the slug."""
+    return _log_labels.get(slug) or slug
+
+
+def set_log_label(slug: str, label: str | None) -> None:
+    """Show *label* in *slug*'s log lines from now on; empty or ``None`` shows the slug."""
+    global _log_labels
+    with _labels_lock:
+        labels = dict(_log_labels)
+        if label:
+            labels[slug] = label
+        else:
+            labels.pop(slug, None)
+        _log_labels = labels
+
+
+def set_log_labels(labels: Mapping[str, str | None]) -> None:
+    """Replace every station's log label: the server's stations as configured."""
+    global _log_labels
+    with _labels_lock:
+        _log_labels = {slug: label for slug, label in labels.items() if label}
+
+
 def install_log_prefix() -> None:
-    """Start every station log line with ``[slug]``.
+    """Start every station log line with ``[slug]``, or ``[label]`` when it has one.
 
     Installed once per process, as a log-record factory, so the prefix is
     added where the line is logged, in the station's own context, and
@@ -183,7 +217,7 @@ def install_log_prefix() -> None:
             record = previous(*args, **kwargs)
             slug = CURRENT_STATION.get()
             if slug is not None and isinstance(record.msg, str) and record.name not in _UNPREFIXED:
-                record.msg = f"[{slug}] {record.msg}"
+                record.msg = f"[{log_label(slug)}] {record.msg}"
             record.station = slug or DEFAULT_SLUG
             return record
 

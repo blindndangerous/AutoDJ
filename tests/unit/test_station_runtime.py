@@ -24,7 +24,10 @@ from autodj.station_log import (
     CURRENT_STATION_SCOPE,
     enter_station,
     install_log_prefix,
+    log_label,
     new_station_scope,
+    set_log_label,
+    set_log_labels,
     station_thread,
     thread_name,
     wait_for_station_threads,
@@ -165,6 +168,62 @@ def test_threads_and_log_lines_carry_the_station_name(caplog: pytest.LogCaptureF
             assert seen["name"] == "autodj-worker"
             assert caplog.records[-1].getMessage() == expected
     assert thread_name("autodj-player") == "autodj-player"
+
+
+@pytest.fixture
+def no_log_labels() -> Any:
+    set_log_labels({})
+    yield
+    set_log_labels({})
+
+
+def _log_as(slug: str, log: logging.Logger) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+
+    def work() -> None:
+        seen["name"] = threading.current_thread().name
+        log.warning("tick failed")
+
+    def as_station() -> None:
+        CURRENT_STATION.set(slug)
+        thread = station_thread(target=work, name="autodj-worker")
+        thread.start()
+        thread.join(5)
+
+    runner = threading.Thread(target=as_station)
+    runner.start()
+    runner.join(5)
+    return seen
+
+
+def test_a_log_label_replaces_the_slug_only_in_the_prefix(
+    caplog: pytest.LogCaptureFixture, no_log_labels: None
+) -> None:
+    install_log_prefix()
+    log = logging.getLogger("autodj.test_station_runtime")
+    with caplog.at_level(logging.WARNING, logger="autodj.test_station_runtime"):
+        set_log_label("nightowl", "nor")
+        seen = _log_as("nightowl", log)
+        record = caplog.records[-1]
+        assert record.getMessage() == "[nor] tick failed"
+        # Machine-readable fields and thread names keep the slug.
+        assert record.station == "nightowl"
+        assert seen["name"] == "autodj-worker-nightowl"
+        assert log_label("nightowl") == "nor"
+
+        set_log_label("default", "main")
+        _log_as("default", log)
+        assert caplog.records[-1].getMessage() == "[main] tick failed"
+        assert caplog.records[-1].station == "default"
+
+        # Cleared, the slug is used exactly as before.
+        set_log_label("nightowl", "")
+        _log_as("nightowl", log)
+        assert caplog.records[-1].getMessage() == "[nightowl] tick failed"
+        set_log_labels({"nightowl": "nor"})
+        _log_as("default", log)
+        assert caplog.records[-1].getMessage() == "[default] tick failed"
+        assert log_label("other") == "other"
 
 
 # -- the registry ---------------------------------------------------------------

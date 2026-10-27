@@ -27,6 +27,7 @@ from autodj.config import (
     canonicalize_allowed_origin,
     is_loopback_bind,
     load_config,
+    log_label_conflict,
     move_station_tables,
     validate_server_exposure,
 )
@@ -870,6 +871,38 @@ class TestServerConfig:
     def test_liner_upload_limit_is_station_local_and_bounded(self, limit: int) -> None:
         with pytest.raises(ValueError, match=r"station\.liner_upload_max_mib"):
             StationConfig.from_dict({"liner_upload_max_mib": limit})
+
+    @pytest.mark.parametrize("label", ["nor", "NOR", "n.o-r_1", "a" * 16, "7"])
+    def test_a_log_label_is_short_and_log_safe(self, label: str) -> None:
+        assert StationConfig.from_dict({"log_label": label}).log_label == label
+
+    @pytest.mark.parametrize("label", [None, ""])
+    def test_no_log_label_means_the_slug(self, label: str | None) -> None:
+        assert StationConfig.from_dict({}).log_label == ""
+        assert StationConfig.from_dict({"log_label": label}).log_label == ""
+
+    @pytest.mark.parametrize(
+        "label",
+        ["n o r", "[nor]", "nor]", "a" * 17, "nor\n", "nor\r", "\x1b[31m", "nør", " nor", 7],
+    )
+    def test_a_log_label_refuses_spaces_brackets_control_and_length(self, label: object) -> None:
+        with pytest.raises((TypeError, ValueError), match=r"station\.log_label"):
+            StationConfig.from_dict({"log_label": label})
+
+    def test_a_log_label_may_not_repeat_another_stations_label_or_id(self) -> None:
+        labels = {"default": "", "nightowl": "nor", "daybreak": ""}
+        assert log_label_conflict("daybreak", "dbr", labels) is None
+        assert log_label_conflict("daybreak", "", labels) is None
+        # A station may use its own ID; that is the same as no label.
+        assert log_label_conflict("daybreak", "daybreak", labels) is None
+        assert log_label_conflict("nightowl", "nor", labels) is None
+        duplicate = log_label_conflict("daybreak", "NOR", labels)
+        assert duplicate is not None
+        assert "nightowl" in duplicate and "already" in duplicate
+        for slug in ("nightowl", "default"):
+            other = log_label_conflict("daybreak", slug.upper(), labels)
+            assert other is not None
+            assert f"ID of station {slug}" in other
 
     def test_custom_bind_and_default_port_drive_derived_policy(self) -> None:
         custom = ServerConfig.from_dict({"host": "127.0.0.2", "port": 9090})

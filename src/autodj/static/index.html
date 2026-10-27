@@ -2501,6 +2501,17 @@
       <input type="number" id="station-upload-cap" min="1" max="1024" step="1">
       <p>Output changes apply when this station next starts.</p>
     </fieldset>
+    <fieldset>
+      <legend>Logs for the selected station</legend>
+      <div class="settings-row">
+        <label for="station-log-label">Log label</label>
+        <input type="text" id="station-log-label" maxlength="16" autocomplete="off"
+               autocapitalize="off" spellcheck="false" aria-describedby="station-log-label-help">
+      </div>
+      <p class="setting-desc" id="station-log-label-help">
+        Shown at the start of this station's log lines: up to 16 letters, digits, hyphens, underscores or dots, different from other stations' labels and IDs. Leave empty to use the station ID, <span id="station-log-label-id">default</span>.
+      </p>
+    </fieldset>
     <h4 id="stations-list-heading">Stations on this server</h4>
     <div class="data-table-scroll">
       <table id="stations-table" role="grid" aria-labelledby="stations-list-heading">
@@ -2527,7 +2538,7 @@
           </select>
         </div>
         <span class="setting-desc" id="station-create-source-help">
-          A copy takes the station's saved settings, including changes made on this page. It never takes its relays, listener password, webhooks, recording folder, queue, history, requests, listeners, bans, statistics, ads, shows, intros, profiles or liners.
+          A copy takes the station's saved settings, including changes made on this page. It never takes its relays, listener password, webhooks, recording folder, log label, queue, history, requests, listeners, bans, statistics, ads, shows, intros, profiles or liners.
         </span>
         <div class="settings-row">
           <label for="station-create-name">Name</label>

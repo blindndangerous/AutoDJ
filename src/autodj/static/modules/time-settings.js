@@ -1,6 +1,8 @@
 // Settings > Stations, Time for every station (#282, #286): the station
-// time zone and the time format. Loads when the Stations tab is shown.
+// time zone and the time format, with the station's output and log label.
+// Loads when the Stations tab is shown.
 import { requestJson } from "./api-client.js";
+import { currentStation, onStationChange } from "./stations.js";
 import { setTimeFormat } from "./time-format.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 
@@ -14,11 +16,20 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
   const output = doc.getElementById("station-output");
   const monitor = doc.getElementById("station-monitor");
   const cap = doc.getElementById("station-upload-cap");
+  // Optional, so a page without the field still saves the other options.
+  const logLabel = doc.getElementById("station-log-label");
+  // The hint names the ID this station logs as while the label is empty.
+  const logLabelId = doc.getElementById("station-log-label-id");
+  if (logLabelId) {
+    logLabelId.textContent = currentStation();
+    onStationChange((slug) => { logLabelId.textContent = slug; });
+  }
   function showOptions(value) {
     output.value = value.output;
     monitor.checked = value.server_audio_too;
     monitor.disabled = output.value !== "stream";
     cap.value = value.liner_upload_max_mib;
+    if (logLabel) logLabel.value = value.log_label ?? "";
   }
   output?.addEventListener("change", () => {
     monitor.disabled = output.value !== "stream";
@@ -47,9 +58,10 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
     write: show,
   });
   const stationDraft = output && monitor && cap ? registerSettingsGroup({
-    panel, group: "station", controls: [output, monitor, cap],
+    panel, group: "station", controls: [output, monitor, cap, logLabel].filter(Boolean),
     read: () => ({ output: output.value, server_audio_too: monitor.checked,
-      liner_upload_max_mib: Number(cap.value) }),
+      liner_upload_max_mib: Number(cap.value),
+      ...(logLabel ? { log_label: logLabel.value.trim() } : {}) }),
     write: showOptions,
   }) : null;
 

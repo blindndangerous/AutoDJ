@@ -47,6 +47,7 @@ from autodj.station_log import (
     DEFAULT_SLUG,
     StationThreadScope,
     new_station_scope,
+    set_log_label,
     wait_for_station_threads,
 )
 from autodj.station_name import listener_name, sync_name
@@ -1865,13 +1866,34 @@ class StationRegistry:
         """Saved configuration is available independently of the running engine."""
         return self._extras[slug].paths._cfg
 
+    def log_labels(self) -> dict[str, str]:
+        """Every configured station's saved log label; empty for one logging as its slug."""
+        with self.configuration_lock:
+            return {slug: self.configuration(slug).station.log_label for slug in self._extras}
+
+    def log_label_problem(self, slug: str, label: str) -> str | None:
+        """Why *slug* may not log as *label* beside the other stations, or ``None``."""
+        from autodj.config import log_label_conflict
+
+        return log_label_conflict(slug, label, self.log_labels())
+
     def save_options(self, slug: str, changes: dict[str, Any]) -> dict[str, Any]:
-        """Validate and save station options; output/time-zone changes apply on start."""
+        """Validate and save station options.
+
+        Output and time-zone changes apply when the station next starts; the
+        upload cap and the log label apply at once.
+
+        Raises:
+            ValueError: An invalid option, or a log label another station uses.
+        """
         from autodj.fsutil import atomic_write
 
         with self.configuration_lock:
             cfg = self.configuration(slug)
             proposed = replace(cfg.station, **changes)
+            problem = self.log_label_problem(slug, proposed.log_label)
+            if problem is not None:
+                raise ValueError(problem)
             paths = self._extras[slug].paths
             document = json.loads(paths.definition.read_text(encoding="utf-8"))
             document["station"]["station"] = asdict(proposed)
@@ -1881,6 +1903,8 @@ class StationRegistry:
             running = self._running.get(slug)
             if running is not None:
                 running.cfg.station.liner_upload_max_mib = proposed.liner_upload_max_mib
+                running.cfg.station.log_label = proposed.log_label
+            set_log_label(slug, proposed.log_label)
             return asdict(proposed)
 
     def public_settings(self, slug: str) -> dict[str, Any]:

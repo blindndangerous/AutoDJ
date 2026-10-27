@@ -144,6 +144,7 @@ from autodj.station_log import (
     CURRENT_STATION,
     DEFAULT_SLUG,
     install_log_prefix,
+    set_log_labels,
     station_thread,
 )
 from autodj.station_name import listener_name
@@ -1003,6 +1004,7 @@ def create_app(
     cfg = services.cfg
     shared = services
     stations = StationRegistry(default_station, extra_stations)
+    set_log_labels(stations.log_labels())
     station_timezone = cfg.station.timezone or system_timezone()
     station_create_lock = asyncio.Lock()
     stations.stop_timeout_s = _SHUTDOWN_TIMEOUT_S
@@ -1963,6 +1965,16 @@ def create_app(
 
         return {"stations": stations.summaries(), "time_format": timefmt.time_format}
 
+    def label_refusal(slug: str) -> str | None:
+        """Why a new station may not use *slug*: another station logs as it."""
+        for other, label in stations.log_labels().items():
+            if label.casefold() == slug:
+                return (
+                    f"Station ID {slug} is the log label of station {other}. "
+                    "Choose another ID, or change that station's log label first."
+                )
+        return None
+
     @app.post("/api/stations", status_code=201)
     async def api_station_create(body: CreateStationBody) -> dict[str, Any]:
         """Publish a validated definition and register a stopped station."""
@@ -1982,6 +1994,8 @@ def create_app(
                 raise HTTPException(status_code=409, detail=f"Station {body.slug} already exists")
             if body.source is not None and body.source not in stations.slugs():
                 raise HTTPException(status_code=404, detail="The source station was not found")
+            if (refusal := label_refusal(body.slug)) is not None:
+                raise HTTPException(status_code=409, detail=refusal)
             if len(root.stations) >= MAX_STATIONS:
                 raise HTTPException(
                     status_code=409, detail=f"At most {MAX_STATIONS} other stations are allowed"
@@ -2008,7 +2022,12 @@ def create_app(
                     duplicate_table, root, body.source, body.slug, body.name, body.autostart
                 )
                 spec = replace(_build_station(body.slug, table, root), defined_in="web")
-                _check_station_conflicts(root, (*root.stations, spec))
+                # Saved labels, the default's included: the root's copy of it can be older.
+                _check_station_conflicts(
+                    root,
+                    (*root.stations, spec),
+                    log_labels={**stations.log_labels(), spec.slug: spec.cfg.station.log_label},
+                )
             except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             clock = None
@@ -2048,7 +2067,12 @@ def create_app(
                 if stations._closing:
                     raise StationControlError("The server is shutting down")
                 extra = _extra_station(root, spec, shared.sim, library, station_timezone)
-                stations.add(extra)
+                # A label saved while the station was staged may have taken its ID.
+                # Saving a label holds this lock, and sees the station once it is added.
+                with stations.configuration_lock:
+                    if (refusal := label_refusal(body.slug)) is not None:
+                        raise StationControlError(refusal)
+                    stations.add(extra)
                 root.stations += (spec,)
             except Exception as exc:
                 try:

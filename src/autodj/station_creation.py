@@ -61,6 +61,8 @@ def duplicate_table(
         "stream": ("relays", "listener_user", "listener_password", "enabled", "trusted_proxies"),
         "recording": ("folder",),
         "time_checks": ("clips_folder",),
+        # Another station's log label would be refused: labels tell stations apart.
+        "station": ("log_label",),
     }.items():
         value = table.get(section)
         if isinstance(value, dict):
