@@ -38,7 +38,7 @@ edits remain pending. Output-mode changes take effect after restarting the stati
 | Voice liners, Time checks, Breaks | Selected station's playback and feature settings |
 | Stream | Station stream formats, metadata, listener limits, retention, public player and recording configuration |
 | Live DJ | Station talkover configuration; available while stopped |
-| Stations | Selected station's output, scheduling timezone and upload limit; shared server time display |
+| Stations | Selected station's output, scheduling timezone, upload limit and log label; shared server time display |
 
 Relay, scheduled-event, profile and DJ-account forms submit individual records.
 Uploads, credentials, pairing and destructive actions also retain their explicit
@@ -246,6 +246,7 @@ Station section: `station` in `station.json`.
 - `liner_upload_max_mib`. Values: whole number from 1 to 1024 MiB. Default: 50. Limits voice liner and cart uploads. **Maximum liner upload size (MiB)**.
 - `output`. Values: `browser` (Browser), `server` (Server sound card), or `stream` (Radio stream). Default: `browser`. Chooses where this station plays; a newly created named station defaults to stream even though the dataclass default is browser. **Playback output**.
 - `server_audio_too`. Values: true or false. Default: false. Also plays the stream mix through this computer's speakers. **Also play the radio stream on the server sound card**.
+- `log_label`. Values: blank, or 1 to 16 letters, digits, hyphens (`-`), underscores (`_`) or dots (`.`), with no spaces or brackets. Default: blank. Replaces the station ID inside the brackets that start this station's log lines, such as `[nor]` instead of `[nightowl]`; blank uses the station ID. It must differ from every other station's log label and station ID, ignoring case. A change applies at once, without a restart; a copied station does not take it. **Log label**.
 
 ### Stream
 

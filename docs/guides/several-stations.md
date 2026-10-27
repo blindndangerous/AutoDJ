@@ -46,7 +46,7 @@ Creating a station never starts it, and no other station stops. The page then of
 **Switch to the new station**.
 
 A copy never takes these from the original station: relays, the listener password, webhooks,
-the recording folder, the queue and history, requests, listeners, bans and statistics, ads,
+the recording folder, the log label, the queue and history, requests, listeners, bans and statistics, ads,
 shows, intros, profiles and liners. Set those up again for the new station.
 
 ## Start and stop stations
@@ -107,6 +107,12 @@ time. Press **Save changes** in **Stations** after changing either.
 Radio stream. **Also play the radio stream on the server sound card** works with Radio stream.
 **Maximum liner upload size (MiB)** limits uploads for that station. Output changes take effect
 when the station next starts.
+
+**Logs for the selected station** holds **Log label**. Log lines from a station start with its ID
+in brackets, such as `[nightowl]`. Enter a short label, such as `nor` for Night Owl Radio, to show
+`[nor]` instead. Use up to 16 letters, digits, hyphens, underscores or dots, with no spaces. Each
+station needs its own label, and a label cannot be another station's ID. Leave it empty to use the
+station ID. Press **Save changes**; the label applies to new log lines at once.
 
 ## Where a station keeps its files
 
