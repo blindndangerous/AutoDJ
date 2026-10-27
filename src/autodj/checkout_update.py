@@ -995,8 +995,7 @@ class CheckoutUpdater:
     def _succeeded(self) -> None:
         action = self._record.get("action")
         if action == "go-back":
-            assert self._go_back is not None
-            date = self._go_back.date
+            date = self._go_back.date if self._go_back is not None else "the backup's day"
             self._release_go_back()
             message = (
                 f"Went back to {self._target_label}. Settings, play history and library "
