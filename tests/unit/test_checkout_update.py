@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import signal
 import subprocess
 import zipfile
@@ -392,7 +393,10 @@ def test_a_needed_migration_rolls_back_and_gives_the_commands(tmp_path: Path) ->
 
 @pytest.mark.parametrize("how", ["exits", "never-answers"])
 def test_a_new_version_that_is_not_healthy_is_rolled_back(tmp_path: Path, how: str) -> None:
-    """ADR-0016-13, ADR-0016-16: healthy means still running and /healthz answering in time."""
+    """ADR-0016-13, ADR-0016-16: healthy means still running and /healthz answering in time.
+
+    The new version ran, so the data goes back to the backup from just before.
+    """
     checkout = FakeCheckout(tmp_path / "checkout", branch="master", tag=None, version="0.20.0")
     now = [0.0]
 
@@ -414,6 +418,16 @@ def test_a_new_version_that_is_not_healthy_is_rolled_back(tmp_path: Path, how: s
     assert checkout.head == OLD
     assert checkout.branch == "master"
     assert ["git", "switch", "--force-create", "master", OLD] in checkout.calls
+    # After the checkout and the old runtime are back: the old version restores its backup.
+    assert checkout.names()[-3:] == ["git rev-parse", "setup", "restore"]
+    assert checkout.calls[-1] == [
+        *BASE,
+        "--config",
+        "night owl.toml",
+        "restore",
+        "--force",
+        str(updater._backup),
+    ]
     result = _result(checkout)
     assert result["outcome"] == "rolled-back"
     expected = (
@@ -423,9 +437,44 @@ def test_a_new_version_that_is_not_healthy_is_rolled_back(tmp_path: Path, how: s
     )
     assert result["message"] == (
         f"The update failed, so AutoDJ went back to 0.20.0, commit {OLD[:7]} on master. {expected}"
+        " The data is back as it was before the update; changes the new version made while it"
+        " ran are gone."
     )
     assert result["commands"] == []
     assert _steps(result)["health"] == "failed"
+
+
+def test_a_rollback_before_the_start_leaves_the_data_alone(tmp_path: Path) -> None:
+    """ADR-0016-16: the new version never ran, so nothing restores the backup."""
+    checkout = FakeCheckout(tmp_path / "checkout", fail={"doctor"})
+    updater = _updater(checkout)
+
+    assert updater.update() == checkout_update.Attempt()
+    assert "restore" not in checkout.names()
+    assert "data is back" not in _result(checkout)["message"]
+
+
+def test_a_restore_that_fails_after_the_start_reports_failed_with_the_commands(
+    tmp_path: Path,
+) -> None:
+    """ADR-0016-16: the checkout is back, the data may not be; nothing starts."""
+    checkout = FakeCheckout(tmp_path / "checkout", fail={"restore"})
+    updater = _updater(checkout, probe=lambda _probe: False)
+    assert updater.update().switched is True
+    updater.watch(_Server(exits=1), lambda: False)  # type: ignore[arg-type]
+
+    assert updater.failed_start() == checkout_update.Attempt(failed=True)
+    assert checkout.head == OLD
+    result = _result(checkout)
+    assert result["outcome"] == "failed"
+    assert f"Restoring {updater._backup} failed (exit status 1)." in result["message"]
+    assert result["commands"] == [
+        "git status --short",
+        f"git switch --detach {OLD}",
+        "./autodj --config 'night owl.toml' setup",
+        f"./autodj --config 'night owl.toml' restore --force {shlex.quote(str(updater._backup))}",
+        "./autodj --config 'night owl.toml' doctor --no-fix",
+    ]
 
 
 def test_a_rollback_that_fails_says_where_the_checkout_is_and_starts_nothing(
@@ -592,6 +641,25 @@ def test_a_stop_signal_during_the_update_puts_the_checkout_back(
     assert result["outcome"] == "stopped"
     assert result["message"].startswith("AutoDJ was stopped during the update")
     assert not updater.locked
+
+
+def test_a_stop_after_the_new_version_started_says_to_restore_the_data(tmp_path: Path) -> None:
+    """ADR-0016-17: no restore while stopping, but the result says so and gives the command."""
+    checkout = FakeCheckout(tmp_path / "checkout")
+    updater = _updater(checkout)
+    assert updater.update().switched is True
+
+    assert updater.stopped_while_starting(signal.SIGTERM) == checkout_update.Attempt(
+        stopped=signal.SIGTERM
+    )
+    assert checkout.head == OLD
+    assert "restore" not in checkout.names()
+    result = _result(checkout)
+    assert result["outcome"] == "stopped"
+    assert "the new version had started and may have changed the data" in result["message"]
+    assert result["commands"] == [
+        f"./autodj --config 'night owl.toml' restore --force {shlex.quote(str(updater._backup))}"
+    ]
 
 
 def test_a_stop_that_cannot_put_the_checkout_back_says_where_it_is(tmp_path: Path) -> None:

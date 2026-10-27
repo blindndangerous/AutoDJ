@@ -218,6 +218,8 @@ class CheckoutUpdater:
         self._backup: Path | None = None
         self._backup_at = 0.0
         self._restored = False
+        #: The new version has started, so it may have changed the data.
+        self._started = False
         self._go_back: GoBack | None = None
         self._lock_handle: Any = None
         #: After :meth:`watch`: True when the new server was healthy, else None.
@@ -764,7 +766,7 @@ class CheckoutUpdater:
             f"commands in the AutoDJ folder, then start AutoDJ.{backup}"
         )
         commands = ["git status --short", self._restore_command(), self._cli("setup")]
-        if self._restored and self._backup is not None:
+        if self._data_changed and self._backup is not None:
             commands.append(self._cli("restore", "--force", str(self._backup)))
         commands.append(self._cli("doctor", "--no-fix"))
         self._finish("failed", message, commands, f"{problem} {reason}")
@@ -780,34 +782,63 @@ class CheckoutUpdater:
             status = self._setup(self._previous_label)
             if status != 0:
                 problem = f"Setup for {self._previous_label} failed (exit status {status})."
-        if problem is None and not self._stopped and self._restored and self._backup is not None:
-            # Go back replaced the data; put the data from before it back too.
+        data_back = False
+        if (
+            problem is None
+            and not self._stopped
+            and self._data_changed
+            and self._backup is not None
+        ):
+            # Go back replaced the data, or the new version started and may
+            # have changed it (a new layout, a newer schema): put back the
+            # data from before, with the old version that made that backup.
             status = self._restore(self._backup)
             if status != 0:
                 problem = f"Restoring {self._backup} failed (exit status {status})."
             else:
-                self._restored = False
+                self._restored = self._started = False
+                data_back = True
         if self._stopped:
             return self._stop()
         if problem is not None:
             return self._failed(reason, problem)
         self._switched = False
         message = f"The update failed, so AutoDJ went back to {self._previous_label}. {reason}"
+        if data_back:
+            message += (
+                " The data is back as it was before the update; changes the new version made "
+                "while it ran are gone."
+            )
         self._finish("rolled-back", message, commands, reason)
         return Attempt()
+
+    @property
+    def _data_changed(self) -> bool:
+        """Whether the data may no longer be what the backup from before holds."""
+        return self._restored or self._started
 
     def _stop(self) -> Attempt:
         signum = self._stopped[0]
         problem = self._restore_checkout() if self._switched else None
-        if problem is None and self._restored:
-            problem = (
-                "The data had already been restored from the backup "
-                f"{self._go_back.backup if self._go_back else ''}."
+        restore = (
+            [self._cli("restore", "--force", str(self._backup))]
+            if self._data_changed and self._backup is not None
+            else []
+        )
+        if problem is None and self._data_changed:
+            # No restore while stopping: a service manager would kill it half done.
+            message = (
+                f"AutoDJ was stopped during the update. The checkout is back at "
+                f"{self._previous_label}, but the new version had "
+                + ("restored an older backup" if self._restored else "started")
+                + " and may have changed the data. Before starting AutoDJ, restore the backup "
+                "from before the update with this command in the AutoDJ folder."
             )
-        if problem is None:
+            commands: list[str] = restore
+        elif problem is None:
             back = f"; the checkout is back at {self._previous_label}." if self._switched else "."
             message = "AutoDJ was stopped during the update, so it did not update" + back
-            commands: list[str] = []
+            commands = []
         else:
             head = self._head()
             message = (
@@ -816,9 +847,12 @@ class CheckoutUpdater:
                 f"{head[:7] if head else 'an unknown commit'}. Run these commands in the AutoDJ "
                 "folder before starting AutoDJ."
             )
-            commands = ["git status --short", self._restore_command(), self._cli("setup")]
-            if self._restored and self._backup is not None:
-                commands.append(self._cli("restore", "--force", str(self._backup)))
+            commands = [
+                "git status --short",
+                self._restore_command(),
+                self._cli("setup"),
+                *restore,
+            ]
         self._switched = False
         self._finish("stopped", message, commands, "stopped")
         return Attempt(stopped=signum)
@@ -913,6 +947,7 @@ class CheckoutUpdater:
         self._begin("migration-check", "asking Doctor whether the library needs a migration.")
         self._doctor(target)
         self._begin("start", f"starting {self._target_label}.")
+        self._started = True
         return Attempt(switched=True)
 
     def _go_back_now(self) -> Attempt:
@@ -959,6 +994,7 @@ class CheckoutUpdater:
         self._begin("migration-check", "asking Doctor whether the library needs a migration.")
         self._doctor(record.tag)
         self._begin("start", f"starting {self._target_label}.")
+        self._started = True
         return Attempt(switched=True)
 
     # ------------------------------------------------------------------
@@ -1009,7 +1045,7 @@ class CheckoutUpdater:
                 self._release_go_back()
             message = f"Updated to {self._target_label}."
         self._switched = False
-        self._restored = False
+        self._restored = self._started = False
         self._finish("updated", message, [], "updated")
 
     # ------------------------------------------------------------------
