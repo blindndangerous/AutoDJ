@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installIndexMarkup as installIndex } from "./helpers.js";
 
 import {
-  checkWords, installationWords, installUpdates, RESTART_WAIT_MS,
+  checkWords, installationWords, installUpdates, notesWords, RESTART_WAIT_MS,
 } from "../../src/autodj/static/modules/updates.js";
 
 // The real Settings markup, so the ids, labels and live region the module
@@ -27,7 +27,7 @@ function view(overrides = {}) {
       status: "available", channel: "development", channel_source: "installation",
       message: "master has new commits, up to 1234567.", latest: "1234567", target: "master",
       checked_at: null,
-      notes_url: "https://github.com/blindndangerous/AutoDJ/blob/master/CHANGELOG.md",
+      notes_url: "https://github.com/blindndangerous/AutoDJ/compare/0db0a92...master",
     },
     commands: ["git fetch origin", "git switch master", "git merge --ff-only origin/master",
       "./autodj setup", "./autodj doctor --no-fix"],
@@ -141,6 +141,18 @@ describe("Updates words", () => {
       "AutoDJ 0.21.0, commit abcdef1, release tag v0.21.0.  Channel: Stable, chosen in Update settings.",
     );
     expect(checkWords(view({ check: null }))).toBe("Not checked yet.");
+  });
+
+  // ADR-0016-09
+  it("names the release notes of a tag and the changes on master since this version", () => {
+    expect(notesWords({ target: "v0.22.0",
+      notes_url: "https://github.com/blindndangerous/AutoDJ/releases/tag/v0.22.0" }))
+      .toBe("Release notes for v0.22.0");
+    expect(notesWords(view().check)).toBe("Changes on master since this version");
+    expect(notesWords({ target: "master",
+      notes_url: "https://github.com/blindndangerous/AutoDJ/commits/master" }))
+      .toBe("Recent changes on master");
+    expect(notesWords({ target: null, notes_url: null })).toBe("");
   });
 });
 

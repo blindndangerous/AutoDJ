@@ -515,7 +515,8 @@ class UpdateCheck:
     - ``current``: this is the latest version on its channel;
     - ``available``: a newer one exists, named by ``latest`` (and ``target``,
       what an update would switch to: a tag, or ``master``), with
-      ``notes_url`` linking its release notes;
+      ``notes_url`` linking its release notes (for ``master``, the commits
+      since this one);
     - ``ahead``: this is newer than the latest release, or has commits
       ``master`` does not have yet;
     - ``branch``: a checkout on a branch other than ``master``, which no
@@ -539,12 +540,20 @@ class UpdateCheck:
         return asdict(self)
 
 
-def release_notes_url(target: str | None) -> str | None:
-    """The GitHub release page of a tag, or the changelog on ``master``; else ``None``."""
+def release_notes_url(target: str | None, commit: str | None = None) -> str | None:
+    """Where to read what an update brings; ``None`` when there is no target.
+
+    A tag links its GitHub release page.  ``master`` links GitHub's compare
+    view from *commit* (this installation's full commit) to ``master``: the
+    changelog's Unreleased section stays empty between releases, so it would
+    say nothing.  Without a full commit, it links ``master``'s commit list.
+    """
     if target is not None and TAG_PATTERN.fullmatch(target):
         return f"{REPOSITORY_URL}/releases/tag/{target}"
     if target == DEVELOPMENT_BRANCH:
-        return f"{REPOSITORY_URL}/blob/{DEVELOPMENT_BRANCH}/CHANGELOG.md"
+        if commit is not None and _SHA_PATTERN.fullmatch(commit.lower()):
+            return f"{REPOSITORY_URL}/compare/{commit.lower()}...{DEVELOPMENT_BRANCH}"
+        return f"{REPOSITORY_URL}/commits/{DEVELOPMENT_BRANCH}"
     return None
 
 
@@ -814,7 +823,7 @@ def check_for_update(
         latest=latest,
         target=target,
         checked_at=clock(),
-        notes_url=release_notes_url(target),
+        notes_url=release_notes_url(target, installation.commit),
     )
 
 

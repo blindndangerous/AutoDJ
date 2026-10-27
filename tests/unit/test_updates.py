@@ -520,7 +520,20 @@ def test_an_available_release_links_its_release_notes(tmp_path: Path) -> None:
     development = updates.check_for_update(
         _git_checkout(tmp_path), UpdateSettings(), runner=_ls_remote(master=MASTER_SHA)
     )
-    assert development.notes_url == updates.REPOSITORY_URL + "/blob/master/CHANGELOG.md"
+    # The changelog's Unreleased section stays empty between releases, so
+    # development links the commits between this one and master.
+    assert development.notes_url == (f"{updates.REPOSITORY_URL}/compare/{LOCAL_SHA}...master")
+    unknown = updates.check_for_update(
+        _git_checkout(tmp_path, commit=None), UpdateSettings(), runner=_ls_remote()
+    )
+    assert unknown.status == "unknown"
+    assert updates.release_notes_url("master", None) == updates.REPOSITORY_URL + "/commits/master"
+    assert updates.release_notes_url("master", "abc1234") == (
+        updates.REPOSITORY_URL + "/commits/master"
+    )
+    assert (
+        updates.release_notes_url("master", "x" * 40) == updates.REPOSITORY_URL + "/commits/master"
+    )
     assert updates.release_notes_url(None) is None
     assert updates.release_notes_url("v0.21.0; rm -rf /") is None
 

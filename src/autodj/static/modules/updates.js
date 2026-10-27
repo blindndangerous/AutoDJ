@@ -65,12 +65,15 @@ function commandsNote(view) {
     + "on Windows use .\\autodj.cmd in place of ./autodj.";
 }
 
-// The link text for the release notes: a release's page, or master's changelog.
-function notesWords(check) {
+// The link text for the release notes: a release's page, or for master the
+// commits since this version (GitHub's compare view), or master's commits
+// when this version's commit is not known.
+export function notesWords(check) {
   if (!check?.notes_url) return "";
-  return check.target && check.target.startsWith("v")
-    ? `Release notes for ${check.target}`
-    : "Changes on master, in the changelog";
+  if (check.target && check.target.startsWith("v")) return `Release notes for ${check.target}`;
+  return check.notes_url.includes("/compare/")
+    ? "Changes on master since this version"
+    : "Recent changes on master";
 }
 
 // The result line: the server's own sentence, and when it was checked.
