@@ -26,7 +26,13 @@ from urllib.parse import urlencode
 
 import pytest
 
-from autodj.config import PlayerPageConfig, RequestsConfig, ServerConfig, TimeChecksConfig
+from autodj.config import (
+    PlayerPageConfig,
+    RequestsConfig,
+    ServerConfig,
+    StationConfig,
+    TimeChecksConfig,
+)
 from autodj.live_protocol import IcecastSourceH11Protocol
 from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.server import PlayerBridge
@@ -2386,6 +2392,7 @@ class TestServeFunction:
                 playback=SimpleNamespace(stereotool_preset="included"),
                 requests=RequestsConfig(enabled=True),
                 player_page=PlayerPageConfig(enabled=True),
+                station=StationConfig(output="stream"),
             ),
         )
         captured = self._serve_capturing_player(tmp_path, stations=(spec,), no_playback=True)

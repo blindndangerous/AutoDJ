@@ -538,6 +538,7 @@ def _station_settings_values(station: Any, request: Request) -> dict[str, dict[s
                 "output": configuration.station.output,
                 "server_audio_too": configuration.station.server_audio_too,
                 "liner_upload_max_mib": configuration.station.liner_upload_max_mib,
+                "log_label": configuration.station.log_label,
             },
             "time": {
                 "timezone": configuration.station.timezone or system_timezone(),
@@ -1599,11 +1600,29 @@ def install_station_routes(router: StationRouter) -> None:
                         raise HTTPException(status_code=400, detail=detail) from exc
                     parsed[name] = value
                 elif name == "station":
-                    allowed = {"output", "server_audio_too", "liner_upload_max_mib"}
+                    allowed = {"output", "server_audio_too", "liner_upload_max_mib", "log_label"}
                     if not value or value.keys() - allowed:
                         raise HTTPException(
                             status_code=400, detail="Choose a station option to change"
                         )
+                    if "log_label" in value:
+                        from autodj.config import LOG_LABEL_RULE, check_log_label
+
+                        try:
+                            label = check_log_label(value["log_label"])
+                        except (TypeError, ValueError):
+                            problem = (
+                                f"Log label must be {LOG_LABEL_RULE}. "
+                                "Leave it empty to use the station ID."
+                            )
+                        else:
+                            value = {**value, "log_label": label}
+                            problem = registry.log_label_problem(slug, label)
+                        if problem is not None:
+                            return JSONResponse(
+                                status_code=400,
+                                content={"detail": problem, "field": "log_label"},
+                            )
                     from dataclasses import replace
 
                     try:

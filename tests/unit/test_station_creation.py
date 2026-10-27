@@ -149,6 +149,19 @@ def test_duplicate_without_flags_skips_assets(tmp_path: Path) -> None:
     assert {item.name for item in folder.iterdir()} == {"station.json"}
 
 
+def test_a_copy_does_not_take_the_sources_log_label(tmp_path: Path) -> None:
+    extra = (
+        '\n[stations.nightowl]\n[stations.nightowl.stream]\nstation_name = "Night Owl Radio"\n'
+        '[stations.nightowl.recording]\nfolder = "recordings/nightowl"\n'
+        '[stations.nightowl.station]\nlog_label = "nor"\ntimezone = "UTC"\n'
+    )
+    cfg = _root(tmp_path, extra)
+    table = duplicate_table(cfg, "nightowl", "new", "New", False)
+    assert "log_label" not in table["station"]
+    assert table["station"]["timezone"] == "UTC"
+    assert _build_station("new", table, cfg).cfg.station.log_label == ""
+
+
 def test_station_json_wins_and_bad_definitions_are_reported(tmp_path: Path) -> None:
     cfg = _root(
         tmp_path,

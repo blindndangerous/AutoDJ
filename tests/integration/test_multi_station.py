@@ -10,6 +10,7 @@ nothing outside the test process runs.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -31,6 +32,7 @@ from autodj.dmca import complement
 from autodj.library import LibraryManager
 from autodj.repeat_rules import TrackKeyCache
 from autodj.similarity import SimilarityIndex
+from autodj.station_log import CURRENT_STATION, set_log_labels
 from autodj.stream import Listener
 from tests.integration._helpers import patch_station_settings
 from tests.unit._fakes import FakeEncoder
@@ -217,6 +219,7 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fixture
     )
     with TestClient(app, client=("192.0.2.4", 50000)) as client:
         yield client, library, cfg, song, closes
+    set_log_labels({})  # a label saved here must not prefix another test's lines
     _wait_for_new_threads_to_end("default", already, "the default station's threads to end")
     _wait_for_new_threads_to_end("nightowl", already, "Night Owl's threads to end")
     assert closes == ["closed"]  # once, after both players were quiet
@@ -381,6 +384,34 @@ def test_create_checks_recording_conflict_and_station_limit(rig: Any) -> None:
     response = client.post("/api/stations", json=body, headers={"Origin": "http://testserver"})
     assert response.status_code == 409
     assert "At most 8" in response.json()["detail"]
+
+
+def test_create_keeps_log_labels_apart(rig: Any) -> None:
+    client, _library, cfg, _song, _closes = rig
+    headers = {"Origin": "http://testserver"}
+    for base, label in ((OWL, "nor"), ("/api", "main")):
+        saved = patch_station_settings(
+            client, {"station": {"log_label": label}}, base=base, headers=headers
+        )
+        assert saved.status_code == 200, saved.text
+    for slug, owner in (("nor", "nightowl"), ("main", "default")):
+        refused = client.post(
+            "/api/stations", json={"slug": slug, "name": f"{slug} Radio"}, headers=headers
+        )
+        assert refused.status_code == 409
+        assert refused.json()["detail"].startswith(
+            f"Station ID {slug} is the log label of station {owner}."
+        )
+        assert not (cfg.index.stations_dir / slug).exists()
+    # A copy of a labelled station starts without the label, logging as its ID.
+    copied = client.post(
+        "/api/stations",
+        json={"slug": "new", "name": "New Radio", "source": "nightowl"},
+        headers=headers,
+    )
+    assert copied.status_code == 201, copied.text
+    assert client.app.state.stations.configuration("new").station.log_label == ""
+    assert client.get("/api/stations/new/station-settings").json()["log_label"] == ""
 
 
 def test_duplicate_copies_active_clock_setting(rig: Any) -> None:
@@ -646,6 +677,7 @@ def test_stopped_station_time_and_output_settings_round_trip(rig: Any) -> None:
     station_values = output_response.json()["settings"]["values"]["station"]
     assert station_values == {
         "liner_upload_max_mib": 12,
+        "log_label": "",
         "output": "stream",
         "server_audio_too": True,
     }
@@ -668,6 +700,87 @@ def test_stopped_station_time_and_output_settings_round_trip(rig: Any) -> None:
         assert definition.read_bytes() == unchanged
 
     timefmt.time_format = original_format
+
+
+def test_a_log_label_saves_and_applies_without_a_restart(
+    rig: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, _library, cfg, *_ = rig
+    headers = {"Origin": "http://testserver"}
+    registry = client.app.state.stations
+    definition = registry._extras["nightowl"].paths.definition
+    owl = registry.get("nightowl")
+
+    saved = patch_station_settings(
+        client, {"station": {"log_label": "nor"}}, base=OWL, headers=headers
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["settings"]["values"]["station"]["log_label"] == "nor"
+    assert client.get(f"{OWL}/station-settings").json()["log_label"] == "nor"
+    document = json.loads(definition.read_text(encoding="utf-8"))
+    assert document["station"]["station"]["log_label"] == "nor"
+    assert load_config(cfg.config_path, environ={}).stations[0].cfg.station.log_label == "nor"
+
+    def station_line() -> logging.LogRecord:
+        """A line the running station logs now, from its own context."""
+        caplog.clear()
+
+        def emit() -> None:
+            CURRENT_STATION.set("nightowl")
+            logging.getLogger("autodj.player").warning("Stream station tick failed")
+
+        with caplog.at_level(logging.WARNING, logger="autodj.player"):
+            contextvars.Context().run(emit)
+        return caplog.records[-1]
+
+    line = station_line()
+    assert line.getMessage() == "[nor] Stream station tick failed"
+    assert line.station == "nightowl"
+    # The same running station: no restart, and its threads keep the slug.
+    assert registry.get("nightowl") is owl
+    assert _station_threads("nightowl")
+
+    cleared = patch_station_settings(
+        client, {"station": {"log_label": ""}}, base=OWL, headers=headers
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert station_line().getMessage() == "[nightowl] Stream station tick failed"
+
+
+def test_a_log_label_is_refused_when_unsafe_or_ambiguous(rig: Any) -> None:
+    client, *_ = rig
+    headers = {"Origin": "http://testserver"}
+    registry = client.app.state.stations
+    owl_definition = registry._extras["nightowl"].paths.definition
+    default_definition = registry._extras["default"].paths.definition
+    assert (
+        patch_station_settings(
+            client, {"station": {"log_label": "nor"}}, base=OWL, headers=headers
+        ).status_code
+        == 200
+    )
+    before = (owl_definition.read_bytes(), default_definition.read_bytes())
+    cases = [
+        (OWL, "n o r", "letters, digits"),
+        (OWL, "[nor]", "letters, digits"),
+        (OWL, "nor\nfake line", "letters, digits"),
+        (OWL, "a" * 17, "1 to 16"),
+        ("/api", "NOR", "already used by station nightowl"),
+        ("/api", "nightowl", "ID of station nightowl"),
+        (OWL, "default", "ID of station default"),
+    ]
+    for base, label, reason in cases:
+        response = patch_station_settings(
+            client, {"station": {"log_label": label}}, base=base, headers=headers
+        )
+        assert response.status_code == 400, (label, response.text)
+        body = response.json()
+        assert body["field"] == "log_label"
+        assert body["detail"].startswith("Log label")
+        assert reason in body["detail"]
+        assert (owl_definition.read_bytes(), default_definition.read_bytes()) == before
+    assert registry.configuration("nightowl").station.log_label == "nor"
+    assert registry.configuration("default").station.log_label == ""
 
 
 def test_public_settings_save_live_and_while_stopped(rig: Any) -> None:

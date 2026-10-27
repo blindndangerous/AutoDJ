@@ -144,6 +144,7 @@ from autodj.station_log import (
     CURRENT_STATION,
     DEFAULT_SLUG,
     install_log_prefix,
+    set_log_labels,
     station_thread,
 )
 from autodj.station_name import listener_name
@@ -1003,6 +1004,7 @@ def create_app(
     cfg = services.cfg
     shared = services
     stations = StationRegistry(default_station, extra_stations)
+    set_log_labels(stations.log_labels())
     station_timezone = cfg.station.timezone or system_timezone()
     station_create_lock = asyncio.Lock()
     stations.stop_timeout_s = _SHUTDOWN_TIMEOUT_S
@@ -1982,6 +1984,14 @@ def create_app(
                 raise HTTPException(status_code=409, detail=f"Station {body.slug} already exists")
             if body.source is not None and body.source not in stations.slugs():
                 raise HTTPException(status_code=404, detail="The source station was not found")
+            # Saved labels, the default's included: the root's copy of it can be older.
+            for other, label in stations.log_labels().items():
+                if label.casefold() == body.slug:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Station ID {body.slug} is the log label of station {other}. "
+                        "Choose another ID, or change that station's log label first.",
+                    )
             if len(root.stations) >= MAX_STATIONS:
                 raise HTTPException(
                     status_code=409, detail=f"At most {MAX_STATIONS} other stations are allowed"
