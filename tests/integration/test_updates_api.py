@@ -436,7 +436,7 @@ def test_update_is_rate_limited_in_its_own_file(
     again = _updatable(tmp_path, monkeypatch)
     refused = again.post("/api/server/update", json={})
     assert refused.status_code == 429
-    assert refused.json()["detail"].startswith("AutoDJ updated a moment ago.")
+    assert refused.json()["detail"].startswith("AutoDJ was updated less than a minute ago.")
     again.app.state.server_exit.assert_not_called()
     (tmp_path / "logs" / "update-requests.json").write_text("not json", encoding="utf-8")
     third = _updatable(tmp_path, monkeypatch)
@@ -681,15 +681,15 @@ def test_only_one_of_restart_and_update_is_ever_accepted(
     client = _updatable(tmp_path, monkeypatch)
     inside = threading.Event()
     release = threading.Event()
-    real_take = updates_api.RestartLimiter.take
+    real_take = updates_api.RestartLimiter.take_or_refuse
 
-    def slow_take(self: updates_api.RestartLimiter) -> int | None:
+    def slow_take(self: updates_api.RestartLimiter) -> tuple[int, str] | None:
         if self._action == "restart":
             inside.set()
             release.wait(5)
         return real_take(self)
 
-    monkeypatch.setattr(updates_api.RestartLimiter, "take", slow_take)
+    monkeypatch.setattr(updates_api.RestartLimiter, "take_or_refuse", slow_take)
     answers: list[int] = []
     with client:
         restart = threading.Thread(
@@ -732,3 +732,36 @@ def test_go_back_moved_by_hand_is_explained(
     assert offer["available"] is False
     assert offer["message"] == reason
     assert client.post("/api/server/go-back", json={}).status_code == 409
+
+
+def test_a_refusal_says_which_limit_applied_and_a_long_wait_in_minutes(tmp_path: Path) -> None:
+    """ADR-0016-06, ADR-0016-18: the minute or the hour, never "1884 seconds"."""
+    now = [10_000.0]
+    restarts = updates_api.RestartLimiter(lambda: tmp_path / "r.json", clock=lambda: now[0])
+    updates_ = updates_api.RestartLimiter(
+        lambda: tmp_path / "u.json", clock=lambda: now[0], action="update"
+    )
+    assert restarts.take_or_refuse() is None
+    assert updates_.take_or_refuse() is None
+    now[0] += 20
+    assert restarts.take_or_refuse() == (
+        40,
+        "AutoDJ restarted less than a minute ago. Try again in 40 seconds.",
+    )
+    assert updates_.take_or_refuse() == (
+        40,
+        "AutoDJ was updated less than a minute ago. Try again in 40 seconds.",
+    )
+    for _ in range(updates_api.RESTART_MAX_PER_HOUR - 1):
+        now[0] += updates_api.RESTART_MIN_INTERVAL_SECONDS
+        assert updates_.take_or_refuse() is None
+    now[0] += 1884 - 3600 + 5 * updates_api.RESTART_MIN_INTERVAL_SECONDS + 60
+    wait, said = updates_.take_or_refuse() or (0, "")
+    assert wait >= 120
+    assert said == (
+        f"AutoDJ was already updated {updates_api.RESTART_MAX_PER_HOUR} times in the last hour. "
+        f"Try again in about {round(wait / 60)} minutes."
+    )
+    assert updates_api.wait_words(119) == "119 seconds"
+    assert updates_api.wait_words(1884) == "about 31 minutes"
+    assert updates_api.wait_words(1) == "1 second"

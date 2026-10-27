@@ -2825,6 +2825,8 @@
     <!-- While an update runs: how long AutoDJ has been away, quietly. -->
     <p id="updates-progress" aria-live="off" hidden></p>
     <button type="button" id="updates-reload" hidden>Load the new version of this page</button>
+    <!-- Why the last Update or Go back was refused, until the next action. -->
+    <p id="updates-update-refused" aria-live="off" hidden></p>
     <!-- Shown on the Stable channel when the updater kept the backup of the
          release it moved this installation to Development from. -->
     <div id="updates-go-back" hidden>
@@ -2865,6 +2867,7 @@
     <h4>Restart</h4>
     <p id="updates-restart-note" class="setting-desc"></p>
     <button type="button" id="updates-restart" hidden>Restart AutoDJ</button>
+    <p id="updates-restart-refused" aria-live="off" hidden></p>
   </div>
 
   </section>

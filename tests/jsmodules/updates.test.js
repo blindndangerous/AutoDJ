@@ -105,7 +105,7 @@ function install({
   });
   const reload = vi.fn();
   installUpdates({
-    request, confirm, probe, reload,
+    request, confirm, probe, reload, settle: async () => {},
     sleep: async (ms) => { clock += ms + stepMs; },
     now: () => clock,
   });
@@ -357,13 +357,17 @@ describe("Updates panel", () => {
 
   it("says why a refused restart did not happen", async () => {
     const { state } = install();
-    state.refuse = "AutoDJ restarted a moment ago. Try again in 40 seconds.";
+    state.refuse = "AutoDJ restarted less than a minute ago. Try again in 40 seconds.";
     open();
     await vi.waitFor(() => expect(byId("updates-restart").hidden).toBe(false));
     byId("updates-restart").click();
-    expect(await said()).toBe(
-      "Could not restart AutoDJ: AutoDJ restarted a moment ago. Try again in 40 seconds.",
-    );
+    const words = "Could not restart AutoDJ: AutoDJ restarted less than a minute ago. "
+      + "Try again in 40 seconds.";
+    expect(await said()).toBe(words);
+    // It stays readable beside Restart until the next action.
+    expect(byId("updates-restart-refused").hidden).toBe(false);
+    expect(byId("updates-restart-refused").textContent).toBe(words);
+    expect(byId("updates-restart-refused").getAttribute("aria-live")).toBe("off");
   });
 
   it("says so when AutoDJ does not come back", async () => {
@@ -431,15 +435,25 @@ describe("Update and Go back", () => {
     expect(byId("updates-commands").getAttribute("aria-labelledby")).toBe("updates-how-heading");
   });
 
-  it("says why a refused update did not happen", async () => {
+  // ADR-0016-21
+  it("says why a refused update did not happen, and keeps it readable", async () => {
     const { state } = install({ initial: view({ check: RELEASE }) });
-    state.refuse = "AutoDJ updated a moment ago. Try again in 40 seconds.";
+    state.refuse = "AutoDJ was already updated 6 times in the last hour. "
+      + "Try again in about 32 minutes.";
     open();
     await vi.waitFor(() => expect(byId("updates-update").hidden).toBe(false));
     byId("updates-update").click();
-    expect(await said()).toBe(
-      "Could not update AutoDJ: AutoDJ updated a moment ago. Try again in 40 seconds.",
-    );
+    const words = "Could not update AutoDJ: AutoDJ was already updated 6 times in the last hour. "
+      + "Try again in about 32 minutes.";
+    expect(await said()).toBe(words);
+    // It stays readable under Update until the next action.
+    const note = byId("updates-update-refused");
+    expect(note.hidden).toBe(false);
+    expect(note.textContent).toBe(words);
+    expect(note.getAttribute("aria-live")).toBe("off");
+    byId("updates-check").click();
+    expect(note.hidden).toBe(true);
+    expect(note.textContent).toBe("");
   });
 
   // ADR-0016-21

@@ -32,6 +32,10 @@ export const RESTART_WAIT_MS = 180000;
 // three hours.  The page waits that long, saying quietly how long so far.
 export const UPDATE_WAIT_MS = 3 * 3600000;
 const MINUTE_MS = 60000;
+// After a confirmation closes, focus moves back to its button; a live-region
+// change in the same moment can be lost in NVDA's focus speech.  What is said
+// right after the dialog waits this long first.
+const SETTLE_MS = 300;
 // After AutoDJ is back, how long the page waits for the updater's result.
 const RESULT_WAIT_MS = 60000;
 // A server that answers this long after Restart without ever having been
@@ -112,6 +116,7 @@ export function installUpdates({
   sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
   now = () => Date.now(),
   reload = () => globalThis.location.reload(),
+  settle = () => new Promise((resolve) => { setTimeout(resolve, SETTLE_MS); }),
 } = {}) {
   const get = (id) => doc.getElementById(id);
   const panel = get("spanel-updates");
@@ -140,10 +145,12 @@ export function installUpdates({
   const commands = get("updates-commands");
   const progress = get("updates-progress");
   const reloadButton = get("updates-reload");
+  const updateRefused = get("updates-update-refused");
+  const restartRefused = get("updates-restart-refused");
   const parts = [panel, status, current, latest, check, enabled, channel, automatic, save,
     restartNote, restartButton, notes, notesLink, updateButton, installNote, installWords,
     guideLink, goBack, goBackNote, goBackButton, last, result, how, commands, progress,
-    reloadButton];
+    reloadButton, updateRefused, restartRefused];
   if (parts.some((part) => !part)) return { load: async () => false };
 
   let view = null;
@@ -152,6 +159,21 @@ export function installUpdates({
   const say = (message, tone = "info") => {
     announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 6000 : 4000, tone });
   };
+
+  // A refusal stays readable in the panel until the next action, besides
+  // being said once.
+  function refuse(note, message) {
+    note.textContent = message;
+    note.hidden = false;
+    say(message, "error");
+  }
+
+  function clearRefusals() {
+    for (const note of [updateRefused, restartRefused]) {
+      note.textContent = "";
+      note.hidden = true;
+    }
+  }
 
   function showLast(next) {
     const done = next.last_update;
@@ -340,8 +362,9 @@ export function installUpdates({
       },
     });
     if (!confirmed) return;
+    await settle();
     if (refused) {
-      say(`${refusedWords}: ${refused}`, "error");
+      refuse(updateRefused, `${refusedWords}: ${refused}`);
       return;
     }
     say(away);
@@ -424,8 +447,9 @@ export function installUpdates({
       },
     });
     if (!confirmed) return;
+    await settle();
     if (refused) {
-      say(refused, "error");
+      refuse(restartRefused, refused);
       return;
     }
     say("AutoDJ is restarting.  The stream is off the air until it is back.");
@@ -437,11 +461,16 @@ export function installUpdates({
     }
   }
 
-  check.addEventListener("click", () => void withDisabled(check, checkNow));
-  save.addEventListener("click", () => void withDisabled(save, saveSettings));
-  updateButton.addEventListener("click", () => void withDisabled(updateButton, update));
-  goBackButton.addEventListener("click", () => void withDisabled(goBackButton, goBackNow));
-  restartButton.addEventListener("click", () => void withDisabled(restartButton, restart));
+  // Every action starts by clearing the last refusal.
+  const act = (button, action) => () => {
+    clearRefusals();
+    void withDisabled(button, action);
+  };
+  check.addEventListener("click", act(check, checkNow));
+  save.addEventListener("click", act(save, saveSettings));
+  updateButton.addEventListener("click", act(updateButton, update));
+  goBackButton.addEventListener("click", act(goBackButton, goBackNow));
+  restartButton.addEventListener("click", act(restartButton, restart));
   reloadButton.addEventListener("click", () => reload());
   panel.addEventListener("toggle", () => {
     if (panel.open) void load();

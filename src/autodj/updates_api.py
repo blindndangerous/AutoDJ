@@ -108,6 +108,26 @@ class EmptyBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def wait_words(seconds: int) -> str:
+    """How long to wait, as the page says it: seconds below 2 minutes, then about N minutes."""
+    if seconds < 120:
+        return seconds_text(seconds)
+    return f"about {round(seconds / 60)} minutes"
+
+
+#: Which limit refused it, per action: the one-a-minute or the hourly limit.
+LIMIT_WORDS = {
+    "restart": (
+        "AutoDJ restarted less than a minute ago.",
+        f"AutoDJ has already restarted {RESTART_MAX_PER_HOUR} times in the last hour.",
+    ),
+    "update": (
+        "AutoDJ was updated less than a minute ago.",
+        f"AutoDJ was already updated {RESTART_MAX_PER_HOUR} times in the last hour.",
+    ),
+}
+
+
 class LimitUnavailable(Exception):
     """The restart count could not be saved, so a restart is refused."""
 
@@ -169,18 +189,34 @@ class RestartLimiter:
             LimitUnavailable: The count could not be read or saved; its
                 message says which file and what to do.
         """
+        refused = self.take_or_refuse()
+        return None if refused is None else refused[0]
+
+    def take_or_refuse(self) -> tuple[int, str] | None:
+        """Count one now; or the seconds to wait and the sentence the page says.
+
+        The sentence names the limit that applied, the minute or the hour,
+        and gives a wait of 2 minutes or more in minutes.
+
+        Raises:
+            LimitUnavailable: The count could not be read or saved.
+        """
         from autodj.fsutil import atomic_write
 
         with self._lock:
             now = self._clock()
             recent = self._recent(now)
-            wait = 0.0
+            minute = hour = 0.0
             if recent:
-                wait = max(wait, recent[-1] + RESTART_MIN_INTERVAL_SECONDS - now)
+                minute = recent[-1] + RESTART_MIN_INTERVAL_SECONDS - now
             if len(recent) >= RESTART_MAX_PER_HOUR:
-                wait = max(wait, recent[-RESTART_MAX_PER_HOUR] + 3600.0 - now)
+                hour = recent[-RESTART_MAX_PER_HOUR] + 3600.0 - now
+            wait = max(minute, hour)
             if wait > 0:
-                return max(1, int(wait + 0.999))
+                seconds = max(1, int(wait + 0.999))
+                recently, hourly = LIMIT_WORDS.get(self._action, LIMIT_WORDS["restart"])
+                said = hourly if hour >= minute else recently
+                return seconds, f"{said} Try again in {wait_words(seconds)}."
             recent.append(now)
             try:
                 atomic_write(self._path(), json.dumps(recent[-RESTART_MAX_PER_HOUR:]))
@@ -408,7 +444,7 @@ def install_updates(
             wait = int(CHECK_INTERVAL_SECONDS - (now - last_check[0]) + 0.999)
             audit(request, "update-check", "rejected", route, 429)
             return JSONResponse(
-                {"detail": f"AutoDJ checked a moment ago. Try again in {seconds_text(wait)}."},
+                {"detail": f"AutoDJ checked a moment ago. Try again in {wait_words(wait)}."},
                 status_code=429,
                 headers={"Retry-After": str(wait)},
             )
@@ -457,18 +493,15 @@ def install_updates(
         accepted = False
         try:
             try:
-                wait = await asyncio.to_thread(limiter.take)
+                refused = await asyncio.to_thread(limiter.take_or_refuse)
             except LimitUnavailable as exc:
                 audit(request, "server-restart", "failed", route, 503)
                 raise HTTPException(status_code=503, detail=str(exc)) from None
-            if wait is not None:
+            if refused is not None:
+                wait, said = refused
                 audit(request, "server-restart", "rejected", route, 429)
                 return JSONResponse(
-                    {
-                        "detail": f"AutoDJ restarted a moment ago. Try again in {seconds_text(wait)}."
-                    },
-                    status_code=429,
-                    headers={"Retry-After": str(wait)},
+                    {"detail": said}, status_code=429, headers={"Retry-After": str(wait)}
                 )
             audit(request, "server-restart", "accepted", route, 202)
             logger.warning("Restart requested from the web page; AutoDJ is restarting.")
@@ -514,16 +547,15 @@ def install_updates(
                 audit(request, audited, "rejected", route, 409)
                 raise HTTPException(status_code=409, detail="This server cannot update itself.")
             try:
-                wait = await asyncio.to_thread(update_limiter.take)
+                refused = await asyncio.to_thread(update_limiter.take_or_refuse)
             except LimitUnavailable as exc:
                 audit(request, audited, "failed", route, 503)
                 raise HTTPException(status_code=503, detail=str(exc)) from None
-            if wait is not None:
+            if refused is not None:
+                wait, said = refused
                 audit(request, audited, "rejected", route, 429)
                 return JSONResponse(
-                    {"detail": f"AutoDJ updated a moment ago. Try again in {seconds_text(wait)}."},
-                    status_code=429,
-                    headers={"Retry-After": str(wait)},
+                    {"detail": said}, status_code=429, headers={"Retry-After": str(wait)}
                 )
             update_id = secrets.token_hex(8)
             record = {
