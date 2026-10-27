@@ -277,7 +277,9 @@ The maintainer cuts releases from `master`. For version `X.Y.Z`:
 5. Tag and push the tag: `git tag vX.Y.Z`, then `git push origin vX.Y.Z`. The Release workflow
    reruns CI and the security scans, checks that the tag equals `uv version --short` and that
    `CHANGELOG.md` has a `## [X.Y.Z]` heading, smoke-installs the wheel, then publishes the signed
-   artifacts.
+   artifacts. The GitHub release's notes are that changelog section
+   (`scripts/release_notes.py vX.Y.Z` prints them), followed by GitHub's list of merged pull
+   requests. Settings, Updates links Stable users to that release page.
 
 The README install command uses `X.Y.Z` placeholders, so it needs no edit per release. Only
 v0.12.0, v0.16.0, v0.16.1, v0.18.0, v0.18.1, v0.18.2, v0.19.0, v0.19.1, v0.21.0, and v0.22.0 were tagged. The other versions from 0.1.0 through 0.15.0,
