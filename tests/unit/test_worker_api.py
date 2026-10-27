@@ -536,7 +536,7 @@ def test_changed_playable_song_accepts_only_pending_bytes(server, with_vector, r
     assert song["embed"] is True
     assert manager.catalog.record_for_path(path) == before
     measurements = scan_result()
-    measurements.update(length=3.0, dj=None)
+    measurements.update(length=3.0, dj=None, audio_analysis=None)
     measurements["points"] = {"start": 0.0, "end": 3.0, "intro": 0.5, "outro": 2.0, "segue": 2.5}
     body, vector = server.result(song, song["lease"], scan=measurements)
     if not with_vector:
@@ -757,7 +757,7 @@ def test_worker_scan_tag_duration_bounds(
     token, secret = server.token()
     reply = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY)
     song = reply.json()["songs"][0]
-    scan = {**scan_result(), "length": length, "dj": None}
+    scan = {**scan_result(), "length": length, "dj": None, "audio_analysis": None}
     body, _ = server.result(song, song["lease"], scan=scan)
     reply = server.call("POST", "/api/worker/result", secret, json=body)
     assert reply.status_code == (200 if accepted else 422), reply.text
@@ -905,6 +905,7 @@ def test_real_scan_analysis_round_trips_dj_and_optional_loudness(server, amplitu
         ("audio_analysis", {"features": [0.0] * 15}),
     ],
 )
+@pytest.mark.dj_analysis
 def test_worker_rejects_malformed_scan_result(server, field, value):
     """ADR-0008-07. Untrusted scan values cannot partially update the catalog."""
     _token, secret = server.token()
@@ -1114,7 +1115,7 @@ def test_pending_replacement_keeps_current_edits(server, monkeypatch, fallback, 
             if edit == "shorter_intro_only"
             else {"start": 0.0, "end": 180.0, "intro": 170.0},
         )
-        measurements.update(length=120.0, dj=None)
+        measurements.update(length=120.0, dj=None, audio_analysis=None)
         measurements["points"] = {
             "start": 1.0,
             "end": 119.0,
@@ -1229,6 +1230,7 @@ def test_pending_completion_preserves_only_edits_after_defer(
     )
     measurements = scan_result()
     measurements["dj"] = None
+    measurements["audio_analysis"] = None
     if fallback:
         entry = replace(make_entry(path), bpm=131.0, key=-1, mode=-1)
         monkeypatch.setattr(
@@ -1281,6 +1283,7 @@ def test_same_bytes_pending_completion_keeps_existing_edits(
             upgraded.close()
     measurements = scan_result()
     measurements["dj"] = None
+    measurements["audio_analysis"] = None
     if fallback:
         monkeypatch.setattr(
             "autodj.library.analyze_basic",
