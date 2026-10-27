@@ -87,6 +87,7 @@ approval = "auto"
 enabled = true
 embed = true
 embed_origins = ["https://nightowl.example"]
+{extra}
 """
 
 
@@ -118,6 +119,7 @@ def _write_config(tmp_path: Path, **values: str) -> Path:
         "owl_processing": "smooth",
         "autostart": "true",
         "server_extra": "",
+        "extra": "",
         **values,
     }
     local = settings.pop("local", None)
@@ -768,6 +770,8 @@ def test_a_log_label_is_refused_when_unsafe_or_ambiguous(rig: Any) -> None:
         ("/api", "NOR", "already used by station nightowl"),
         ("/api", "nightowl", "ID of station nightowl"),
         (OWL, "default", "ID of station default"),
+        # Not text: the field error, not a server error.
+        (OWL, 7, "letters, digits"),
     ]
     for base, label, reason in cases:
         response = patch_station_settings(
@@ -781,6 +785,123 @@ def test_a_log_label_is_refused_when_unsafe_or_ambiguous(rig: Any) -> None:
         assert (owl_definition.read_bytes(), default_definition.read_bytes()) == before
     assert registry.configuration("nightowl").station.log_label == "nor"
     assert registry.configuration("default").station.log_label == ""
+
+
+def _station_line(caplog: pytest.LogCaptureFixture, slug: str) -> str:
+    """The text of a line logged now in *slug*'s context."""
+    caplog.clear()
+
+    def emit() -> None:
+        CURRENT_STATION.set(slug)
+        logging.getLogger("autodj.player").warning("Stream station tick failed")
+
+    with caplog.at_level(logging.WARNING, logger="autodj.player"):
+        contextvars.Context().run(emit)
+    return caplog.records[-1].getMessage()
+
+
+SAVED_LABELS = {
+    "extra": '[station]\nlog_label = "abc"\n[stations.nightowl.station]\nlog_label = "nor"\n'
+}
+
+
+@pytest.mark.parametrize("rig", [SAVED_LABELS], indirect=True)
+def test_saved_log_labels_prefix_lines_from_startup(
+    rig: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, *_ = rig
+    registry = client.app.state.stations
+    assert registry.log_labels() == {"default": "abc", "nightowl": "nor"}
+    assert _station_line(caplog, "nightowl") == "[nor] Stream station tick failed"
+    assert _station_line(caplog, "default") == "[abc] Stream station tick failed"
+
+
+@pytest.mark.parametrize("rig", [SAVED_LABELS], indirect=True)
+def test_a_cleared_default_label_frees_the_id_for_a_new_station(rig: Any) -> None:
+    client, *_ = rig
+    headers = {"Origin": "http://testserver"}
+    body = {"slug": "abc", "name": "Another Radio"}
+    refused = client.post("/api/stations", json=body, headers=headers)
+    assert refused.status_code == 409
+    assert "log label of station default" in refused.json()["detail"]
+    cleared = patch_station_settings(
+        client, {"station": {"log_label": ""}}, base="/api", headers=headers
+    )
+    assert cleared.status_code == 200, cleared.text
+    # No restart: the check uses the saved label, not the label loaded at startup.
+    created = client.post("/api/stations", json=body, headers=headers)
+    assert created.status_code == 201, created.text
+
+
+def test_a_label_saved_while_a_station_is_created_cannot_take_its_id(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _library, cfg, *_ = rig
+    headers = {"Origin": "http://testserver"}
+    registry = client.app.state.stations
+    import autodj.station_creation as creation
+
+    real_stage = creation.stage_station
+
+    def stage_then_take_the_id(*args: Any, **kwargs: Any) -> Any:
+        staged = real_stage(*args, **kwargs)
+        # Another session saves a label while the new station is being staged.
+        registry.save_options("nightowl", {"log_label": "new"})
+        return staged
+
+    monkeypatch.setattr(creation, "stage_station", stage_then_take_the_id)
+    response = client.post(
+        "/api/stations", json={"slug": "new", "name": "New Radio"}, headers=headers
+    )
+    assert response.status_code == 409
+    assert "Station ID new is the log label of station nightowl" in response.json()["detail"]
+    assert "new" not in registry.slugs()
+    assert not (cfg.index.stations_dir / "new").exists()
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_a_stopped_stations_label_blocks_another_station(rig: Any) -> None:
+    client, *_ = rig
+    headers = {"Origin": "http://testserver"}
+    assert _stations(client)["nightowl"]["state"] == "stopped"
+    saved = patch_station_settings(
+        client, {"station": {"log_label": "nor"}}, base=OWL, headers=headers
+    )
+    assert saved.status_code == 200, saved.text
+    refused = patch_station_settings(
+        client, {"station": {"log_label": "nor"}}, base="/api", headers=headers
+    )
+    assert refused.status_code == 400
+    assert refused.json() == {
+        "detail": "Log label nor is already used by station nightowl. Each station needs "
+        "its own label so log lines show which station they came from.",
+        "field": "log_label",
+    }
+
+
+def test_a_failed_label_save_changes_nothing(
+    rig: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, *_ = rig
+    headers = {"Origin": "http://testserver"}
+    registry = client.app.state.stations
+    definition = registry._extras["nightowl"].paths.definition
+    before = definition.read_bytes()
+    station_before = registry.configuration("nightowl").station
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("autodj.fsutil.atomic_write", refuse)
+    response = patch_station_settings(
+        client, {"station": {"log_label": "nor"}}, base=OWL, headers=headers
+    )
+    assert response.status_code == 207, response.text
+    assert "disk full" in response.json()["failed"]["station"]
+    assert definition.read_bytes() == before
+    assert registry.configuration("nightowl").station is station_before
+    assert registry.get("nightowl").cfg.station.log_label == ""
+    assert _station_line(caplog, "nightowl") == "[nightowl] Stream station tick failed"
 
 
 def test_public_settings_save_live_and_while_stopped(rig: Any) -> None:

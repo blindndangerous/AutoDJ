@@ -3070,7 +3070,12 @@ def station_config(station: AutoDJConfig, root: AutoDJConfig) -> AutoDJConfig:
     )
 
 
-def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -> None:
+def _check_station_conflicts(
+    root: AutoDJConfig,
+    specs: Iterable[StationSpec],
+    *,
+    log_labels: Mapping[str, str] | None = None,
+) -> None:
     """Refuse two stations that share a recording folder, relay target or log label.
 
     A recorder deletes old recordings from its folder, so a shared folder
@@ -3078,6 +3083,13 @@ def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -
     one relay mount fight over it.  A log label that repeats another
     station's label or ID would make their log lines look alike.  Two
     stations with the same name are only warned about.
+
+    Args:
+        root: The default station's configuration and the shared sections.
+        specs: The other stations.
+        log_labels: Saved log labels by slug, when the configurations can be
+            older: a running server saves the default's label to its own
+            configuration, not to *root*.
 
     Raises:
         ValueError: Naming both stations.
@@ -3089,6 +3101,8 @@ def _check_station_conflicts(root: AutoDJConfig, specs: Iterable[StationSpec]) -
     earlier: dict[str, str] = {}
     for slug, cfg in stations:
         label = cfg.station.log_label
+        if log_labels is not None:
+            label = log_labels.get(slug, label)
         problems = (
             (slug, log_label_conflict(slug, label, earlier)),
             *(
