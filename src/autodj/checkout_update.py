@@ -1,49 +1,54 @@
 """Update a source checkout between two runs of ``serve``: the launcher's half of Update.
 
-Settings, Updates' Update button makes the server write a request into the
-hand-off record (:data:`autodj.updates.UPDATE_STATE`) and exit with
+Settings, Updates' Update button makes the server write ``request.json``
+(:mod:`autodj.update_contract`) into the launcher's update folder,
+``.uv/update`` in the checkout, and exit with
 :data:`autodj.updates.UPDATE_EXIT_CODE`.  While no server runs, the
 launcher's supervise loop (:func:`autodj.launcher.run_supervised`) asks a
 :class:`CheckoutUpdater` to follow the upgrade checklist:
 
-1. check again itself, for the channel the server follows, and refuse
-   anything but a newer version on that channel;
-2. refuse a checkout with any change (``git status --porcelain``);
-3. make a backup with ``autodj backup``;
-4. fetch, then switch: a release tag detached, or ``master``
+1. ``check``: check again itself, for the channel the server follows, and
+   refuse anything but a newer version on that channel, or a checkout with
+   any change (``git status --porcelain``);
+2. ``backup``: make a backup with ``autodj backup``;
+3. ``fetch``, then ``switch``: a release tag detached, or ``master``
    fast-forwarded to ``origin/master``;
-5. run the checkout's setup unattended (``setup --yes``), which reuses and
-   verifies the saved runtime without changing its packages;
-6. run Doctor read-only, and stop if the library needs a migration.
+4. ``setup``: run the checkout's setup unattended (``setup --yes``), which
+   reuses and verifies the saved runtime without changing its packages;
+5. ``migration-check``: run Doctor read-only, and stop if the library
+   needs a migration.
 
-The loop then starts the new server and :meth:`CheckoutUpdater.watch`
-waits for it to be healthy: still running, and answering ``GET /healthz``
-with 200 and ``"ok"`` within HEALTH_TIMEOUT_SECONDS.  Anything that fails
-after the switch puts the checkout back on the commit it was on, restores
-the runtime selection, runs setup for it, and starts the old version.  A
-stop signal puts the checkout back and stops.  The result goes into the
-hand-off record for the page.
+The loop then starts the new server (``start``) and
+:meth:`CheckoutUpdater.watch` waits for it to be healthy (``health``):
+still running, and answering ``GET /healthz`` with 200 and ``"ok"`` within
+HEALTH_TIMEOUT_SECONDS.  Anything that fails after the switch puts the
+checkout back on the commit it was on, restores the runtime selection,
+runs setup for it and starts the old version (``rollback``).  A stop
+signal puts the checkout back and stops.  Progress goes into
+``state.json`` and the outcome into ``result.json``.
 
-The request names only its id, the channel the server follows and where
-the server listens; the launcher validates each and works out the target
-itself.  Standard library only, like the launcher.
+Moving a stable release to development records ``go-back.json`` with that
+update's backup.  Go back (action ``go-back``) switches to that release
+again, runs its setup and restores that backup with ``autodj restore``,
+after a backup of the current data that a rollback restores.
+
+The request names only its id, its action, the channel the server follows
+and where the server listens; the launcher validates each and works out the
+target itself.  Standard library only, like the launcher.
 """
 
 from __future__ import annotations
 
 import contextlib
-import http.client
 import json
 import os
 import re
 import shlex
 import signal
-import ssl
 import subprocess  # nosec B404 -- fixed git and AutoDJ argv lists, never a shell
 import sys
 import time
 import tomllib
-import urllib.request
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,36 +59,32 @@ from typing import Any
 import autodj.child_jobs
 import autodj.fsutil
 import autodj.version
+from autodj import update_contract as contract
 from autodj import updates
+from autodj.update_contract import GoBack, HealthProbe, Request
 from autodj.updates import (
-    CHANNELS,
     CHECK_ENV,
     DEVELOPMENT_BRANCH,
-    FINAL_UPDATE_STATES,
     TAG_PATTERN,
-    HealthProbe,
     Installation,
     UpdateCheck,
     UpdateSettings,
-    parse_health_probe,
-    read_update_state,
-    update_state_path,
-    valid_update_id,
     version_key,
-    write_update_state,
 )
 
-#: Where the updater keeps the backups it makes, inside the ignored ``.uv``.
-BACKUPS = Path(".uv") / "update" / "backups"
+#: The launcher's update folder, inside the checkout's ignored ``.uv``.
+FOLDER = Path(".uv") / "update"
 #: Held while an update runs, so two launchers never update one checkout.
-LOCK = Path(".uv") / "update" / "lock"
+LOCK = "lock"
 #: The updater's own backups beyond this many, oldest first, are deleted.
+#: The one kept for Go back is not counted.
 KEEP_BACKUPS = 3
 #: A lock older than this is left over from a launcher that was killed.
 LOCK_STALE_SECONDS = 4 * 3600.0
 FETCH_TIMEOUT_SECONDS = 300.0
 GIT_TIMEOUT_SECONDS = 120.0
 BACKUP_TIMEOUT_SECONDS = 1800.0
+RESTORE_TIMEOUT_SECONDS = 1800.0
 SETUP_TIMEOUT_SECONDS = 1800.0
 DOCTOR_TIMEOUT_SECONDS = 600.0
 #: How long a new server has to answer ``/healthz`` before it is rolled back.
@@ -124,6 +125,8 @@ class _Previous:
 
     commit: str
     branch: str | None
+    tag: str | None
+    version: str
     setup_state: bytes | None
 
 
@@ -142,31 +145,6 @@ class _RollBack(_Refuse):
 
 class _Stop(Exception):
     """A stop signal arrived during the update."""
-
-
-def probe_health(probe: HealthProbe, timeout: float = 2.0) -> bool:
-    """Whether the server answers ``GET /healthz`` with 200 and ``"ok"``.
-
-    No proxy is used.  Over HTTPS the certificate is not checked: the probe
-    asks this computer (or the address the server is bound to), sends
-    nothing secret, and the certificate names the public host name.
-    """
-    handlers: list[urllib.request.BaseHandler] = [urllib.request.ProxyHandler({})]
-    if probe.scheme == "https":
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE  # nosec B501 -- local readiness probe, see above
-        handlers.append(urllib.request.HTTPSHandler(context=context))
-    opener = urllib.request.build_opener(*handlers)
-    request = urllib.request.Request(probe.url, headers={"Host": probe.host}, method="GET")
-    try:
-        with opener.open(request, timeout=timeout) as response:  # nosec B310 -- http(s) only
-            if response.status != 200:
-                return False
-            body = json.loads(response.read(4096).decode("utf-8"))
-    except (OSError, ValueError, http.client.HTTPException):
-        return False
-    return isinstance(body, dict) and body.get("status") == "ok"
 
 
 def _stop_process(process: subprocess.Popen[Any], grace: float = STOP_GRACE_SECONDS) -> None:
@@ -189,9 +167,10 @@ class CheckoutUpdater:
     """Update the checkout at *root* when ``serve`` asks, and roll back when it fails.
 
     *runtime* gives the selected runtime's command prefix (``python -m
-    autodj``) and environment; it is called again after setup.  *global_options*
-    are the options given before ``serve`` (``--config``), passed on to
-    backup and Doctor.  The rest are stand-ins for the tests.
+    autodj``) and environment; it is called again after setup.
+    *global_options* are the options given before ``serve`` (``--config``),
+    passed on to backup, restore and Doctor.  The rest are stand-ins for the
+    tests.
     """
 
     def __init__(
@@ -203,7 +182,7 @@ class CheckoutUpdater:
         run: Run | None = None,
         installation: Callable[[], Installation] | None = None,
         check: Callable[[Installation, UpdateSettings], UpdateCheck] | None = None,
-        probe: Callable[[HealthProbe], bool] = probe_health,
+        probe: Callable[[HealthProbe], bool] = contract.probe_health,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -212,6 +191,7 @@ class CheckoutUpdater:
     ) -> None:
         """See the class."""
         self.root = Path(root)
+        self.folder = self.root / FOLDER
         self.global_options = list(global_options)
         self._runtime = runtime
         self._run = run or self._spawn
@@ -223,19 +203,23 @@ class CheckoutUpdater:
         self._sleep = sleep
         self._setup_python = setup_python
         self._windows = windows
-        self.state_path = update_state_path(self.root)
         self._stopped: list[int] = []
         self._current: tuple[subprocess.Popen[str], int | None, bool] | None = None
         self._reset()
 
     def _reset(self) -> None:
         self._record: dict[str, Any] = {}
+        self._steps = contract.new_steps()
+        self._request: Request | None = None
         self._previous: _Previous | None = None
         self._switched = False
-        self._probe: HealthProbe | None = None
+        self._target = ""
         self._target_label = ""
         self._previous_label = ""
         self._backup: Path | None = None
+        self._backup_at = 0.0
+        self._restored = False
+        self._go_back: GoBack | None = None
         self._locked = False
         #: After :meth:`watch`: True when the new server was healthy, else None.
         self.started_ok: bool | None = None
@@ -296,7 +280,7 @@ class CheckoutUpdater:
         return subprocess.CompletedProcess(argv, process.returncode, stdout or "", stderr or "")
 
     def _step(self, argv: list[str], **options: Any) -> subprocess.CompletedProcess[str]:
-        """Run one step; a step that cannot start or times out answers exit status -1."""
+        """Run one command; one that cannot start or times out answers exit status -1."""
         try:
             return self._run(argv, **options)
         except subprocess.TimeoutExpired:
@@ -311,11 +295,8 @@ class CheckoutUpdater:
     def _git(
         self, *args: str, timeout: float = GIT_TIMEOUT_SECONDS, interruptible: bool = True
     ) -> subprocess.CompletedProcess[str]:
-        ssh = (
-            updates._batch_ssh_command(self.root, runner=self._runner)
-            if args[:1] == ("fetch",)
-            else None
-        )
+        fetching = args[:1] == ("fetch",)
+        ssh = updates._batch_ssh_command(self.root, runner=self._runner) if fetching else None
         return self._step(
             ["git", *args],
             timeout=timeout,
@@ -332,6 +313,9 @@ class CheckoutUpdater:
     def _head(self) -> str | None:
         return self._git_value("rev-parse", "--verify", "HEAD^{commit}")
 
+    def _tag_commit(self, tag: str) -> str | None:
+        return self._git_value("rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}")
+
     def _cli(self, *words: str) -> str:
         """A launcher command line for this computer, with the options given to ``serve``."""
         launcher = ".\\autodj.cmd" if self._windows else "./autodj"
@@ -340,24 +324,68 @@ class CheckoutUpdater:
         return f"{launcher} {quoted}".rstrip()
 
     # ------------------------------------------------------------------
-    # The record and the lock
+    # The contract files and the lock
     # ------------------------------------------------------------------
 
-    def _write(self, state: str, **fields: Any) -> None:
-        self._record.update(fields, state=state, updated_at=self._clock())
+    def _save(self, name: str, record: Mapping[str, Any]) -> None:
+        path = self.folder / name
         try:
-            write_update_state(self.state_path, self._record)
+            contract.write(path, record)
         except OSError as exc:
-            print(
-                f"AutoDJ: could not record the update in {self.state_path}: {exc}", file=sys.stderr
-            )
+            print(f"AutoDJ: could not write {path}: {exc}", file=sys.stderr)
 
-    def _progress(self, step: str, text: str) -> None:
+    def _mark(self, name: str, status: str) -> None:
+        for step in self._steps:
+            if step["name"] == name:
+                step["status"] = status
+
+    def _running(self) -> str | None:
+        return next((step["name"] for step in self._steps if step["status"] == "running"), None)
+
+    def _begin(self, name: str, text: str) -> None:
+        """Start step *name*: the one before it is done; progress goes into ``state.json``."""
+        running = self._running()
+        if running is not None:
+            self._mark(running, "done")
+        self._mark(name, "running")
         print(f"AutoDJ: update: {text}", file=sys.stderr)
-        self._write("running", step=step)
+        self._save(
+            contract.STATE,
+            {**self._record, "step": name, "steps": self._steps, "updated_at": self._clock()},
+        )
+
+    def _finish(self, outcome: str, message: str, commands: list[str], reason: str) -> None:
+        """Write ``result.json`` once, with every step that did not run as skipped."""
+        running = self._running()
+        if running is not None:
+            self._mark(running, "done" if outcome in {"updated", "rolled-back"} else "failed")
+        for step in self._steps:
+            if step["status"] == "pending":
+                step["status"] = "skipped"
+        print(f"AutoDJ: {message}", file=sys.stderr)
+        for command in commands:
+            print(f"  {command}", file=sys.stderr)
+        now = self._clock()
+        self._save(
+            contract.STATE,
+            {**self._record, "step": None, "steps": self._steps, "updated_at": now},
+        )
+        self._save(
+            contract.RESULT,
+            {
+                **self._record,
+                "outcome": outcome,
+                "reason": reason,
+                "message": message,
+                "commands": commands if outcome in contract.FAILURES else [],
+                "steps": self._steps,
+                "finished_at": now,
+            },
+        )
+        self._unlock()
 
     def _lock(self) -> None:
-        path = self.root / LOCK
+        path = self.folder / LOCK
         path.parent.mkdir(parents=True, exist_ok=True)
         for _attempt in range(2):
             try:
@@ -367,9 +395,7 @@ class CheckoutUpdater:
                     if self._clock() - path.stat().st_mtime > LOCK_STALE_SECONDS:
                         path.unlink()
                         continue
-                raise _Refuse(
-                    "Another AutoDJ launcher is updating this checkout, so this one did not."
-                ) from None
+                break
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 handle.write(f"{os.getpid()}\n")
             self._locked = True
@@ -379,7 +405,7 @@ class CheckoutUpdater:
     def _unlock(self) -> None:
         if self._locked:
             with contextlib.suppress(OSError):
-                (self.root / LOCK).unlink()
+                (self.folder / LOCK).unlink()
             self._locked = False
 
     # ------------------------------------------------------------------
@@ -405,16 +431,10 @@ class CheckoutUpdater:
     @contextlib.contextmanager
     def _signals(self) -> Iterator[None]:
         """Note stop signals instead of dying of them, so the checkout can be put back."""
-        names = (
-            ("SIGINT", "SIGBREAK")
-            if sys.platform == "win32"
-            else (
-                "SIGINT",
-                "SIGTERM",
-                "SIGHUP",
-                "SIGQUIT",
-            )
-        )
+        if sys.platform == "win32":
+            names: tuple[str, ...] = ("SIGINT", "SIGBREAK")
+        else:
+            names = ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT")
         previous: dict[int, Any] = {}
         for name in names:
             number = getattr(signal, name, None)
@@ -454,11 +474,14 @@ class CheckoutUpdater:
         short = commit[:7] if commit else "unknown"
         return f"{version}, commit {short}" + (f" on {branch}" if branch else "")
 
-    def _target(self, installation: Installation, result: UpdateCheck) -> str:
+    def _target_for(self, installation: Installation, result: UpdateCheck) -> str:
         target = result.target
         if result.status == "available" and target is not None:
             if TAG_PATTERN.fullmatch(target):
-                if version_key(target) <= version_key(installation.version):
+                mine, theirs = version_key(installation.version), version_key(target)
+                # The same version number only from a commit that release includes,
+                # which the switch step checks after fetching.
+                if theirs < mine or (theirs == mine and installation.tag is not None):
                     raise _Refuse(
                         f"{target} is not newer than the installed {installation.version}. "
                         + DOWNGRADE
@@ -466,17 +489,45 @@ class CheckoutUpdater:
                 return target
             if target == DEVELOPMENT_BRANCH:
                 return target
-        if result.status == "ahead":
+        if result.status in {"ahead", "waiting-for-release"}:
             raise _Refuse(f"{result.message} {DOWNGRADE}")
         if result.status == "current":
             raise _Refuse("AutoDJ is already the latest version on its channel.")
         raise _Refuse(result.message or "No update is available.")
 
+    def _clean_tree(self) -> None:
+        status = self._git("status", "--porcelain")
+        if status.returncode != 0:
+            raise _Refuse(
+                f"git could not read the checkout's status (exit status {status.returncode})."
+            )
+        if status.stdout.strip():
+            raise _Refuse(
+                "The AutoDJ folder has changes git does not know about, or files it does not "
+                "track, so AutoDJ did not update. Save them on a branch or move them out of "
+                "the folder, then try again. These commands list them and put them aside.",
+                [
+                    "git status --short",
+                    'git stash push --include-untracked -m "Before updating AutoDJ"',
+                ],
+            )
+
+    def _remember(self, installation: Installation) -> None:
+        setup_state = self.root / SETUP_STATE
+        self._previous = _Previous(
+            installation.commit or "",
+            installation.branch,
+            installation.tag,
+            installation.version,
+            setup_state.read_bytes() if setup_state.is_file() else None,
+        )
+
     def _backup_now(self, installation: Installation) -> None:
         base, environment = self._runtime()
-        folder = self.root / BACKUPS
+        folder = self.folder / contract.BACKUPS
         folder.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime(self._clock()))
+        self._backup_at = self._clock()
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime(self._backup_at))
         version = re.sub(r"[^0-9A-Za-z.]+", "-", installation.version)
         path = folder / f"autodj-update-{version}-{stamp}.zip"
         done = self._step(
@@ -515,11 +566,17 @@ class CheckoutUpdater:
     def _verify(self, installation: Installation, target: str) -> str:
         """The commit to switch to; refuses a target that would go back."""
         if TAG_PATTERN.fullmatch(target):
-            commit = self._git_value(
-                "rev-parse", "--verify", "--quiet", f"refs/tags/{target}^{{commit}}"
-            )
+            commit = self._tag_commit(target)
             if commit is None:
                 raise _Refuse(f"The release tag {target} is not in the checkout after fetching.")
+            if installation.tag is None:
+                # From development: only a release that includes this commit.
+                ancestor = self._git("merge-base", "--is-ancestor", "HEAD", f"refs/tags/{target}")
+                if ancestor.returncode != 0:
+                    raise _Refuse(
+                        f"Release {target} does not include this version yet. You'll move to "
+                        "Stable when a release includes it."
+                    )
             return commit
         remote = f"refs/remotes/origin/{DEVELOPMENT_BRANCH}"
         commit = self._git_value("rev-parse", "--verify", "--quiet", f"{remote}^{{commit}}")
@@ -581,6 +638,17 @@ class CheckoutUpdater:
         print(
             f"AutoDJ: update: setup for {which} ended with status {done.returncode}.",
             file=sys.stderr,
+        )
+        return done.returncode
+
+    def _restore(self, archive: Path) -> int:
+        """Restore *archive* with the runtime selected now (the version that made it)."""
+        base, environment = self._runtime()
+        done = self._step(
+            [*base, *self.global_options, "restore", "--force", str(archive)],
+            timeout=RESTORE_TIMEOUT_SECONDS,
+            env={**environment, CHECK_ENV: "0"},
+            capture=False,
         )
         return done.returncode
 
@@ -660,13 +728,6 @@ class CheckoutUpdater:
             return f"AutoDJ could not restore {state}: {exc}."
         return None
 
-    def _finish(self, state: str, message: str, commands: list[str], reason: str) -> None:
-        print(f"AutoDJ: {message}", file=sys.stderr)
-        for command in commands:
-            print(f"  {command}", file=sys.stderr)
-        self._write(state, step=None, reason=reason, message=message, commands=commands)
-        self._unlock()
-
     def _failed(self, reason: str, problem: str) -> Attempt:
         head = self._head()
         where = (
@@ -680,22 +741,30 @@ class CheckoutUpdater:
             f"{problem} {reason} {where} AutoDJ did not start again. Stop AutoDJ, run these "
             f"commands in the AutoDJ folder, then start AutoDJ.{backup}"
         )
-        commands = [
-            "git status --short",
-            self._restore_command(),
-            self._cli("setup"),
-            self._cli("doctor", "--no-fix"),
-        ]
+        commands = ["git status --short", self._restore_command(), self._cli("setup")]
+        if self._restored and self._backup is not None:
+            commands.append(self._cli("restore", "--force", str(self._backup)))
+        commands.append(self._cli("doctor", "--no-fix"))
         self._finish("failed", message, commands, f"{problem} {reason}")
         return Attempt(failed=True)
 
     def _roll_back(self, reason: str, commands: list[str]) -> Attempt:
-        self._progress("rollback", f"going back to {self._previous_label}.")
+        running = self._running()
+        if running is not None:
+            self._mark(running, "failed")
+        self._begin("rollback", f"going back to {self._previous_label}.")
         problem = self._restore_checkout()
         if problem is None and not self._stopped:
             status = self._setup(self._previous_label)
             if status != 0:
                 problem = f"Setup for {self._previous_label} failed (exit status {status})."
+        if problem is None and not self._stopped and self._restored and self._backup is not None:
+            # Go back replaced the data; put the data from before it back too.
+            status = self._restore(self._backup)
+            if status != 0:
+                problem = f"Restoring {self._backup} failed (exit status {status})."
+            else:
+                self._restored = False
         if self._stopped:
             return self._stop()
         if problem is not None:
@@ -708,10 +777,14 @@ class CheckoutUpdater:
     def _stop(self) -> Attempt:
         signum = self._stopped[0]
         problem = self._restore_checkout() if self._switched else None
-        if problem is None:
-            message = "AutoDJ was stopped during the update, so it did not update" + (
-                f"; the checkout is back at {self._previous_label}." if self._switched else "."
+        if problem is None and self._restored:
+            problem = (
+                "The data had already been restored from the backup "
+                f"{self._go_back.backup if self._go_back else ''}."
             )
+        if problem is None:
+            back = f"; the checkout is back at {self._previous_label}." if self._switched else "."
+            message = "AutoDJ was stopped during the update, so it did not update" + back
             commands: list[str] = []
         else:
             head = self._head()
@@ -722,6 +795,8 @@ class CheckoutUpdater:
                 "folder before starting AutoDJ."
             )
             commands = ["git status --short", self._restore_command(), self._cli("setup")]
+            if self._restored and self._backup is not None:
+                commands.append(self._cli("restore", "--force", str(self._backup)))
         self._switched = False
         self._finish("stopped", message, commands, "stopped")
         return Attempt(stopped=signum)
@@ -731,25 +806,27 @@ class CheckoutUpdater:
     # ------------------------------------------------------------------
 
     def update(self) -> Attempt:
-        """Update the checkout; see the module.  Never raises for a failed step."""
+        """Update the checkout, or go back; see the module.  Never raises for a failed step."""
         self._reset()
         self._stopped.clear()
-        request = read_update_state(self.state_path) or {}
+        request = contract.read_request(self.folder)
+        self._request = request
         self._record = {
-            "id": valid_update_id(request.get("id")),
-            "requested_at": request.get("requested_at")
-            if isinstance(request.get("requested_at"), (int, float))
-            else None,
-            "channel": None,
+            "id": request.id if request else None,
+            "action": request.action if request else "update",
+            "channel": request.channel if request else None,
+            "requested_at": request.requested_at if request else None,
             "from": None,
             "to": None,
             "backup": None,
-            "reason": None,
-            "message": None,
-            "commands": [],
         }
         with self._signals():
             try:
+                if request is None:
+                    raise _Refuse("AutoDJ could not read the update request the server wrote.")
+                self._lock()
+                if request.action == "go-back":
+                    return self._go_back_now()
                 return self._update(request)
             except _Stop:
                 return self._stop()
@@ -766,15 +843,7 @@ class CheckoutUpdater:
                 self._finish("refused", f"AutoDJ did not update: {reason}", [], reason)
                 return Attempt()
 
-    def _update(self, request: Mapping[str, Any]) -> Attempt:
-        channel = request.get("channel")
-        self._probe = parse_health_probe(request.get("probe"))
-        if request.get("state") != "requested" or channel not in CHANNELS or self._probe is None:
-            raise _Refuse("AutoDJ could not read the update request the server wrote.")
-        self._record["channel"] = channel
-        self._lock()
-        self._progress("check", f"checking the {channel} channel.")
-        installation = self._installation()
+    def _start_from(self, installation: Installation) -> None:
         if installation.kind != "git" or installation.commit is None:
             raise _Refuse("This is not a git checkout that AutoDJ can update.")
         self._previous_label = self._label(
@@ -785,55 +854,142 @@ class CheckoutUpdater:
             "commit": installation.commit,
             "label": self._previous_label,
         }
-        result = self._check(installation, UpdateSettings(check=True, channel=channel))
-        target = self._target(installation, result)
-        self._check_stop()
-        status = self._git("status", "--porcelain")
-        if status.returncode != 0:
-            raise _Refuse(
-                f"git could not read the checkout's status (exit status {status.returncode})."
-            )
-        if status.stdout.strip():
-            raise _Refuse(
-                "The AutoDJ folder has changes git does not know about, or files it does not "
-                "track, so AutoDJ did not update. Save them on a branch or move them out of "
-                "the folder, then try again. These commands list them and put them aside.",
-                [
-                    "git status --short",
-                    'git stash push --include-untracked -m "Before updating AutoDJ"',
-                ],
-            )
-        setup_state = self.root / SETUP_STATE
-        self._previous = _Previous(
-            installation.commit,
-            installation.branch,
-            setup_state.read_bytes() if setup_state.is_file() else None,
+
+    def _switched_to(self, target: str, commit: str, branch: str | None) -> None:
+        version = self._version()
+        self._target_label = self._label(
+            version, commit, branch, target if TAG_PATTERN.fullmatch(target) else None
         )
-        self._progress("backup", "making a backup.")
+        self._record["to"] = {"version": version, "commit": commit, "label": self._target_label}
+
+    def _update(self, request: Request) -> Attempt:
+        self._begin("check", f"checking the {request.channel} channel.")
+        installation = self._installation()
+        self._start_from(installation)
+        result = self._check(installation, UpdateSettings(check=True, channel=request.channel))
+        target = self._target_for(installation, result)
+        self._target = target
+        self._check_stop()
+        self._clean_tree()
+        self._remember(installation)
+        self._begin("backup", "making a backup.")
         self._backup_now(installation)
-        self._progress("fetch", f"fetching {target}.")
+        self._begin("fetch", f"fetching {target}.")
         self._fetch(target)
         commit = self._verify(installation, target)
         self._check_stop()
-        self._progress("switch", f"switching to {target}.")
+        self._begin("switch", f"switching to {target}.")
         self._switched = True
         self._switch(target, commit)
         self._check_stop()
-        version = self._version()
-        branch = None if TAG_PATTERN.fullmatch(target) else DEVELOPMENT_BRANCH
-        self._target_label = self._label(
-            version, commit, branch, target if branch is None else None
-        )
-        self._record["to"] = {"version": version, "commit": commit, "label": self._target_label}
-        self._progress("setup", f"running setup for {self._target_label}.")
-        status_code = self._setup(self._target_label)
+        self._switched_to(target, commit, None if TAG_PATTERN.fullmatch(target) else "master")
+        self._begin("setup", f"running setup for {self._target_label}.")
+        status = self._setup(self._target_label)
         self._check_stop()
-        if status_code != 0:
-            raise _RollBack(f"Setup for {self._target_label} failed (exit status {status_code}).")
-        self._progress("doctor", "asking Doctor whether the library needs a migration.")
+        if status != 0:
+            raise _RollBack(f"Setup for {self._target_label} failed (exit status {status}).")
+        self._begin("migration-check", "asking Doctor whether the library needs a migration.")
         self._doctor(target)
-        self._progress("start", f"starting {self._target_label}.")
+        self._begin("start", f"starting {self._target_label}.")
         return Attempt(switched=True)
+
+    def _go_back_now(self) -> Attempt:
+        self._begin("check", "checking the backup to go back to.")
+        record = contract.read_go_back(self.folder)
+        if record is None:
+            raise _Refuse("There is no backup from a release to go back to.")
+        problem = contract.go_back_problem(record)
+        if problem is not None:
+            raise _Refuse(problem)
+        self._go_back = record
+        installation = self._installation()
+        self._start_from(installation)
+        if installation.tag is not None:
+            raise _Refuse(f"AutoDJ already runs the release {installation.tag}.")
+        if self._tag_commit(record.tag) != record.commit:
+            raise _Refuse(
+                f"The release tag {record.tag} no longer points at the commit AutoDJ moved "
+                "from, so it did not go back."
+            )
+        self._clean_tree()
+        self._remember(installation)
+        self._target = record.tag
+        self._begin("backup", "making a backup of the data as it is now.")
+        self._backup_now(installation)
+        self._begin("switch", f"switching to {record.tag}.")
+        self._switched = True
+        self._switch(record.tag, record.commit)
+        self._check_stop()
+        self._switched_to(record.tag, record.commit, None)
+        self._begin("setup", f"running setup for {self._target_label}.")
+        status = self._setup(self._target_label)
+        self._check_stop()
+        if status != 0:
+            raise _RollBack(f"Setup for {self._target_label} failed (exit status {status}).")
+        self._begin("restore", f"restoring the backup made on {record.date}.")
+        self._restored = True
+        status = self._restore(record.backup)
+        self._check_stop()
+        if status != 0:
+            raise _RollBack(
+                f"Restoring the backup made on {record.date} failed (exit status {status})."
+            )
+        self._begin("migration-check", "asking Doctor whether the library needs a migration.")
+        self._doctor(record.tag)
+        self._begin("start", f"starting {self._target_label}.")
+        return Attempt(switched=True)
+
+    # ------------------------------------------------------------------
+    # Go back's record
+    # ------------------------------------------------------------------
+
+    def _release_go_back(self) -> None:
+        """Forget Go back; its backup becomes an ordinary one, deleted in its turn."""
+        record = contract.read_go_back(self.folder)
+        contract.remove(self.folder / contract.GO_BACK)
+        if record is not None and record.backup.is_file():
+            ordinary = record.backup.with_name(
+                record.backup.name.replace("autodj-go-back-", "autodj-update-", 1)
+            )
+            with contextlib.suppress(OSError):
+                record.backup.replace(ordinary)
+
+    def _keep_for_go_back(self) -> None:
+        """Keep this update's backup for Go back to the release it moved from."""
+        previous, backup = self._previous, self._backup
+        if previous is None or previous.tag is None or backup is None or not backup.is_file():
+            return
+        self._release_go_back()
+        kept = backup.with_name(backup.name.replace("autodj-update-", "autodj-go-back-", 1))
+        try:
+            backup.replace(kept)
+        except OSError as exc:
+            print(f"AutoDJ: could not keep {backup} for Go back: {exc}", file=sys.stderr)
+            return
+        self._record["backup"] = str(kept)
+        record = GoBack(previous.tag, previous.version, previous.commit, kept, self._backup_at)
+        self._save(contract.GO_BACK, record.to_dict())
+
+    def _succeeded(self) -> None:
+        action = self._record.get("action")
+        if action == "go-back":
+            assert self._go_back is not None
+            date = self._go_back.date
+            self._release_go_back()
+            message = (
+                f"Went back to {self._target_label}. Settings, play history and library "
+                f"changes made since {date} were replaced by the backup from that day."
+            )
+        else:
+            if self._target == DEVELOPMENT_BRANCH:
+                self._keep_for_go_back()
+            elif TAG_PATTERN.fullmatch(self._target):
+                # On a release again: going back to an older one would be a downgrade.
+                self._release_go_back()
+            message = f"Updated to {self._target_label}."
+        self._switched = False
+        self._restored = False
+        self._finish("updated", message, [], "updated")
 
     # ------------------------------------------------------------------
     # The new server
@@ -846,8 +1002,9 @@ class CheckoutUpdater:
         HEALTH_TIMEOUT_SECONDS.  Afterwards :attr:`started_ok` is True, or
         :meth:`failed_start` rolls back.
         """
+        self._begin("health", "waiting for the new version to answer.")
         deadline = self._monotonic() + HEALTH_TIMEOUT_SECONDS
-        probe = self._probe
+        probe = self._request.health if self._request is not None else None
         while not stopping():
             code = process.poll()
             if code is not None:
@@ -857,9 +1014,7 @@ class CheckoutUpdater:
                 return
             if probe is not None and self._probe_fn(probe):
                 self.started_ok = True
-                message = f"Updated to {self._target_label}."
-                self._switched = False
-                self._finish("updated", message, [], "updated")
+                self._succeeded()
                 return
             if self._monotonic() >= deadline:
                 self._start_failure = (
@@ -887,19 +1042,22 @@ class CheckoutUpdater:
 
     def recover_interrupted(self) -> None:
         """Record an update a killed launcher left unfinished, when no launcher holds it."""
-        record = read_update_state(self.state_path)
-        if record is None or record.get("state") in FINAL_UPDATE_STATES:
+        state = contract.read(self.folder / contract.STATE)
+        if state is None or state.get("step") is None:
             return
-        lock = self.root / LOCK
+        result = contract.read_result(self.folder)
+        if result is not None and result.get("id") == state.get("id"):
+            return
+        lock = self.folder / LOCK
         with contextlib.suppress(OSError):
             if self._clock() - lock.stat().st_mtime <= LOCK_STALE_SECONDS:
                 return
             lock.unlink()
         head = self._head()
-        before = record.get("from") if isinstance(record.get("from"), dict) else {}
+        before = state.get("from") if isinstance(state.get("from"), dict) else {}
         old_commit = before.get("commit") if isinstance(before, dict) else None
         message = (
-            f"An earlier update did not finish (it stopped during {record.get('step') or 'its start'}). "
+            f"An earlier update did not finish (it stopped during {state.get('step')}). "
             f"The checkout is at {head[:7] if head else 'an unknown commit'}."
         )
         commands = ["git status --short"]
@@ -911,5 +1069,16 @@ class CheckoutUpdater:
         ):
             message += f" Before the update it was at {old_commit[:7]}."
             commands += [f"git switch --detach {old_commit}", self._cli("setup")]
-        self._record = dict(record)
+        self._record = {
+            key: state.get(key) for key in ("id", "action", "channel", "from", "to", "backup")
+        }
+        if self._record.get("action") not in contract.ACTIONS:
+            self._record["action"] = "update"
+        steps = state.get("steps")
+        if isinstance(steps, list):
+            self._steps = [
+                step
+                for step in steps
+                if isinstance(step, dict) and step.get("name") in contract.STEPS
+            ] or self._steps
         self._finish("failed", message, commands, "interrupted")

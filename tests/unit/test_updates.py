@@ -301,12 +301,68 @@ def test_stable_compares_with_the_newest_release_tag(
 def test_master_after_a_release_is_ahead_of_it_on_the_stable_channel(tmp_path: Path) -> None:
     """ADR-0016-03: the same version number with commits after the tag."""
     result = updates.check_for_update(
-        _git_checkout(tmp_path),
-        UpdateSettings(channel="stable"),
+        _git_checkout(tmp_path, branch=None),
+        UpdateSettings(),
         runner=_ls_remote(tags=["v0.21.0"]),
     )
     assert result.status == "ahead"
     assert "after the latest release" in result.message
+
+
+@pytest.mark.parametrize("version", ["0.21.0", "0.22.0"])
+def test_development_on_a_saved_stable_channel_waits_for_the_next_release(
+    tmp_path: Path, version: str
+) -> None:
+    """ADR-0016-19: never a downgrade; the release that includes this commit is the update."""
+    waiting = updates.check_for_update(
+        _git_checkout(tmp_path, version=version),
+        UpdateSettings(channel="stable"),
+        runner=_ls_remote(tags=["v0.21.0"]),
+    )
+    assert waiting.status == "waiting-for-release"
+    assert waiting.target is None
+    assert waiting.message == (
+        "You'll move to Stable when the next release includes your version. "
+        f"Installed: {version}, commit {LOCAL_SHA[:7]}, on master. Latest release: v0.21.0."
+    )
+    released = updates.check_for_update(
+        _git_checkout(tmp_path, version="0.21.0"),
+        UpdateSettings(channel="stable"),
+        runner=_ls_remote(tags=["v0.21.0"], ancestor=True),
+    )
+    assert released.status == "available"
+    assert released.target == "v0.21.0"
+    # A newer release that does not include this commit does not count either.
+    later = updates.check_for_update(
+        _git_checkout(tmp_path, version="0.21.0"),
+        UpdateSettings(channel="stable"),
+        runner=_ls_remote(tags=["v0.22.0"], ancestor=False),
+    )
+    assert later.status == "waiting-for-release"
+
+
+def test_an_installation_without_git_asks_github_whether_the_release_includes_it(
+    tmp_path: Path,
+) -> None:
+    """ADR-0016-19: GitHub's compare view says whether the commit is behind the tag."""
+    asked: list[str] = []
+
+    def fetch(url: str, _headers: object, _timeout: float) -> str:
+        asked.append(url)
+        if url.endswith("/releases/latest"):
+            return json.dumps({"tag_name": "v0.21.0"})
+        return json.dumps({"status": status})
+
+    container = Installation(kind="container", version="0.21.0", commit="abcdef1", branch="master")
+    status = "ahead"
+    waiting = updates.check_for_update(
+        container, UpdateSettings(channel="stable"), fetch_text=fetch
+    )
+    assert waiting.status == "waiting-for-release"
+    assert asked[-1] == updates.REPOSITORY_API + "/compare/v0.21.0...abcdef1"
+    status = "behind"
+    assert updates.contained_in_release(container, "v0.21.0", fetch_text=fetch) is True
+    assert updates.contained_in_release(container, "nightly", fetch_text=fetch) is None
 
 
 @pytest.mark.parametrize(
@@ -801,7 +857,7 @@ def test_only_a_checkout_under_an_updating_launcher_can_update(tmp_path: Path) -
     launched = {updates.SUPERVISOR_ENV: "1", updates.UPDATER_ENV: "launcher"}
     support = updates.update_support(checkout, launched)
     assert support.available is True
-    assert support.mode == "launcher"
+    assert support.mechanism == "launcher"
     # A launcher from before the web update restarts but cannot update.
     older = updates.update_support(checkout, {updates.SUPERVISOR_ENV: "1"})
     assert older.available is False
@@ -815,48 +871,3 @@ def test_only_a_checkout_under_an_updating_launcher_can_update(tmp_path: Path) -
     assert package.guide_url.endswith("backups-and-updates.md#update-a-wheel-installation")
     assert support.to_dict()["available"] is True
     assert updates.UPDATE_EXIT_CODE not in (0, updates.RESTART_EXIT_CODE)
-
-
-def test_the_hand_off_record_round_trips_and_damage_reads_as_none(tmp_path: Path) -> None:
-    """ADR-0016-12."""
-    path = updates.update_state_path(tmp_path)
-    assert path == tmp_path / ".uv" / "update" / "state.json"
-    assert updates.read_update_state(path) is None
-    record = {"state": "requested", "id": "0123abcd", "channel": "stable"}
-    updates.write_update_state(path, record)
-    assert updates.read_update_state(path) == record
-    for damaged in (
-        "not json",
-        "[]",
-        '{"state": "dancing"}',
-        '{"state": "requested", "id": "../etc"}',
-        '{"state": "updated", "pad": "' + "x" * 70_000 + '"}',
-    ):
-        path.write_text(damaged, encoding="utf-8")
-        assert updates.read_update_state(path) is None, damaged[:30]
-
-
-def test_the_health_probe_asks_this_computer_with_an_allowed_host() -> None:
-    """ADR-0016-13."""
-    everywhere = updates.health_probe_for(
-        "0.0.0.0", 8080, https=False, host_allowed=lambda name: name == "localhost"
-    )
-    assert everywhere.url == "http://127.0.0.1:8080/healthz"
-    assert everywhere.host == "localhost:8080"
-    six = updates.health_probe_for("::", 8443, https=True, host_allowed=lambda _name: False)
-    assert six.url == "https://[::1]:8443/healthz"
-    assert six.host == "[::1]:8443"
-    lan = updates.health_probe_for(
-        "192.0.2.10", 8080, https=False, host_allowed=lambda name: name == "192.0.2.10"
-    )
-    assert lan.url == "http://192.0.2.10:8080/healthz"
-    assert updates.parse_health_probe(lan.to_dict()) == lan
-    for bad in (
-        None,
-        {**lan.to_dict(), "scheme": "file"},
-        {**lan.to_dict(), "address": "example.com"},
-        {**lan.to_dict(), "port": 0},
-        {**lan.to_dict(), "port": True},
-        {**lan.to_dict(), "host": "a b"},
-    ):
-        assert updates.parse_health_probe(bad) is None

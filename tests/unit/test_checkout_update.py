@@ -5,17 +5,18 @@ from __future__ import annotations
 import json
 import signal
 import subprocess
-import threading
+import zipfile
 from collections.abc import Callable
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from autodj import checkout_update, launcher, updates
+from autodj import update_contract as contract
 from autodj.checkout_update import CheckoutUpdater
-from autodj.updates import HealthProbe, Installation, UpdateCheck, UpdateSettings
+from autodj.update_contract import HealthProbe
+from autodj.updates import Installation, UpdateCheck, UpdateSettings
 
 OLD = "1" * 40
 NEW = "2" * 40
@@ -29,7 +30,7 @@ def _pyproject(version: str) -> str:
 
 
 class FakeCheckout:
-    """A checkout that answers git, backup, setup and Doctor like the real ones."""
+    """A checkout that answers git, backup, restore, setup and Doctor like the real ones."""
 
     def __init__(
         self,
@@ -42,23 +43,22 @@ class FakeCheckout:
         master_version: str = "0.23.0",
         doctor: dict[str, Any] | None = None,
         fail: set[str] | None = None,
+        head: str = OLD,
     ) -> None:
         self.root = root
         root.mkdir(parents=True, exist_ok=True)
-        (root / "pyproject.toml").write_text(_pyproject(version), encoding="utf-8")
         (root / "scripts").mkdir(exist_ok=True)
         (root / "scripts" / "setup.py").write_text("", encoding="utf-8")
         (root / ".uv").mkdir(exist_ok=True)
         (root / ".uv" / "setup.json").write_text('{"backend": "cpu"}', encoding="utf-8")
-        self.head = OLD
-        self.branch = branch
-        self.tag = tag
-        self.dirty = dirty
         self.versions = {OLD: version, NEW: "0.22.0", MASTER: master_version}
+        self.tags = {"v0.21.0": OLD, "v0.22.0": NEW}
+        self.dirty = dirty
         self.doctor = doctor if doctor is not None else {"exit_code": 0, "checks": []}
         self.fail = fail or set()
         self.calls: list[list[str]] = []
         self.on: dict[str, Callable[[], None]] = {}
+        self._move(head, branch, tag)
 
     def installation(self) -> Installation:
         return Installation(
@@ -83,6 +83,9 @@ class FakeCheckout:
             return subprocess.CompletedProcess(argv, 1, "", "")
         if argv[0] == "git":
             return self._git(argv, argv[1:])
+        if name == "backup":
+            with zipfile.ZipFile(argv[-1], "w") as archive:
+                archive.writestr("manifest.json", "{}")
         if name == "doctor":
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.doctor), "")
         return subprocess.CompletedProcess(argv, 0, "", "")
@@ -107,7 +110,7 @@ class FakeCheckout:
             return ok()
         if args[:3] == ["rev-parse", "--verify", "--quiet"]:
             ref = args[3]
-            found = {"refs/tags/v0.22.0^{commit}": NEW}.get(ref)
+            found = {f"refs/tags/{tag}^{{commit}}": sha for tag, sha in self.tags.items()}.get(ref)
             if ref.startswith("refs/remotes/origin/master"):
                 found = MASTER
             return ok(f"{found}\n") if found else ok(code=1)
@@ -121,15 +124,15 @@ class FakeCheckout:
             where = [word for word in args[1:] if word != "--discard-changes"]
             if where[0] == "--detach":
                 target = where[1]
-                commit = NEW if target == "v0.22.0" else target
+                commit = self.tags.get(target, target)
                 if commit != OLD and "switch-new" in self.fail:
                     return ok(code=1)
-                if commit == OLD and "restore" in self.fail:
+                if commit == OLD and "restore-checkout" in self.fail:
                     return ok(code=1)
                 self._move(commit, None, target if target.startswith("v") else None)
                 return ok()
             if where[0] == "--force-create":
-                if "restore" in self.fail:
+                if "restore-checkout" in self.fail:
                     return ok(code=1)
                 self._move(where[2], where[1])
                 return ok()
@@ -155,24 +158,37 @@ def _available(target: str = "v0.22.0", channel: str = "stable") -> UpdateCheck:
     )
 
 
+def _folder(checkout: FakeCheckout) -> Path:
+    return checkout.root / checkout_update.FOLDER
+
+
+def _ask(checkout: FakeCheckout, action: str = "update", channel: str = "stable") -> None:
+    contract.write(
+        _folder(checkout) / contract.REQUEST,
+        {
+            "id": "abcdef12",
+            "action": action,
+            "channel": channel,
+            "requested_at": 1_000.0,
+            "health": PROBE.to_dict(),
+            # Never trusted: the launcher works out the target itself.
+            "target": "v9.9.9",
+        },
+    )
+
+
 def _updater(
     checkout: FakeCheckout,
     result: UpdateCheck | None = None,
     *,
     channel: str = "stable",
+    action: str = "update",
     probe: Callable[[HealthProbe], bool] = lambda _probe: True,
-    request: dict[str, Any] | None = None,
     monotonic: Callable[[], float] | None = None,
+    ask: bool = True,
 ) -> CheckoutUpdater:
-    record = {
-        "state": "requested",
-        "id": "abcdef12",
-        "channel": channel,
-        "probe": PROBE.to_dict(),
-        # Never trusted: the launcher works out the target itself.
-        "target": "v9.9.9",
-    }
-    updates.write_update_state(updates.update_state_path(checkout.root), request or record)
+    if ask:
+        _ask(checkout, action, channel)
     seen: list[UpdateSettings] = []
 
     def check(_installation: Installation, settings: UpdateSettings) -> UpdateCheck:
@@ -187,7 +203,7 @@ def _updater(
         installation=checkout.installation,
         check=check,
         probe=probe,
-        clock=lambda: 1_000_000.0,
+        clock=lambda: 1_793_000_000.0,
         monotonic=monotonic or (lambda: 0.0),
         sleep=lambda _seconds: None,
         setup_python="setup-py",
@@ -197,10 +213,14 @@ def _updater(
     return updater
 
 
-def _record(checkout: FakeCheckout) -> dict[str, Any]:
-    found = updates.read_update_state(updates.update_state_path(checkout.root))
+def _result(checkout: FakeCheckout) -> dict[str, Any]:
+    found = contract.read_result(_folder(checkout))
     assert found is not None
     return found
+
+
+def _steps(record: dict[str, Any]) -> dict[str, str]:
+    return {step["name"]: step["status"] for step in record["steps"]}
 
 
 class _Server:
@@ -253,7 +273,7 @@ def test_a_stable_update_follows_the_upgrade_checklist(tmp_path: Path) -> None:
     ]
     backup = checkout.calls[1]
     assert backup[:6] == [*BASE, "--config", "night owl.toml", "backup"]
-    assert Path(backup[6]).parent == checkout.root / checkout_update.BACKUPS
+    assert Path(backup[6]).parent == _folder(checkout) / contract.BACKUPS
     assert ["git", "fetch", "--tags", "origin"] in checkout.calls
     assert ["git", "switch", "--detach", "v0.22.0"] in checkout.calls
     assert checkout.calls[7] == ["setup-py", str(checkout.root / "scripts" / "setup.py"), "--yes"]
@@ -267,22 +287,37 @@ def test_a_stable_update_follows_the_upgrade_checklist(tmp_path: Path) -> None:
         "--offline",
     ]
     assert updater.checked == [UpdateSettings(check=True, channel="stable")]  # type: ignore[attr-defined]
-    assert _record(checkout)["state"] == "running"
-    assert (checkout.root / checkout_update.LOCK).exists()
+    state = contract.read(_folder(checkout) / contract.STATE)
+    assert state is not None and state["step"] == "start"
+    assert (_folder(checkout) / checkout_update.LOCK).exists()
 
-    server = _Server()
-    updater.watch(server, lambda: False)  # type: ignore[arg-type]
+    updater.watch(_Server(), lambda: False)  # type: ignore[arg-type]
 
     assert updater.started_ok is True
     assert updater.pending is False
-    record = _record(checkout)
-    assert record["state"] == "updated"
-    assert record["id"] == "abcdef12"
-    assert record["message"] == "Updated to 0.22.0."
-    assert record["from"]["version"] == "0.21.0"
-    assert record["to"] == {"version": "0.22.0", "commit": NEW, "label": "0.22.0"}
-    assert record["commands"] == []
-    assert not (checkout.root / checkout_update.LOCK).exists()
+    result = _result(checkout)
+    assert result["outcome"] == "updated"
+    assert result["id"] == "abcdef12"
+    assert result["action"] == "update"
+    assert result["message"] == "Updated to 0.22.0."
+    assert result["from"]["version"] == "0.21.0"
+    assert result["to"] == {"version": "0.22.0", "commit": NEW, "label": "0.22.0"}
+    assert result["commands"] == []
+    assert _steps(result) == {
+        "check": "done",
+        "backup": "done",
+        "fetch": "done",
+        "switch": "done",
+        "setup": "done",
+        "restore": "skipped",
+        "migration-check": "done",
+        "start": "done",
+        "health": "done",
+        "rollback": "skipped",
+    }
+    assert not (_folder(checkout) / checkout_update.LOCK).exists()
+    # Not from a release to development, so there is nothing to go back to.
+    assert contract.read_go_back(_folder(checkout)) is None
 
 
 def test_a_development_update_fast_forwards_master(tmp_path: Path) -> None:
@@ -296,7 +331,7 @@ def test_a_development_update_fast_forwards_master(tmp_path: Path) -> None:
     assert ["git", "merge", "--ff-only", "origin/master"] in checkout.calls
     assert checkout.head == MASTER
     updater.watch(_Server(), lambda: False)  # type: ignore[arg-type]
-    assert _record(checkout)["message"] == f"Updated to 0.23.0, commit {MASTER[:7]} on master."
+    assert _result(checkout)["message"] == f"Updated to 0.23.0, commit {MASTER[:7]} on master."
 
 
 def test_a_checkout_with_changes_is_refused_before_anything_changes(tmp_path: Path) -> None:
@@ -306,14 +341,16 @@ def test_a_checkout_with_changes_is_refused_before_anything_changes(tmp_path: Pa
 
     assert updater.update() == checkout_update.Attempt()
     assert checkout.names() == ["git status"]
-    record = _record(checkout)
-    assert record["state"] == "refused"
-    assert record["message"].startswith("AutoDJ did not update: The AutoDJ folder has changes")
-    assert record["commands"] == [
+    result = _result(checkout)
+    assert result["outcome"] == "refused"
+    assert result["message"].startswith("AutoDJ did not update: The AutoDJ folder has changes")
+    assert result["commands"] == [
         "git status --short",
         'git stash push --include-untracked -m "Before updating AutoDJ"',
     ]
-    assert not (checkout.root / checkout_update.LOCK).exists()
+    assert _steps(result)["check"] == "failed"
+    assert _steps(result)["backup"] == "skipped"
+    assert not (_folder(checkout) / checkout_update.LOCK).exists()
 
 
 def test_a_needed_migration_rolls_back_and_gives_the_commands(tmp_path: Path) -> None:
@@ -330,10 +367,6 @@ def test_a_needed_migration_rolls_back_and_gives_the_commands(tmp_path: Path) ->
         ],
     }
     checkout = FakeCheckout(tmp_path / "checkout", doctor=doctor)
-    (checkout.root / ".uv" / "setup.json").write_text('{"backend": "amd"}', encoding="utf-8")
-    checkout.on["setup"] = lambda: (checkout.root / ".uv" / "setup.json").write_text(
-        '{"backend": "changed"}', encoding="utf-8"
-    )
     updater = _updater(checkout)
 
     assert updater.update() == checkout_update.Attempt()
@@ -341,24 +374,26 @@ def test_a_needed_migration_rolls_back_and_gives_the_commands(tmp_path: Path) ->
     assert ["git", "switch", "--detach", OLD] in checkout.calls
     assert checkout.names().count("setup") == 2  # the new version's, then the old one's again
     assert "migrate" not in " ".join(" ".join(call) for call in checkout.calls)
-    record = _record(checkout)
-    assert record["state"] == "rolled-back"
-    assert record["message"].startswith(
+    result = _result(checkout)
+    assert result["outcome"] == "rolled-back"
+    assert result["message"].startswith(
         "The update failed, so AutoDJ went back to 0.21.0. The new version needs a library migration"
     )
-    assert record["commands"] == [
+    assert result["commands"] == [
         "git switch --detach v0.22.0",
         "./autodj --config 'night owl.toml' setup",
         "./autodj --config 'night owl.toml' migrate-index",
         "./autodj --config 'night owl.toml' migrate-index --apply",
         "./autodj --config 'night owl.toml' doctor --no-fix",
     ]
+    assert _steps(result)["migration-check"] == "failed"
+    assert _steps(result)["rollback"] == "done"
 
 
 @pytest.mark.parametrize("how", ["exits", "never-answers"])
 def test_a_new_version_that_is_not_healthy_is_rolled_back(tmp_path: Path, how: str) -> None:
     """ADR-0016-13, ADR-0016-16: healthy means still running and /healthz answering in time."""
-    checkout = FakeCheckout(tmp_path / "checkout", branch="master", tag=None)
+    checkout = FakeCheckout(tmp_path / "checkout", branch="master", tag=None, version="0.20.0")
     now = [0.0]
 
     def later() -> float:
@@ -379,36 +414,37 @@ def test_a_new_version_that_is_not_healthy_is_rolled_back(tmp_path: Path, how: s
     assert checkout.head == OLD
     assert checkout.branch == "master"
     assert ["git", "switch", "--force-create", "master", OLD] in checkout.calls
-    record = _record(checkout)
-    assert record["state"] == "rolled-back"
+    result = _result(checkout)
+    assert result["outcome"] == "rolled-back"
     expected = (
         "The new version stopped with exit status 1 before it was ready."
         if how == "exits"
         else "The new version did not answer within 180 seconds."
     )
-    assert record["message"] == (
-        f"The update failed, so AutoDJ went back to 0.21.0, commit {OLD[:7]} on master. {expected}"
+    assert result["message"] == (
+        f"The update failed, so AutoDJ went back to 0.20.0, commit {OLD[:7]} on master. {expected}"
     )
-    assert record["commands"] == []
+    assert result["commands"] == []
+    assert _steps(result)["health"] == "failed"
 
 
 def test_a_rollback_that_fails_says_where_the_checkout_is_and_starts_nothing(
     tmp_path: Path,
 ) -> None:
     """ADR-0016-16."""
-    checkout = FakeCheckout(tmp_path / "checkout", fail={"setup", "restore"})
+    checkout = FakeCheckout(tmp_path / "checkout", fail={"setup", "restore-checkout"})
     updater = _updater(checkout)
 
     attempt = updater.update()
 
     assert attempt == checkout_update.Attempt(failed=True)
     assert checkout.head == NEW
-    record = _record(checkout)
-    assert record["state"] == "failed"
-    assert "could not go back to 0.21.0" in record["message"]
-    assert f"The checkout is at {NEW[:7]}." in record["message"]
-    assert "A backup from before the update is at" in record["message"]
-    assert record["commands"] == [
+    result = _result(checkout)
+    assert result["outcome"] == "failed"
+    assert "could not go back to 0.21.0" in result["message"]
+    assert f"The checkout is at {NEW[:7]}." in result["message"]
+    assert "A backup from before the update is at" in result["message"]
+    assert result["commands"] == [
         "git status --short",
         f"git switch --detach {OLD}",
         "./autodj --config 'night owl.toml' setup",
@@ -428,6 +464,7 @@ def test_a_rollback_that_fails_says_where_the_checkout_is_and_starts_nothing(
             "This is newer than the latest release",
         ),
         (_available("v0.20.0"), "stable", set(), "v0.20.0 is not newer than the installed 0.21.0"),
+        (_available("v0.21.0"), "stable", set(), "v0.21.0 is not newer than the installed 0.21.0"),
         (
             _available("master", "development"),
             "development",
@@ -451,8 +488,8 @@ def test_an_older_or_the_same_version_is_refused(
 
     assert updater.update() == checkout_update.Attempt()
     assert "git switch" not in checkout.names()
-    record = _record(checkout)
-    assert record["state"] == "refused"
+    record = _result(checkout)
+    assert record["outcome"] == "refused"
     assert words in record["reason"]
     if result.status != "current":
         assert "does not move to an older version" in record["reason"]
@@ -465,33 +502,50 @@ def test_development_older_than_the_installed_version_is_refused(tmp_path: Path)
 
     assert updater.update() == checkout_update.Attempt()
     assert "git switch" not in checkout.names()
-    assert "master has version 0.20.0" in _record(checkout)["reason"]
+    assert "master has version 0.20.0" in _result(checkout)["reason"]
 
 
-@pytest.mark.parametrize(
-    "request_record",
-    [
-        {"state": "requested", "id": "abcdef12", "channel": "nightly", "probe": PROBE.to_dict()},
-        {"state": "requested", "id": "abcdef12", "channel": "stable", "probe": {"scheme": "ftp"}},
-        {"state": "updated", "id": "abcdef12", "channel": "stable", "probe": PROBE.to_dict()},
-    ],
-)
-def test_an_unreadable_request_changes_nothing(
-    tmp_path: Path, request_record: dict[str, Any]
+@pytest.mark.parametrize("included", [True, False])
+def test_development_moves_to_stable_only_with_a_release_that_includes_it(
+    tmp_path: Path, included: bool
 ) -> None:
+    """ADR-0016-19: the same version number is fine when the release includes this commit."""
+    checkout = FakeCheckout(
+        tmp_path / "checkout",
+        branch="master",
+        tag=None,
+        version="0.22.0",
+        fail=set() if included else {"not-ancestor"},
+    )
+    updater = _updater(checkout, _available("v0.22.0"))
+
+    attempt = updater.update()
+
+    assert ["git", "merge-base", "--is-ancestor", "HEAD", "refs/tags/v0.22.0"] in checkout.calls
+    if included:
+        assert attempt.switched is True
+        assert checkout.head == NEW
+    else:
+        assert attempt == checkout_update.Attempt()
+        assert "git switch" not in checkout.names()
+        assert "You'll move to Stable when a release includes it." in _result(checkout)["reason"]
+
+
+def test_a_request_it_cannot_read_changes_nothing(tmp_path: Path) -> None:
     """ADR-0016-15: only a valid request from the server starts an update."""
     checkout = FakeCheckout(tmp_path / "checkout")
-    updater = _updater(checkout, request=request_record)
+    contract.write(_folder(checkout) / contract.REQUEST, {"id": "abcdef12", "action": "update"})
+    updater = _updater(checkout, ask=False)
 
     assert updater.update() == checkout_update.Attempt()
     assert checkout.calls == []
-    assert _record(checkout)["state"] == "refused"
+    assert _result(checkout)["outcome"] == "refused"
 
 
 def test_only_one_update_runs_on_a_checkout_at_a_time(tmp_path: Path) -> None:
     """ADR-0016-18: a second launcher on the same checkout does not update it too."""
     checkout = FakeCheckout(tmp_path / "checkout")
-    lock = checkout.root / checkout_update.LOCK
+    lock = _folder(checkout) / checkout_update.LOCK
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text("1\n", encoding="utf-8")
     updater = _updater(checkout)
@@ -499,7 +553,7 @@ def test_only_one_update_runs_on_a_checkout_at_a_time(tmp_path: Path) -> None:
 
     assert updater.update() == checkout_update.Attempt()
     assert checkout.calls == []
-    assert "Another AutoDJ launcher is updating" in _record(checkout)["reason"]
+    assert "Another AutoDJ launcher is updating" in _result(checkout)["reason"]
     assert lock.exists()
 
 
@@ -522,51 +576,172 @@ def test_a_stop_signal_during_the_update_puts_the_checkout_back(
 
     assert attempt == checkout_update.Attempt(stopped=signal.SIGTERM)
     assert checkout.head == OLD
-    if during == "setup":
-        # The runtime selection is put back as well as the checkout.
-        assert selection.read_text(encoding="utf-8") == '{"backend": "cpu"}'
     assert checkout.names().count("setup") == (1 if during == "setup" else 0)
     if during == "backup":
         assert "git fetch" not in checkout.names()
-    record = _record(checkout)
-    assert record["state"] == "stopped"
-    assert record["message"].startswith("AutoDJ was stopped during the update")
-    assert not (checkout.root / checkout_update.LOCK).exists()
+    else:
+        # The runtime selection is put back as well as the checkout.
+        assert selection.read_text(encoding="utf-8") == '{"backend": "cpu"}'
+    result = _result(checkout)
+    assert result["outcome"] == "stopped"
+    assert result["message"].startswith("AutoDJ was stopped during the update")
+    assert not (_folder(checkout) / checkout_update.LOCK).exists()
 
 
 def test_a_stop_that_cannot_put_the_checkout_back_says_where_it_is(tmp_path: Path) -> None:
     """ADR-0016-17."""
-    checkout = FakeCheckout(tmp_path / "checkout", fail={"restore"})
+    checkout = FakeCheckout(tmp_path / "checkout", fail={"restore-checkout"})
     updater = _updater(checkout)
     checkout.on["setup"] = lambda: updater._note_stop(signal.SIGINT, None)
 
     assert updater.update() == checkout_update.Attempt(stopped=signal.SIGINT)
-    record = _record(checkout)
-    assert record["state"] == "stopped"
-    assert f"The checkout is at {NEW[:7]}." in record["message"]
-    assert f"git switch --detach {OLD}" in record["commands"]
+    result = _result(checkout)
+    assert result["outcome"] == "stopped"
+    assert f"The checkout is at {NEW[:7]}." in result["message"]
+    assert f"git switch --detach {OLD}" in result["commands"]
 
 
 def test_an_update_a_killed_launcher_left_is_recorded_at_the_next_start(tmp_path: Path) -> None:
     """ADR-0016-17: the record says what state the checkout is in."""
-    checkout = FakeCheckout(tmp_path / "checkout")
-    checkout.head = NEW
-    updates.write_update_state(
-        updates.update_state_path(checkout.root),
-        {"state": "running", "id": "abcdef12", "step": "setup", "from": {"commit": OLD}},
+    checkout = FakeCheckout(tmp_path / "checkout", head=NEW, tag=None)
+    contract.write(
+        _folder(checkout) / contract.STATE,
+        {
+            "id": "abcdef12",
+            "action": "update",
+            "step": "setup",
+            "from": {"commit": OLD},
+            "steps": contract.new_steps(),
+        },
     )
-    updater = _updater(checkout, request=None)
-    updates.write_update_state(
-        updates.update_state_path(checkout.root),
-        {"state": "running", "id": "abcdef12", "step": "setup", "from": {"commit": OLD}},
-    )
+    updater = _updater(checkout, ask=False)
 
     updater.recover_interrupted()
 
-    record = _record(checkout)
-    assert record["state"] == "failed"
-    assert "stopped during setup" in record["message"]
-    assert f"git switch --detach {OLD}" in record["commands"]
+    result = _result(checkout)
+    assert result["outcome"] == "failed"
+    assert "stopped during setup" in result["message"]
+    assert f"git switch --detach {OLD}" in result["commands"]
+
+
+# ---------------------------------------------------------------------------
+# Going back to the release this installation came from
+# ---------------------------------------------------------------------------
+
+
+def _moved_to_development(tmp_path: Path) -> FakeCheckout:
+    """A release that the updater moved to development: it keeps the backup for Go back."""
+    checkout = FakeCheckout(tmp_path / "checkout")
+    updater = _updater(checkout, _available("master", "development"), channel="development")
+    assert updater.update().switched is True
+    updater.watch(_Server(), lambda: False)  # type: ignore[arg-type]
+    checkout.calls.clear()
+    return checkout
+
+
+def test_moving_a_release_to_development_keeps_its_backup_for_go_back(tmp_path: Path) -> None:
+    """ADR-0016-20: the tag, the backup and the date, only from this flow."""
+    checkout = _moved_to_development(tmp_path)
+    record = contract.read_go_back(_folder(checkout))
+    assert record is not None
+    assert (record.tag, record.version, record.commit) == ("v0.21.0", "0.21.0", OLD)
+    assert record.backup.name.startswith("autodj-go-back-0.21.0-")
+    assert record.backup.is_file()
+    assert record.made_at == 1_793_000_000.0
+    assert contract.go_back_problem(record) is None
+    # Later development updates keep it; old ordinary backups never delete it.
+    for _round in range(checkout_update.KEEP_BACKUPS + 1):
+        again = _updater(checkout, _available("master", "development"), channel="development")
+        assert again.update().switched is True
+        again.watch(_Server(), lambda: False)  # type: ignore[arg-type]
+    assert contract.read_go_back(_folder(checkout)) == record
+    ordinary = list((_folder(checkout) / contract.BACKUPS).glob("autodj-update-*.zip"))
+    assert len(ordinary) <= checkout_update.KEEP_BACKUPS
+
+
+def test_go_back_restores_the_backup_with_the_release_it_came_from(tmp_path: Path) -> None:
+    """ADR-0016-20: switch to the tag, its setup, restore that backup, Doctor, then healthy."""
+    checkout = _moved_to_development(tmp_path)
+    kept = contract.read_go_back(_folder(checkout))
+    assert kept is not None
+    updater = _updater(checkout, action="go-back")
+
+    attempt = updater.update()
+
+    assert attempt == checkout_update.Attempt(switched=True)
+    assert checkout.names() == [
+        "git rev-parse",
+        "git status",
+        "backup",
+        "git switch",
+        "git rev-parse",
+        "setup",
+        "restore",
+        "doctor",
+    ]
+    assert ["git", "switch", "--detach", "v0.21.0"] in checkout.calls
+    restore = next(call for call in checkout.calls if "restore" in call)
+    assert restore == [
+        *BASE,
+        "--config",
+        "night owl.toml",
+        "restore",
+        "--force",
+        str(kept.backup),
+    ]
+    assert checkout.head == OLD
+    updater.watch(_Server(), lambda: False)  # type: ignore[arg-type]
+    result = _result(checkout)
+    assert result["outcome"] == "updated"
+    assert result["action"] == "go-back"
+    assert result["message"] == (
+        f"Went back to 0.21.0. Settings, play history and library changes made since "
+        f"{kept.date} were replaced by the backup from that day."
+    )
+    assert _steps(result)["fetch"] == "skipped"
+    assert _steps(result)["restore"] == "done"
+    # Used: it is not offered again.
+    assert contract.read_go_back(_folder(checkout)) is None
+
+
+def test_a_failed_go_back_restores_the_data_from_before_it(tmp_path: Path) -> None:
+    """ADR-0016-20: rolled back like an update, and its data put back from its own backup."""
+    checkout = _moved_to_development(tmp_path)
+    updater = _updater(checkout, action="go-back", probe=lambda _probe: False)
+    assert updater.update().switched is True
+    safety = updater._backup
+    updater.watch(_Server(exits=1), lambda: False)  # type: ignore[arg-type]
+
+    assert updater.failed_start() == checkout_update.Attempt()
+    assert checkout.head == MASTER
+    restores = [call for call in checkout.calls if "restore" in call]
+    assert restores[-1][-1] == str(safety)
+    assert _result(checkout)["outcome"] == "rolled-back"
+    assert contract.read_go_back(_folder(checkout)) is not None
+
+
+def test_go_back_without_its_backup_changes_nothing(tmp_path: Path) -> None:
+    """ADR-0016-20."""
+    checkout = _moved_to_development(tmp_path)
+    kept = contract.read_go_back(_folder(checkout))
+    assert kept is not None
+    kept.backup.unlink()
+    updater = _updater(checkout, action="go-back")
+
+    assert updater.update() == checkout_update.Attempt()
+    assert checkout.calls == []
+    assert _result(checkout)["reason"].endswith("is missing.")
+
+
+def test_reaching_a_release_forgets_go_back(tmp_path: Path) -> None:
+    """ADR-0016-19, ADR-0016-20: back on a release, the older one would be a downgrade."""
+    checkout = _moved_to_development(tmp_path)
+    checkout.tags["v0.24.0"] = "4" * 40
+    checkout.versions["4" * 40] = "0.24.0"
+    updater = _updater(checkout, _available("v0.24.0"))
+    assert updater.update().switched is True
+    updater.watch(_Server(), lambda: False)  # type: ignore[arg-type]
+    assert contract.read_go_back(_folder(checkout)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +754,7 @@ class _StubUpdater:
         self.attempt = attempt
         self.healthy = healthy
         self.pending = False
+        self.folder = Path("update-folder")
         self.events: list[str] = []
 
     def update(self) -> checkout_update.Attempt:
@@ -624,13 +800,13 @@ def test_the_loop_updates_while_no_server_runs_then_starts_and_watches_it(health
         plan=lambda: next(plans),
     )
 
-    assert started[0][1][updates.UPDATER_ENV] == "launcher"
-    assert started[0][1][updates.SUPERVISOR_ENV] == "1"
-    assert started[1] == (
-        ["new", "serve"],
-        {"B": "2", updates.SUPERVISOR_ENV: "1", updates.UPDATER_ENV: "launcher"},
-        True,
-    )
+    marks = {
+        updates.SUPERVISOR_ENV: "1",
+        updates.UPDATER_ENV: "launcher",
+        contract.UPDATE_DIR_ENV: "update-folder",
+    }
+    assert started[0][1] == {"A": "1", **marks}
+    assert started[1] == (["new", "serve"], {"B": "2", **marks}, True)
     if healthy:
         assert stub.events == ["update", "watch"]
         assert status == 1
@@ -672,16 +848,14 @@ def test_a_failed_rollback_ends_the_launcher_without_a_server() -> None:
         runs.append(1)
         return updates.UPDATE_EXIT_CODE
 
-    assert (
-        launcher.run_supervised(
-            ["serve"],
-            {},
-            run_child=run_child,
-            updater=stub,
-            plan=lambda: (["serve"], {}),  # type: ignore[arg-type]
-        )
-        == 1
+    status = launcher.run_supervised(
+        ["serve"],
+        {},
+        run_child=run_child,
+        updater=stub,  # type: ignore[arg-type]
+        plan=lambda: (["serve"], {}),
     )
+    assert status == 1
     assert runs == [1]
 
 
@@ -701,41 +875,3 @@ def test_global_options_are_the_words_before_serve() -> None:
         "-v",
     ]
     assert launcher.global_options(["serve"]) == []
-
-
-# ---------------------------------------------------------------------------
-# The health probe
-# ---------------------------------------------------------------------------
-
-
-def test_the_health_probe_needs_200_and_ok_from_healthz() -> None:
-    """ADR-0016-13: asked on this computer, with the Host header the server allows."""
-    seen: list[str | None] = []
-    answers = iter([(200, b'{"status": "ok"}'), (403, b"Disallowed Host"), (200, b"{}")])
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:
-            seen.append(self.headers.get("Host"))
-            code, body = next(answers)
-            self.send_response(code)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *_args: object) -> None:
-            return
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        port = server.server_address[1]
-        probe = HealthProbe("http", "127.0.0.1", port, f"localhost:{port}")
-        assert checkout_update.probe_health(probe) is True
-        assert checkout_update.probe_health(probe) is False
-        assert checkout_update.probe_health(probe) is False
-    finally:
-        server.shutdown()
-        server.server_close()
-    assert seen == [f"localhost:{port}"] * 3
-    assert checkout_update.probe_health(probe, timeout=0.5) is False

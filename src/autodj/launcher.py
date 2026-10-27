@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.child_jobs import bind_to_autodj
+from autodj.update_contract import UPDATE_DIR_ENV
 from autodj.updates import RESTART_EXIT_CODE, SUPERVISOR_ENV, UPDATE_EXIT_CODE, UPDATER_ENV
 
 if TYPE_CHECKING:
@@ -273,6 +274,7 @@ def run_supervised(
     extra = {SUPERVISOR_ENV: "1"}
     if updater is not None:
         extra[UPDATER_ENV] = "launcher"
+        extra[UPDATE_DIR_ENV] = str(updater.folder)
     child_environment = {**environment, **extra}
     restarts: deque[float] = deque(maxlen=MAX_RESTARTS)
     watching = False

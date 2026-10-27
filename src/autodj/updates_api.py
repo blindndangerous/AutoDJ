@@ -5,8 +5,9 @@ the update settings, the last check (checking again when it is stale),
 whether AutoDJ can restart and update itself, and how the last update
 went.  ``POST /api/updates/check`` checks now; ``PUT /api/updates/settings``
 saves the settings; ``POST /api/server/restart`` restarts AutoDJ;
-``POST /api/server/update`` asks the checkout's launcher to update it.
-Every station shares them.
+``POST /api/server/update`` asks the updater to update it, and
+``POST /api/server/go-back`` to go back to the release it moved to
+development from.  Every station shares them.
 
 They are browser routes like every settings change: a paired browser
 session when pairing is on, an allowed Origin for the writes, and machine
@@ -18,13 +19,16 @@ and six an hour, counted in a file so a restart does not reset the count;
 when that file cannot be written, restart is refused.  One update check
 runs at a time: page loads during a slow check wait for it.
 
-Update is refused unless :func:`autodj.updates.update_support` says the
-launcher updates this checkout and the last check found an update.  It
-takes no options: the server writes the hand-off record (an id, the
-channel it follows and where it listens) and exits with
-:data:`autodj.updates.UPDATE_EXIT_CODE`; the launcher works out the target
-itself (:mod:`autodj.checkout_update`).  Its own limiter file keeps it to
-one a minute and six an hour, and only one update or restart is pending.
+Update is refused unless :func:`autodj.updates.update_support` names an
+updater and the last check found an update; Go back, unless the updater
+recorded a usable backup when it moved a release to development.  They
+take no options: the server writes ``request.json`` (an id, the action,
+the channel it follows and where it listens; see
+:mod:`autodj.update_contract`) and exits with
+:data:`autodj.updates.UPDATE_EXIT_CODE`; the updater works out the target
+itself (:mod:`autodj.checkout_update`).  Their own limiter file keeps them
+to one a minute and six an hour, and only one update, go-back or restart
+is pending.
 """
 
 from __future__ import annotations
@@ -43,23 +47,21 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, StrictBool
 
+from autodj import update_contract as contract
 from autodj.security import emit_audit, new_request_id, seconds_text
+from autodj.update_contract import HealthProbe
 from autodj.updates import (
-    FINAL_UPDATE_STATES,
     RESTART_EXIT_CODE,
     UPDATE_EXIT_CODE,
-    HealthProbe,
+    Installation,
     RestartSupport,
     UpdateCheck,
     UpdateChecker,
     UpdateSettings,
     UpdateSupport,
     channel_for,
-    read_update_state,
     restart_support,
-    update_state_path,
     update_support,
-    write_update_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,7 @@ ROUTES = (
     "/api/updates/settings",
     "/api/server/restart",
     "/api/server/update",
+    "/api/server/go-back",
 )
 #: Seconds the page waits between two Check now presses.
 CHECK_INTERVAL_SECONDS = 10.0
@@ -184,31 +187,51 @@ class RestartLimiter:
             return None
 
 
-def last_update(path: Path | None, now: float) -> dict[str, Any] | None:
-    """The last update's result for the page, from the hand-off record, or ``None``.
+def last_update(folder: Path | None, now: float) -> dict[str, Any] | None:
+    """The last update's result for the page, from ``result.json``, or ``None``.
 
-    Only what the page shows: the id, the state, the launcher's sentence and
-    the recovery commands.  A result older than UPDATE_RESULT_SECONDS is not
-    shown, nor a request the launcher has not taken up.
+    Only what the page shows: the id, the action, the outcome, the
+    updater's sentence and the recovery commands.  A result older than
+    UPDATE_RESULT_SECONDS is not shown.
     """
-    record = read_update_state(path) if path is not None else None
-    if record is None or record.get("state") == "requested":
+    record = contract.read_result(folder) if folder is not None else None
+    if record is None:
         return None
-    updated = record.get("updated_at")
-    if not isinstance(updated, (int, float)) or now - updated > UPDATE_RESULT_SECONDS:
+    finished = record.get("finished_at")
+    if not isinstance(finished, (int, float)) or now - finished > UPDATE_RESULT_SECONDS:
         return None
-    commands = record.get("commands")
-    message = record.get("message")
-    lines = (
-        [line for line in commands if isinstance(line, str)] if isinstance(commands, list) else []
-    )
     return {
         "id": record.get("id"),
-        "state": record["state"],
-        "final": record["state"] in FINAL_UPDATE_STATES,
-        "message": message if isinstance(message, str) else "",
-        "commands": lines[:20],
-        "updated_at": updated,
+        "action": record["action"],
+        "outcome": record["outcome"],
+        "message": record["message"],
+        "commands": list(record["commands"])[:20],
+        "finished_at": finished,
+    }
+
+
+def go_back_offer(
+    folder: Path | None, installation: Installation, channel: str, update: UpdateSupport
+) -> dict[str, Any] | None:
+    """Whether the page offers Go back, or ``None`` when there is nothing to say.
+
+    Only on the stable channel, for a checkout not on a release, with the
+    updater that recorded the backup when it moved that release to
+    development.  A recorded backup that is missing or unreadable is not
+    offered, with one sentence saying why.
+    """
+    record = contract.read_go_back(folder) if folder is not None else None
+    if record is None or channel != "stable" or installation.tag is not None:
+        return None
+    if not update.available:
+        return None
+    problem = contract.go_back_problem(record)
+    return {
+        "available": problem is None,
+        "tag": record.tag,
+        "version": record.version,
+        "date": record.date,
+        "message": problem or "",
     }
 
 
@@ -218,11 +241,13 @@ def updates_view(
     result: UpdateCheck | None,
     update: UpdateSupport | None = None,
     last: dict[str, Any] | None = None,
+    folder: Path | None = None,
 ) -> dict[str, Any]:
     """Everything Settings, Updates shows, with *result* as the last check."""
     installation = checker.installation()
     settings = checker.settings()
     channel, source = channel_for(installation, settings)
+    update = update or update_support(installation)
     return {
         "installation": installation.to_dict(),
         "settings": settings.to_dict(),
@@ -233,7 +258,8 @@ def updates_view(
         },
         "check": result.to_dict() if result is not None else None,
         "restart": support.to_dict(),
-        "update": (update or update_support(installation)).to_dict(),
+        "update": update.to_dict(),
+        "go_back": go_back_offer(folder, installation, channel, update),
         "last_update": last,
     }
 
@@ -253,8 +279,9 @@ def install_updates(
     (a test client, an embedding) restart and update are refused.  After a
     restart or update request, ``app.state.restart_requested`` is true and
     ``app.state.exit_status`` is the status ``serve`` exits with.
-    ``app.state.update_state_file`` names the hand-off record; by default it
-    is the one in this installation's checkout.
+    ``app.state.update_dir`` names the update folder; by default the one
+    the updater names, else ``updates`` in the index folder
+    (:func:`autodj.update_contract.update_dir`).
     """
     checker = checker or UpdateChecker(index_dir)
     limiter = RestartLimiter(lambda: Path(index_dir()) / "logs" / "restart-requests.json")
@@ -280,7 +307,7 @@ def install_updates(
     app.state.update_checker = checker
     app.state.restart_requested = False
     app.state.exit_status = None
-    app.state.update_state_file = None
+    app.state.update_dir = None
     app.state.health_probe = None
 
     def audit(request: Request, action: str, outcome: str, route: str, code: int) -> None:
@@ -306,12 +333,11 @@ def install_updates(
             return RestartSupport(None, "This server cannot stop itself, so it cannot restart.")
         return found
 
-    def state_file() -> Path | None:
-        configured = getattr(app.state, "update_state_file", None)
+    def folder() -> Path | None:
+        configured = getattr(app.state, "update_dir", None)
         if configured is not None:
             return Path(configured)
-        root = checker.installation().root
-        return update_state_path(root) if root is not None else None
+        return contract.update_dir(Path(index_dir()))
 
     def current_update_support() -> UpdateSupport:
         found = update_support(checker.installation())
@@ -325,8 +351,14 @@ def install_updates(
         return found
 
     def view(found: RestartSupport, result: UpdateCheck | None) -> dict[str, Any]:
+        where = folder()
         return updates_view(
-            checker, found, result, current_update_support(), last_update(state_file(), time.time())
+            checker,
+            found,
+            result,
+            current_update_support(),
+            last_update(where, time.time()),
+            where,
         )
 
     @app.get("/api/updates")
@@ -412,80 +444,99 @@ def install_updates(
         background.add_task(schedule_exit, app)
         return {"restarting": True, "message": found.message}
 
-    @app.post("/api/server/update", status_code=202)
-    async def api_server_update(
-        request: Request, background: BackgroundTasks, _body: EmptyBody | None = None
+    async def ask_updater(
+        request: Request, background: BackgroundTasks, action: str, route: str, audited: str
     ) -> Any:
-        """Stop AutoDJ so the checkout's launcher updates it and starts it again.
-
-        The target comes from the last check, never from the request; the
-        launcher checks again before it changes anything.
-        """
-        route = "/api/server/update"
-        browser_only(request, "server-update", route)
+        """Write ``request.json`` for *action* and stop, so the updater takes over."""
+        browser_only(request, audited, route)
         found = await asyncio.to_thread(current_update_support)
         if not found.available:
-            audit(request, "server-update", "rejected", route, 409)
+            audit(request, audited, "rejected", route, 409)
             raise HTTPException(status_code=409, detail=found.message)
         if app.state.restart_requested:
-            audit(request, "server-update", "rejected", route, 409)
+            audit(request, audited, "rejected", route, 409)
             raise HTTPException(status_code=409, detail=BUSY)
         result = await shared_check(force=False)
-        if result.status != "available" or result.target is None:
-            audit(request, "server-update", "rejected", route, 409)
-            raise HTTPException(
-                status_code=409, detail=f"No update is available. {result.message}".strip()
-            )
-        path = await asyncio.to_thread(state_file)
+        installation = await asyncio.to_thread(checker.installation)
+        where = await asyncio.to_thread(folder)
+        if action == "update":
+            if result.status != "available" or result.target is None:
+                audit(request, audited, "rejected", route, 409)
+                raise HTTPException(
+                    status_code=409, detail=f"No update is available. {result.message}".strip()
+                )
+            channel, target = result.channel, result.target
+        else:
+            channel = channel_for(installation, checker.settings())[0]
+            offer = await asyncio.to_thread(go_back_offer, where, installation, channel, found)
+            if offer is None or not offer["available"]:
+                audit(request, audited, "rejected", route, 409)
+                detail = (offer or {}).get("message") or "There is no release to go back to."
+                raise HTTPException(status_code=409, detail=detail)
+            target = offer["tag"]
         probe = app.state.health_probe
-        if path is None or not isinstance(probe, HealthProbe):
-            audit(request, "server-update", "rejected", route, 409)
+        if where is None or not isinstance(probe, HealthProbe):
+            audit(request, audited, "rejected", route, 409)
             raise HTTPException(status_code=409, detail="This server cannot update itself.")
         try:
             wait = await asyncio.to_thread(update_limiter.take)
         except LimitUnavailable as exc:
-            audit(request, "server-update", "failed", route, 503)
+            audit(request, audited, "failed", route, 503)
             raise HTTPException(status_code=503, detail=str(exc)) from None
         if wait is not None:
-            audit(request, "server-update", "rejected", route, 429)
+            audit(request, audited, "rejected", route, 429)
             return JSONResponse(
                 {"detail": f"AutoDJ updated a moment ago. Try again in {seconds_text(wait)}."},
                 status_code=429,
                 headers={"Retry-After": str(wait)},
             )
-        installation = await asyncio.to_thread(checker.installation)
         update_id = secrets.token_hex(8)
-        now = time.time()
         record = {
-            "state": "requested",
             "id": update_id,
-            "requested_at": now,
-            "updated_at": now,
-            "channel": result.channel,
-            # For the record only: the launcher works out the target itself.
-            "target": result.target,
+            "action": action,
+            "channel": channel,
+            "requested_at": time.time(),
+            # For the record only: the updater works out the target itself.
+            "target": target,
             "from": {"version": installation.version, "commit": installation.commit},
-            "probe": probe.to_dict(),
+            "health": probe.to_dict(),
         }
+        path = where / contract.REQUEST
         try:
-            await asyncio.to_thread(write_update_state, path, record)
+            await asyncio.to_thread(contract.write, path, record)
         except OSError as exc:
             logger.warning("Could not write the update request %s: %s", path, exc)
-            audit(request, "server-update", "failed", route, 503)
+            audit(request, audited, "failed", route, 503)
             raise HTTPException(
                 status_code=503, detail=f"AutoDJ could not write {path}, so it did not update."
             ) from None
-        audit(request, "server-update", "accepted", route, 202)
-        logger.warning("Update requested from the web page; AutoDJ is stopping to update.")
+        audit(request, audited, "accepted", route, 202)
+        logger.warning("%s requested from the web page; AutoDJ is stopping.", action)
         app.state.restart_requested = True
         background.add_task(schedule_exit, app, None, UPDATE_EXIT_CODE)
-        return {
-            "updating": True,
-            "id": update_id,
-            "target": result.target,
-            "latest": result.latest,
-            "message": found.message,
-        }
+        return {"updating": True, "id": update_id, "action": action, "target": target}
+
+    @app.post("/api/server/update", status_code=202)
+    async def api_server_update(
+        request: Request, background: BackgroundTasks, _body: EmptyBody | None = None
+    ) -> Any:
+        """Stop AutoDJ so its updater updates it and starts it again.
+
+        The target comes from the last check, never from the request; the
+        updater checks again before it changes anything.
+        """
+        return await ask_updater(
+            request, background, "update", "/api/server/update", "server-update"
+        )
+
+    @app.post("/api/server/go-back", status_code=202)
+    async def api_server_go_back(
+        request: Request, background: BackgroundTasks, _body: EmptyBody | None = None
+    ) -> Any:
+        """Stop AutoDJ so its updater goes back to the release it moved from, with its backup."""
+        return await ask_updater(
+            request, background, "go-back", "/api/server/go-back", "server-go-back"
+        )
 
     return checker
 

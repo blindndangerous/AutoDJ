@@ -5,15 +5,18 @@ from __future__ import annotations
 import json
 import logging
 import time
+import zipfile
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from autodj import update_contract as contract
 from autodj import updates, updates_api
 from autodj.server import PlayerBridge
-from autodj.updates import HealthProbe, Installation, RestartSupport, UpdateCheck, UpdateSupport
+from autodj.update_contract import HealthProbe
+from autodj.updates import Installation, RestartSupport, UpdateCheck, UpdateSupport
 from tests._layout import point_index
 from tests._server import create_app
 
@@ -341,7 +344,7 @@ def _updatable(
     checker._check = Mock(return_value=result or _available())
     client.app.state.server_exit = Mock()
     client.app.state.health_probe = _PROBE
-    client.app.state.update_state_file = tmp_path / "checkout" / ".uv" / "update" / "state.json"
+    client.app.state.update_dir = tmp_path / "checkout" / ".uv" / "update"
     return client
 
 
@@ -353,7 +356,7 @@ def test_update_hands_the_launcher_a_request_and_exits_with_the_update_status(
     view = client.get("/api/updates").json()
     assert view["update"] == {
         "available": True,
-        "mode": "launcher",
+        "mechanism": "launcher",
         "message": "The AutoDJ launcher updates this checkout.",
         "guide_url": "guide",
     }
@@ -370,12 +373,10 @@ def test_update_hands_the_launcher_a_request_and_exits_with_the_update_status(
     body = response.json()
     assert body["updating"] is True
     assert body["target"] == "v0.22.0"
-    record = updates.read_update_state(client.app.state.update_state_file)
-    assert record is not None
-    assert record["state"] == "requested"
-    assert record["id"] == body["id"]
-    assert record["channel"] == "stable"
-    assert record["probe"] == _PROBE.to_dict()
+    request = contract.read_request(client.app.state.update_dir)
+    assert request == contract.Request(
+        body["id"], "update", "stable", pytest.approx(time.time(), abs=60), _PROBE
+    )
     assert again.status_code == 409
     assert again.json()["detail"] == "AutoDJ is already restarting or updating."
     assert restart.status_code == 409
@@ -447,31 +448,143 @@ def test_update_is_rate_limited_in_its_own_file(
 def test_the_page_gets_the_last_update_result_for_a_day(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ADR-0016-12: only the id, state, sentence and recovery commands; not a pending request."""
+    """ADR-0016-12: only the id, action, outcome, sentence and recovery commands."""
     client = _updatable(tmp_path, monkeypatch)
-    path = client.app.state.update_state_file
-    updates.write_update_state(
-        path,
-        {
-            "state": "rolled-back",
-            "id": "abcdef12",
-            "updated_at": time.time(),
-            "message": "The update failed, so AutoDJ went back to 0.21.0.",
-            "commands": ["git switch --detach v0.22.0"],
-            "backup": "/somewhere/private.zip",
-        },
-    )
+    folder = client.app.state.update_dir
+    result = {
+        "id": "abcdef12",
+        "action": "update",
+        "outcome": "rolled-back",
+        "finished_at": time.time(),
+        "message": "The update failed, so AutoDJ went back to 0.21.0.",
+        "commands": ["git switch --detach v0.22.0"],
+        "steps": contract.new_steps(),
+        "backup": "/somewhere/private.zip",
+    }
+    contract.write(folder / contract.RESULT, result)
     last = client.get("/api/updates").json()["last_update"]
     assert last == {
         "id": "abcdef12",
-        "state": "rolled-back",
-        "final": True,
+        "action": "update",
+        "outcome": "rolled-back",
         "message": "The update failed, so AutoDJ went back to 0.21.0.",
         "commands": ["git switch --detach v0.22.0"],
-        "updated_at": pytest.approx(time.time(), abs=60),
+        "finished_at": pytest.approx(time.time(), abs=60),
     }
-    updates.write_update_state(path, {"state": "updated", "id": "abcdef12", "updated_at": 1.0})
+    contract.write(folder / contract.RESULT, {**result, "finished_at": 1.0})
     assert client.get("/api/updates").json()["last_update"] is None
-    pending = {"state": "requested", "id": "abcdef12", "updated_at": time.time()}
-    updates.write_update_state(path, pending)
-    assert client.get("/api/updates").json()["last_update"] is None
+
+
+def test_without_an_updater_the_update_folder_is_in_the_index_folder(tmp_path: Path) -> None:
+    """ADR-0016-12: where a container's helper would read and write the same files."""
+    client = _client(tmp_path)
+    contract.write(
+        tmp_path / "updates" / contract.RESULT,
+        {
+            "id": "abcdef12",
+            "action": "update",
+            "outcome": "updated",
+            "finished_at": time.time(),
+            "message": "Updated to 0.22.0.",
+            "commands": [],
+            "steps": contract.new_steps(),
+        },
+    )
+    assert client.get("/api/updates").json()["last_update"]["message"] == "Updated to 0.22.0."
+
+
+# ---------------------------------------------------------------------------
+# Go back
+# ---------------------------------------------------------------------------
+
+
+def _with_go_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, backup: bool = True
+) -> TestClient:
+    """A development checkout whose updater kept the backup of the release it came from."""
+    waiting = UpdateCheck(
+        "waiting-for-release",
+        "stable",
+        "setting",
+        "You'll move to Stable when the next release includes your version.",
+        latest="v0.21.0",
+    )
+    client = _updatable(tmp_path, monkeypatch, waiting)
+    client.app.state.update_checker._installation = lambda: Installation(
+        kind="git", version="0.22.0", commit="3" * 40, branch="master", root=tmp_path / "checkout"
+    )
+    client.app.state.update_checker.save(updates.UpdateSettings(check=True, channel="stable"))
+    folder = client.app.state.update_dir
+    kept = folder / contract.BACKUPS / "autodj-go-back-0.21.0-20261027-101500.zip"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    if backup:
+        with zipfile.ZipFile(kept, "w") as archive:
+            archive.writestr("manifest.json", "{}")
+    contract.write(
+        folder / contract.GO_BACK,
+        {
+            "tag": "v0.21.0",
+            "version": "0.21.0",
+            "commit": _OLD,
+            "backup": str(kept),
+            "made_at": 1_793_000_000.0,
+        },
+    )
+    return client
+
+
+def test_go_back_is_offered_with_its_date_and_hands_the_launcher_a_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """ADR-0016-20: its own audit action, the update's limit, and one pending at a time."""
+    client = _with_go_back(tmp_path, monkeypatch)
+    date = contract.GoBack("v0.21.0", "0.21.0", _OLD, Path("x"), 1_793_000_000.0).date
+    offer = client.get("/api/updates").json()["go_back"]
+    assert offer == {
+        "available": True,
+        "tag": "v0.21.0",
+        "version": "0.21.0",
+        "date": date,
+        "message": "",
+    }
+    with caplog.at_level(logging.INFO, logger="autodj.audit"), client:
+        response = client.post("/api/server/go-back", json={})
+        assert response.status_code == 202
+        again = client.post("/api/server/update", json={})
+    assert response.json()["action"] == "go-back"
+    request = contract.read_request(client.app.state.update_dir)
+    assert request is not None
+    assert request.action == "go-back"
+    assert again.status_code == 409
+    assert [entry["outcome"] for entry in _audits(caplog, "server-go-back")] == ["accepted"]
+    # The same limit as Update.
+    later = _with_go_back(tmp_path, monkeypatch)
+    assert later.post("/api/server/go-back", json={}).status_code == 429
+    assert later.post("/api/server/update", json={}).status_code == 409  # nothing available
+
+
+def test_go_back_without_its_backup_is_explained_and_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0016-20."""
+    client = _with_go_back(tmp_path, monkeypatch, backup=False)
+    offer = client.get("/api/updates").json()["go_back"]
+    assert offer["available"] is False
+    assert offer["message"].startswith("Going back to 0.21.0 is not offered, because the backup")
+    response = client.post("/api/server/go-back", json={})
+    assert response.status_code == 409
+    assert response.json()["detail"] == offer["message"]
+    client.app.state.server_exit.assert_not_called()
+
+
+def test_go_back_is_not_offered_off_the_stable_channel_or_without_a_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0016-20: never for a backup made by anything other than this flow."""
+    client = _with_go_back(tmp_path, monkeypatch)
+    client.app.state.update_checker.save(updates.UpdateSettings(check=True, channel="development"))
+    assert client.get("/api/updates").json()["go_back"] is None
+    client.app.state.update_checker.save(updates.UpdateSettings(check=True, channel="stable"))
+    contract.remove(client.app.state.update_dir / contract.GO_BACK)
+    assert client.get("/api/updates").json()["go_back"] is None
+    assert client.post("/api/server/go-back", json={}).status_code == 409

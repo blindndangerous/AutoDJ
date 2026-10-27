@@ -3371,11 +3371,11 @@ def serve(
         server.should_exit = True
 
     app.state.server_exit = _server_exit
-    from autodj.updates import health_probe_for
+    from autodj.update_contract import health_for
 
     # Where the checkout's launcher asks a new version whether it is up,
     # after Update (autodj.checkout_update).
-    app.state.health_probe = health_probe_for(
+    app.state.health_probe = health_for(
         host, port, https=secure_cookie, host_allowed=startup_policy.host_allowed
     )
     interrupted = False

@@ -68,21 +68,14 @@ RESTART_EXIT_CODE = 75
 UPDATE_EXIT_CODE = 85
 #: Set to ``1`` by the launcher for a ``serve`` it restarts on RESTART_EXIT_CODE.
 SUPERVISOR_ENV = "AUTODJ_SUPERVISOR"
-#: Set to ``launcher`` by a checkout launcher that updates the checkout when
-#: ``serve`` exits with UPDATE_EXIT_CODE.  A launcher from before the web
-#: update does not set it, so its server offers no Update.
+#: Set by an updater for the server it starts, naming itself: ``launcher``
+#: for a checkout launcher that updates the checkout when ``serve`` exits
+#: with UPDATE_EXIT_CODE.  A launcher from before the web update does not
+#: set it, so its server offers no Update.  The files they exchange are in
+#: :mod:`autodj.update_contract`.
 UPDATER_ENV = "AUTODJ_UPDATER"
-#: The hand-off between the server and the launcher, inside the checkout's
-#: ignored ``.uv`` folder beside the launcher's ``setup.json``.  The server
-#: writes the request; the launcher writes its progress and the result.
-UPDATE_STATE = Path(".uv") / "update" / "state.json"
-#: Every state the hand-off record can be in.
-UPDATE_STATES = ("requested", "running", "updated", "rolled-back", "refused", "failed", "stopped")
-#: The states that end an update.
-FINAL_UPDATE_STATES = frozenset({"updated", "rolled-back", "refused", "failed", "stopped"})
-_UPDATE_STATE_MAX_BYTES = 64 * 1024
-_UPDATE_ID_PATTERN = re.compile(r"[0-9a-f]{8,64}\Z")
-_PROBE_HOST_PATTERN = re.compile(r"[A-Za-z0-9.:\[\]-]{1,255}\Z")
+#: The updaters AutoDJ knows.  A helper on a container's host would add one.
+UPDATERS = ("launcher",)
 #: ``0`` turns the network check off for this process.  The tests set it, and
 #: so do setup's and restore's Doctor runs.
 CHECK_ENV = "AUTODJ_UPDATE_CHECK"
@@ -539,6 +532,10 @@ class UpdateCheck:
       since this one);
     - ``ahead``: this is newer than the latest release, or has commits
       ``master`` does not have yet;
+    - ``waiting-for-release``: the saved channel is stable, and this is
+      newer than the latest release (it came from ``master``).  It moves to
+      stable with the first release that includes it, which is then
+      ``available``;
     - ``branch``: a checkout on a branch other than ``master``, which no
       channel follows;
     - ``unknown``: no commit to compare with ``master``;
@@ -819,8 +816,14 @@ def check_for_update(
         )
     try:
         if channel == "stable":
+            newest = latest_release_tag(installation, runner=runner, fetch_text=fetch_text)
             result = _compare_release(
-                installation, latest_release_tag(installation, runner=runner, fetch_text=fetch_text)
+                installation,
+                newest,
+                saved_stable=settings.channel == "stable",
+                contained=lambda: contained_in_release(
+                    installation, newest, runner=runner, fetch_text=fetch_text
+                ),
             )
         else:
             result = _compare_development(
@@ -847,23 +850,93 @@ def check_for_update(
     )
 
 
+def contained_in_release(
+    installation: Installation,
+    tag: str,
+    *,
+    runner: Runner = run_bounded,
+    fetch_text: FetchText | None = None,
+) -> bool | None:
+    """Whether the release *tag* includes this installation's commit; ``None`` when unknown.
+
+    A checkout asks git (``merge-base --is-ancestor HEAD`` the tag), which
+    reads only what it already has: a tag not fetched yet is unknown.  An
+    installation without git asks GitHub's compare view.
+    """
+    commit = installation.commit
+    if commit is None or not TAG_PATTERN.fullmatch(tag):
+        return None
+    if installation.kind == "git" and installation.root is not None:
+        try:
+            done = git(
+                installation.root,
+                "merge-base",
+                "--is-ancestor",
+                "HEAD",
+                f"refs/tags/{tag}",
+                runner=runner,
+                timeout=5.0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return {0: True, 1: False}.get(done.returncode)
+    if not _SHORT_SHA_PATTERN.fullmatch(commit):
+        return None
+    fetch_text = fetch_text or _fetch_text
+    try:
+        body = fetch_text(
+            f"{REPOSITORY_API}/compare/{tag}...{commit}",
+            _api_headers(installation.version, "application/vnd.github+json"),
+            HTTP_TIMEOUT_SECONDS,
+        )
+        status = json.loads(body).get("status")
+    except (OSError, ValueError, AttributeError):
+        return None
+    # The commit is "behind" the tag (or the same) when the release includes it.
+    return {"behind": True, "identical": True, "ahead": False, "diverged": False}.get(status)
+
+
 def _compare_release(
-    installation: Installation, latest: str
+    installation: Installation,
+    latest: str,
+    *,
+    saved_stable: bool = False,
+    contained: Callable[[], bool | None] = lambda: None,
 ) -> tuple[str, str, str | None, str | None]:
-    """Compare with the newest release tag."""
-    mine, newest = version_key(installation.version), version_key(latest)
-    if mine > newest:
-        return "ahead", f"This is newer than the latest release, {latest}.", latest, None
-    if mine == newest:
-        if installation.kind == "git" and installation.tag != latest:
+    """Compare with the newest release tag.
+
+    Ahead of it, an installation whose saved channel is stable waits for the
+    first release that includes it (``waiting-for-release``); one that only
+    infers stable is ``ahead``.  A release that includes this commit is
+    ``available``, even with the same version number.
+    """
+
+    def beyond(message: str) -> tuple[str, str, str | None, str | None]:
+        if saved_stable:
             return (
-                "ahead",
-                f"This checkout has changes after the latest release, {latest}.",
+                "waiting-for-release",
+                "You'll move to Stable when the next release includes your version. "
+                f"Installed: {installation.describe()}. Latest release: {latest}.",
                 latest,
                 None,
             )
+        return "ahead", message, latest, None
+
+    available = ("available", f"Release {latest} is available.", latest, latest)
+    mine, newest = version_key(installation.version), version_key(latest)
+    if mine > newest:
+        return beyond(f"This is newer than the latest release, {latest}.")
+    if mine == newest:
+        if installation.kind == "git" and installation.tag != latest:
+            if installation.tag is None and contained() is True:
+                return available
+            return beyond(f"This checkout has changes after the latest release, {latest}.")
+        if installation.kind != "git" and contained() is False:
+            return beyond(f"This build has changes after the latest release, {latest}.")
         return "current", f"This is the latest release, {latest}.", latest, None
-    return "available", f"Release {latest} is available.", latest, latest
+    if installation.kind == "git" and installation.tag is None and contained() is False:
+        return beyond(f"The latest release, {latest}, does not include this commit.")
+    return available
 
 
 def _compare_development(
@@ -1156,26 +1229,28 @@ UPDATE_GUIDES = {
 class UpdateSupport:
     """Whether this installation can update itself from the web page, and how.
 
-    ``mode`` is ``launcher`` (the checkout's launcher updates it between two
-    runs of ``serve``) or ``None``: the person who installed AutoDJ updates
-    it the way they installed it, as ``guide_url`` describes.  Another
-    updater (a helper on a container's host) would add a mode here.
+    ``mechanism`` is the updater that does it, one of UPDATERS (``launcher``:
+    the checkout's launcher, between two runs of ``serve``), or ``None``.
+    ``message`` says how, or why not: then the person who installed AutoDJ
+    updates it the way they installed it, as ``guide_url`` describes.  The
+    page shows the message and the link and needs nothing else, so a new
+    mechanism (a helper on a container's host) changes neither.
     """
 
-    mode: str | None
+    mechanism: str | None
     message: str
     guide_url: str | None = None
 
     @property
     def available(self) -> bool:
         """Whether the web page may offer Update."""
-        return self.mode is not None
+        return self.mechanism is not None
 
     def to_dict(self) -> dict[str, Any]:
         """The JSON form for the page."""
         return {
             "available": self.available,
-            "mode": self.mode,
+            "mechanism": self.mechanism,
             "message": self.message,
             "guide_url": self.guide_url,
         }
@@ -1187,8 +1262,8 @@ def update_support(
     """Find out whether something here can update AutoDJ when the page asks.
 
     Only a source checkout whose ``serve`` runs under a launcher that says it
-    updates (UPDATER_ENV) can.  A wheel, a container and a checkout started
-    any other way update the way they were installed.
+    updates (UPDATER_ENV) can, for now.  A wheel, a container and a checkout
+    started any other way update the way they were installed.
     """
     environment = os.environ if environ is None else environ
     guide = UPDATE_GUIDES.get(installation.kind, UPDATE_GUIDES["git"])
@@ -1200,120 +1275,6 @@ def update_support(
     ):
         return UpdateSupport("launcher", "The AutoDJ launcher updates this checkout.", guide)
     return UpdateSupport(None, "Update it the way you installed it.", guide)
-
-
-def update_state_path(root: Path) -> Path:
-    """The hand-off record of the checkout at *root*."""
-    return Path(root) / UPDATE_STATE
-
-
-def valid_update_id(value: object) -> str | None:
-    """*value* when it is an update's id (8 to 64 lowercase hex digits), else ``None``."""
-    return value if isinstance(value, str) and _UPDATE_ID_PATTERN.fullmatch(value) else None
-
-
-def read_update_state(path: Path) -> dict[str, Any] | None:
-    """The hand-off record at *path*, or ``None`` when it is missing or damaged."""
-    try:
-        with Path(path).open("rb") as handle:
-            data = handle.read(_UPDATE_STATE_MAX_BYTES + 1)
-    except OSError:
-        return None
-    if len(data) > _UPDATE_STATE_MAX_BYTES:
-        return None
-    try:
-        record = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return None
-    if not isinstance(record, dict) or record.get("state") not in UPDATE_STATES:
-        return None
-    if record.get("id") is not None and valid_update_id(record["id"]) is None:
-        return None
-    return record
-
-
-def write_update_state(path: Path, record: Mapping[str, Any]) -> None:
-    """Replace the hand-off record atomically.
-
-    Raises:
-        OSError: It could not be written.
-    """
-    from autodj.fsutil import atomic_write
-
-    atomic_write(Path(path), json.dumps(dict(record), indent=2) + "\n")
-
-
-@dataclass(frozen=True)
-class HealthProbe:
-    """Where the launcher asks a new server whether it is up: ``GET /healthz``.
-
-    ``address`` is the IP address to connect to (loopback for a server bound
-    to every interface); ``host`` is the Host header, one the server's own
-    allowed hosts accept.
-    """
-
-    scheme: str
-    address: str
-    port: int
-    host: str
-
-    @property
-    def url(self) -> str:
-        """The address of ``/healthz``."""
-        address = f"[{self.address}]" if ":" in self.address else self.address
-        return f"{self.scheme}://{address}:{self.port}/healthz"
-
-    def to_dict(self) -> dict[str, Any]:
-        """The JSON form in the hand-off record."""
-        return asdict(self)
-
-
-def parse_health_probe(raw: object) -> HealthProbe | None:
-    """A probe from the hand-off record, or ``None`` unless every part is valid.
-
-    The address must be an IP address or ``localhost``, so the launcher only
-    ever asks this computer or the address the server was bound to.
-    """
-    import ipaddress
-
-    if not isinstance(raw, dict):
-        return None
-    scheme, address, port, host = (raw.get(key) for key in ("scheme", "address", "port", "host"))
-    if scheme not in {"http", "https"} or not isinstance(address, str):
-        return None
-    if address != "localhost":
-        try:
-            ipaddress.ip_address(address)
-        except ValueError:
-            return None
-    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
-        return None
-    if not isinstance(host, str) or not _PROBE_HOST_PATTERN.fullmatch(host):
-        return None
-    return HealthProbe(scheme, address, port, host)
-
-
-def health_probe_for(
-    host: str, port: int, *, https: bool, host_allowed: Callable[[str], bool]
-) -> HealthProbe:
-    """How to reach a server bound to *host*:*port* from this computer.
-
-    A server bound to every interface is asked on loopback.  The Host header
-    is the first of the address, ``localhost``, the loopback addresses and
-    *host* that *host_allowed* accepts, so the server's own Host check lets
-    the probe through; with none, the address itself.
-    """
-    bound = host.strip("[]")
-    if bound in {"", "0.0.0.0"}:  # nosec B104 -- compares the bind address, binds nothing
-        address = "127.0.0.1"
-    elif bound == "::":
-        address = "::1"
-    else:
-        address = bound
-    candidates = [address, "localhost", "127.0.0.1", "::1", bound]
-    header = next((name for name in candidates if name and host_allowed(name)), address)
-    rendered = f"[{header}]" if ":" in header else header
-    return HealthProbe("https" if https else "http", address, port, f"{rendered}:{port}")
 
 
 def channel_label(channel: str) -> str:
@@ -1346,7 +1307,6 @@ __all__ = [
     "TAG_PATTERN",
     "UPDATER_ENV",
     "UPDATE_EXIT_CODE",
-    "HealthProbe",
     "Installation",
     "RestartSupport",
     "UpdateCheck",

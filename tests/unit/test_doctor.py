@@ -1316,3 +1316,28 @@ def test_restore_runs_doctor_offline(tmp_path: Path, monkeypatch) -> None:
         result = CliRunner().invoke(cli, ["restore", str(archive)])
     assert result.exit_code == 0, result.output
     assert seen == [{"check_updates": False}]
+
+
+def test_doctor_and_check_update_say_when_development_waits_for_a_release(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """ADR-0016-19: a pass, in the same words as the page."""
+    from autodj import updates
+
+    waiting = updates.UpdateCheck(
+        status="waiting-for-release",
+        channel="stable",
+        channel_source="setting",
+        message="You'll move to Stable when the next release includes your version. "
+        "Installed: 0.22.0, commit 0db0a92, on master. Latest release: v0.21.0.",
+        latest="v0.21.0",
+    )
+    installation = updates.Installation("git", "0.22.0", commit="0" * 40, branch="master")
+    monkeypatch.setattr(updates, "detect_installation", lambda: installation)
+    monkeypatch.setattr(updates, "check_for_update", lambda *_args, **_kwargs: waiting)
+    check = doctor._update_check(_config(tmp_path))
+    assert check.status is doctor.CheckStatus.PASS
+    assert check.summary == waiting.message
+    lines = updates.describe_check(installation, waiting)
+    assert waiting.message in lines
+    assert not any(line.startswith("Make a backup") for line in lines)
