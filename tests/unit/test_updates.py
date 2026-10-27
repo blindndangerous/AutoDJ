@@ -788,3 +788,75 @@ def test_closing_a_checks_job_ends_exactly_the_processes_in_it() -> None:
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# Updating from the web page
+# ---------------------------------------------------------------------------
+
+
+def test_only_a_checkout_under_an_updating_launcher_can_update(tmp_path: Path) -> None:
+    """ADR-0016-11: other installations update the way they were installed."""
+    checkout = _git_checkout(tmp_path)
+    launched = {updates.SUPERVISOR_ENV: "1", updates.UPDATER_ENV: "launcher"}
+    support = updates.update_support(checkout, launched)
+    assert support.available is True
+    assert support.mode == "launcher"
+    # A launcher from before the web update restarts but cannot update.
+    older = updates.update_support(checkout, {updates.SUPERVISOR_ENV: "1"})
+    assert older.available is False
+    assert older.message == "Update it the way you installed it."
+    assert older.guide_url.endswith("backups-and-updates.md#update-a-source-checkout")
+    container = updates.update_support(Installation(kind="container", version="0.21.0"), launched)
+    assert container.available is False
+    assert container.guide_url.endswith("containers-and-windows.md#update-the-container")
+    package = updates.update_support(Installation(kind="package", version="0.21.0"), launched)
+    assert package.available is False
+    assert package.guide_url.endswith("backups-and-updates.md#update-a-wheel-installation")
+    assert support.to_dict()["available"] is True
+    assert updates.UPDATE_EXIT_CODE not in (0, updates.RESTART_EXIT_CODE)
+
+
+def test_the_hand_off_record_round_trips_and_damage_reads_as_none(tmp_path: Path) -> None:
+    """ADR-0016-12."""
+    path = updates.update_state_path(tmp_path)
+    assert path == tmp_path / ".uv" / "update" / "state.json"
+    assert updates.read_update_state(path) is None
+    record = {"state": "requested", "id": "0123abcd", "channel": "stable"}
+    updates.write_update_state(path, record)
+    assert updates.read_update_state(path) == record
+    for damaged in (
+        "not json",
+        "[]",
+        '{"state": "dancing"}',
+        '{"state": "requested", "id": "../etc"}',
+        '{"state": "updated", "pad": "' + "x" * 70_000 + '"}',
+    ):
+        path.write_text(damaged, encoding="utf-8")
+        assert updates.read_update_state(path) is None, damaged[:30]
+
+
+def test_the_health_probe_asks_this_computer_with_an_allowed_host() -> None:
+    """ADR-0016-13."""
+    everywhere = updates.health_probe_for(
+        "0.0.0.0", 8080, https=False, host_allowed=lambda name: name == "localhost"
+    )
+    assert everywhere.url == "http://127.0.0.1:8080/healthz"
+    assert everywhere.host == "localhost:8080"
+    six = updates.health_probe_for("::", 8443, https=True, host_allowed=lambda _name: False)
+    assert six.url == "https://[::1]:8443/healthz"
+    assert six.host == "[::1]:8443"
+    lan = updates.health_probe_for(
+        "192.0.2.10", 8080, https=False, host_allowed=lambda name: name == "192.0.2.10"
+    )
+    assert lan.url == "http://192.0.2.10:8080/healthz"
+    assert updates.parse_health_probe(lan.to_dict()) == lan
+    for bad in (
+        None,
+        {**lan.to_dict(), "scheme": "file"},
+        {**lan.to_dict(), "address": "example.com"},
+        {**lan.to_dict(), "port": 0},
+        {**lan.to_dict(), "port": True},
+        {**lan.to_dict(), "host": "a b"},
+    ):
+        assert updates.parse_health_probe(bad) is None

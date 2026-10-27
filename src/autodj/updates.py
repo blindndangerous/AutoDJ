@@ -61,8 +61,28 @@ _BRANCH_PATTERN = re.compile(r"[A-Za-z0-9._/-]{1,200}\Z")
 #: The exit status that asks the launcher, a service manager or a container
 #: runtime to start AutoDJ again (``EX_TEMPFAIL``).
 RESTART_EXIT_CODE = 75
+#: The exit status that asks the checkout's launcher to update AutoDJ, then
+#: start it again.  It is outside the ``sysexits`` range (64 to 78) and below
+#: the shell's 126, so it means nothing else.  Only a launcher that sets
+#: UPDATER_ENV acts on it; anything else sees a failed exit.
+UPDATE_EXIT_CODE = 85
 #: Set to ``1`` by the launcher for a ``serve`` it restarts on RESTART_EXIT_CODE.
 SUPERVISOR_ENV = "AUTODJ_SUPERVISOR"
+#: Set to ``launcher`` by a checkout launcher that updates the checkout when
+#: ``serve`` exits with UPDATE_EXIT_CODE.  A launcher from before the web
+#: update does not set it, so its server offers no Update.
+UPDATER_ENV = "AUTODJ_UPDATER"
+#: The hand-off between the server and the launcher, inside the checkout's
+#: ignored ``.uv`` folder beside the launcher's ``setup.json``.  The server
+#: writes the request; the launcher writes its progress and the result.
+UPDATE_STATE = Path(".uv") / "update" / "state.json"
+#: Every state the hand-off record can be in.
+UPDATE_STATES = ("requested", "running", "updated", "rolled-back", "refused", "failed", "stopped")
+#: The states that end an update.
+FINAL_UPDATE_STATES = frozenset({"updated", "rolled-back", "refused", "failed", "stopped"})
+_UPDATE_STATE_MAX_BYTES = 64 * 1024
+_UPDATE_ID_PATTERN = re.compile(r"[0-9a-f]{8,64}\Z")
+_PROBE_HOST_PATTERN = re.compile(r"[A-Za-z0-9.:\[\]-]{1,255}\Z")
 #: ``0`` turns the network check off for this process.  The tests set it, and
 #: so do setup's and restore's Doctor runs.
 CHECK_ENV = "AUTODJ_UPDATE_CHECK"
@@ -1117,6 +1137,185 @@ def restart_support(
     )
 
 
+# ---------------------------------------------------------------------------
+# Updating
+# ---------------------------------------------------------------------------
+
+#: Where each kind of installation's update procedure is described.
+UPDATE_GUIDES = {
+    "git": f"{REPOSITORY_URL}/blob/{DEVELOPMENT_BRANCH}/docs/guides/backups-and-updates.md"
+    "#update-a-source-checkout",
+    "container": f"{REPOSITORY_URL}/blob/{DEVELOPMENT_BRANCH}/docs/guides/operations/"
+    "containers-and-windows.md#update-the-container",
+    "package": f"{REPOSITORY_URL}/blob/{DEVELOPMENT_BRANCH}/docs/guides/backups-and-updates.md"
+    "#update-a-wheel-installation",
+}
+
+
+@dataclass(frozen=True)
+class UpdateSupport:
+    """Whether this installation can update itself from the web page, and how.
+
+    ``mode`` is ``launcher`` (the checkout's launcher updates it between two
+    runs of ``serve``) or ``None``: the person who installed AutoDJ updates
+    it the way they installed it, as ``guide_url`` describes.  Another
+    updater (a helper on a container's host) would add a mode here.
+    """
+
+    mode: str | None
+    message: str
+    guide_url: str | None = None
+
+    @property
+    def available(self) -> bool:
+        """Whether the web page may offer Update."""
+        return self.mode is not None
+
+    def to_dict(self) -> dict[str, Any]:
+        """The JSON form for the page."""
+        return {
+            "available": self.available,
+            "mode": self.mode,
+            "message": self.message,
+            "guide_url": self.guide_url,
+        }
+
+
+def update_support(
+    installation: Installation, environ: Mapping[str, str] | None = None
+) -> UpdateSupport:
+    """Find out whether something here can update AutoDJ when the page asks.
+
+    Only a source checkout whose ``serve`` runs under a launcher that says it
+    updates (UPDATER_ENV) can.  A wheel, a container and a checkout started
+    any other way update the way they were installed.
+    """
+    environment = os.environ if environ is None else environ
+    guide = UPDATE_GUIDES.get(installation.kind, UPDATE_GUIDES["git"])
+    if (
+        installation.kind == "git"
+        and installation.root is not None
+        and environment.get(SUPERVISOR_ENV) == "1"
+        and environment.get(UPDATER_ENV) == "launcher"
+    ):
+        return UpdateSupport("launcher", "The AutoDJ launcher updates this checkout.", guide)
+    return UpdateSupport(None, "Update it the way you installed it.", guide)
+
+
+def update_state_path(root: Path) -> Path:
+    """The hand-off record of the checkout at *root*."""
+    return Path(root) / UPDATE_STATE
+
+
+def valid_update_id(value: object) -> str | None:
+    """*value* when it is an update's id (8 to 64 lowercase hex digits), else ``None``."""
+    return value if isinstance(value, str) and _UPDATE_ID_PATTERN.fullmatch(value) else None
+
+
+def read_update_state(path: Path) -> dict[str, Any] | None:
+    """The hand-off record at *path*, or ``None`` when it is missing or damaged."""
+    try:
+        with Path(path).open("rb") as handle:
+            data = handle.read(_UPDATE_STATE_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(data) > _UPDATE_STATE_MAX_BYTES:
+        return None
+    try:
+        record = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("state") not in UPDATE_STATES:
+        return None
+    if record.get("id") is not None and valid_update_id(record["id"]) is None:
+        return None
+    return record
+
+
+def write_update_state(path: Path, record: Mapping[str, Any]) -> None:
+    """Replace the hand-off record atomically.
+
+    Raises:
+        OSError: It could not be written.
+    """
+    from autodj.fsutil import atomic_write
+
+    atomic_write(Path(path), json.dumps(dict(record), indent=2) + "\n")
+
+
+@dataclass(frozen=True)
+class HealthProbe:
+    """Where the launcher asks a new server whether it is up: ``GET /healthz``.
+
+    ``address`` is the IP address to connect to (loopback for a server bound
+    to every interface); ``host`` is the Host header, one the server's own
+    allowed hosts accept.
+    """
+
+    scheme: str
+    address: str
+    port: int
+    host: str
+
+    @property
+    def url(self) -> str:
+        """The address of ``/healthz``."""
+        address = f"[{self.address}]" if ":" in self.address else self.address
+        return f"{self.scheme}://{address}:{self.port}/healthz"
+
+    def to_dict(self) -> dict[str, Any]:
+        """The JSON form in the hand-off record."""
+        return asdict(self)
+
+
+def parse_health_probe(raw: object) -> HealthProbe | None:
+    """A probe from the hand-off record, or ``None`` unless every part is valid.
+
+    The address must be an IP address or ``localhost``, so the launcher only
+    ever asks this computer or the address the server was bound to.
+    """
+    import ipaddress
+
+    if not isinstance(raw, dict):
+        return None
+    scheme, address, port, host = (raw.get(key) for key in ("scheme", "address", "port", "host"))
+    if scheme not in {"http", "https"} or not isinstance(address, str):
+        return None
+    if address != "localhost":
+        try:
+            ipaddress.ip_address(address)
+        except ValueError:
+            return None
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        return None
+    if not isinstance(host, str) or not _PROBE_HOST_PATTERN.fullmatch(host):
+        return None
+    return HealthProbe(scheme, address, port, host)
+
+
+def health_probe_for(
+    host: str, port: int, *, https: bool, host_allowed: Callable[[str], bool]
+) -> HealthProbe:
+    """How to reach a server bound to *host*:*port* from this computer.
+
+    A server bound to every interface is asked on loopback.  The Host header
+    is the first of the address, ``localhost``, the loopback addresses and
+    *host* that *host_allowed* accepts, so the server's own Host check lets
+    the probe through; with none, the address itself.
+    """
+    bound = host.strip("[]")
+    if bound in {"", "0.0.0.0"}:  # nosec B104 -- compares the bind address, binds nothing
+        address = "127.0.0.1"
+    elif bound == "::":
+        address = "::1"
+    else:
+        address = bound
+    candidates = [address, "localhost", "127.0.0.1", "::1", bound]
+    header = next((name for name in candidates if name and host_allowed(name)), address)
+    rendered = f"[{header}]" if ":" in header else header
+    return HealthProbe("https" if https else "http", address, port, f"{rendered}:{port}")
+
+
 def channel_label(channel: str) -> str:
     """``Stable`` or ``Development``."""
     return "Development" if channel == "development" else "Stable"
@@ -1145,14 +1344,19 @@ __all__ = [
     "RESTART_EXIT_CODE",
     "SUPERVISOR_ENV",
     "TAG_PATTERN",
+    "UPDATER_ENV",
+    "UPDATE_EXIT_CODE",
+    "HealthProbe",
     "Installation",
     "RestartSupport",
     "UpdateCheck",
     "UpdateChecker",
     "UpdateSettings",
+    "UpdateSupport",
     "check_for_update",
     "detect_installation",
     "load_settings",
     "restart_support",
     "save_settings",
+    "update_support",
 ]
