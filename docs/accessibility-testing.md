@@ -454,8 +454,8 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Library tools, folder table: arrow onto each checkbox and hear its name and checked state;
   toggle it once, keep focus while saving and after the next poll, and confirm only one save.
   After a failed save, check that the saved value is restored and focus stays on the checkbox.
-  Search and History action cells are read as buttons named by the row's song, with the column
-  heading said once, by NVDA; returning from Track info leaves arrow navigation working.
+  Search and History action cells focus their buttons and announce the button role without
+  repeating the track name; returning from Track info leaves arrow navigation working.
 - Queue & Search, browsing: Tab to Type, Folder, Search text and Search; one result grid with
   arrows, Home and End, and Enter or Space activating each action; the track count said once per
   search and page, with focus staying on Previous or Next (or moving to the other when a page ends);
