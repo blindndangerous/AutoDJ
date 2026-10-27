@@ -321,7 +321,18 @@ def test_log_labels_must_tell_stations_apart(tmp_path: Path, label: str, reason:
         _load(tmp_path, text)
 
 
-def test_a_hand_edited_duplicate_log_label_skips_that_station(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("edited", "label", "reason"),
+    [
+        ("daybreak", "nor", "already used by station nightowl"),
+        ("daybreak", "nor\nfake line", "station.log_label must be"),
+        # The default's own label takes another station's ID: that station is skipped.
+        ("default", "daybreak", "ID of station daybreak"),
+    ],
+)
+def test_a_hand_edited_log_label_that_breaks_the_rules_skips_a_station(
+    tmp_path: Path, edited: str, label: str, reason: str
+) -> None:
     text = (
         BASE
         + NIGHTOWL
@@ -330,15 +341,16 @@ def test_a_hand_edited_duplicate_log_label_skips_that_station(tmp_path: Path) ->
     )
     cfg = _load(tmp_path, text)
     assert [spec.slug for spec in cfg.stations] == ["nightowl", "daybreak"]
-    definition = tmp_path / "index" / "stations" / "daybreak" / "station.json"
-    document = json.loads(definition.read_text(encoding="utf-8"))
-    document["station"].setdefault("station", {})["log_label"] = "nor"
-    definition.write_text(json.dumps(document), encoding="utf-8")
+    stations = tmp_path / "index" / "stations"
+    edited_definition = stations / edited / "station.json"
+    document = json.loads(edited_definition.read_text(encoding="utf-8"))
+    document["station"].setdefault("station", {})["log_label"] = label
+    edited_definition.write_text(json.dumps(document), encoding="utf-8")
     reloaded = load_config(cfg.config_path, environ={})
     assert [spec.slug for spec in reloaded.stations] == ["nightowl"]
-    ((path, reason),) = reloaded.skipped_definitions
-    assert path == str(definition)
-    assert "already used by station nightowl" in reason
+    ((path, why),) = reloaded.skipped_definitions
+    assert path == str(stations / "daybreak" / "station.json")
+    assert reason in why
 
 
 def test_relay_targets_must_differ_across_stations(tmp_path: Path) -> None:
