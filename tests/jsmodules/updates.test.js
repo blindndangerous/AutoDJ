@@ -355,19 +355,36 @@ describe("Updates panel", () => {
     expect(byId("updates-status").textContent).toBe("");
   });
 
-  it("says why a refused restart did not happen", async () => {
-    const { state } = install();
+  // ADR-0016-21
+  it("describes a refused restart on its button before the dialog closes", async () => {
+    const seen = {};
+    const confirm = vi.fn(async (_doc, { onConfirm }) => {
+      const target = await onConfirm();
+      seen.note = byId("updates-restart-refused").textContent;
+      seen.describedBy = target.getAttribute("aria-describedby");
+      target.focus();
+      return true;
+    });
+    const { state } = install({ confirm });
     state.refuse = "AutoDJ restarted less than a minute ago. Try again in 40 seconds.";
     open();
     await vi.waitFor(() => expect(byId("updates-restart").hidden).toBe(false));
+    byId("updates-restart").focus();  // a press focuses the button, as in a browser
     byId("updates-restart").click();
     const words = "Could not restart AutoDJ: AutoDJ restarted less than a minute ago. "
       + "Try again in 40 seconds.";
-    expect(await said()).toBe(words);
-    // It stays readable beside Restart until the next action.
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalled());
+    await vi.waitFor(() => expect(seen.note).toBe(words));
+    expect(seen.describedBy).toBe("updates-restart-refused");
+    expect(document.activeElement).toBe(byId("updates-restart"));
     expect(byId("updates-restart-refused").hidden).toBe(false);
-    expect(byId("updates-restart-refused").textContent).toBe(words);
     expect(byId("updates-restart-refused").getAttribute("aria-live")).toBe("off");
+    // Focus back on the button reads it: no second, live announcement.
+    await Promise.resolve();
+    expect(byId("updates-status").textContent).toBe("");
+    byId("updates-check").click();
+    expect(byId("updates-restart-refused").hidden).toBe(true);
+    expect(byId("updates-restart").hasAttribute("aria-describedby")).toBe(false);
   });
 
   it("says so when AutoDJ does not come back", async () => {
@@ -436,24 +453,82 @@ describe("Update and Go back", () => {
   });
 
   // ADR-0016-21
-  it("says why a refused update did not happen, and keeps it readable", async () => {
-    const { state } = install({ initial: view({ check: RELEASE }) });
+  it("describes a refused update on its button before the dialog closes, until the next action", async () => {
+    const seen = {};
+    const confirm = vi.fn(async (_doc, { onConfirm }) => {
+      const target = await onConfirm();
+      seen.note = byId("updates-update-refused").textContent;
+      seen.hidden = byId("updates-update-refused").hidden;
+      seen.describedBy = target.getAttribute("aria-describedby");
+      target.focus();
+      return true;
+    });
+    const { state } = install({ initial: view({ check: RELEASE }), confirm });
     state.refuse = "AutoDJ was already updated 6 times in the last hour. "
       + "Try again in about 32 minutes.";
     open();
     await vi.waitFor(() => expect(byId("updates-update").hidden).toBe(false));
+    byId("updates-update").focus();  // a press focuses the button, as in a browser
     byId("updates-update").click();
     const words = "Could not update AutoDJ: AutoDJ was already updated 6 times in the last hour. "
       + "Try again in about 32 minutes.";
-    expect(await said()).toBe(words);
-    // It stays readable under Update until the next action.
+    await vi.waitFor(() => expect(seen.note).toBe(words));
+    expect(seen.hidden).toBe(false);
+    expect(seen.describedBy).toBe("updates-update-refused");
     const note = byId("updates-update-refused");
-    expect(note.hidden).toBe(false);
-    expect(note.textContent).toBe(words);
     expect(note.getAttribute("aria-live")).toBe("off");
+    await Promise.resolve();
+    expect(byId("updates-status").textContent).toBe("");
     byId("updates-check").click();
     expect(note.hidden).toBe(true);
     expect(note.textContent).toBe("");
+    expect(byId("updates-update").hasAttribute("aria-describedby")).toBe(false);
+  });
+
+  // ADR-0016-21
+  it("says a refusal aloud when focus did not come back to its button", async () => {
+    const confirm = vi.fn(async (_doc, { onConfirm }) => {
+      await onConfirm();
+      byId("updates-check").focus();  // the button was gone, say
+      return true;
+    });
+    const { state } = install({ initial: view({ check: RELEASE }), confirm });
+    state.refuse = "AutoDJ was updated less than a minute ago. Try again in 40 seconds.";
+    open();
+    await vi.waitFor(() => expect(byId("updates-update").hidden).toBe(false));
+    byId("updates-update").click();
+    expect(await said()).toBe(
+      "Could not update AutoDJ: AutoDJ was updated less than a minute ago. Try again in 40 seconds.",
+    );
+  });
+
+  // ADR-0016-21
+  it("keeps a refused Go back's note beside Go back, not Update", async () => {
+    const seen = {};
+    const confirm = vi.fn(async (_doc, { onConfirm }) => {
+      const target = await onConfirm();
+      seen.describedBy = target.getAttribute("aria-describedby");
+      target.focus();
+      return true;
+    });
+    const back = { available: true, tag: "v0.21.0", version: "0.21.0", date: "2026-10-27", message: "" };
+    const { state } = install({ initial: view({ go_back: back }), confirm });
+    state.refuse = "AutoDJ was updated less than a minute ago. Try again in 40 seconds.";
+    open();
+    await vi.waitFor(() => expect(byId("updates-go-back-button").hidden).toBe(false));
+    byId("updates-go-back-button").focus();
+    byId("updates-go-back-button").click();
+    const note = byId("updates-go-back-refused");
+    await vi.waitFor(() => expect(note.hidden).toBe(false));
+    expect(note.previousElementSibling).toBe(byId("updates-go-back-button"));
+    expect(note.textContent).toBe(
+      "Could not go back: AutoDJ was updated less than a minute ago. Try again in 40 seconds.",
+    );
+    expect(seen.describedBy).toBe("updates-go-back-refused");
+    expect(byId("updates-update-refused").hidden).toBe(true);
+    byId("updates-check").click();
+    expect(note.hidden).toBe(true);
+    expect(byId("updates-go-back-button").hasAttribute("aria-describedby")).toBe(false);
   });
 
   // ADR-0016-21

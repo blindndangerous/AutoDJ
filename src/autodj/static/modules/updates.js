@@ -34,7 +34,8 @@ export const UPDATE_WAIT_MS = 3 * 3600000;
 const MINUTE_MS = 60000;
 // After a confirmation closes, focus moves back to its button; a live-region
 // change in the same moment can be lost in NVDA's focus speech.  What is said
-// right after the dialog waits this long first.
+// right after the dialog waits this long first.  A refusal needs no wait when
+// focus is back on its button: the button describes it (aria-describedby).
 const SETTLE_MS = 300;
 // After AutoDJ is back, how long the page waits for the updater's result.
 const RESULT_WAIT_MS = 60000;
@@ -146,11 +147,12 @@ export function installUpdates({
   const progress = get("updates-progress");
   const reloadButton = get("updates-reload");
   const updateRefused = get("updates-update-refused");
+  const goBackRefused = get("updates-go-back-refused");
   const restartRefused = get("updates-restart-refused");
   const parts = [panel, status, current, latest, check, enabled, channel, automatic, save,
     restartNote, restartButton, notes, notesLink, updateButton, installNote, installWords,
     guideLink, goBack, goBackNote, goBackButton, last, result, how, commands, progress,
-    reloadButton, updateRefused, restartRefused];
+    reloadButton, updateRefused, goBackRefused, restartRefused];
   if (parts.some((part) => !part)) return { load: async () => false };
 
   let view = null;
@@ -160,19 +162,36 @@ export function installUpdates({
     announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 6000 : 4000, tone });
   };
 
-  // A refusal stays readable in the panel until the next action, besides
-  // being said once.
-  function refuse(note, message) {
+  // Each refusable button and the note that says why it was refused.
+  const refusals = [
+    [updateButton, updateRefused],
+    [goBackButton, goBackRefused],
+    [restartButton, restartRefused],
+  ];
+
+  // A refusal is written beside its button, and the button points at it,
+  // while the dialog is still open: focus coming back to the button then
+  // reads it, with no timing involved.  It stays until the next action.
+  function showRefusal(button, note, message) {
     note.textContent = message;
     note.hidden = false;
-    say(message, "error");
+    button.setAttribute("aria-describedby", note.id);
   }
 
   function clearRefusals() {
-    for (const note of [updateRefused, restartRefused]) {
+    for (const [button, note] of refusals) {
       note.textContent = "";
       note.hidden = true;
+      button.removeAttribute("aria-describedby");
     }
+  }
+
+  // Said aloud only when focus did not come back to the refused button,
+  // which already reads it, and only once focus has settled.
+  async function sayRefusal(button, message) {
+    if (doc.activeElement === button) return;
+    await settle();
+    say(message, "error");
   }
 
   function showLast(next) {
@@ -343,7 +362,7 @@ export function installUpdates({
 
   // Update and Go back: ask, stop AutoDJ for its updater, wait, and say once
   // how it went in the updater's own words.
-  async function runUpdater({ url, button, dialog, refusedWords, away }) {
+  async function runUpdater({ url, button, note, dialog, refusedWords, away }) {
     let refused = null;
     let started = null;
     const confirmed = await confirm(doc, {
@@ -356,17 +375,18 @@ export function installUpdates({
             body: "{}",
           });
         } catch (errorValue) {
-          refused = errorValue.message;
+          refused = `${refusedWords}: ${errorValue.message}`;
+          showRefusal(button, note, refused);
         }
         return button;
       },
     });
     if (!confirmed) return;
-    await settle();
     if (refused) {
-      refuse(updateRefused, `${refusedWords}: ${refused}`);
+      await sayRefusal(button, refused);
       return;
     }
+    await settle();
     say(away);
     reloadButton.hidden = true;
     showProgress(away, 0);
@@ -393,6 +413,7 @@ export function installUpdates({
     return runUpdater({
       url: "/api/server/update",
       button: updateButton,
+      note: updateRefused,
       dialog: {
         title: "Update AutoDJ?",
         message: `AutoDJ makes a backup, installs ${targetWords(view?.check)} and starts again.  `
@@ -411,6 +432,7 @@ export function installUpdates({
     return runUpdater({
       url: "/api/server/go-back",
       button: goBackButton,
+      note: goBackRefused,
       dialog: {
         title: `Go back to AutoDJ ${back.version}?`,
         message: `AutoDJ restores the backup it made on ${back.date}, when it moved to `
@@ -442,16 +464,17 @@ export function installUpdates({
           });
         } catch (errorValue) {
           refused = `Could not restart AutoDJ: ${errorValue.message}`;
+          showRefusal(restartButton, restartRefused, refused);
         }
         return restartButton;
       },
     });
     if (!confirmed) return;
-    await settle();
     if (refused) {
-      refuse(restartRefused, refused);
+      await sayRefusal(restartButton, refused);
       return;
     }
+    await settle();
     say("AutoDJ is restarting.  The stream is off the air until it is back.");
     if (await waitForServer()) {
       await load();
