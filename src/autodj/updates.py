@@ -1282,9 +1282,11 @@ def go_back_moved(
 ) -> str | None:
     """Why Go back to release *version* (at *commit*) no longer fits this checkout, or ``None``.
 
-    It fits while that release's commit is an ancestor of ``HEAD`` (the
-    checkout still came from it) and ``HEAD`` has not reached a newer
-    release since.  A checkout moved by hand drops the offer.
+    It fits while ``HEAD`` is not itself a release and that release's commit
+    is an ancestor of ``HEAD``: the checkout still came from it.  Development
+    that has since passed a newer release still fits, since that is when
+    someone waiting for Stable wants it; the updater forgets Go back when it
+    moves the checkout onto a release.  A checkout moved by hand drops it.
     """
     root = installation.root
     unknown = (
@@ -1293,11 +1295,15 @@ def go_back_moved(
     )
     if installation.kind != "git" or root is None:
         return unknown
+    if installation.tag is not None:
+        return (
+            f"This checkout runs release {installation.tag} now, so going back to {version} "
+            "is not offered."
+        )
     try:
         ancestor = git(
             root, "merge-base", "--is-ancestor", commit, "HEAD", runner=runner, timeout=5.0
         ).returncode
-        merged = git(root, "tag", "--merged", "HEAD", runner=runner, timeout=5.0)
     except (OSError, subprocess.SubprocessError):
         return unknown
     if ancestor == 1:
@@ -1305,18 +1311,8 @@ def go_back_moved(
             f"This checkout has moved away from {version}, so going back to it with its backup "
             "is not offered."
         )
-    if ancestor != 0 or merged.returncode != 0:
+    if ancestor != 0:
         return unknown
-    newer = [
-        tag
-        for tag in merged.stdout.split()
-        if TAG_PATTERN.fullmatch(tag) and version_key(tag) > version_key(version)
-    ]
-    if newer:
-        return (
-            f"This checkout has reached release {max(newer, key=version_key)} since, so going "
-            f"back to {version} is not offered."
-        )
     return None
 
 

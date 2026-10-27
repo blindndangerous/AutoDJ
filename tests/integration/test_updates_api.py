@@ -647,11 +647,11 @@ def test_update_is_not_offered_while_another_server_runs_from_this_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """ADR-0016-18: another launcher's lock, not this server's own launcher's."""
-    import os
-
     client = _updatable(tmp_path, monkeypatch)
     folder = client.app.state.update_dir
-    own = contract.try_lock(contract.serving_path(folder, os.getppid()))
+    # The launcher names itself: the server need not be its direct child.
+    monkeypatch.setenv(contract.LAUNCHER_PID_ENV, "515151")
+    own = contract.try_lock(contract.serving_path(folder, 515151))
     assert client.get("/api/updates").json()["update"]["available"] is True
     other = contract.try_lock(contract.serving_path(folder, 424242))
     try:

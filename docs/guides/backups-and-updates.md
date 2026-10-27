@@ -79,7 +79,7 @@ From Stable to Development, choose **Development** and update: `master` is newer
 
 When **Update AutoDJ** moved this installation from a release to Development, it kept the backup it made just before. On the Stable channel, **Go back to Stable now** offers to go back to that release with that backup. The confirmation names the version and the day of the backup: settings, play history and library changes made since that day are lost. AutoDJ backs up the data as it is now, switches to the release, runs its setup, restores the backup with `autodj restore`, runs Doctor and starts it, and goes back to Development with the new backup if that fails.
 
-The page offers it only for that backup, and only while your AutoDJ folder still came from that release and has not reached a newer one; after you switch versions by hand, it says it is no longer offered. When the backup is missing or cannot be read, the page says so in one sentence and does not offer it. A later release reached from Development forgets it.
+The page offers it only for that backup, and only while your AutoDJ folder still came from that release and does not run a release itself, also after Development has passed a newer release; after you switch versions by hand, it says it is no longer offered. When the backup is missing or cannot be read, the page says so in one sentence and does not offer it. A later release reached from Development forgets it.
 
 ## Update a source checkout
 

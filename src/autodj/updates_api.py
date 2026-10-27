@@ -36,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import secrets
 import threading
 import time
@@ -373,7 +372,9 @@ def install_updates(
         # The updater checks the probe again; one it would refuse is not offered.
         if not isinstance(probe, HealthProbe) or contract.parse_health(probe.to_dict()) is None:
             return UpdateSupport(None, NO_HEALTH_CHECK, found.guide_url)
-        others = contract.other_servers(folder(), {os.getppid()})
+        # This server's own launcher passes its process id: the server is not
+        # always its direct child (a virtual environment's python.exe on Windows).
+        others = contract.other_servers(folder(), contract.own_launcher())
         if others:
             return UpdateSupport(None, contract.other_servers_reason(others), found.guide_url)
         return found

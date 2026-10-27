@@ -625,12 +625,19 @@ def test_only_one_update_runs_on_a_checkout_at_a_time(tmp_path: Path) -> None:
     checkout.calls.clear()
     state = (_folder(checkout) / contract.STATE).read_bytes()
     second = _updater(checkout)
+    contract.write(
+        _folder(checkout) / contract.REQUEST,
+        {**contract.read(_folder(checkout) / contract.REQUEST), "id": "fedcba98"},
+    )
 
     assert second.update() == checkout_update.Attempt()
     assert checkout.calls == []
-    # The first update's files are left alone, and it still owns the result.
+    # The first update's state is left alone; only this request is answered.
     assert (_folder(checkout) / contract.STATE).read_bytes() == state
-    assert contract.read_result(_folder(checkout)) is None
+    refused = _result(checkout)
+    assert refused["id"] == "fedcba98"
+    assert refused["outcome"] == "refused"
+    assert refused["reason"] == "Another update is already running from this AutoDJ folder."
     # The first one finishes and lets go; a lock file left behind holds nothing.
     first.watch(_Server(), lambda: False)  # type: ignore[arg-type]
     assert not first.locked
@@ -772,8 +779,7 @@ def test_go_back_restores_the_backup_with_the_release_it_came_from(tmp_path: Pat
 
     assert attempt == checkout_update.Attempt(switched=True)
     assert checkout.names() == [
-        "git merge-base",  # the checkout still came from v0.21.0 ...
-        "git tag",  # ... and has reached no newer release
+        "git merge-base",  # the checkout still came from v0.21.0
         "git rev-parse",
         "git status",
         "backup",
@@ -908,6 +914,8 @@ def test_the_loop_updates_while_no_server_runs_then_starts_and_watches_it(health
         updates.SUPERVISOR_ENV: "1",
         updates.UPDATER_ENV: "launcher",
         contract.UPDATE_DIR_ENV: "update-folder",
+        # The server is not always the launcher's direct child: it is told the launcher.
+        contract.LAUNCHER_PID_ENV: str(os.getpid()),
     }
     assert started[0][1] == {"A": "1", **marks}
     assert started[1] == (["new", "serve"], {"B": "2", **marks}, True)
@@ -1031,7 +1039,12 @@ def test_an_update_is_refused_while_another_launcher_serves_from_this_checkout(
     contract.unlock(other._serving)
     other._serving = None
     assert contract.other_servers(_folder(checkout), {os.getpid()}) == []
-    assert not contract.serving_path(_folder(checkout), 424242).exists()
+    # A reader never deletes a lock file: a launcher starting now may take it.
+    assert contract.serving_path(_folder(checkout), 424242).exists()
+    # Its owner does, when it stops serving.
+    updater.release_serving()
+    assert not updater.serving
+    assert not contract.serving_path(_folder(checkout), os.getpid()).exists()
 
 
 def test_a_moved_release_tag_is_named_instead_of_blaming_the_network(tmp_path: Path) -> None:
@@ -1085,20 +1098,27 @@ def test_reading_the_checkout_is_never_cut_short_by_a_stop(tmp_path: Path) -> No
 
 
 def test_go_back_is_refused_when_the_checkout_moved_by_hand(tmp_path: Path) -> None:
-    """ADR-0016-20: a newer release reached since, or a checkout that left that release."""
+    """ADR-0016-20: a checkout that no longer came from that release."""
     checkout = _moved_to_development(tmp_path)
-    checkout.merged = ["v0.21.0", "v0.22.0"]
+    checkout.fail.add("not-ancestor")
     updater = _updater(checkout, action="go-back")
 
     assert updater.update() == checkout_update.Attempt()
     assert "git switch" not in checkout.names()
     assert _result(checkout)["reason"] == (
-        "This checkout has reached release v0.22.0 since, so going back to 0.21.0 is not offered."
+        "This checkout has moved away from 0.21.0, so going back to it with its backup is not "
+        "offered."
     )
-    checkout.merged = []
-    checkout.fail.add("not-ancestor")
-    assert _updater(checkout, action="go-back").update() == checkout_update.Attempt()
-    assert "has moved away from 0.21.0" in _result(checkout)["reason"]
+
+
+def test_go_back_still_fits_development_past_a_newer_release(tmp_path: Path) -> None:
+    """ADR-0016-20: someone waiting for Stable wants it most after the next release."""
+    checkout = _moved_to_development(tmp_path)
+    checkout.merged = ["v0.21.0", "v0.22.0"]
+    updater = _updater(checkout, action="go-back")
+
+    assert updater.update().switched is True
+    assert "git tag" not in checkout.names()
 
 
 def test_an_interrupted_update_suggests_its_branch(tmp_path: Path) -> None:
@@ -1117,7 +1137,12 @@ def test_an_interrupted_update_suggests_its_branch(tmp_path: Path) -> None:
     _updater(checkout, ask=False).recover_interrupted()
     result = _result(checkout)
     assert "on master" in result["message"]
-    assert f"git switch --force-create master {OLD}" in result["commands"]
+    # Look first: a branch with commits since keeps them with a detached switch.
+    assert f"use git switch --detach {OLD} instead" in result["message"]
+    assert result["commands"][1:3] == [
+        f"git log --oneline {OLD}..master",
+        f"git switch --force-create master {OLD}",
+    ]
 
 
 def test_a_stop_ends_a_running_step_within_a_moment(tmp_path: Path) -> None:

@@ -206,6 +206,7 @@ class CheckoutUpdater:
         self._windows = windows
         self._stopped: list[int] = []
         self._serving: Any = None
+        self._serving_path = self.folder / "serving.lock"
         self._current: tuple[subprocess.Popen[str], int | None, bool] | None = None
         self._reset()
 
@@ -438,7 +439,13 @@ class CheckoutUpdater:
         """
         if self._serving is None:
             owner = os.getpid() if pid is None else pid
-            self._serving = contract.try_lock(contract.serving_path(self.folder, owner))
+            self._serving_path = contract.serving_path(self.folder, owner)
+            self._serving = contract.try_lock(self._serving_path)
+
+    def release_serving(self) -> None:
+        """This launcher stops serving: let go of its lock and delete its file."""
+        handle, self._serving = self._serving, None
+        contract.release_serving(handle, self._serving_path)
 
     @property
     def serving(self) -> bool:
@@ -922,12 +929,27 @@ class CheckoutUpdater:
         }
         with self._signals():
             if not self._try_lock():
-                # Another launcher's update owns the files: leave them alone.
-                print(
-                    "AutoDJ: another AutoDJ launcher is updating this checkout, so this one "
-                    "did not.",
-                    file=sys.stderr,
-                )
+                # Another launcher's update owns state.json: leave it alone, and
+                # answer only this request, so its page hears why.
+                reason = "Another update is already running from this AutoDJ folder."
+                print(f"AutoDJ: {reason}", file=sys.stderr)
+                if request is not None:
+                    steps = [
+                        {"name": name, "status": "failed" if name == "check" else "skipped"}
+                        for name in contract.STEPS
+                    ]
+                    self._save(
+                        contract.RESULT,
+                        {
+                            **self._record,
+                            "outcome": "refused",
+                            "reason": reason,
+                            "message": f"AutoDJ did not update: {reason}",
+                            "commands": [],
+                            "steps": steps,
+                            "finished_at": self._clock(),
+                        },
+                    )
                 return Attempt()
             try:
                 if request is None:
@@ -1186,12 +1208,19 @@ class CheckoutUpdater:
             and re.fullmatch(r"[0-9a-f]{40}", old_commit)
         ):
             if isinstance(old_branch, str) and re.fullmatch(r"[A-Za-z0-9._/-]{1,200}", old_branch):
-                message += f" Before the update it was at {old_commit[:7]} on {old_branch}."
-                switch = f"git switch --force-create {old_branch} {old_commit}"
+                message += (
+                    f" Before the update it was at {old_commit[:7]} on {old_branch}. First list "
+                    f"the commits on {old_branch} since then; if there are any, keep them and use "
+                    f"git switch --detach {old_commit} instead of the switch below."
+                )
+                commands += [
+                    f"git log --oneline {old_commit}..{old_branch}",
+                    f"git switch --force-create {old_branch} {old_commit}",
+                ]
             else:
                 message += f" Before the update it was at {old_commit[:7]}."
-                switch = f"git switch --detach {old_commit}"
-            commands += [switch, self._cli("setup")]
+                commands.append(f"git switch --detach {old_commit}")
+            commands.append(self._cli("setup"))
         self._record = {
             key: state.get(key) for key in ("id", "action", "channel", "from", "to", "backup")
         }

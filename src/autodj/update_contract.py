@@ -59,6 +59,11 @@ from typing import Any
 CONTRACT_VERSION = 1
 #: Set by an updater for the server it starts: the update folder.
 UPDATE_DIR_ENV = "AUTODJ_UPDATE_DIR"
+#: Set by the checkout's launcher for the server it starts: its own process
+#: id, so the server skips that launcher's serving lock.  The server is not
+#: always the launcher's direct child: on Windows a virtual environment's
+#: ``python.exe`` starts the real interpreter as its own child.
+LAUNCHER_PID_ENV = "AUTODJ_LAUNCHER_PID"
 #: The update folder in the index folder, when no updater names one.
 INDEX_UPDATE_DIR = "updates"
 REQUEST = "request.json"
@@ -250,9 +255,11 @@ def _connect_address(bound: str, port: int, resolve: Callable[..., Any]) -> str 
         pass
     else:
         return bound
-    # A host name: the address it resolves to, which the server bound.
+    # A host name: the address it resolves to, which the server bound.  uvicorn
+    # binds IPv6 only for a host with ":" in it, so a name means IPv4.
+    family = socket.AF_INET6 if ":" in bound else socket.AF_INET
     try:
-        found = resolve(bound, port, type=socket.SOCK_STREAM)
+        found = resolve(bound, port, family=family, type=socket.SOCK_STREAM)
     except (OSError, UnicodeError):
         return None
     for _family, _type, _proto, _name, sockaddr in found:
@@ -371,11 +378,20 @@ def serving_path(folder: Path, pid: int) -> Path:
     return Path(folder) / f"{SERVING}{pid}.lock"
 
 
+def own_launcher(environ: Mapping[str, str] | None = None) -> set[int]:
+    """The process id of the launcher that started this server, from LAUNCHER_PID_ENV."""
+    environment = os.environ if environ is None else environ
+    text = (environment.get(LAUNCHER_PID_ENV) or "").strip()
+    return {int(text)} if text.isdigit() else set()
+
+
 def other_servers(folder: Path | None, own: Iterable[int]) -> list[int]:
     """Process ids of other launchers serving from this checkout right now.
 
-    A lock file whose launcher has ended is free, and is deleted.  *own* are
-    the process ids not to count: the caller's own launcher.
+    A lock file whose launcher has ended is free and only skipped: a reader
+    never deletes one, since a launcher that is just starting may hold it a
+    moment later.  Only its owner deletes it (:func:`release_serving`).
+    *own* are the process ids not to count: the caller's own launcher.
     """
     if folder is None:
         return []
@@ -390,9 +406,26 @@ def other_servers(folder: Path | None, own: Iterable[int]) -> list[int]:
             found.append(int(text))
             continue
         unlock(handle)
-        with contextlib.suppress(OSError):
-            path.unlink()
     return found
+
+
+def release_serving(handle: Any, path: Path) -> None:
+    """Let go of this launcher's serving lock and delete its file: only the owner deletes it.
+
+    On POSIX the file goes while still locked.  Windows cannot delete an open
+    file, so there it goes just after; a reader that opened it in between
+    keeps it, which only leaves a free lock file behind.
+    """
+    if handle is None:
+        return
+    if sys.platform != "win32":
+        with contextlib.suppress(OSError):
+            Path(path).unlink()
+        unlock(handle)
+        return
+    unlock(handle)
+    with contextlib.suppress(OSError):
+        Path(path).unlink()
 
 
 def other_servers_reason(pids: list[int]) -> str:

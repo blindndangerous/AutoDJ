@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.child_jobs import bind_to_autodj
-from autodj.update_contract import UPDATE_DIR_ENV
+from autodj.update_contract import LAUNCHER_PID_ENV, UPDATE_DIR_ENV
 from autodj.updates import RESTART_EXIT_CODE, SUPERVISOR_ENV, UPDATE_EXIT_CODE, UPDATER_ENV
 
 if TYPE_CHECKING:
@@ -275,6 +275,7 @@ def run_supervised(
     if updater is not None:
         extra[UPDATER_ENV] = "launcher"
         extra[UPDATE_DIR_ENV] = str(updater.folder)
+        extra[LAUNCHER_PID_ENV] = str(os.getpid())
     child_environment = {**environment, **extra}
     restarts: deque[float] = deque(maxlen=MAX_RESTARTS)
     watching = False
@@ -376,9 +377,12 @@ def _supervise(arguments: list[str], selected: tuple[Path, str]) -> int:
 
     updater = CheckoutUpdater(ROOT, global_options(arguments), current)
     updater.hold_serving()
-    updater.recover_interrupted()
-    base, child_environment = _child_plan(selected)
-    return run_supervised([*base, *arguments], child_environment, updater=updater, plan=plan)
+    try:
+        updater.recover_interrupted()
+        base, child_environment = _child_plan(selected)
+        return run_supervised([*base, *arguments], child_environment, updater=updater, plan=plan)
+    finally:
+        updater.release_serving()
 
 
 def main() -> int:

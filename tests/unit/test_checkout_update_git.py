@@ -203,7 +203,7 @@ def test_a_rollback_never_resets_a_branch_someone_committed_on(repos) -> None:
     assert _git(checkout, "rev-parse", "HEAD") == _git(checkout, "rev-parse", "v0.22.0^{commit}")
 
 
-def test_go_back_drops_when_the_checkout_reaches_a_newer_release(repos) -> None:
+def test_go_back_fits_development_but_not_a_release(repos) -> None:
     """ADR-0016-20: real tags decide whether the checkout still came from that release."""
     origin, checkout = repos
     _git(checkout, "tag", "-d", "v0.22.0")
@@ -216,10 +216,57 @@ def test_go_back_drops_when_the_checkout_reaches_a_newer_release(repos) -> None:
     installation = updates.detect_installation(root=checkout, version="0.23.0")
     assert updates.go_back_moved(installation, record.commit, record.version) is None
 
+    # At a release itself, Go back is not offered.
     _git(origin, "tag", "-a", "v0.23.0", "-m", "0.23.0", "master")
     _git(checkout, "fetch", "-q", "origin", "refs/tags/v0.23.0:refs/tags/v0.23.0")
     installation = updates.detect_installation(root=checkout, version="0.23.0")
     reason = updates.go_back_moved(installation, record.commit, record.version)
     assert reason == (
-        "This checkout has reached release v0.23.0 since, so going back to 0.21.0 is not offered."
+        "This checkout runs release v0.23.0 now, so going back to 0.21.0 is not offered."
     )
+    # Development past that release, waiting for the next: still offered.
+    _version(origin, "0.24.0")
+    _git(origin, "commit", "-q", "-am", "more development")
+    _git(checkout, "pull", "-q", "--ff-only", "origin", "master")
+    installation = updates.detect_installation(root=checkout, version="0.24.0")
+    assert installation.tag is None
+    assert updates.go_back_moved(installation, record.commit, record.version) is None
+
+
+def test_a_detached_commit_updates_to_the_release_that_includes_it_and_back(repos) -> None:
+    """ADR-0016-14, ADR-0016-16: from a detached commit that is not a release."""
+    origin, checkout = repos
+    _git(checkout, "tag", "-d", "v0.21.0")  # HEAD is now a plain detached commit
+    old = _git(checkout, "rev-parse", "HEAD")
+
+    attempt, updater = _run(checkout, "stable", healthy=False)
+
+    assert attempt.switched is True
+    assert updater.failed_start() == Attempt()
+    assert _git(checkout, "rev-parse", "HEAD") == old
+    assert subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=checkout).returncode != 0
+    healthy, _updater_used = _run(checkout, "stable")
+    assert healthy.switched is True
+    assert _git(checkout, "rev-parse", "HEAD") == _git(origin, "rev-parse", "v0.22.0^{commit}")
+
+
+def test_a_local_master_that_diverged_from_origin_is_refused_and_keeps_its_commit(repos) -> None:
+    """ADR-0016-15: never a move that would leave a local commit behind."""
+    origin, checkout = repos
+    _git(checkout, "switch", "-q", "master")
+    _git(checkout, "reset", "-q", "--hard", "v0.22.0")
+    (checkout / "local.txt").write_text("local work", encoding="utf-8")
+    _git(checkout, "add", "local.txt")
+    _git(checkout, "commit", "-q", "-m", "local work")
+    mine = _git(checkout, "rev-parse", "HEAD")
+
+    attempt, _updater_used = _run(checkout, "development")
+
+    assert attempt == Attempt()
+    result = _result(checkout)
+    assert result["outcome"] == "refused"
+    assert "is not part of master's history" in result["reason"]
+    assert _git(checkout, "rev-parse", "HEAD") == mine
+    assert _git(checkout, "rev-parse", "refs/heads/master") == mine
+    assert _git(checkout, "status", "--porcelain") == ""
+    assert _git(origin, "rev-parse", "master") != mine
