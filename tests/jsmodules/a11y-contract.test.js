@@ -3688,7 +3688,9 @@ describe("station switcher and station context contracts (#70)", () => {
     const help = document.getElementById("station-log-label-help");
     expect(help.classList.contains("setting-desc")).toBe(true);
     expect(help.textContent.replace(/\s+/g, " ").trim())
-      .toBe("Shown at the start of this station's log lines. Leave empty to use the station ID, default.");
+      .toBe("Shown at the start of this station's log lines: up to 16 letters, digits, hyphens, "
+        + "underscores or dots, different from other stations' labels and IDs. "
+        + "Leave empty to use the station ID, default.");
     expect(help.contains(document.getElementById("station-log-label-id"))).toBe(true);
   });
 

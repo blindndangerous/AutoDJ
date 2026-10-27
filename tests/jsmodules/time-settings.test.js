@@ -81,7 +81,7 @@ it("edits the log label with the station options and names the station ID it rep
     <input id="station-monitor" type="checkbox"><input id="station-upload-cap" type="number">
     <label for="station-log-label">Log label</label>
     <input id="station-log-label" type="text" maxlength="16" aria-describedby="station-log-label-help">
-    <p id="station-log-label-help">Shown at the start of this station's log lines. Leave empty to use the station ID, <span id="station-log-label-id">default</span>.</p>
+    <p id="station-log-label-help">Shown at the start of this station's log lines: up to 16 letters, digits, hyphens, underscores or dots, different from other stations' labels and IDs. Leave empty to use the station ID, <span id="station-log-label-id">default</span>.</p>
     </div>`;
   const options = { output: "stream", server_audio_too: false, liner_upload_max_mib: 50, log_label: "nor" };
   const request = vi.fn(async (url) => {
