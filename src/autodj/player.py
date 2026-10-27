@@ -1885,6 +1885,7 @@ class Player:
             self._clock_condition_cache = cache
 
         closed_steps = self._closed_clock_steps(context, step_hours)
+        preview_choices = getattr(self, "_preview_clock_choices", None)
 
         def pick(
             use_rules: bool,
@@ -1929,6 +1930,9 @@ class Player:
                 versions=self._song_versions(),
                 fit=fit,
                 preferred_path=getattr(self, "_preview_preferred_path", None),
+                preferred_for_step=(lambda index: preview_choices.preferred(self, index))
+                if preview_choices is not None
+                else None,
             )
 
         # Like the other pick modes, relax rather than stop the music: first
@@ -1997,6 +2001,8 @@ class Player:
                 self._clock_status = f"Settings step skipped: {exc}"
         if picked.entry is not None:
             _log_repeat_blocks(context.repeat, picked.entry)
+        if (choices := getattr(self, "_preview_clock_choices", None)) is not None:
+            choices.remember(self, picked)
         return replace(
             picked,
             step_snapshot=self._clock_step_snapshot(picked.step_index, steps),
@@ -2594,6 +2600,12 @@ class Player:
                 if restart:
                     assert boundary is not None
                     self._promote_pending_clock()
+                    if (choices := getattr(self, "_preview_clock_choices", None)) is not None:
+                        following = next_boundary(
+                            datetime.fromtimestamp(max(boundary, when)).astimezone(),
+                            (self._clock or {}).get("resync_minutes", [0]),
+                        )
+                        choices.restart(following.timestamp() if following else None)
                     reset = self._clock_pick(context, 0)
                     self._chosen_clock_revision = self._clock_revision
                     if reset.entry is None:

@@ -187,6 +187,12 @@ def least_recent(
     )
 
 
+def _preferred_entry(entries: Sequence[Any], path: str | None) -> Any | None:
+    if path is None:
+        return None
+    return next((entry for entry in entries if _normalized(entry.path) == _normalized(path)), None)
+
+
 def _least_recent(
     entries: Sequence[Any],
     played: Callable[[str], Any],
@@ -205,18 +211,8 @@ def _least_recent(
     if versions:
         songs = list(dict.fromkeys(versions.song(entry.path) for entry in entries))
         chooser.shuffle(songs)
-        preferred_song = (
-            next(
-                (
-                    versions.song(entry.path)
-                    for entry in entries
-                    if _normalized(entry.path) == _normalized(preferred_path)
-                ),
-                None,
-            )
-            if preferred_path is not None
-            else None
-        )
+        preferred = _preferred_entry(entries, preferred_path)
+        preferred_song = versions.song(preferred.path) if preferred is not None else None
         if preferred_song is not None:
             songs.remove(preferred_song)
             songs.insert(0, preferred_song)
@@ -276,17 +272,9 @@ def _least_recent(
     ages = [age(entry) for entry in entries]
     oldest = min(ages)
     candidates = [entry for entry, when in zip(entries, ages, strict=True) if when == oldest]
-    if preferred_path is not None:
-        preferred = next(
-            (
-                entry
-                for entry in candidates
-                if _normalized(entry.path) == _normalized(preferred_path)
-            ),
-            None,
-        )
-        if preferred is not None:
-            return preferred
+    preferred = _preferred_entry(candidates, preferred_path)
+    if preferred is not None:
+        return preferred
     return chooser.choice(candidates)
 
 
@@ -497,6 +485,7 @@ def pick_slot(
     versions: SongVersions | None = None,
     fit: Callable[[Sequence[Any]], Any] | None = None,
     preferred_path: str | None = None,
+    preferred_for_step: Callable[[int], str | None] | None = None,
 ) -> ClockPick:
     """Scan one clock cycle and select its next eligible music entry.
 
@@ -542,6 +531,11 @@ def pick_slot(
         slot: ClockSlot, matches: Sequence[Any], label: str
     ) -> tuple[Any | None, str | None]:
         nonlocal played
+        preference = (
+            preferred_for_step(index)
+            if preferred_for_step is not None and slot.kind != "liner"
+            else preferred_path
+        )
         if not matches:
             return None, f"{label}: no matching entries"
         if slot.selection == "least_recent":
@@ -559,27 +553,48 @@ def pick_slot(
                 allowed=allowed if slot.enforce_rules else None,
                 versions=versions,
                 fit=fit,
-                preferred_path=preferred_path,
+                preferred_path=preference,
             )
         else:
             candidates = [entry for entry in matches if not slot.enforce_rules or allowed(entry)]
+            preferred = _preferred_entry(candidates, preference)
             if not candidates:
                 selected = None
-            elif versions:
-                if fit is None:
-                    selected = versions.choice(candidates, chooser)
-                else:
+            elif fit is None:
+                selected = (
+                    preferred
+                    if preferred is not None
+                    else (
+                        versions.choice(candidates, chooser)
+                        if versions
+                        else chooser.choice(candidates)
+                    )
+                )
+            else:
+                if versions:
                     songs: dict[str, list[Any]] = {}
                     for entry in candidates:
                         songs.setdefault(versions.song(entry.path), []).append(entry)
-                    sampled = chooser.sample(list(songs), min(FIT_CANDIDATES, len(songs)))
-                    selected = fit([chooser.choice(songs[song]) for song in sampled])
-            else:
-                selected = (
-                    fit(chooser.sample(candidates, min(FIT_CANDIDATES, len(candidates))))
-                    if fit is not None
-                    else chooser.choice(candidates)
-                )
+                    sampled_songs = chooser.sample(list(songs), min(FIT_CANDIDATES, len(songs)))
+                    sampled = [chooser.choice(songs[song]) for song in sampled_songs]
+                else:
+                    sampled = chooser.sample(candidates, min(FIT_CANDIDATES, len(candidates)))
+                if preferred is not None:
+                    # Keep the remembered version first so an equally good fit stays put.
+                    sampled = [
+                        preferred,
+                        *(
+                            entry
+                            for entry in sampled
+                            if (
+                                versions.song(entry.path) != versions.song(preferred.path)
+                                if versions
+                                else entry is not preferred
+                            )
+                        ),
+                    ]
+                    sampled = sampled[:FIT_CANDIDATES]
+                selected = fit(sampled)
         if selected is None:
             return (
                 None,

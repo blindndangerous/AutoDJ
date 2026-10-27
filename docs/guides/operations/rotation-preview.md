@@ -136,6 +136,12 @@ Each row says in its Status column whether it is fixed or predicted:
 - Clockwheel ad steps appear as **Predicted** ad breaks with their expected length. When no spot
   would play, the row has length 0 and says why.
 
+Random and least-recently-played clockwheel steps keep their previous predicted song while it
+remains eligible and suitable for the step. A step that temporarily falls out before an hour
+restart keeps that preference if it fits again. Each wheel cycle has its own choices; changing
+the wheel or playing a different sequence can require a fresh forecast. These remembered
+choices belong to the preview and do not reserve songs for live playback.
+
 Predicted songs also include song/artist intros and Matched intros rules, using the selected
 station's categories, play dates, cooldowns and liner precedence. Automatic liners use the
 same trigger rules as playback. Talk-ups overlap the song; clips that play before it move
