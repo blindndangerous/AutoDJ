@@ -101,6 +101,54 @@ def test_live_edit_preserves_heard_prefix_and_bus_cursor(player):
     np.testing.assert_allclose(outgoing_block, 0.4)
 
 
+@pytest.mark.parametrize("prepared_at", [4, 6])
+def test_continuation_admits_effect_only_before_its_first_frame(player, monkeypatch, prepared_at):
+    from autodj.live_transitions import build_live_transition
+    from tests.unit.test_live_playout import _UnconsumedDeck
+    from tests.unit.test_live_transitions import _parity_player
+
+    player, (current, upcoming, _, _) = player
+    samples = np.full((8 * 44_100, 2), 0.2, np.float32)
+    renderer, a, b, _requests = _parity_player(
+        monkeypatch, {"out.wav": samples, "in.wav": samples}, 1.0, "echo_out", None
+    )
+    renderer._MIN_FX_DURATION_S = {"echo_out": 3.0}
+    renderer._live_file = lambda _entry: _UnconsumedDeck(len(samples), 0.2)
+    rendered = build_live_transition(renderer, a, b, 0)
+    assert rendered is not None
+    replacement = replace(
+        rendered,
+        entry=current,
+        next_entry=upcoming,
+        next_live_source=_UnconsumedDeck(len(samples), 0.2),
+    )
+    original = replace(
+        _render(current, None, _audio(len(samples), 0.2), overlap=0), handoff_pending=True
+    )
+    _install_bus(player, original)
+    player.bus.start_set()
+    for _ in range(prepared_at * 50):
+        player.bus.render_block()
+    player._rewind_render_cursor = lambda _track: None
+    player._next_rendered_serial = lambda: replacement
+    player._playout.reset = MagicMock()
+    player._live_queue_dirty = True
+
+    player._refresh_live_queue()
+
+    installed = player._playing_render
+    if prepared_at == 6:
+        # The effect began at 5 s, even though the crossfade starts at 7.8 s.
+        np.testing.assert_allclose(player.bus.render_block(), 0.2)
+        assert installed.overlap_frames == 0
+        assert installed.next_start_offset == replacement.next_entry_offset
+    else:
+        assert installed.overlap_frames == replacement.overlap_frames
+        for _ in range(50):
+            np.testing.assert_allclose(player.bus.render_block(), 0.2)
+        np.testing.assert_allclose(player.bus.render_block(), 0.1)
+
+
 def test_after_incoming_is_audible_queue_edit_waits_for_continuation_promotion(player):
     """ADR-0004-09: A ready body has no successor to replan until it becomes current."""
     player, (current, old_next, chosen, later) = player

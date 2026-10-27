@@ -4362,6 +4362,8 @@ class Player:
         if getattr(track.entry, "_prepared_clip", False):
             return 0
         boundaries = [len(track.audio)]
+        if track.transition_start_frame is not None:
+            boundaries.append(track.transition_start_frame)
         if track.overlap_frames:
             boundaries.append(len(track.audio) - track.overlap_frames)
         boundaries.extend(
@@ -4642,6 +4644,7 @@ class Player:
                         next_start_offset=replacement.next_entry_offset,
                         next_glide=None,
                         overlap_frames=0,
+                        transition_start_frame=None,
                         transition_fx="",
                         beatmatch_ratio=1.0,
                         liner_events=(),

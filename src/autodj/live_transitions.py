@@ -446,6 +446,7 @@ def build_live_transition(
             full_audio=full,
             playback_rate=rate_a,
             next_playback_rate=rate_b,
+            transition_start_frame=prefix,
         )
     except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
         logger.error("Cannot prepare live transition for %s: %s", current.path, exc)
