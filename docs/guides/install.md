@@ -227,8 +227,11 @@ has the steps.
 
 ## Update AutoDJ
 
-Back up first with `autodj backup`. Follow [Back up and update AutoDJ](backups-and-updates.md)
-for source, wheel, and Docker updates.
+A source checkout started with `./autodj serve` or `.\autodj.cmd serve` updates from
+**Settings**, **Updates** with **Update AutoDJ**, which makes the backup itself; see
+[Update from the page](backups-and-updates.md#update-from-the-page). Otherwise back up first with
+`autodj backup` and follow [Back up and update AutoDJ](backups-and-updates.md) for source, wheel,
+and Docker updates.
 
 ## Release artifacts
 

@@ -97,8 +97,8 @@ docker compose up -d
 
 The image tells AutoDJ its update channel. An image published as `stable` follows Stable, and
 one published as `development` follows Development, whichever checkout holds `compose.yaml`.
-A channel chosen in **Settings**, **Updates** still wins; the update commands then say which
-image to name in `.env`.
+A channel chosen in **Settings**, **Updates** still wins; the commands `autodj check-update`
+prints then say which image to name in `.env`.
 
 The published image is for 64-bit x86 computers (`linux/amd64`). On an ARM computer, such as a
 Raspberry Pi or an ARM NAS, [build the image yourself](#build-the-image-yourself).
@@ -139,8 +139,9 @@ Development, anything else is Stable.
 ## Update the container
 
 AutoDJ in a container checks for updates like any installation and says in **Settings**,
-**Updates** when one is available, with a link to its release notes and the commands to run. It
-does not update itself, and nothing in the Compose file gets the Docker or Podman socket. Read
+**Updates** when one is available, with a link to its release notes and to this section. It
+cannot update itself from the page yet, and nothing in the Compose file gets the Docker or Podman
+socket. `autodj check-update` in the container prints the commands for its image. Read
 the release notes, make a backup, then, on the computer that runs the container, in the folder
 with `compose.yaml`, run:
 

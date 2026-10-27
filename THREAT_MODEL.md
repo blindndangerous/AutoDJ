@@ -1333,13 +1333,14 @@ controls them and can race filesystem operations.
 
 ## Updates and restart from the web
 
-Settings, Updates checks for a newer AutoDJ and restarts it
+Settings, Updates checks for a newer AutoDJ, updates a source checkout and restarts it
 ([ADR 16](docs/adr/0016-update-and-restart-from-the-web.md)). Its routes are
-`GET /api/updates`, `POST /api/updates/check`, `PUT /api/updates/settings` and
-`POST /api/server/restart`. They follow the same session, Host and Origin policy as every other
-settings route: when pairing is on, only a paired browser reaches them, and a page on another site
-cannot press Restart. There are no user roles, so every paired browser may restart AutoDJ; pairing
-already grants control of playback. Machine tokens and live DJ credentials never reach these
+`GET /api/updates`, `POST /api/updates/check`, `PUT /api/updates/settings`,
+`POST /api/server/restart`, `POST /api/server/update` and `POST /api/server/go-back`. They follow
+the same session, Host and Origin policy as every other settings route: when pairing is on, only a
+paired browser reaches them, and a page on another site cannot press Restart or Update. There are
+no user roles, so every paired browser may restart, update or go back; pairing already grants
+control of playback. Machine tokens and live DJ credentials never reach these
 routes. Each takes at most 8 KiB of JSON and no free text: the settings are a boolean and one of
 three channel names.
 
@@ -1359,12 +1360,33 @@ status) without git's own messages or the remote's address, which may hold crede
 are cached, so opening the page does not ask the network every time, and Check now is limited to
 one in 10 seconds. With **Check for updates** off, or `doctor --offline`, nothing is asked. A
 remote that lies can only make the page say an update exists; the check changes nothing.
-AutoDJ does not update itself: the notice links the release notes on GitHub (a URL built from
-the fixed repository address and a validated tag) and lists commands for the operator to run.
-For a container those name the image from `AUTODJ_IMAGE`, which Compose sets and AutoDJ shows only
-when it is a plain image name (letters, digits and `._/:@-`).
-Updating from the web page is a later decision in
-[#552](https://github.com/blindndangerous/AutoDJ/issues/552); nothing gets the Docker socket.
+The notice links the release notes on GitHub, a URL built from the fixed repository address and
+a validated tag, or for Development a validated 40-digit commit in GitHub's compare view.
+`autodj check-update` lists commands for the operator to run; for a container those name the
+image from `AUTODJ_IMAGE`, which Compose sets and AutoDJ shows only when it is a plain image name
+(letters, digits and `._/:@-`). Nothing gets the Docker socket.
+
+**Update and Go back.** Only a source checkout started with its launcher, which marks its server
+with `AUTODJ_UPDATER=launcher`, offers them; the running server never changes its own files. A
+request takes no body but `{}`: the server writes `request.json` with a random id, the action, the
+channel it follows and the address its own health check answers on, then exits with status 85.
+The launcher, with no server running, reads that file from its own `.uv/update` folder, validates
+every field (an IP address or `localhost`, a port, a Host header of plain characters, `/healthz`
+only) and works out the target itself with its own check, so a request cannot choose a version or
+a command. git and AutoDJ's own commands run from argument lists with timeouts that end their
+process trees, git without prompts and without passing its messages on. It refuses a changed or
+untracked file, an older or the same version, and a library that needs a migration, and puts the
+checkout back on any later failure. The health check asks only this computer or the bound address,
+without a proxy; over HTTPS it does not check the certificate, which is safe because it sends
+nothing and reads only `{"status": "ok"}`. Go back restores only a backup the updater made in its
+own folder, named by its own pattern, when it moved that release to development; it backs up the
+current data first. Update and Go back are audited as `server-update` and `server-go-back`, share
+a limit of one a minute and six an hour in `<index_dir>/logs/update-requests.json` that fails
+closed, and run one at a time, with a lock file against a second launcher on the same checkout.
+Anyone who can write the update folder or the checkout can already change what AutoDJ runs. The
+remaining risk is a stolen browser session taking the stations off air for an update, or going
+back and replacing recent settings and history with the kept backup, which the confirmation names.
+A helper for containers is a later change that reuses these files.
 
 **Restart.** The server stops through uvicorn's own shutdown and exits with status 75. It is
 offered only when the checkout's launcher, a systemd service with `Restart=always` or
@@ -1379,8 +1401,9 @@ unreadable or cannot be written the restart is refused (503, naming the file). T
 SIGTERM) during a restart's shutdown stops AutoDJ instead of restarting it; the launcher keeps the
 server in its own process group so terminal signals reach both, and shutting down stops a
 running Library tools job, so no job is left running beside the next server. Restart takes every station off the air for a moment, which
-is the remaining risk of a stolen browser session. Check, restart and their refusals are audited
-as `update-check` and `server-restart` with the usual closed-schema fields.
+is the remaining risk of a stolen browser session. Check, restart, update, go back and their refusals are audited
+as `update-check`, `server-restart`, `server-update` and `server-go-back` with the usual
+closed-schema fields.
 
 ## Container and dependency controls
 

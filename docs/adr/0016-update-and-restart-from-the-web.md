@@ -187,18 +187,189 @@ between them was run with podman-compose, not with Docker.
 Revisit when ARM users need a published image, or if the development image should wait for the
 full CI run.
 
+## Amendment, 2026-10-27: update and go back from the web page
+
+Amendment status: Proposed; pending maintainer acceptance.
+Decision authority: Project maintainer. The owner decided step 3 of
+[#552](https://github.com/blindndangerous/AutoDJ/issues/552): a source checkout started with its
+launcher updates from the page, a container later through an opt-in helper on its host, and
+the page and the routes stay the same for both. The text above is kept; where it says AutoDJ does
+not update itself and the page lists the update commands, this amendment applies.
+
+### Who updates, and when
+
+- A person always starts an update; nothing updates on its own.
+- The running server never replaces its own files: Windows locks them. Update makes the server
+  write a request and exit with status 85 (`UPDATE_EXIT_CODE`, outside the `sysexits` range and
+  below the shell's 126, so it means nothing else). The updater does the work while no server
+  runs, then starts a server again.
+- `update_support()` names the updater that applies, or says why none does. For now that is the
+  checkout's launcher (`autodj`, `autodj.cmd`), which marks the server it supervises with
+  `AUTODJ_UPDATER=launcher`; a launcher from before this amendment does not, so its server
+  offers no Update. A wheel, a container and a checkout started any other way are told to update
+  the way they were installed, with a link to the guide for their kind. A container helper later
+  adds a mechanism; the page shows only the message and the link, so it does not change.
+- The launcher counts an update as a restart for its five-a-minute limit.
+
+### The steps
+
+The launcher follows the [upgrade checklist](../guides/operations/upgrade.md#upgrade-checklist),
+with the options given before `serve` (`--config`) passed to backup, restore and Doctor:
+
+1. `check`: it checks again itself, for the channel the server follows. The target is never taken
+   from the request. It refuses an older or the same version (`version_key`, and for
+   Development that `HEAD` is an ancestor of `origin/master` and `master`'s own version is not
+   lower), and a checkout where `git status --porcelain` prints anything, ignored nothing.
+2. `backup`: `autodj backup` into `.uv/update/backups`; the three newest of its own are kept.
+3. `fetch`: `git fetch --tags origin` for Stable, `git fetch origin master` for Development.
+4. `switch`: `git switch --detach vX.Y.Z`; or `git switch master` and
+   `git merge --ff-only origin/master`. From Development to a release, only a release that
+   includes `HEAD` (`git merge-base --is-ancestor`).
+5. `setup`: the checkout's own `scripts/setup.py --yes`, run as `autodj setup` runs it. With a
+   saved runtime, setup reuses and verifies it without changing its packages, keeps an existing
+   `config.toml`, and runs Doctor offline. This is the documented unattended mode, so the
+   launcher uses it rather than syncing packages itself: syncing a GPU runtime against the CPU
+   lock is what the checklist warns against. On Windows, `--yes` may install a missing FFmpeg
+   through WinGet, as it does by hand. A release that needs new packages then fails its health
+   check and is rolled back; the guide says to run setup by hand to see why.
+6. `migration-check`: `autodj doctor --no-fix --json --offline`. A failed check whose repair is
+   `migrate-index` stops the update and rolls back, with the commands to migrate by hand.
+7. `start` and `health`: the new server starts. It is healthy when it still runs and answers
+   `GET /healthz` with 200 and `{"status": "ok"}` within 180 seconds, asked on this computer
+   (loopback for a server bound to every interface) with a Host header its allowed hosts accept,
+   without a proxy, and over HTTPS without checking the certificate. The server writes that
+   address into the request from its own bind address and policy. A shell script on a host can
+   make the same request.
+8. `rollback`, after any failure past the switch or an unhealthy start: the checkout goes back to
+   its commit and branch (`git switch --force-create <branch> <commit>`, or `--detach`, with
+   `--discard-changes` as a second try, since the tree was clean), `.uv/setup.json` is put back,
+   setup runs for the old version, and the old version starts. When that fails, the launcher
+   records where the checkout is and the commands to put it right, and starts nothing.
+
+Git runs with the update check's environment (no terminal prompt, no credential window,
+`BatchMode=yes` ssh) and its messages are not passed on. Each step has a timeout that ends its
+whole process tree. One update runs at a time on a checkout (a lock file in the update folder;
+one older than four hours is left over). A stop signal during the update, or while the new version
+starts, keeps the ADR's stop contract: the launcher lets `git switch` and `git merge` finish, stops
+a longer step, puts the checkout and the runtime selection back, records it, and ends with that
+signal. When it cannot put it back, the result says where the checkout is. A launcher killed
+outright leaves `state.json` mid-step; the next start records that as a failure.
+
+### From Development back to Stable
+
+- A plain downgrade stays refused. With **Stable** saved as the channel and a version newer than
+  the latest release, the check says `waiting-for-release` ("You'll move to Stable when the next
+  release includes your version", with both versions). When a release includes the installed
+  commit (`git merge-base --is-ancestor HEAD <tag>`; GitHub's compare view without git), it is
+  `available`, even with the same version number. Doctor passes with the same sentence and
+  `check-update` prints it.
+- Go back is the one way to an older release. When an update moves a release to Development,
+  the launcher keeps that update's backup as `autodj-go-back-<version>-<time>.zip` and records the
+  tag, its commit, the backup's path and its time in `go-back.json`. On the Stable channel the
+  page offers **Go back to Stable now**; its confirmation names the version and the date and says
+  that settings, play history and library changes made since then are lost. It backs up the
+  current data, switches to the tag, runs its setup, restores the backup with `autodj restore
+  --force` (the version that made it), runs Doctor, and is watched and rolled back like an
+  update; a rollback also restores the new backup. It is offered only for a backup this flow
+  made, in its own folder; a missing or unreadable one is explained in one sentence. Using it, or
+  reaching a later release, forgets it.
+
+### The contract
+
+`autodj.update_contract`, standard library only, defines version 1 of the files a server and its
+updater exchange. A helper on a container's host will read and write the same files.
+
+- The update folder: the updater names it in `AUTODJ_UPDATE_DIR` for the server it starts. The
+  launcher uses `.uv/update` in the checkout, since it cannot read the configuration to find the
+  index folder. Without the variable the server uses `updates` in the index folder, which a
+  container mounts.
+- Every file is a JSON object of at most 64 KiB with `"contract": 1`, written atomically; a reader
+  ignores a damaged file or another version.
+- `request.json`, from the server: `id` (16 hex digits), `action` (`update` or `go-back`),
+  `channel`, `requested_at`, and `health` (`scheme`, `address`, `port`, `host`, `path`
+  `/healthz`). `target` and `from` are for the record; the updater never trusts them.
+- `state.json`, from the updater after each step: the request's `id`, `action`, `channel`, `from`
+  and `to` (`version`, `commit`, `label`), `backup`, `step` and `steps`.
+- `result.json`, from the updater once: the same, plus `outcome` (`updated`, `rolled-back`,
+  `refused`, `failed`, `stopped`), `reason`, `message` (the sentence the page says), `commands`
+  (only with a failure) and `finished_at`.
+- `go-back.json`, from the updater: `tag`, `version`, `commit`, `backup`, `made_at`.
+- The steps, each `pending`, `running`, `done`, `skipped` or `failed`, always all listed: `check`,
+  `backup`, `fetch` (an image pull for a container), `switch`, `setup`, `restore` (Go back only),
+  `migration-check`, `start`, `health`, `rollback`.
+
+### Who may do it
+
+Update and Go back are browser routes like Restart: `POST /api/server/update` and
+`POST /api/server/go-back`, a paired browser session when pairing is on, an allowed Origin, no
+machine token, and no body but `{}`. They are audited as `server-update` and `server-go-back`,
+share a limit of one a minute and six an hour in `<index_dir>/logs/update-requests.json` (which
+fails closed like Restart's), and run one at a time: while one is pending, Update, Go back and
+Restart are refused. Update needs an update in the server's last check.
+
+### The page
+
+While an update is available and the installation can update, Settings, Updates says "AutoDJ X is
+available", links the release notes and offers **Update AutoDJ**; it asks first in the Restart
+dialog, saying the stream goes off the air, polls while AutoDJ is away, and says the updater's
+sentence once ("Updated to X", or "The update failed, so AutoDJ went back to Y" and the reason).
+**Last update** keeps the sentence for a day, with the recovery commands only after a failure.
+An installation that cannot update gets "Update it the way you installed it" and its guide; the
+default command list is gone from the page, and `check-update` keeps it. For the development
+channel the release-notes link is GitHub's compare view from the installed commit to `master`,
+since the changelog's Unreleased section stays empty between releases; without a full commit it is
+`master`'s commit list.
+
+### Alternatives
+
+- **The server updates itself.** Windows locks the files of a running program, and a half-replaced
+  server cannot roll itself back.
+- **Sync the runtime's packages in the launcher.** Setup with a saved runtime deliberately does
+  not, and syncing a GPU runtime against the CPU lock breaks it; setup's unattended mode is the
+  documented path.
+- **Migrate automatically.** Migrations may not be reversible; a person runs them.
+- **Health from the process alone.** A server that runs but does not serve would pass, and a host
+  script could not check it.
+- **Move back to Stable at once.** It would run an older version on newer data; waiting for the
+  next release, or Go back with the backup from before the move, does not.
+- **Go back with any backup.** A backup from elsewhere may not match the release; only the one
+  this flow made is offered.
+- **Files in the checkout for every updater.** A container helper cannot see the checkout, but it
+  can see the index folder, so the folder is named by the updater.
+
+### Consequences
+
+A station goes off the air for the length of an update, a few minutes plus setup and Doctor, and
+longer when a failure rolls back. A server that keeps being asked to update counts toward the
+launcher's restart limit. Two servers started from one checkout cannot both update it; the second
+is refused while the first holds the lock, and a server still running from the old files is not
+detected. Each update keeps a backup in the checkout's `.uv/update/backups`, three of them plus the
+one kept for Go back; deleting `.uv` deletes them.
+
+Verification limits: unit tests stand in for git, setup, Doctor, backup, restore and the new
+server, with a real HTTP server for the health probe. No update has been run against a real
+checkout, network or GPU runtime; Windows' job objects and Ctrl+C during an update, macOS, and the
+Playwright audit and a screen reader on the new controls have not been exercised for this
+amendment.
+
+Revisit when the container helper lands, when AutoDJ gains user roles, or if setup learns to sync
+a runtime's packages safely.
+
 ## Implementation and operational references
 
 - [Image workflow](../../.github/workflows/image.yml), [compose.yaml](../../compose.yaml) and
   [compose.build.yaml](../../compose.build.yaml).
 - [Update check, notice and restart detection](../../src/autodj/updates.py),
   [web routes](../../src/autodj/updates_api.py), [launcher restart loop](../../src/autodj/launcher.py),
+  [the launcher's update](../../src/autodj/checkout_update.py), the
+  [update contract](../../src/autodj/update_contract.py),
   [Doctor's check](../../src/autodj/doctor.py) and the `check-update` command in
   [cli.py](../../src/autodj/cli.py).
 - [Settings, Updates](../../src/autodj/static/modules/updates.js) in the
   [page](../../src/autodj/static/index.html).
-- [Back up and update AutoDJ](../guides/backups-and-updates.md#check-for-updates-and-restart)
-  and the [upgrade checklist](../guides/operations/upgrade.md).
+- [Back up and update AutoDJ](../guides/backups-and-updates.md#check-for-updates-and-restart),
+  [Update from the page](../guides/backups-and-updates.md#update-from-the-page) and the
+  [upgrade checklist](../guides/operations/upgrade.md).
 
 ## Current contracts
 
@@ -234,4 +405,5 @@ structural validation does not execute it or accept this ADR.
 Tests stand in for git, GitHub, systemd and the server's exit. They do not show that a real
 systemd unit or a container runtime restarts AutoDJ. A restart through the Windows launcher was
 run once by hand against a temporary server; record other runs separately when they are made.
-No screen reader has sampled Settings, Updates.
+No screen reader has sampled Settings, Updates. Update, Go back and Last update (the
+2026-10-27 amendment) have not been through the browser audit or a screen reader yet.

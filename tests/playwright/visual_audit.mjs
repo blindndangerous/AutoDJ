@@ -677,8 +677,9 @@ async function standInForSchedule(page) {
 }
 
 // Settings > Updates (#552): an update available, with its release notes,
-// the commands and Restart, which the audit server (no launcher loop) would
-// not offer.  Long command lines test reflow at 320 px.
+// Update, Go back, a failed last update with its recovery commands, and
+// Restart, which the audit server (no launcher loop) would not offer.  Long
+// command lines test reflow at 320 px.
 const UPDATES = {
   installation: { kind: "git", version: "0.21.0", commit: "0db0a92", branch: null, tag: "v0.21.0" },
   settings: { check: true, channel: null },
@@ -689,12 +690,23 @@ const UPDATES = {
     checked_at: 1792740000,
     notes_url: "https://github.com/blindndangerous/AutoDJ/releases/tag/v0.22.0",
   },
-  commands: [
-    "git fetch --tags origin", "git switch --detach v0.22.0", "./autodj setup",
-    "./autodj doctor --no-fix",
-    'uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/v0.22.0/autodj-0.22.0-py3-none-any.whl"',
-  ],
   restart: { available: true, mode: "launcher", message: "The AutoDJ launcher starts AutoDJ again." },
+  update: {
+    available: true, mechanism: "launcher", message: "The AutoDJ launcher updates this checkout.",
+    guide_url: "https://github.com/blindndangerous/AutoDJ/blob/master/docs/guides/backups-and-updates.md#update-a-source-checkout",
+  },
+  go_back: { available: true, tag: "v0.20.0", version: "0.20.0", date: "2026-10-01", message: "" },
+  last_update: {
+    id: "abcdef12", action: "update", outcome: "rolled-back", finished_at: 1792740000,
+    message: "The update failed, so AutoDJ went back to 0.21.0. The new version needs a library "
+      + "migration, which AutoDJ does not run by itself. To migrate, stop AutoDJ and run these "
+      + "commands in the AutoDJ folder.",
+    commands: [
+      "git switch --detach v0.22.0", "./autodj setup", "./autodj migrate-index",
+      "./autodj migrate-index --apply",
+      "./autodj --config /srv/night-owl-radio/configuration/with/a/long/unbroken/path/config.toml doctor --no-fix",
+    ],
+  },
 };
 const updatesPages = new WeakSet();
 
@@ -704,33 +716,44 @@ async function standInForUpdates(page) {
   await page.route("**/api/updates", (route) => (route.request().method() === "GET"
     ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(UPDATES) })
     : route.continue()));
-  // Restart is only ever cancelled here; a press that got through is refused.
-  await page.route("**/api/server/restart", (route) => route.fulfill({
-    status: 409, contentType: "application/json", body: JSON.stringify({ detail: "Audit" }),
-  }));
+  // Restart, Update and Go back are only ever cancelled here; a press that
+  // got through is refused.
+  for (const action of ["restart", "update", "go-back"]) {
+    await page.route(`**/api/server/${action}`, (route) => route.fulfill({
+      status: 409, contentType: "application/json", body: JSON.stringify({ detail: "Audit" }),
+    }));
+  }
 }
 
-// Restart opens the shared confirmation on Cancel; Escape closes it and puts
-// focus back on Restart, with nothing sent.
-async function openRestartConfirm(page, visit) {
-  const restart = page.locator("#updates-restart");
-  await restart.waitFor({ state: "visible" });
-  await page.locator("#updates-how").waitFor({ state: "visible" });
-  await restart.focus();
+// Update, Go back and Restart open the shared confirmation on Cancel;
+// Escape closes it and puts focus back on the button, with nothing sent.
+async function openUpdatesConfirm(page, visit, id, name, words) {
+  const button = page.locator(`#${id}`);
+  await button.waitFor({ state: "visible" });
+  await button.focus();
   await page.keyboard.press("Enter");
   const dialog = page.locator("#confirm-dialog");
   await dialog.waitFor({ state: "visible" });
   const focused = await page.evaluate(() => document.activeElement?.id);
   if (focused !== "confirm-cancel") {
-    throw new Error(`Restart's confirmation opened with focus on ${focused}, not Cancel`);
+    throw new Error(`${name}'s confirmation opened with focus on ${focused}, not Cancel`);
   }
   const message = await page.locator("#confirm-message").textContent();
-  if (!/off the air/.test(message || "")) throw new Error(`Restart's confirmation says: ${message}`);
-  await visit("settings/updates/restart");
+  if (!words.test(message || "")) throw new Error(`${name}'s confirmation says: ${message}`);
+  await visit(`settings/updates/${name.toLowerCase().replace(" ", "-")}`);
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
   const back = await page.evaluate(() => document.activeElement?.id);
-  if (back !== "updates-restart") throw new Error(`Escape left focus on ${back}, not Restart`);
+  if (back !== id) throw new Error(`Escape left focus on ${back}, not ${name}`);
+}
+
+async function openRestartConfirm(page, visit) {
+  await page.locator("#updates-how").waitFor({ state: "visible" });
+  await openUpdatesConfirm(page, visit, "updates-update", "Update", /off the air/);
+  await openUpdatesConfirm(
+    page, visit, "updates-go-back-button", "Go back", /made since 2026-10-01 are lost/,
+  );
+  await openUpdatesConfirm(page, visit, "updates-restart", "Restart", /off the air/);
 }
 
 const hourFitPages = new WeakSet();
