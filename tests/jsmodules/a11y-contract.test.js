@@ -3671,6 +3671,27 @@ describe("station switcher and station context contracts (#70)", () => {
     }
   });
 
+  it("gives Log label a short native label and linked help naming the station ID", () => {
+    installDocument();
+    const panel = document.getElementById("spanel-stations");
+    const input = document.getElementById("station-log-label");
+    expect(panel.contains(input)).toBe(true);
+    expect(input.tagName).toBe("INPUT");
+    expect(input.type).toBe("text");
+    expect(input.hasAttribute("aria-label")).toBe(false);
+    expect(input.hasAttribute("placeholder")).toBe(false);
+    expect(input.maxLength).toBe(16);
+    expect(panel.querySelector('label[for="station-log-label"]').textContent.trim()).toBe("Log label");
+    expect(input.closest("fieldset").querySelector("legend").textContent.trim())
+      .toBe("Logs for the selected station");
+    expect(ids(input, "aria-describedby")).toEqual(["station-log-label-help"]);
+    const help = document.getElementById("station-log-label-help");
+    expect(help.classList.contains("setting-desc")).toBe(true);
+    expect(help.textContent.replace(/\s+/g, " ").trim())
+      .toBe("Shown at the start of this station's log lines. Leave empty to use the station ID, default.");
+    expect(help.contains(document.getElementById("station-log-label-id"))).toBe(true);
+  });
+
   it("gives New station labelled native fields, one polite status and an error to link (#233)", () => {
     installDocument();
     const panel = document.getElementById("spanel-stations");
@@ -3709,7 +3730,7 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(panel.querySelector(".card-desc").textContent)
       .toMatch(/song cue points and Stereo Tool preset files/);
     expect(document.getElementById("station-create-source-help").textContent)
-      .toMatch(/never takes its relays, listener password, webhooks, recording folder, queue, history/);
+      .toMatch(/never takes its relays, listener password, webhooks, recording folder, log label, queue, history/);
     // Also copy is a fieldset hidden in the markup with its help inside it.
     const copies = document.getElementById("station-create-copies");
     expect(copies.tagName).toBe("FIELDSET");
