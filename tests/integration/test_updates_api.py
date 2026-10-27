@@ -11,9 +11,9 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 
-from autodj import updates_api
+from autodj import updates, updates_api
 from autodj.server import PlayerBridge
-from autodj.updates import Installation, RestartSupport, UpdateCheck
+from autodj.updates import HealthProbe, Installation, RestartSupport, UpdateCheck, UpdateSupport
 from tests._layout import point_index
 from tests._server import create_app
 
@@ -83,7 +83,7 @@ def test_settings_are_saved_and_validated(tmp_path: Path) -> None:
 
 
 def test_check_now_is_audited_and_rate_limited(tmp_path: Path, caplog) -> None:
-    """ADR-0016-06, ADR-0016-09: the answer carries the commands for this installation."""
+    """ADR-0016-06, ADR-0016-09: the page gets no update commands; check-update keeps them."""
     client = _client(tmp_path)
     found = UpdateCheck(
         status="available",
@@ -101,10 +101,10 @@ def test_check_now_is_audited_and_rate_limited(tmp_path: Path, caplog) -> None:
         second = client.post("/api/updates/check", json={})
     assert first.status_code == 200
     assert first.json()["check"]["target"] == "v0.22.0"
-    assert first.json()["commands"] == [
-        'uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/'
-        'download/v0.22.0/autodj-0.22.0-py3-none-any.whl"'
-    ]
+    # The page lists no commands; a package is told to update the way it was installed.
+    assert "commands" not in first.json()
+    assert first.json()["update"]["available"] is False
+    assert first.json()["update"]["message"] == "Update it the way you installed it."
     assert second.status_code == 429
     assert int(second.headers["Retry-After"]) >= 1
     assert check.call_count == 1
@@ -181,7 +181,7 @@ def test_the_restart_limiter_allows_six_an_hour(tmp_path: Path) -> None:
 
 @pytest.mark.usefixtures("supported")
 def test_only_a_paired_browser_on_this_site_reaches_the_update_routes(tmp_path: Path) -> None:
-    """ADR-0016-06: session, Origin, and no machine token."""
+    """ADR-0016-06, ADR-0016-18: session, Origin, and no machine token."""
     client = _client(tmp_path, token=_TOKEN)
     server_exit = Mock()
     client.app.state.server_exit = server_exit
@@ -190,6 +190,7 @@ def test_only_a_paired_browser_on_this_site_reaches_the_update_routes(tmp_path: 
         ("post", "/api/updates/check", {}),
         ("put", "/api/updates/settings", {"check": True, "channel": "auto"}),
         ("post", "/api/server/restart", {}),
+        ("post", "/api/server/update", {}),
     ]
     for method, url, body in routes:
         kwargs = {"json": body} if body is not None else {}
@@ -303,3 +304,174 @@ def test_an_unreadable_restart_count_refuses_and_names_the_file(
     assert "Delete that file" in detail
     server_exit.assert_not_called()
     assert count.read_text(encoding="utf-8") == content
+
+
+# ---------------------------------------------------------------------------
+# Update
+# ---------------------------------------------------------------------------
+
+_OLD = "1" * 40
+_LAUNCHER = UpdateSupport("launcher", "The AutoDJ launcher updates this checkout.", "guide")
+_PROBE = HealthProbe("http", "127.0.0.1", 8080, "127.0.0.1:8080")
+
+
+def _available() -> UpdateCheck:
+    return UpdateCheck(
+        status="available",
+        channel="stable",
+        channel_source="installation",
+        message="Release v0.22.0 is available.",
+        latest="v0.22.0",
+        target="v0.22.0",
+        checked_at=time.time(),
+    )
+
+
+def _updatable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, result: UpdateCheck | None = None
+) -> TestClient:
+    """A checkout under the updating launcher, served by a server that can stop."""
+    monkeypatch.setattr(updates_api, "update_support", lambda _installation: _LAUNCHER)
+    monkeypatch.setattr(updates_api, "EXIT_DELAY_SECONDS", 0.0)
+    client = _client(tmp_path)
+    checker = client.app.state.update_checker
+    checker._installation = lambda: Installation(
+        kind="git", version="0.21.0", commit=_OLD, tag="v0.21.0", root=tmp_path / "checkout"
+    )
+    checker._check = Mock(return_value=result or _available())
+    client.app.state.server_exit = Mock()
+    client.app.state.health_probe = _PROBE
+    client.app.state.update_state_file = tmp_path / "checkout" / ".uv" / "update" / "state.json"
+    return client
+
+
+def test_update_hands_the_launcher_a_request_and_exits_with_the_update_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """ADR-0016-18: audited, carries nothing from the request, and only one is pending."""
+    client = _updatable(tmp_path, monkeypatch)
+    view = client.get("/api/updates").json()
+    assert view["update"] == {
+        "available": True,
+        "mode": "launcher",
+        "message": "The AutoDJ launcher updates this checkout.",
+        "guide_url": "guide",
+    }
+    with caplog.at_level(logging.INFO, logger="autodj.audit"), client:
+        response = client.post("/api/server/update", json={})
+        assert response.status_code == 202
+        deadline = time.monotonic() + 5
+        while not client.app.state.server_exit.called and time.monotonic() < deadline:
+            time.sleep(0.01)
+        again = client.post("/api/server/update", json={})
+        restart = client.post("/api/server/restart", json={})
+    client.app.state.server_exit.assert_called_once_with()
+    assert client.app.state.exit_status == updates.UPDATE_EXIT_CODE
+    body = response.json()
+    assert body["updating"] is True
+    assert body["target"] == "v0.22.0"
+    record = updates.read_update_state(client.app.state.update_state_file)
+    assert record is not None
+    assert record["state"] == "requested"
+    assert record["id"] == body["id"]
+    assert record["channel"] == "stable"
+    assert record["probe"] == _PROBE.to_dict()
+    assert again.status_code == 409
+    assert again.json()["detail"] == "AutoDJ is already restarting or updating."
+    assert restart.status_code == 409
+    assert [entry["outcome"] for entry in _audits(caplog, "server-update")] == [
+        "accepted",
+        "rejected",
+    ]
+
+
+def test_update_takes_no_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR-0016-18: the target is the server's own check, never the request body."""
+    client = _updatable(tmp_path, monkeypatch)
+    refused = client.post("/api/server/update", json={"target": "v9.9.9"})
+    assert refused.status_code == 422
+    client.app.state.server_exit.assert_not_called()
+
+
+def test_update_is_refused_when_this_installation_cannot_update(tmp_path: Path, caplog) -> None:
+    """ADR-0016-11: a package (or a container, for now) updates the way it was installed."""
+    client = _client(tmp_path)
+    client.app.state.server_exit = Mock()
+    client.app.state.health_probe = _PROBE
+    view = client.get("/api/updates").json()
+    assert view["update"]["available"] is False
+    assert view["update"]["guide_url"].endswith("#update-a-wheel-installation")
+    with caplog.at_level(logging.INFO, logger="autodj.audit"):
+        response = client.post("/api/server/update", json={})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Update it the way you installed it."
+    client.app.state.server_exit.assert_not_called()
+    assert [entry["outcome"] for entry in _audits(caplog, "server-update")] == ["rejected"]
+
+
+def test_update_is_refused_without_an_update_or_a_server_that_can_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0016-18."""
+    current = UpdateCheck("current", "stable", "installation", "This is the latest release.")
+    client = _updatable(tmp_path, monkeypatch, current)
+    response = client.post("/api/server/update", json={})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "No update is available. This is the latest release."
+    stopless = _updatable(tmp_path / "other", monkeypatch)
+    stopless.app.state.server_exit = None
+    assert stopless.get("/api/updates").json()["update"]["available"] is False
+    assert stopless.post("/api/server/update", json={}).status_code == 409
+
+
+def test_update_is_rate_limited_in_its_own_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0016-18: one a minute across a restart, and refused when the count cannot be read."""
+    client = _updatable(tmp_path, monkeypatch)
+    assert client.post("/api/server/update", json={}).status_code == 202
+    assert (tmp_path / "logs" / "update-requests.json").is_file()
+    assert not (tmp_path / "logs" / "restart-requests.json").exists()
+    again = _updatable(tmp_path, monkeypatch)
+    refused = again.post("/api/server/update", json={})
+    assert refused.status_code == 429
+    assert refused.json()["detail"].startswith("AutoDJ updated a moment ago.")
+    again.app.state.server_exit.assert_not_called()
+    (tmp_path / "logs" / "update-requests.json").write_text("not json", encoding="utf-8")
+    third = _updatable(tmp_path, monkeypatch)
+    damaged = third.post("/api/server/update", json={})
+    assert damaged.status_code == 503
+    assert "so it did not update" in damaged.json()["detail"]
+
+
+def test_the_page_gets_the_last_update_result_for_a_day(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0016-12: only the id, state, sentence and recovery commands; not a pending request."""
+    client = _updatable(tmp_path, monkeypatch)
+    path = client.app.state.update_state_file
+    updates.write_update_state(
+        path,
+        {
+            "state": "rolled-back",
+            "id": "abcdef12",
+            "updated_at": time.time(),
+            "message": "The update failed, so AutoDJ went back to 0.21.0.",
+            "commands": ["git switch --detach v0.22.0"],
+            "backup": "/somewhere/private.zip",
+        },
+    )
+    last = client.get("/api/updates").json()["last_update"]
+    assert last == {
+        "id": "abcdef12",
+        "state": "rolled-back",
+        "final": True,
+        "message": "The update failed, so AutoDJ went back to 0.21.0.",
+        "commands": ["git switch --detach v0.22.0"],
+        "updated_at": pytest.approx(time.time(), abs=60),
+    }
+    updates.write_update_state(path, {"state": "updated", "id": "abcdef12", "updated_at": 1.0})
+    assert client.get("/api/updates").json()["last_update"] is None
+    pending = {"state": "requested", "id": "abcdef12", "updated_at": time.time()}
+    updates.write_update_state(path, pending)
+    assert client.get("/api/updates").json()["last_update"] is None

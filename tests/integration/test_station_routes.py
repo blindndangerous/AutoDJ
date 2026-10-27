@@ -54,6 +54,7 @@ SHARED = frozenset(
         "/api/updates/check",
         "/api/updates/settings",
         "/api/server/restart",
+        "/api/server/update",
         "/api/library/tracks",
         "/api/library/folders",
         "/api/library/folders/{source_id}",

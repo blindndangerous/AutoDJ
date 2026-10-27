@@ -3144,11 +3144,13 @@ def serve(
     stream: bool | None = None,
     lan_configured_hosts: list[str] | None = None,
     library: LibraryManager | None = None,
-) -> bool:
+) -> int | None:
     """Start the Player thread and the FastAPI/uvicorn web server.
 
-    This function blocks until uvicorn is stopped (Ctrl+C), and returns
-    whether it stopped because Settings, Updates asked for a restart.
+    This function blocks until uvicorn is stopped (Ctrl+C), and returns the
+    exit status Settings, Updates asked for (RESTART_EXIT_CODE for Restart,
+    UPDATE_EXIT_CODE for Update), or ``None`` when nothing was asked or a
+    stop signal won.
 
     Args:
         cfg: Full :class:`~autodj.config.AutoDJConfig` instance.
@@ -3369,6 +3371,13 @@ def serve(
         server.should_exit = True
 
     app.state.server_exit = _server_exit
+    from autodj.updates import health_probe_for
+
+    # Where the checkout's launcher asks a new version whether it is up,
+    # after Update (autodj.checkout_update).
+    app.state.health_probe = health_probe_for(
+        host, port, https=secure_cookie, host_allowed=startup_policy.host_allowed
+    )
     interrupted = False
     try:
         server.run()
@@ -3385,4 +3394,9 @@ def serve(
     if not server.started:
         # What uvicorn.run does when the server could not start (port in use).
         sys.exit(3)
-    return bool(getattr(app.state, "restart_requested", False)) and not interrupted
+    if not getattr(app.state, "restart_requested", False) or interrupted:
+        return None
+    from autodj.updates import RESTART_EXIT_CODE
+
+    status = getattr(app.state, "exit_status", None)
+    return status if isinstance(status, int) else RESTART_EXIT_CODE

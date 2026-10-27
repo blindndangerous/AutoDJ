@@ -2151,10 +2151,13 @@ class TestServeFunction:
 
     @pytest.mark.parametrize(
         ("stop", "expected"),
-        [("restart", True), ("ctrl-c", False), ("signal", False)],
+        [("restart", 75), ("update", 85), ("ctrl-c", None), ("signal", None)],
     )
     def test_a_stop_signal_wins_over_a_pending_restart(self, tmp_path, stop, expected) -> None:
-        """ADR-0016-10: Ctrl+C or SIGTERM during a restart's shutdown stops AutoDJ."""
+        """ADR-0016-10: Ctrl+C or SIGTERM during a restart's shutdown stops AutoDJ.
+
+        ADR-0016-18: an update request exits with the update status instead.
+        """
         import signal as signals
         from unittest.mock import MagicMock, patch
 
@@ -2170,6 +2173,8 @@ class TestServeFunction:
         def run() -> None:
             app = config.call_args.args[0]
             app.state.restart_requested = True
+            if stop == "update":
+                app.state.exit_status = 85
             if stop == "ctrl-c":
                 raise KeyboardInterrupt
 
