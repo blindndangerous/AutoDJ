@@ -1,6 +1,7 @@
 """Clock preview memory follows occurrences and keeps temporarily omitted steps (#604)."""
 
 from dataclasses import replace
+from threading import RLock
 from types import SimpleNamespace
 
 import pytest
@@ -19,7 +20,8 @@ def _source(*, boundary=1000):
         _clock={"name": "Main", "cursor": 0, "resync_minutes": [] if boundary is None else [0]},
         _pending_clock_boundary=boundary,
         _clock_next_boundary=boundary,
-        _state=SimpleNamespace(track_number=0),
+        _state=SimpleNamespace(track_number=0, play_history=[]),
+        _pick_lock=RLock(),
     )
     source = SimpleNamespace(
         player=player,
@@ -84,10 +86,26 @@ def test_cycles_without_restarts_have_distinct_choices_and_follow_fixed_advancem
     assert first_lap != second_lap
 
     source.player._state.track_number = 3
+    source.player._state.play_history = [
+        SimpleNamespace(path=path)
+        for path in ("/music/lap-one.flac", "/music/middle.flac", last.path)
+    ]
     fixed = replace(decided, last=last, clock_cursor=0)
     refreshed = _ClockChoices.start(source, fixed, memory)
     assert first_lap not in refreshed.paths
     assert refreshed.preferred(source.player, 0) == next_song.path
+
+
+def test_matching_last_song_does_not_hide_a_different_played_sequence():
+    source, decided, _liner = _source(boundary=None)
+    memory = _ClockChoices.start(source, decided, None)
+    _remember(memory, source.player, 0, "/music/first.flac", count=1)
+    _position, last = _remember(memory, source.player, 1, "/music/last.flac", count=2)
+    _remember(memory, source.player, 2, "/music/future.flac", count=3)
+    source.player._state.track_number = 2
+    source.player._state.play_history = [SimpleNamespace(path="/music/unexpected.flac"), last]
+    fixed = replace(decided, last=last, clock_cursor=2)
+    assert not _ClockChoices.start(source, fixed, memory).paths
 
 
 @pytest.mark.parametrize("change", ["boundary", "edit", "switch", "unmatched-prefix"])

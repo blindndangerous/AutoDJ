@@ -2827,11 +2827,23 @@ class _ClockChoices:
         )
         memory.boundary = decided.clock_boundary
         liners = {entry.path for entry in source.library.entries_snapshot("liner")}
-        memory.count = player._state.track_number + sum(
-            entry.path not in liners for entry, _ in decided.unplayed
-        )
+        with player._pick_lock:
+            memory.count = player._state.track_number
+            history_paths = tuple(
+                record.path for record in player._state.play_history if record.path not in liners
+            )
+        unplayed = tuple(entry.path for entry, _ in decided.unplayed if entry.path not in liners)
+        memory.count += len(unplayed)
+        fixed_paths = history_paths + unplayed
         last = decided.last.path if decided.last is not None else None
-        memory.anchor = (memory.count, last, decided.clock_name, memory.cursor, memory.boundary)
+        memory.anchor = (
+            memory.count,
+            last,
+            decided.clock_name,
+            memory.cursor,
+            memory.boundary,
+            fixed_paths[-MAX_PREDICTED - 1 :],
+        )
         if previous is not None and previous.definition == memory.definition:
             if previous.anchor == memory.anchor:
                 memory.paths = dict(previous.paths)
@@ -2839,10 +2851,20 @@ class _ClockChoices:
             else:
                 # Only carry a lap forward when the newly fixed prefix matches this forecast.
                 advanced = memory.count - previous.count
+                prefix = [
+                    (path, count) for _, path, count in previous.realized if count <= advanced
+                ]
+                aligned = (
+                    advanced > 0
+                    and prefix
+                    == list(zip(fixed_paths[-advanced:], range(1, advanced + 1), strict=False))
+                    and len(prefix) == advanced
+                )
                 matches = [
                     (position, path)
                     for position, path, count in previous.realized
-                    if count == advanced
+                    if aligned
+                    and count == advanced
                     and path == last
                     and position.boundary == memory.boundary
                     and (position.step + 1) % max(1, len(player._clock_slots)) == memory.cursor
