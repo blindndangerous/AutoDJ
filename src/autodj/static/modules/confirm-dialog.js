@@ -100,16 +100,11 @@ export function confirmAction(doc, {
       if (pending) event.preventDefault();
       else releaseDialogFocus(dialog);
     }
-    // Cancel, Escape, or a browser that closed the dialog anyway.  The close
-    // event comes a task after the dialog has closed: when focus has moved on
-    // to another control meanwhile, someone chose it, so it stays there.
+    // Cancel, Escape, or a browser that closed the dialog anyway.
     function closed() {
       if (pending) return;
       settle(false);
-      const active = doc.activeElement;
-      const movedOn = active && active !== doc.body && active !== opener
-        && !dialog.contains(active);
-      if (!movedOn) returnFocus();
+      returnFocus();
     }
     for (const [target, type, listener] of listeners) {
       target?.addEventListener(type, listener);
