@@ -1429,6 +1429,7 @@ def predict(
     limit: int | None = None,
     ad_runs: Sequence[Any] = (),
     preferred_choices: dict[str, str] | None = None,
+    clock_choices: _ClockChoices | None = None,
     on_choice: Callable[[str, str], None] | None = None,
     capture_audio: bool = False,
     cancelled: Callable[[], bool] | None = None,
@@ -1458,6 +1459,7 @@ def predict(
             ad_runs,
             capture_audio,
             cancelled,
+            clock_choices,
         )
 
 
@@ -1605,6 +1607,7 @@ def _predict(
     ad_runs: Sequence[Any] = (),
     capture_audio: bool = False,
     cancelled: Callable[[], bool] | None = None,
+    clock_choices: _ClockChoices | None = None,
 ) -> tuple[list[Item], float, str | None]:
     began = time.perf_counter()
     # Ad breaks not yet booked (#51), soonest first: each joins the first
@@ -1620,6 +1623,8 @@ def _predict(
         else 1.0
     )
     player = _copy_player(source, snapshot, decided.now, random.Random(seed), _ignore)
+    if clock_choices is not None:
+        player._preview_clock_choices = clock_choices  # type: ignore[attr-defined]
     # The callback resolves stable prepared occurrences, never track paths.
     player.prepared_handoff = getattr(  # type: ignore[attr-defined]
         source.player, "prepared_preview_handoff", None
@@ -1787,6 +1792,8 @@ def _predict(
         if songs >= limit:
             stopped = "it reached its limit of songs"
             break
+        if clock_choices is not None:
+            clock_choices.selected = None
         added: tuple[tuple[Any, bool], ...] = ()
         queued_row = None
         while waiting and waiting[0].kind == "liner":
@@ -1823,6 +1830,8 @@ def _predict(
                 break
             if on_choice is not None:
                 on_choice(choice_key, entry.path)
+        if clock_choices is not None:
+            clock_choices.advance(player, entry, songs + 1)
         moment = handoff
         ad_spots: list[tuple[str, Any]] = []
         while ads and ads[0].at <= handoff:
@@ -2483,6 +2492,7 @@ def build_preview(
     describe: Callable[[Any], str] | None = None,
     budget: float = BUDGET_SECONDS,
     preferred_choices: dict[str, str] | None = None,
+    clock_choices: _ClockChoices | None = None,
     on_prediction: Callable[[tuple[tuple[str, str], ...]], None] | None = None,
     capture_audio: bool = False,
     on_items: Callable[[tuple[Item, ...]], None] | None = None,
@@ -2563,6 +2573,7 @@ def build_preview(
         budget=budget,
         ad_runs=forecasts,
         preferred_choices=preferred_choices,
+        clock_choices=clock_choices,
         capture_audio=capture_audio,
         cancelled=cancelled,
         on_choice=(
@@ -2769,6 +2780,158 @@ class _Job:
     force: bool = False
 
 
+@dataclass(frozen=True)
+class _ClockPosition:
+    name: str
+    definition: str
+    boundary: float | None
+    lap: int
+    step: int
+
+
+class _ClockChoices:
+    """Remember attempted steps separately from the forecast that actually fits."""
+
+    def __init__(self) -> None:
+        self.paths: dict[_ClockPosition, str] = {}
+        self.realized: list[tuple[_ClockPosition, str, int]] = []
+        self.selected: tuple[_ClockPosition, str] | None = None
+        self.anchor: tuple[Any, ...] = ()
+        self.definition = ""
+        self.count = 0
+        self.lap = 0
+        self.cursor = 0
+        self.boundary: float | None = None
+        self.restarting = False
+        self.start_lap = 0
+
+    @classmethod
+    def start(
+        cls, source: SimulationSource, decided: Decided, previous: _ClockChoices | None
+    ) -> _ClockChoices:
+        memory = cls()
+        player = source.player
+        memory.definition = repr(
+            (
+                player._cfg.playback.pick_mode,
+                player._clock_steps,
+                getattr(player, "_clock_revision", None),
+                (player._clock or {}).get("name"),
+                (player._clock or {}).get("resync_minutes"),
+            )
+        )
+        memory.cursor = (
+            decided.clock_cursor
+            if decided.clock_cursor is not None
+            else (player._clock or {}).get("cursor", 0)
+        )
+        memory.boundary = decided.clock_boundary
+        liners = {entry.path for entry in source.library.entries_snapshot("liner")}
+        with player._pick_lock:
+            memory.count = player._state.track_number
+            history_paths = tuple(
+                record.path for record in player._state.play_history if record.path not in liners
+            )
+        unplayed = tuple(entry.path for entry, _ in decided.unplayed if entry.path not in liners)
+        memory.count += len(unplayed)
+        fixed_paths = history_paths + unplayed
+        last = decided.last.path if decided.last is not None else None
+        memory.anchor = (
+            memory.count,
+            last,
+            decided.clock_name,
+            memory.cursor,
+            memory.boundary,
+            fixed_paths[-MAX_PREDICTED - 1 :],
+        )
+        if previous is not None and previous.definition == memory.definition:
+            if previous.anchor == memory.anchor:
+                memory.paths = dict(previous.paths)
+                memory.lap = previous.start_lap
+            else:
+                # Only carry a lap forward when the newly fixed prefix matches this forecast.
+                advanced = memory.count - previous.count
+                prefix = [
+                    (path, count) for _, path, count in previous.realized if count <= advanced
+                ]
+                aligned = (
+                    advanced > 0
+                    and prefix
+                    == list(zip(fixed_paths[-advanced:], range(1, advanced + 1), strict=False))
+                    and len(prefix) == advanced
+                )
+                matches = [
+                    (position, path)
+                    for position, path, count in previous.realized
+                    if aligned
+                    and count == advanced
+                    and path == last
+                    and position.boundary == memory.boundary
+                    and (position.step + 1) % max(1, len(player._clock_slots)) == memory.cursor
+                ]
+                if len(matches) == 1:
+                    position, _ = matches[0]
+                    memory.lap = position.lap + int(memory.cursor == 0)
+                    memory.paths = {
+                        key: path
+                        for key, path in previous.paths.items()
+                        if key.boundary != position.boundary
+                        or (key.lap, key.step) > (position.lap, position.step)
+                    }
+        memory.paths = {
+            key: path
+            for key, path in memory.paths.items()
+            if key.boundary is None or key.boundary > decided.now
+        }
+        memory.start_lap = memory.lap
+        return memory
+
+    def position(self, player: Any, step: int) -> _ClockPosition:
+        boundary = getattr(player, "_pending_clock_boundary", None) or getattr(
+            player, "_clock_next_boundary", None
+        )
+        if not self.restarting and boundary != self.boundary:
+            self.restart(boundary)
+            self.restarting = False
+        return _ClockPosition(
+            (player._clock or {}).get("name", ""),
+            repr(player._clock_steps),
+            self.boundary,
+            self.lap + int(step < self.cursor),
+            step,
+        )
+
+    def preferred(self, player: Any, step: int) -> str | None:
+        return self.paths.get(self.position(player, step))
+
+    def remember(self, player: Any, picked: Any) -> None:
+        if picked.entry is not None and picked.step_index is not None:
+            position = self.position(player, picked.step_index)
+            self.paths[position] = picked.entry.path
+            self.selected = (position, picked.entry.path)
+
+    def restart(self, boundary: float | None) -> None:
+        self.boundary, self.cursor, self.lap = boundary, 0, 0
+        self.selected = None
+        self.restarting = True
+
+    def advance(self, player: Any, entry: Any, count: int) -> None:
+        if self.selected is not None and self.selected[1] == entry.path:
+            position, path = self.selected
+            self.realized.append((position, path, count))
+            self.cursor = (position.step + 1) % len(player._clock_slots)
+            self.lap = position.lap + int(self.cursor == 0)
+            self.restarting = False
+
+    def trim(self) -> None:
+        # Keep current predictions first, then dormant attempts, within the forecast's bound.
+        current = {position: path for position, path, _ in self.realized}
+        current.update(
+            {key: path for key, path in reversed(self.paths.items()) if key not in current}
+        )
+        self.paths = dict(list(current.items())[: 2 * MAX_PREDICTED])
+
+
 class HourPreviews:
     """The server's previews: one worker thread, and each station's latest preview per span.
 
@@ -2785,6 +2948,7 @@ class HourPreviews:
         self._cond = threading.Condition()
         self._kept: dict[_Key, tuple[float, str, dict[str, Any]]] = {}
         self._choices: dict[_Key, dict[str, str]] = {}
+        self._clock_choices: dict[_Key, _ClockChoices] = {}
         self._asked: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
         self._forced: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
         self._waiting: deque[_Job] = deque()
@@ -2949,6 +3113,7 @@ class HourPreviews:
         with self._cond:
             kept = self._kept.get(key)
             previous_choices = self._choices.get(key, {})
+            previous_clock = self._clock_choices.get(key)
         if (
             not force
             and kept is not None
@@ -2956,6 +3121,7 @@ class HourPreviews:
             and time.monotonic() - kept[0] < self._keep
         ):
             return kept[2]
+        clock_choices = _ClockChoices.start(source, decided, previous_clock)
         choices: dict[str, str] = {}
 
         def remember_choices(picks: tuple[tuple[str, str], ...]) -> None:
@@ -2968,11 +3134,14 @@ class HourPreviews:
             decided=decided,
             describe=describe,
             preferred_choices=previous_choices,
+            clock_choices=clock_choices,
             on_prediction=remember_choices,
         )
         with self._cond:
             self._kept[key] = (time.monotonic(), signature, view)
             self._choices[key] = choices
+            clock_choices.trim()
+            self._clock_choices[key] = clock_choices
         return view
 
 
