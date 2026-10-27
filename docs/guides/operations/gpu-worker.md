@@ -8,24 +8,36 @@ Prepare HTTPS and a machine token, install the worker environment, and run remot
 
 Architecture and verification context: [Proposed background-work ADR](../../adr/0008-bound-background-work-outside-playout.md).
 
-Advanced analysis on a NAS processor is slow. A computer with a graphics card can do it for the
+Similarity analysis on a NAS processor is slow. A computer with a graphics card can do it for the
 server instead, over the network, with `autodj worker`. The worker asks the server for songs that
-need analysis, downloads each one from the server, analyses it with the same model and code as
-`autodj index`, and sends the result back. It never reads the server's music folder, so the two
-machines need no shared drive and no matching paths, and the server keeps its own play history and
-settings. Results appear in the server's library within a couple of seconds, without a restart.
+need analysis, downloads each one from the server, runs the compatible audio and MuQ analysis, and
+sends results back. It never reads the server's music folder, so the two machines need no shared
+drive and no matching paths, and the server keeps its own play history and settings. Results appear
+in the server's library within a couple of seconds, without a restart.
+
+Music folders can request **Basic**, **Audio** or **Similarity** analysis. Audio saves the shared
+16-value feature result and DJ metadata; Similarity adds a MuQ vector. The catalog caches those
+audio features independently of the vector, keyed to the file identity and analysis version.
+A rescan can reuse a matching cache; changed file identity invalidates it, while an existing vector
+remains until replacement analysis is saved. A feature-version change causes the cache to be
+recomputed. The worker scan-analysis protocol version is bumped for the shared result. Tracks
+longer than 15 minutes use the first and last five minutes for audio features.
+The **Similarity maximum song length** setting under **Settings**, **Stations** controls which
+tracks also receive a MuQ vector; longer tracks still get Audio analysis.
 
 While a worker is connected, the server pauses its own analysis so the two never analyse the same
 song. Two minutes after the last worker leaves, the server analyses whatever is left on its own
 processor again, so new music is always analysed sooner or later. This includes `autodj index`
-run by hand on the server: its advanced analysis stops taking songs while a worker is connected
+run by hand on the server: its MuQ analysis stops taking songs while a worker is connected
 and leaves them to the worker (`autodj index --force` does not stop).
 
-Workers that advertise `scan_decode_v1` and the matching `scan_analysis_version` also decode new and changed music found
-by a library scan: length and energy, automatic cue points, intro lift, loudness when enabled,
-and the DJ beat grid and cues when enabled. Each song is downloaded once for this work and its
-advanced analysis. Songs excluded from advanced analysis by source settings or the length
-cutoff still receive scan measurements, without a vector.
+Workers that advertise `scan_decode_v1` and the matching `scan_analysis_version` also decode new
+and changed music found by a library scan: length and energy, automatic cue points, intro lift,
+loudness when enabled, and the audio features and DJ beat grid. Each song is downloaded once for
+this work and its MuQ analysis. Songs set to Basic, or excluded from Similarity by the length
+limit, still receive the analysis their folder requests without an embedding vector. A worker and
+server with different scan-analysis versions do not share scan results; the server handles that
+decoding locally. Older workers can still perform compatible vector jobs.
 
 The server still discovers files, reads tags and lyric sidecars, reconciles moves, imports
 external DJ cues, and scans liners. On-demand analysis during playback is unchanged. New music
@@ -215,7 +227,7 @@ is a branch name (`main`), and two machines that downloaded `main` at different 
 different weights, so the server compares the snapshot commit of each machine's downloaded copy
 (or, for a `[model] manual_path` folder, a digest of its weight files). The server needs its own
 copy of the model for this. With a model-capable server runtime and songs pending
-advanced analysis, `autodj index` downloads that copy. If the copies differ, the worker stops
+Similarity analysis, `autodj index` downloads that copy. If the copies differ, the worker stops
 before it loads anything and says which commit the server has; set
 `[model] revision = "<that commit>"` in the GPU machine's `config.toml` and start the worker again,
 and it downloads exactly the server's weights.
@@ -272,7 +284,7 @@ The worker logs one line per song. Network trouble is retried with a growing pau
 minutes, so a worker left running rides out a server restart. Ctrl+C finishes the song in hand,
 gives the rest of its batch back and exits; a second Ctrl+C quits at once. A worker that stops
 without giving its songs back (a crash or a pulled cable) loses them after ten minutes, and the
-server hands them out again. For advanced analysis, a song the worker cannot decode is held back
+server hands them out again. For MuQ analysis, a song the worker cannot decode is held back
 for six hours, and a song whose file changed on the server since the last scan for one hour;
 a Rescan that reads the song's new file clears either hold at once. Pending scan measurements
 instead receive the local recovery attempt described above.
@@ -352,7 +364,7 @@ Dismiss. The server keeps only the latest refusal for each token.
   release. A worker of this release reports its model to the server, so this shows before it
   loads anything. An older worker stops on its own, and the server sees the mismatch only if it
   sends a result.
-- **Scan analysis version differs**: the worker still does advanced analysis, but the server
+- **Scan analysis version differs**: the worker still does MuQ analysis, but the server
   decodes new music itself. Update AutoDJ on both machines to the same release.
 - **Revoked token, wrong secret, or not a worker token**: pair the worker again, or give it a new
   analysis-worker token.

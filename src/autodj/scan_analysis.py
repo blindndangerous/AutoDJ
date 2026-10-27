@@ -10,9 +10,10 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
+from autodj.audio_analysis import AudioAnalysis
 from autodj.processing import MAX_GAIN_DB, MIN_GAIN_DB, PREPARATION_VERSION, TARGET_LUFS
 
-SCAN_ANALYSIS_VERSION = "1"
+SCAN_ANALYSIS_VERSION = "2"
 MAX_SCAN_SECONDS = 24 * 60 * 60
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ class ScanResult(_StrictModel):
     intro_lift_db: Finite = Field(ge=0, le=6)
     loudness: ScanLoudness | None
     dj: ScanDj | None
+    audio_analysis: AudioAnalysis | None = None
 
     @model_validator(mode="after")
     def check_times(self) -> Self:
@@ -116,7 +118,7 @@ class ScanResult(_StrictModel):
 
 def analyse_scan(path: Path, options: dict[str, Any]) -> dict[str, Any]:
     """Measure downloaded music, retaining the server's scan settings and cue hints."""
-    from autodj.dj_meta import analyse_decoded
+    from autodj.audio_analysis import analyse_audio_features
     from autodj.intro_lift import measure_source_intro
     from autodj.processing import analyze_basic, analyze_loudness, load_for_analysis
     from autodj.stereo import SAMPLE_RATE
@@ -132,15 +134,16 @@ def analyse_scan(path: Path, options: dict[str, Any]) -> dict[str, Any]:
     points = normalize_basic_points(points, entry.length)
     effective = {**points, **options.get("saved_points", {})}
     dj = None
+    audio_analysis = None
     if options["dj"]:
-        dj = asdict(
-            analyse_decoded(
-                audio,
-                SAMPLE_RATE,
-                intro_end_s=effective.get("intro") or 0.0,
-                outro_start_s=effective.get("outro") or entry.length,
-            )
+        shared, dj_meta = analyse_audio_features(
+            audio,
+            SAMPLE_RATE,
+            intro_end_s=effective.get("intro") or 0.0,
+            outro_start_s=effective.get("outro") or entry.length,
         )
+        dj = asdict(dj_meta)
+        audio_analysis = shared
     del audio
     try:
         lift = measure_source_intro(path, SAMPLE_RATE, entry.energy)
@@ -160,5 +163,6 @@ def analyse_scan(path: Path, options: dict[str, Any]) -> dict[str, Any]:
         "intro_lift_db": lift,
         "loudness": loudness,
         "dj": dj,
+        "audio_analysis": audio_analysis,
     }
     return ScanResult.model_validate(result).model_dump()

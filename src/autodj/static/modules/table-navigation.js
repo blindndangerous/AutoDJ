@@ -10,8 +10,8 @@
 export function installTableNavigation(body) {
   if (!body) return { refresh() {} };
   const cells = () => [...body.querySelectorAll("tr > td[role=gridcell], tr > td[role=rowheader]")];
-  const controls = (cell) => cell ? [...cell.querySelectorAll("button, input")] : [];
-  const input = (cell) => controls(cell).find((item) => item.tagName === "INPUT" && !item.disabled);
+  const controls = (cell) => cell ? [...cell.querySelectorAll("button, input, select")] : [];
+  const input = (cell) => controls(cell).find((item) => ["INPUT", "SELECT"].includes(item.tagName) && !item.disabled);
   const stop = (cell) => input(cell) || cell;
   const place = (cell) => {
     const row = [...cell.parentElement.children];
@@ -43,6 +43,7 @@ export function installTableNavigation(body) {
     setRovingFocus(target);
   });
   body.addEventListener("keydown", (event) => {
+    if (event.target.matches("select")) return;
     const rowEdge = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
       && (event.key === "Home" || event.key === "End");
     if ((event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) && !rowEdge) return;

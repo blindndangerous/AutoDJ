@@ -22,6 +22,7 @@ from autodj.config import ServerConfig
 from autodj.indexer import ANALYSIS_VERSION, FEATURE_DIM, analysis_identity
 from autodj.library import LibraryManager
 from autodj.machine_tokens import SCOPE_ANALYSIS_WORKER, SCOPE_ANNOUNCER
+from autodj.scan_analysis import SCAN_ANALYSIS_VERSION
 from autodj.worker_api import RESULT_BODY_MAX_BYTES, RateLimiter, decode_vector
 from tests._server import create_app
 from tests.unit._catalog_vectors import vectors_snapshot
@@ -29,7 +30,7 @@ from tests.unit.test_library import Similarity, make_config, make_entry
 
 HTTPS = "https://127.0.0.1:8080"
 COMMIT = "c" * 40
-SCAN_CAPABILITY = {"scan_decode_v1": True, "scan_analysis_version": "1"}
+SCAN_CAPABILITY = {"scan_decode_v1": True, "scan_analysis_version": SCAN_ANALYSIS_VERSION}
 
 
 def fake_model_cache(cfg, commit=COMMIT):
@@ -238,12 +239,23 @@ def test_scan_mismatch_warning_history_has_a_token_bound(server, monkeypatch, ca
 
 
 def scan_result():
+    from autodj.audio_analysis import ANALYSIS_VERSION
+
     return {
         "length": 180.0,
         "energy": 0.25,
         "points": {"start": 0.1, "end": 179.0, "intro": 10.0, "outro": 165.0, "segue": 170.0},
         "intro_lift_db": 2.0,
         "loudness": None,
+        "audio_analysis": {
+            "version": ANALYSIS_VERSION,
+            "features": [0.25] + [0.0] * 15,
+            "energy": 0.25,
+            "key": 4,
+            "mode": 0,
+            "bpm": 128.0,
+            "tempo_confidence": 0.8,
+        },
         "dj": {
             "intro_start_s": 0.1,
             "intro_end_s": 10.0,
@@ -524,7 +536,7 @@ def test_changed_playable_song_accepts_only_pending_bytes(server, with_vector, r
     assert song["embed"] is True
     assert manager.catalog.record_for_path(path) == before
     measurements = scan_result()
-    measurements.update(length=3.0, dj=None)
+    measurements.update(length=3.0, dj=None, audio_analysis=None)
     measurements["points"] = {"start": 0.0, "end": 3.0, "intro": 0.5, "outro": 2.0, "segue": 2.5}
     body, vector = server.result(song, song["lease"], scan=measurements)
     if not with_vector:
@@ -662,10 +674,10 @@ def test_scan_version_mismatch_only_claims_advanced_and_logs_once(server, caplog
         for _ in range(2):
             heartbeat = server.call("POST", "/api/worker/heartbeat", secret, json=capability)
             assert heartbeat.status_code == 200, heartbeat.text
-            assert heartbeat.json()["scan_analysis_version"] == "1"
+            assert heartbeat.json()["scan_analysis_version"] == SCAN_ANALYSIS_VERSION
         reply = server.call("POST", "/api/worker/claim", secret, json={**capability, "batch": 16})
     assert reply.status_code == 200, reply.text
-    assert reply.json()["scan_analysis_version"] == "1"
+    assert reply.json()["scan_analysis_version"] == SCAN_ANALYSIS_VERSION
     assert len(reply.json()["songs"]) == 2
     assert not queue.worker_active(scan_decode=True)
     assert sum("scan analysis version" in record.message for record in caplog.records) == 1
@@ -745,7 +757,7 @@ def test_worker_scan_tag_duration_bounds(
     token, secret = server.token()
     reply = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY)
     song = reply.json()["songs"][0]
-    scan = {**scan_result(), "length": length, "dj": None}
+    scan = {**scan_result(), "length": length, "dj": None, "audio_analysis": None}
     body, _ = server.result(song, song["lease"], scan=scan)
     reply = server.call("POST", "/api/worker/result", secret, json=body)
     assert reply.status_code == (200 if accepted else 422), reply.text
@@ -889,8 +901,11 @@ def test_real_scan_analysis_round_trips_dj_and_optional_loudness(server, amplitu
         ("points", {"start": 0.0, "end": 179.0, "intro": True}),
         ("loudness", {"lufs": -20.0}),
         ("dj", {"beats": [1.0] * 20001}),
+        ("audio_analysis", None),
+        ("audio_analysis", {"features": [0.0] * 15}),
     ],
 )
+@pytest.mark.dj_analysis
 def test_worker_rejects_malformed_scan_result(server, field, value):
     """ADR-0008-07. Untrusted scan values cannot partially update the catalog."""
     _token, secret = server.token()
@@ -1100,7 +1115,7 @@ def test_pending_replacement_keeps_current_edits(server, monkeypatch, fallback, 
             if edit == "shorter_intro_only"
             else {"start": 0.0, "end": 180.0, "intro": 170.0},
         )
-        measurements.update(length=120.0, dj=None)
+        measurements.update(length=120.0, dj=None, audio_analysis=None)
         measurements["points"] = {
             "start": 1.0,
             "end": 119.0,
@@ -1215,6 +1230,7 @@ def test_pending_completion_preserves_only_edits_after_defer(
     )
     measurements = scan_result()
     measurements["dj"] = None
+    measurements["audio_analysis"] = None
     if fallback:
         entry = replace(make_entry(path), bpm=131.0, key=-1, mode=-1)
         monkeypatch.setattr(
@@ -1267,6 +1283,7 @@ def test_same_bytes_pending_completion_keeps_existing_edits(
             upgraded.close()
     measurements = scan_result()
     measurements["dj"] = None
+    measurements["audio_analysis"] = None
     if fallback:
         monkeypatch.setattr(
             "autodj.library.analyze_basic",

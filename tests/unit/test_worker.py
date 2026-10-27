@@ -17,6 +17,7 @@ from autodj.analysis_queue import SERVER_HOLDER, WORKER_LEASE_SECONDS, AnalysisQ
 from autodj.cli import cli
 from autodj.indexer import EMBEDDING_DIM, FEATURE_DIM, analyse_file, file_fingerprint
 from autodj.library import LibraryManager, analyse_library
+from autodj.scan_analysis import SCAN_ANALYSIS_VERSION
 from autodj.worker import (
     UNREACHABLE_RELEASE_SECONDS,
     ApiError,
@@ -107,7 +108,12 @@ def make_worker(server, *, analyse=None, **kwargs):
     transport = ClientTransport(server, secret)
     worker = Worker(
         ServerApi(transport),
-        analyse or (lambda path: analyse_file(path, model)),
+        analyse
+        or (
+            lambda path, audio_analysis=None: analyse_file(
+                path, model, audio_analysis=audio_analysis
+            )
+        ),
         server.identity(),
         idle_seconds=0,
         **kwargs,
@@ -123,7 +129,7 @@ def stored_vectors(manager: LibraryManager) -> dict[str, np.ndarray]:
 @pytest.mark.parametrize("embed", [True, False])
 @pytest.mark.dj_analysis
 def test_worker_downloads_once_for_scan_and_vector(server, monkeypatch, embed):
-    """A real scan result uses server settings, local functions, and one download."""
+    """ADR-0008-38. One worker scan supplies shared features with or without a vector."""
     from autodj.intro_lift import measure_source_intro
     from autodj.processing import analyze_basic, analyze_loudness, loudness_matches
     from autodj.stereo import SAMPLE_RATE
@@ -162,6 +168,11 @@ def test_worker_downloads_once_for_scan_and_vector(server, monkeypatch, embed):
         assert record["loudness"] == analyze_loudness(song)
         assert loudness_matches(record["loudness"], song)
         assert manager._dj_cache().get(str(song)).analysed
+        features = manager.catalog.get_audio_analysis(song)
+        assert features is not None
+        if embed:
+            expected = analyse_file(song, FakeModel(), audio_analysis=features)
+            np.testing.assert_array_equal(stored_vectors(manager)[song.name], expected.vector)
     assert not manager.analysis_queue.pending_scans()
 
 
@@ -194,7 +205,7 @@ def test_worker_does_not_advertise_scan_with_incompatible_version(version):
             requests += 1
             if requests > 1 and version is not None:
                 assert body["scan_decode_v1"] is False
-                assert body["scan_analysis_version"] == "1"
+                assert body["scan_analysis_version"] == SCAN_ANALYSIS_VERSION
             else:
                 assert "scan_decode_v1" not in body
                 assert "scan_analysis_version" not in body
@@ -229,10 +240,12 @@ def test_worker_retries_legacy_fields_after_scan_downgrade(endpoint):
                 return (
                     200,
                     {},
-                    json.dumps({"scan_decode_v1": True, "scan_analysis_version": "1"}).encode(),
+                    json.dumps(
+                        {"scan_decode_v1": True, "scan_analysis_version": SCAN_ANALYSIS_VERSION}
+                    ).encode(),
                 )
             if "scan_decode_v1" in body:
-                assert body["scan_analysis_version"] == "1"
+                assert body["scan_analysis_version"] == SCAN_ANALYSIS_VERSION
                 return 422, {}, b'{"detail":"extra fields"}'
             return 200, {}, b'{"songs":[]}'
 
@@ -260,7 +273,9 @@ def test_worker_renegotiates_scan_support_after_reconnect(failure):
                 return (
                     200,
                     {},
-                    json.dumps({"scan_decode_v1": True, "scan_analysis_version": "1"}).encode(),
+                    json.dumps(
+                        {"scan_decode_v1": True, "scan_analysis_version": SCAN_ANALYSIS_VERSION}
+                    ).encode(),
                 )
             if len(requests) == 2 and failure is not None:
                 if isinstance(failure, NetworkError):
@@ -281,7 +296,7 @@ def test_worker_renegotiates_scan_support_after_reconnect(failure):
         assert "scan_analysis_version" not in requests[-1]
     else:
         assert requests[-1]["scan_decode_v1"] is True
-        assert requests[-1]["scan_analysis_version"] == "1"
+        assert requests[-1]["scan_analysis_version"] == SCAN_ANALYSIS_VERSION
 
 
 def test_worker_restart_releases_orphans_and_heartbeat_tracks_received_leases(server):
@@ -1075,7 +1090,9 @@ def test_cpu_analysis_waits_while_a_worker_is_connected_and_resumes_after(tmp_pa
 
 
 def _gated_embed(decisions):
-    def embed(tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None):
+    def embed(
+        tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None, feature_for=None
+    ):
         entries, vectors = [], []
         for track in tracks:
             decision = gate(track)
@@ -1120,7 +1137,9 @@ def test_the_cpu_job_skips_songs_a_worker_holds_and_leases_its_own(tmp_path):
     decisions = []
     seen_leases = []
 
-    def embed(tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None):
+    def embed(
+        tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None, feature_for=None
+    ):
         result = _gated_embed(decisions)
         queue = AnalysisQueue(cfg.index.library_dir / "library.db")
         try:
@@ -1226,7 +1245,7 @@ def managed_worker(server, **kwargs):
     transport = ClientTransport(server, secret)
     worker = Worker(
         ServerApi(transport),
-        lambda path: analyse_file(path, model),
+        lambda path, audio_analysis=None: analyse_file(path, model, audio_analysis=audio_analysis),
         server.identity(),
         idle_seconds=0,
         **kwargs,

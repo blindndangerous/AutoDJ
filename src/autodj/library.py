@@ -183,6 +183,9 @@ class LibraryManager:
         from autodj.config import station_config
 
         self.cfg = cfg
+        from autodj.model_identity import CachedModelCommit
+
+        self._analysis_model_commit = CachedModelCommit(lambda: (cfg.model, cfg.index))
         self.sim = sim
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
@@ -627,11 +630,16 @@ class LibraryManager:
         self._auto_rescan_minutes = minutes
 
     def dj_analysis_enabled(self) -> bool:
-        """Whether scans find each song's beats and song structure (on by default)."""
-        return self.catalog.get_setting("dj_analysis", True) is not False
+        """Whether any music source requests audio analysis."""
+        return any(s["analysis"] != "basic" for s in self.catalog.sources("music"))
 
-    def set_dj_analysis_enabled(self, enabled: bool) -> None:
-        self.catalog.set_setting("dj_analysis", enabled)
+    def similarity_available(self) -> bool:
+        """Whether installed weights can be used locally or by a connected worker."""
+        from autodj.model_identity import model_analysis_available
+
+        return bool(self._analysis_model_commit()) and (
+            model_analysis_available() or self.analysis_queue.worker_active()
+        )
 
     def music_fade_drop_db(self) -> int:
         return music_fade_drop_db(self.catalog)
@@ -730,6 +738,7 @@ class LibraryManager:
 
         return {
             "folders": self.catalog.sources(),
+            "similarity_available": self.similarity_available(),
             "import": state,
             "tracks_ready": ready,
             "tracks_indexed": indexed,
@@ -1539,7 +1548,11 @@ class LibraryManager:
             ):
                 # One decode serves the cue points and the beats and cues.  A
                 # long track's decode keeps only its start and end.
-                dj = kind == "music" and self.dj_analysis_enabled() and self._dj_cache() is not None
+                dj = (
+                    kind == "music"
+                    and self.dj_analysis_enabled()
+                    and self.catalog.analysis_for_path(path) != "basic"
+                )
                 decoding = True
                 audio = load_for_analysis(path) if dj else None
                 if kind == "music":
@@ -1747,7 +1760,7 @@ class LibraryManager:
         spans = sung_spans(load_lrc_for(path))
         return {
             "music_fade_drop_db": self.music_fade_drop_db(),
-            "dj": self.dj_analysis_enabled(),
+            "dj": self.dj_analysis_enabled() and self.catalog.analysis_for_path(path) != "basic",
             "loudness": self.cfg.playback.loudness_processing in {"smooth", "stereotool"},
             "lyrics": {"intro": first_vocal_s(spans), "outro": spans[-1][1]} if spans else {},
             "suggestions": self._legacy_point_suggestions(path),
@@ -1854,39 +1867,51 @@ class LibraryManager:
     def _dj_analyse(
         self, path: Path, audio: np.ndarray | TrackWindows | None = None, force: bool = False
     ) -> None:
-        """Store *path*'s beat grid and cues, placed from its saved Intro and Outro.
-
-        *audio* is the song already decoded at ``SAMPLE_RATE`` by
-        :func:`~autodj.processing.load_for_analysis`: all of it, or a long
-        song's start and end, which are analysed on their own
-        (:func:`~autodj.dj_meta.analyse_windows`).  It is decoded here when
-        ``None``.  Without *force* a song already analysed is left alone.  A
-        failure is logged and the scan goes on.
-        """
-        if not self.dj_analysis_enabled():
+        """Save shared audio features and structure from the same bounded decode."""
+        if not self.dj_analysis_enabled() or self.catalog.analysis_for_path(path) == "basic":
             return
         cache = self._dj_cache()
         if cache is None:
             return
         try:
-            if not force and cache.get(str(path)).analysed:
+            if (
+                not force
+                and cache.get(str(path)).analysed
+                and self.catalog.get_audio_analysis(path) is not None
+            ):
+                return
+            record = self.catalog.record_for_path(path)
+            if record is None:
                 return
             self._refresh_scan_cues()
             if audio is None:
                 audio = load_for_analysis(path)
-            from autodj.dj_meta import analyse_decoded
+            from autodj.audio_analysis import analyse_audio_features
 
             points = self.catalog.points(path)
             length = audio.seconds if isinstance(audio, TrackWindows) else len(audio) / SAMPLE_RATE
-            meta = analyse_decoded(
+            features, meta = analyse_audio_features(
                 audio,
                 SAMPLE_RATE,
                 intro_end_s=points.get("intro") or 0.0,
                 outro_start_s=points.get("outro") or length,
             )
-            self.store_scan_dj(path, meta)
+            if self.catalog.store_audio_analysis(
+                path, record["size"], record["fingerprint"], features
+            ):
+                self.store_scan_dj(path, meta)
         except Exception as exc:
-            logger.warning("DJ analysis failed for %s: %s", path, exc)
+            logger.warning("Audio analysis failed for %s: %s", path, exc)
+
+    def ensure_audio_analysis(self, path: Path) -> dict:
+        """Supply current persisted audio features before starting model inference."""
+        result = self.catalog.get_audio_analysis(path)
+        if result is None:
+            self._dj_analyse(path)
+            result = self.catalog.get_audio_analysis(path)
+        if result is None:
+            raise ValueError(f"Audio analysis is unavailable for {path}")
+        return result
 
     def _dj_backlog(self) -> None:
         """Analyse the beat grid and cues of music songs that still lack them.
@@ -1903,15 +1928,19 @@ class LibraryManager:
         # all in memory, and the garbage collector then stalled playout
         # walking them.
         paths = self.catalog.all_paths("music")
-        analysed = cache.analysed_among(paths)
+        analysed = cache.analysed_among(paths) & self.catalog.audio_analysed_paths()
         backlog = []
         for stored in paths:
             # Checking each file takes a while in a big library.
             if self._stop.is_set():
                 return
-            if stored not in analysed and Path(stored).is_file():
+            if (
+                stored not in analysed
+                and self.catalog.analysis_for_path(stored) != "basic"
+                and Path(stored).is_file()
+            ):
                 backlog.append(Path(stored))
-        self._set_state(phase="analysing beats", done=0, total=len(backlog), current="")
+        self._set_state(phase="analysing audio", done=0, total=len(backlog), current="")
         for done, path in enumerate(backlog, start=1):
             with self._lock:
                 waiting = self._pending_sources is None or bool(self._pending_sources)
@@ -2273,6 +2302,9 @@ def analyse_library(
                     throttle_ms=cfg.index.throttle_ms,
                     report=report,
                     gate=gate,
+                    feature_for=(
+                        manager.ensure_audio_analysis if manager.dj_analysis_enabled() else None
+                    ),
                 )
         _finish_decode_report(report, cfg.index.library_dir / LIBRARY_DECODE_LOG)
         return completed

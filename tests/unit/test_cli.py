@@ -1359,7 +1359,7 @@ def test_analyse_library_reports_embedded_track_count(completed: int, tmp_path: 
         result = CliRunner().invoke(cli, ["analyse-library"])
 
     assert result.exit_code == 0
-    assert f"Advanced analysis embedded {completed} tracks" in result.output
+    assert f"Similarity analysis embedded {completed} tracks" in result.output
 
 
 @pytest.mark.parametrize(

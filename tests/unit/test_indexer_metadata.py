@@ -205,8 +205,14 @@ class TestIndexerExtract:
 
         from autodj import indexer
 
-        with patch.object(indexer, "_load_audio") as load, patch.object(indexer, "librosa") as lib:
+        with (
+            patch.object(indexer, "_load_audio") as load,
+            patch("autodj.audio_analysis.librosa") as lib,
+        ):
             load.return_value = (np.ones(22050, dtype=np.float32), 22050)
+            lib.resample.side_effect = lambda y, orig_sr, target_sr: np.repeat(
+                y, target_sr // orig_sr
+            )
             lib.feature.rms.return_value = np.array([[0.5]])
             lib.feature.spectral_centroid.return_value = np.array([[1000.0]])
             lib.feature.zero_crossing_rate.return_value = np.array([[0.1]])
@@ -246,8 +252,14 @@ class TestIndexerExtract:
 
         from autodj import indexer
 
-        with patch.object(indexer, "_load_audio") as load, patch.object(indexer, "librosa") as lib:
+        with (
+            patch.object(indexer, "_load_audio") as load,
+            patch("autodj.audio_analysis.librosa") as lib,
+        ):
             load.return_value = (np.ones(22050, dtype=np.float32), 22050)
+            lib.resample.side_effect = lambda y, orig_sr, target_sr: np.repeat(
+                y, target_sr // orig_sr
+            )
             lib.feature.rms.return_value = np.array([[0.5]])
             lib.feature.spectral_centroid.return_value = np.array([[1000.0]])
             lib.feature.zero_crossing_rate.return_value = np.array([[0.1]])
@@ -271,8 +283,14 @@ class TestIndexerExtract:
 
         from autodj import indexer
 
-        with patch.object(indexer, "_load_audio") as load, patch.object(indexer, "librosa") as lib:
+        with (
+            patch.object(indexer, "_load_audio") as load,
+            patch("autodj.audio_analysis.librosa") as lib,
+        ):
             load.return_value = (np.ones(1024, dtype=np.float32), 22050)
+            lib.resample.side_effect = lambda y, orig_sr, target_sr: np.repeat(
+                y, target_sr // orig_sr
+            )
             lib.feature.rms.return_value = np.array([[0.5]])
             lib.feature.spectral_centroid.return_value = np.array([[1000.0]])
             lib.feature.zero_crossing_rate.return_value = np.array([[0.1]])

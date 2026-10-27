@@ -63,7 +63,9 @@ def _entry(path: Path, *, title: str = "Song") -> IndexEntry:
 
 
 def _fake_embed(calls: list[dict]):
-    def embed(tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None):
+    def embed(
+        tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None, feature_for=None
+    ):
         del wrapper, throttle_ms, report
         calls.append({"tracks": tracks, "workers": workers})
         for track in tracks:

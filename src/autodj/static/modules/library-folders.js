@@ -58,6 +58,18 @@ const NO_LANDMARKS = { load() {}, clear() {}, refresh() {} };
 
 const count = (n, one, many = `${one}s`) => `${Number(n || 0).toLocaleString("en-US")} ${Number(n) === 1 ? one : many}`;
 
+function syncSimilarityOption(select, available, keepUnavailable) {
+  let option = select.querySelector('option[value="similarity"]');
+  if (!available && !keepUnavailable) { option?.remove(); return; }
+  if (!option) {
+    option = select.ownerDocument.createElement("option");
+    option.value = "similarity";
+    select.add(option);
+  }
+  option.textContent = available ? "Audio + similarity" : "Audio + similarity (unavailable)";
+  option.disabled = !available;
+}
+
 // One line about the library import: counts only, never the joined paths;
 // the files with errors are listed below it (renderErrors).
 export function importSummary(data) {
@@ -65,7 +77,7 @@ export function importSummary(data) {
   const errors = job.errors?.length || 0;
   const long = data?.too_long_for_analysis || 0;
   const longNote = long
-    ? ` ${count(long, "song")} longer than ${data.advanced_max_minutes} minutes ${long === 1 ? "has" : "have"} basic analysis only.`
+    ? ` ${count(long, "song")} longer than ${data.advanced_max_minutes} minutes ${long === 1 ? "has" : "have"} audio analysis only.`
     : "";
   if (job.running) {
     const where = job.current ? `; ${job.current}` : "";
@@ -73,9 +85,9 @@ export function importSummary(data) {
     const activity = job.phase === "recovering analysis" ? "Recovering analysis" : `Importing tracks (${job.phase || "working"})`;
     return `${activity}: ${job.done || 0} of ${job.total || 0}${where}${failed}`;
   }
-  // tracks_indexed counts songs with advanced analysis, which a no-model
+  // tracks_indexed counts songs with similarity analysis, which a no-model
   // install never has: "indexed" read as if no song had been imported.
-  const ready = `${count(data?.tracks_ready, "track")} ready; ${Number(data?.tracks_indexed || 0).toLocaleString("en-US")} with advanced analysis.`;
+  const ready = `${count(data?.tracks_ready, "track")} ready; ${Number(data?.tracks_indexed || 0).toLocaleString("en-US")} with similarity analysis.`;
   if (errors) return `Import finished with ${count(errors, "error")}; the list follows. ${ready}${longNote}`;
   return `${ready}${longNote}`;
 }
@@ -83,8 +95,10 @@ export function importSummary(data) {
 // landmarks: Track info's Song structure (modules/landmarks.js, #60).
 export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, getStation = () => "default", onBackgroundError = () => {}, onFolders, landmarks = NO_LANDMARKS }) {
   const panel = doc.getElementById("panel-library");
+  const settingsPanel = doc.getElementById("panel-settings");
   const searchPanel = doc.getElementById("library-kind")?.closest("section[data-view]") || null;
   let searchShown = false;
+  let settingsShown = false;
   const list = doc.getElementById("source-folders");
   const tableNavigation = installTableNavigation(list);
   const pendingFolderEdits = new Set();
@@ -124,7 +138,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
   if (pathInput) addBrowseButton(pathInput, { source: serverFolderSource({ request }), label: "folder path" });
   const kindInput = doc.getElementById("source-folder-kind");
   const recursiveInput = doc.getElementById("source-folder-recursive");
-  const advancedInput = doc.getElementById("source-folder-advanced");
+  const analysisInput = doc.getElementById("source-folder-analysis");
+  const analysisGroup = doc.getElementById("source-folder-analysis-group");
+  let similarityAvailable = false;
   const editor = doc.getElementById("points-editor");
   const pointStatus = doc.getElementById("points-status");
   const pointPath = doc.getElementById("points-path");
@@ -257,25 +273,27 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const recursive = doc.createElement("input");
     recursive.type = "checkbox"; recursive.dataset.field = "recursive";
     const recursiveLabel = doc.createElement("label"); recursiveLabel.append(recursive, " Add subfolders");
-    let advanced = null;
-    let advancedLabel = "";
+    let analysis = null;
     if (folder.kind === "music") {
-      advanced = doc.createElement("input");
-      advanced.type = "checkbox"; advanced.dataset.field = "advanced";
-      advancedLabel = doc.createElement("label"); advancedLabel.append(advanced, " Perform advanced analysis");
+      analysis = doc.createElement("select"); analysis.dataset.field = "analysis";
+      analysis.setAttribute("aria-label", `Analysis for ${folder.path}`);
+      analysis.innerHTML = '<option value="basic">Basic</option><option value="audio">Audio</option>';
+      syncSimilarityOption(analysis, similarityAvailable, folder.analysis === "similarity" || folder.advanced);
     }
     const remove = doc.createElement("button"); remove.type = "button"; remove.dataset.action = "remove"; remove.textContent = "Remove folder";
-    const row = tableRow(doc, [folder.kind === "liner" ? "Voice liner" : "Music", folder.path, recursiveLabel, advancedLabel, remove], { nameIndex: 1 });
+    const row = tableRow(doc, [folder.kind === "liner" ? "Voice liner" : "Music", folder.path, recursiveLabel, analysis || "Basic", remove], { nameIndex: 1 });
     row.dataset.id = folder.id;
-    return { key: JSON.stringify([folder.id, folder.kind, folder.path]), row, recursive, advanced };
+    return { key: JSON.stringify([folder.id, folder.kind, folder.path]), row, recursive, analysis };
   }
-  // A folder's row is kept and its checkboxes set in place, as the relay
-  // table does.  The table drawn again after a save destroyed the focused
-  // checkbox, and NVDA went to browse mode (#330).
+  // Keep folder controls in place while polling so updates do not move focus.
   let folderRows = new Map();
   function renderFolders(data) {
     const folders = data.folders || [];
-    const signature = JSON.stringify(folders.map(({ id, path, kind, recursive, advanced }) => ({ id, path, kind, recursive, advanced })));
+    similarityAvailable = data.similarity_available === true;
+    const addMode = analysisInput.value;
+    syncSimilarityOption(analysisInput, similarityAvailable, false);
+    analysisInput.value = !similarityAvailable && addMode === "similarity" ? "audio" : addMode;
+    const signature = JSON.stringify({ available: similarityAvailable, folders: folders.map(({ id, path, kind, recursive, analysis, advanced }) => ({ id, path, kind, recursive, analysis, advanced })) });
     if (signature !== folderSignature && pendingFolderEdits.size === 0) {
       const focused = list.contains(doc.activeElement) ? {
         id: doc.activeElement.closest("tr")?.dataset.id,
@@ -285,7 +303,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
         const kept = folderRows.get(folder.id);
         const record = kept?.key === JSON.stringify([folder.id, folder.kind, folder.path]) ? kept : folderRow(folder);
         if (record.recursive.checked !== !!folder.recursive) record.recursive.checked = !!folder.recursive;
-        if (record.advanced && record.advanced.checked !== !!folder.advanced) record.advanced.checked = !!folder.advanced;
+        if (record.analysis) {
+          const selected = folder.analysis || (folder.advanced === false ? "basic" : "similarity");
+          syncSimilarityOption(record.analysis, similarityAvailable, selected === "similarity");
+          record.analysis.value = selected;
+        }
         return record;
       });
       folderRows = new Map(records.map((record, index) => [folders[index].id, record]));
@@ -296,7 +318,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       onFolders?.(folders);
       if (focused && !list.contains(doc.activeElement)) {
         const cell = [...list.querySelectorAll("tr")].find((row) => row.dataset.id === focused.id)?.cells[focused.column];
-        const replacement = cell?.querySelector("button:not(:disabled), input:not(:disabled)") || cell;
+        const replacement = cell?.querySelector("button:not(:disabled), input:not(:disabled), select:not(:disabled)") || cell;
         (replacement || doc.getElementById("source-folder-add")).focus();
       }
     }
@@ -341,8 +363,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
   function visible() { return !suspended && !!panel && !panel.closest("[hidden]") && !doc.hidden; }
   function updatePolling() {
     const searching = !suspended && !!searchPanel && !searchPanel.closest("[hidden]") && !doc.hidden;
+    const showSettings = !suspended && !!settingsPanel && !settingsPanel.closest("[hidden]") && !doc.hidden;
     if (searching && !searchShown && !visible()) void refresh();
+    if (showSettings && !settingsShown) void advancedLength?.load();
     searchShown = searching;
+    settingsShown = showSettings;
     if (visible() && timer == null) {
       void refresh();
       void autoRescan?.load();
@@ -355,10 +380,13 @@ export function installLibraryFolders({ document: doc = document, request = requ
     }
   }
 
-  kindInput.addEventListener("change", () => {
-    advancedInput.disabled = kindInput.value === "liner";
-    advancedInput.checked = kindInput.value !== "liner";
-  });
+  function updateFolderAnalysisControl() {
+    analysisInput.disabled = kindInput.value === "liner";
+    if (analysisGroup) analysisGroup.hidden = kindInput.value === "liner";
+    analysisInput.value = similarityAvailable ? "similarity" : "audio";
+  }
+  kindInput.addEventListener("change", updateFolderAnalysisControl);
+  updateFolderAnalysisControl();
   pathInput.addEventListener("input", () => {
     if (addError) {
       const previousError = addError;
@@ -375,7 +403,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (/^"(?:[A-Za-z]:[\\/]|\\\\)/.test(path) && path.endsWith('"')) path = path.slice(1, -1);
     if (!path) { reportAddError("Enter a folder path on the AutoDJ machine."); return; }
     try {
-      await request("/api/library/folders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, kind: kindInput.value, recursive: recursiveInput.checked, advanced: kindInput.value === "music" && advancedInput.checked }) });
+      await request("/api/library/folders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, kind: kindInput.value, recursive: recursiveInput.checked, analysis: kindInput.value === "music" ? analysisInput.value : "basic" }) });
       if (!requestCurrent(epoch, generation)) return;
       pathInput.value = "";
       announceAction(`Folder added; import queued for ${path}.`);
@@ -384,10 +412,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
   });
   list.addEventListener("change", async (event) => {
     if (suspended) return;
-    const input = event.target.closest("input[data-field]");
+    const input = event.target.closest("input[data-field], select[data-field]");
     if (!input || pendingFolderEdits.has(input)) return;
     const row = input.closest("tr");
-    const body = { [input.dataset.field]: input.checked };
+    const body = { [input.dataset.field]: input.type === "checkbox" ? input.checked : input.value };
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
     // pendingFolderEdits holds off another toggle (see the click guard).
@@ -402,7 +430,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (requestCurrent(epoch, generation)) announceAction("Folder settings saved.");
     } catch (error) {
-      if (requestCurrent(epoch, generation)) { input.checked = !body[input.dataset.field]; announceAction(`Could not save folder settings: ${error.message}`, true); }
+      if (requestCurrent(epoch, generation)) { if (input.type === "checkbox") input.checked = !body[input.dataset.field]; else await refresh(); announceAction(`Could not save folder settings: ${error.message}`, true); }
     } finally {
       stopPending();
       pendingFolderEdits.delete(input);
@@ -414,7 +442,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   list.addEventListener("click", async (event) => {
     if (suspended) return;
     // A checkbox or Remove still saving takes no second press.
-    if (pendingFolderEdits.has(event.target.closest("input[data-field], button[data-action]"))) { event.preventDefault(); return; }
+    if (pendingFolderEdits.has(event.target.closest("input[data-field], select[data-field], button[data-action]"))) { event.preventDefault(); return; }
     const button = event.target.closest('button[data-action="remove"]');
     if (!button) return;
     const row = button.closest("tr");
@@ -446,7 +474,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
   const advancedLength = installAdvancedLength({
     document: doc,
     request,
-    say: announceAction,
+    say: (message, error = false) => announceStatus(doc.getElementById("sr-status"), message, {
+      force: true, dwellMs: error ? 6000 : 4000, tone: error ? "error" : "info",
+    }),
     isCurrent: () => !suspended,
   });
   const musicFadeDrop = installMusicFadeDrop({
@@ -656,7 +686,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       ["Type", currentKind === "liner" ? "Voice liner" : "Music"],
       ["Duration", formatPointTime(data.length)], ["Last played", lastPlayed],
       ["BPM", data.bpm > 0 ? data.bpm : null], ["Key", data.key_label === "--" ? "Unknown" : data.key_label],
-      ["Advanced analysis", analysis],
+      ["Similarity analysis", analysis],
       ["Loudness analysis", data.loudness_ready == null ? "Not available" : data.loudness_ready ? "Ready" : "Not measured yet"],
       ["Folder", path.slice(0, split + 1)], ["Filename", path.slice(split + 1)],
     ];
@@ -973,7 +1003,6 @@ export function installLibraryFolders({ document: doc = document, request = requ
     }
     catch (error) { pointSay(error.message, true); }
   });
-  doc.getElementById("source-folder-advanced").disabled = false;
   window.addEventListener("hashchange", updatePolling);
   doc.addEventListener("visibilitychange", updatePolling);
   updatePolling();
@@ -986,6 +1015,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (timer != null) clearInterval(timer);
     timer = null;
     searchShown = false;
+    settingsShown = false;
     opening = saving = false;
     const dialog = doc.getElementById("track-info-dialog");
     if (dialog?.open) dialog.close();

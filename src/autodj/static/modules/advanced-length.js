@@ -1,7 +1,5 @@
-// Library tools, Longest song for advanced analysis (#391).  Longer songs
-// are imported and play like any other, with the basic analysis only; the
-// advanced analysis is slow and memory-heavy on an hour-long mix.  0
-// analyses every length.
+// Shared-library similarity limit. Longer songs retain their selected audio
+// preparation; 0 permits model analysis at every length.
 import { sayIfStillPending } from "./live-region.js";
 
 const MAX_ADVANCED_MINUTES = 600;
@@ -10,14 +8,13 @@ const MAX_ADVANCED_MINUTES = 600;
 export function advancedLengthProblem(text) {
   const value = String(text ?? "").trim();
   if (!/^\d+$/.test(value) || Number(value) > MAX_ADVANCED_MINUTES) {
-    return `Enter a whole number of minutes from 0 to ${MAX_ADVANCED_MINUTES}; 0 analyses every length.`;
+    return `Enter a whole number of minutes from 0 to ${MAX_ADVANCED_MINUTES}; 0 means no limit.`;
   }
   return null;
 }
 
-// *say(message, error)* writes the Library tools status region; *isCurrent()*
-// is false once the session has ended or the panel was cleared.  Returns
-// null when the page has no such field.
+// *say(message, error)* announces a save result; *isCurrent()* is false when
+// the session has ended or the panel was cleared.
 export function installAdvancedLength({ document: doc, request, say, isCurrent = () => true }) {
   const input = doc.getElementById("advanced-length");
   const save = doc.getElementById("advanced-length-save");
@@ -51,6 +48,7 @@ export function installAdvancedLength({ document: doc, request, say, isCurrent =
   }
 
   async function load() {
+    if (saving) return;
     const ticket = ++loaded;
     try {
       const value = await request("/api/library/advanced-length");
@@ -69,34 +67,37 @@ export function installAdvancedLength({ document: doc, request, say, isCurrent =
     const problem = advancedLengthProblem(input.value);
     if (problem) { showError(problem); return; }
     clearError();
-    loaded += 1;
+    const ticket = ++loaded;
     // No aria-disabled while saving: NVDA would call the pressed button
     // unavailable (#331).  aria-busy says it is busy; a slow reply says so.
     saving = true;
     save.classList.add("is-pending");
     save.setAttribute("aria-busy", "true");
-    const stopPending = sayIfStillPending(say, "Saving the advanced analysis length…");
+    const current = () => ticket === loaded && isCurrent();
+    const stopPending = sayIfStillPending((message) => { if (current()) say(message); }, "Saving the similarity analysis limit…");
     try {
       const value = await request("/api/library/advanced-length", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ minutes: Number(input.value.trim()) }),
       });
-      if (!isCurrent()) return;
+      if (!current()) return;
       show(value);
       const minutes = Number(input.value);
       say(minutes === 0
-        ? "Saved. Advanced analysis takes songs of every length."
-        : `Saved. Songs longer than ${minutes} minutes get basic analysis only.`);
+        ? "Saved. Similarity analysis has no length limit."
+        : `Saved. Songs longer than ${minutes} minutes get audio analysis only.`);
     } catch (err) {
-      if (!isCurrent()) return;
+      if (!current()) return;
       if (err?.status === 422 || err?.status === 400) showError(advancedLengthProblem("x"));
-      else say(`Could not save the advanced analysis length: ${err?.message || "error"}`, true);
+      else say(`Could not save the similarity analysis limit: ${err?.message || "error"}`, true);
     } finally {
       stopPending();
-      saving = false;
-      save.classList.remove("is-pending");
-      save.removeAttribute("aria-busy");
+      if (ticket === loaded) {
+        saving = false;
+        save.classList.remove("is-pending");
+        save.removeAttribute("aria-busy");
+      }
     }
   });
 
@@ -105,6 +106,9 @@ export function installAdvancedLength({ document: doc, request, say, isCurrent =
     load,
     clear() {
       loaded += 1;
+      saving = false;
+      save.classList.remove("is-pending");
+      save.removeAttribute("aria-busy");
       clearError();
       input.value = "15";
     },

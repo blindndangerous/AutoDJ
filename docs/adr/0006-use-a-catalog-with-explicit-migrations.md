@@ -81,6 +81,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0006-03` | Migration preview writes nothing; applied migration preserves vectors and metadata. | automated | `tests/unit/test_index_migration.py::test_dry_run_writes_nothing`; `tests/unit/test_index_migration.py::test_apply_preserves_vectors_metadata_and_reports_missing_file` |
 | `ADR-0006-04` | Worker results reject incompatible model/weight/version identities, invalid vectors, and files changed since claim. | automated | `tests/unit/test_worker_api.py::test_results_from_other_weights_or_versions_are_refused`; `tests/unit/test_worker_api.py::test_invalid_vectors_are_refused`; `tests/unit/test_worker_api.py::test_a_result_for_a_changed_file_is_refused_as_stale` |
 | `ADR-0006-05` | Changed file identity invalidates cached timing analysis; fresh cues cannot inherit old Intro/Outro, and disabled DJ analysis leaves work pending. | automated | `tests/unit/test_library.py::test_changed_file_recalculates_cues_without_inheriting_dj_cache`; `tests/unit/test_library.py::test_deferred_replacement_clears_old_dj_cache_before_publishing_identity`; `tests/unit/test_library.py::test_rescan_reads_external_tag_edit_with_unchanged_size` |
+| `ADR-0006-06` | Audio-feature results are versioned and tied to catalog file identity; storing estimates preserves manual key/BPM and a positive source BPM. | automated | `tests/unit/test_catalog_audio_analysis.py::test_audio_analysis_cache_is_identity_checked_and_survives_source_changes`; `tests/unit/test_catalog_audio_analysis.py::test_audio_estimates_preserve_manual_tags_and_existing_source_bpm` |
 
 ## Clarification, 2026-10-22: analysis follows file identity
 
@@ -102,6 +103,24 @@ no stored time, the time is too recent to trust, or the rescan overrides tags. N
 the same size and time are seen at the next change of either. Contract `ADR-0008-34` in
 [ADR 8](0008-bound-background-work-outside-playout.md) records the rule; the record retains
 its Proposed status.
+
+## Amendment clarification 2026-10-27: shared audio features and three folder modes
+
+[Issue #594](https://github.com/blindndangerous/AutoDJ/issues/594) separates basic scanning,
+shared audio analysis and MuQ similarity vectors. Music sources request Basic, Audio or Similarity;
+overlapping music sources use the strongest request, while a liner source keeps liner handling at
+Basic. Existing `advanced=true` source settings migrate to Similarity. A disabled source migrates
+to Audio when the saved `dj_analysis` setting is enabled (default true), otherwise Basic. Liners
+remain Basic.
+
+The catalog stores a versioned audio-feature result independently from its vector. A rescan reuses
+that result for a matching file identity and ignores it after an identity or analysis-version
+change. Replacing audio features does not discard an existing vector; a replacement vector is
+published separately. New features use 44.1 kHz audio for agreement between local and remote
+jobs; older vectors remain saved and are not recomputed just for this migration. Feature extraction
+for tracks over 15 minutes uses the first and last five minutes. The Similarity maximum-length
+setting controls MuQ vector work; longer tracks may still receive Audio analysis. This extends the
+proposed record and does not change its status.
 
 ## Verification
 

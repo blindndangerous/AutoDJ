@@ -1100,8 +1100,8 @@ def cmd_index(
 
     Add music folders in Library before indexing. Older indexes need migrate-index first.
     Later runs rescan the folders saved in Library tools. Songs become available
-    before advanced analysis; folders with advanced analysis disabled are skipped
-    by that pass. --limit caps advanced analysis, not the basic import.
+    before similarity analysis; folders with similarity analysis disabled are skipped
+    by that pass. --limit caps similarity analysis, not the basic import.
 
     --force replaces existing analysis after each successful result. It keeps
     manual cues, history, settings and usable old vectors if a song fails.
@@ -1113,7 +1113,7 @@ def cmd_index(
     console.print(Panel("[bold green]AutoDJ library import[/]", expand=False))
     console.print(f"  Library : {cfg.index.library_dir}")
     if limit:
-        console.print(f"  Advanced analysis limit : {limit} songs")
+        console.print(f"  Similarity analysis limit : {limit} songs")
     if force:
         console.print("  Mode : [yellow]FORCE REBUILD[/] of analysis; saved station data is kept")
     try:
@@ -1132,7 +1132,7 @@ def cmd_index(
         pending = library.analysis_pending(force=force)
         if pending and not model_analysis_available():
             console.print(
-                "[yellow]Advanced analysis pending: local model analysis is unavailable. "
+                "[yellow]Similarity analysis pending: local model analysis is unavailable. "
                 "Imported songs remain available; run `autodj setup --backend cpu` "
                 "to enable local analysis.[/]"
             )
@@ -1144,7 +1144,7 @@ def cmd_index(
             ]
             if missing:
                 raise RuntimeError(
-                    f"Advanced analysis needs missing packages: {', '.join(missing)}. "
+                    f"Similarity analysis needs missing packages: {', '.join(missing)}. "
                     "Install with uv sync --extra index. Imported songs remain available."
                 )
             model_path = download_model_if_needed(
@@ -1153,9 +1153,9 @@ def cmd_index(
             completed = analyse_library(
                 cfg, load_model(model_path), limit=limit, force=force, workers=workers
             )
-            console.print(f"[green]Advanced analysis completed for {completed} songs.[/]")
+            console.print(f"[green]Similarity analysis completed for {completed} songs.[/]")
         else:
-            console.print("Advanced analysis is up to date; nothing to do.")
+            console.print("Similarity analysis is up to date; nothing to do.")
     except Exception as exc:
         raise click.ClickException(f"Indexing failed: {exc}") from exc
 
@@ -1330,7 +1330,7 @@ def cmd_enrich(ctx: click.Context) -> None:
 @cli.command("analyse-library")
 @click.pass_context
 def cmd_analyse_library(ctx: click.Context) -> None:
-    """Analyse basic-ready songs from folders with advanced analysis enabled."""
+    """Analyse basic-ready songs from folders with similarity analysis enabled."""
     _require_model_analysis()
     from autodj.library import analyse_library
     from autodj.model import download_model_if_needed, load_model
@@ -1339,7 +1339,7 @@ def cmd_analyse_library(ctx: click.Context) -> None:
     try:
         model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
         completed = analyse_library(cfg, load_model(model_path))
-        click.echo(f"[AutoDJ] Advanced analysis embedded {completed} tracks.")
+        click.echo(f"[AutoDJ] Similarity analysis embedded {completed} tracks.")
     except Exception as exc:
         raise click.ClickException(f"Library analysis failed: {exc}") from exc
 
@@ -1554,9 +1554,9 @@ def cmd_worker(
     wrapper: MuqWrapper | None = None
     prepared = False
 
-    def analyse(path: Path) -> TrackAnalysis:
+    def analyse(path: Path, audio_analysis: dict | None = None) -> TrackAnalysis:
         assert wrapper is not None  # loaded before analysis starts
-        return analyse_file(path, wrapper)
+        return analyse_file(path, wrapper, audio_analysis=audio_analysis)
 
     def prepare() -> None:
         nonlocal wrapper, prepared
