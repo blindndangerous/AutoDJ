@@ -289,7 +289,7 @@ def test_a_stable_update_follows_the_upgrade_checklist(tmp_path: Path) -> None:
     assert updater.checked == [UpdateSettings(check=True, channel="stable")]  # type: ignore[attr-defined]
     state = contract.read(_folder(checkout) / contract.STATE)
     assert state is not None and state["step"] == "start"
-    assert (_folder(checkout) / checkout_update.LOCK).exists()
+    assert updater.locked
 
     updater.watch(_Server(), lambda: False)  # type: ignore[arg-type]
 
@@ -315,7 +315,7 @@ def test_a_stable_update_follows_the_upgrade_checklist(tmp_path: Path) -> None:
         "health": "done",
         "rollback": "skipped",
     }
-    assert not (_folder(checkout) / checkout_update.LOCK).exists()
+    assert not updater.locked
     # Not from a release to development, so there is nothing to go back to.
     assert contract.read_go_back(_folder(checkout)) is None
 
@@ -350,7 +350,7 @@ def test_a_checkout_with_changes_is_refused_before_anything_changes(tmp_path: Pa
     ]
     assert _steps(result)["check"] == "failed"
     assert _steps(result)["backup"] == "skipped"
-    assert not (_folder(checkout) / checkout_update.LOCK).exists()
+    assert not updater.locked
 
 
 def test_a_needed_migration_rolls_back_and_gives_the_commands(tmp_path: Path) -> None:
@@ -545,16 +545,22 @@ def test_a_request_it_cannot_read_changes_nothing(tmp_path: Path) -> None:
 def test_only_one_update_runs_on_a_checkout_at_a_time(tmp_path: Path) -> None:
     """ADR-0016-18: a second launcher on the same checkout does not update it too."""
     checkout = FakeCheckout(tmp_path / "checkout")
-    lock = _folder(checkout) / checkout_update.LOCK
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.write_text("1\n", encoding="utf-8")
-    updater = _updater(checkout)
-    updater._clock = lambda: lock.stat().st_mtime + 60  # type: ignore[method-assign]
+    first = _updater(checkout)
+    assert first.update().switched is True
+    assert first.locked
+    checkout.calls.clear()
+    second = _updater(checkout)
 
-    assert updater.update() == checkout_update.Attempt()
+    assert second.update() == checkout_update.Attempt()
     assert checkout.calls == []
     assert "Another AutoDJ launcher is updating" in _result(checkout)["reason"]
-    assert lock.exists()
+    # The first one finishes and lets go; a lock file left behind holds nothing.
+    first.watch(_Server(), lambda: False)  # type: ignore[arg-type]
+    assert not first.locked
+    assert (_folder(checkout) / checkout_update.LOCK).exists()
+    assert _updater(checkout, _available("v0.22.0")).update() == checkout_update.Attempt()
+    assert "already the latest" not in _result(checkout)["reason"]
+    assert "Another AutoDJ launcher" not in _result(checkout)["reason"]
 
 
 @pytest.mark.parametrize("during", ["backup", "setup"])
@@ -585,7 +591,7 @@ def test_a_stop_signal_during_the_update_puts_the_checkout_back(
     result = _result(checkout)
     assert result["outcome"] == "stopped"
     assert result["message"].startswith("AutoDJ was stopped during the update")
-    assert not (_folder(checkout) / checkout_update.LOCK).exists()
+    assert not updater.locked
 
 
 def test_a_stop_that_cannot_put_the_checkout_back_says_where_it_is(tmp_path: Path) -> None:
@@ -875,3 +881,25 @@ def test_global_options_are_the_words_before_serve() -> None:
         "-v",
     ]
     assert launcher.global_options(["serve"]) == []
+
+
+def test_a_new_version_that_cannot_even_start_is_rolled_back() -> None:
+    """ADR-0016-16: a server process that cannot start counts as an unhealthy start."""
+    stub = _StubUpdater(checkout_update.Attempt(switched=True), healthy=False)
+    statuses = iter([updates.UPDATE_EXIT_CODE, 0])
+
+    def run_child(command, environment, watch=None) -> int:
+        if watch is not None:
+            raise FileNotFoundError(command[0])
+        return next(statuses)
+
+    status = launcher.run_supervised(
+        ["old", "serve"],
+        {},
+        run_child=run_child,
+        clock=lambda: 0.0,
+        updater=stub,  # type: ignore[arg-type]
+        plan=lambda: (["serve"], {}),
+    )
+    assert stub.events == ["update", "rollback"]
+    assert status == 0

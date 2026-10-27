@@ -295,6 +295,11 @@ def run_supervised(
             if watching and updater is not None and updater.pending:
                 updater.stopped_while_starting(stop.signum)
             return end_with_signal(stop.signum)
+        except OSError:
+            if not (watching and updater is not None and updater.pending):
+                raise
+            # The new version could not even start: put the old one back.
+            status = -1
         if watching and updater is not None:
             watching = False
             if updater.pending:

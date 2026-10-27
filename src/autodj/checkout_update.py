@@ -74,13 +74,12 @@ from autodj.updates import (
 
 #: The launcher's update folder, inside the checkout's ignored ``.uv``.
 FOLDER = Path(".uv") / "update"
-#: Held while an update runs, so two launchers never update one checkout.
+#: Locked while an update runs, so two launchers never update one checkout.
+#: The operating system releases the lock when its launcher ends, however it ends.
 LOCK = "lock"
 #: The updater's own backups beyond this many, oldest first, are deleted.
 #: The one kept for Go back is not counted.
 KEEP_BACKUPS = 3
-#: A lock older than this is left over from a launcher that was killed.
-LOCK_STALE_SECONDS = 4 * 3600.0
 FETCH_TIMEOUT_SECONDS = 300.0
 GIT_TIMEOUT_SECONDS = 120.0
 BACKUP_TIMEOUT_SECONDS = 1800.0
@@ -220,7 +219,7 @@ class CheckoutUpdater:
         self._backup_at = 0.0
         self._restored = False
         self._go_back: GoBack | None = None
-        self._locked = False
+        self._lock_handle: Any = None
         #: After :meth:`watch`: True when the new server was healthy, else None.
         self.started_ok: bool | None = None
         self._start_failure = ""
@@ -384,29 +383,52 @@ class CheckoutUpdater:
         )
         self._unlock()
 
-    def _lock(self) -> None:
+    def _try_lock(self) -> bool:
+        """Lock the checkout for this update; False when another launcher holds it."""
+        if self._lock_handle is not None:
+            return True
         path = self.folder / LOCK
         path.parent.mkdir(parents=True, exist_ok=True)
-        for _attempt in range(2):
-            try:
-                descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            except FileExistsError:
-                with contextlib.suppress(OSError):
-                    if self._clock() - path.stat().st_mtime > LOCK_STALE_SECONDS:
-                        path.unlink()
-                        continue
-                break
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(f"{os.getpid()}\n")
-            self._locked = True
-            return
-        raise _Refuse("Another AutoDJ launcher is updating this checkout, so this one did not.")
+        handle = path.open("a+b")
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return False
+        self._lock_handle = handle
+        return True
+
+    def _lock(self) -> None:
+        if not self._try_lock():
+            raise _Refuse("Another AutoDJ launcher is updating this checkout, so this one did not.")
 
     def _unlock(self) -> None:
-        if self._locked:
-            with contextlib.suppress(OSError):
-                (self.folder / LOCK).unlink()
-            self._locked = False
+        handle, self._lock_handle = self._lock_handle, None
+        if handle is None:
+            return
+        with contextlib.suppress(OSError):
+            if sys.platform == "win32":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+    @property
+    def locked(self) -> bool:
+        """Whether this updater holds the checkout's update lock."""
+        return self._lock_handle is not None
 
     # ------------------------------------------------------------------
     # Signals
@@ -1048,11 +1070,8 @@ class CheckoutUpdater:
         result = contract.read_result(self.folder)
         if result is not None and result.get("id") == state.get("id"):
             return
-        lock = self.folder / LOCK
-        with contextlib.suppress(OSError):
-            if self._clock() - lock.stat().st_mtime <= LOCK_STALE_SECONDS:
-                return
-            lock.unlink()
+        if not self._try_lock():
+            return  # another launcher is still updating this checkout
         head = self._head()
         before = state.get("from") if isinstance(state.get("from"), dict) else {}
         old_commit = before.get("commit") if isinstance(before, dict) else None
