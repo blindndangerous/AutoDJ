@@ -15,6 +15,17 @@ const said = () => vi.waitFor(() => {
   if (!text) throw new Error("nothing said yet");
   return text;
 });
+const LAUNCHER = {
+  available: true, mechanism: "launcher", message: "The AutoDJ launcher updates this checkout.",
+  guide_url: "https://github.com/blindndangerous/AutoDJ/blob/master/docs/guides/backups-and-updates.md#update-a-source-checkout",
+};
+const RELEASE = {
+  status: "available", channel: "stable", channel_source: "installation",
+  message: "Release v0.22.0 is available.", latest: "v0.22.0", target: "v0.22.0",
+  checked_at: null,
+  notes_url: "https://github.com/blindndangerous/AutoDJ/releases/tag/v0.22.0",
+};
+const CURRENT = { status: "current", message: "This is the latest release, v0.22.0." };
 
 function view(overrides = {}) {
   return {
@@ -29,15 +40,16 @@ function view(overrides = {}) {
       checked_at: null,
       notes_url: "https://github.com/blindndangerous/AutoDJ/compare/0db0a92...master",
     },
-    commands: ["git fetch origin", "git switch master", "git merge --ff-only origin/master",
-      "./autodj setup", "./autodj doctor --no-fix"],
     restart: { available: true, mode: "launcher", message: "The AutoDJ launcher starts AutoDJ again." },
+    update: LAUNCHER,
+    go_back: null,
+    last_update: null,
     ...overrides,
   };
 }
 
 function server(initial = view()) {
-  const state = { view: initial, posted: [] };
+  const state = { view: initial, posted: [], after: null };
   const request = vi.fn(async (url, options = {}) => {
     if (url === "/api/updates") return state.view;
     if (url === "/api/updates/check" && options.method === "POST") return state.view;
@@ -51,14 +63,15 @@ function server(initial = view()) {
       };
       return state.view;
     }
-    if (url === "/api/server/restart" && options.method === "POST") {
+    if (url.startsWith("/api/server/") && options.method === "POST") {
       state.posted.push(url);
       if (state.refuse) {
         const error = new Error(state.refuse);
-        error.status = 429;
+        error.status = 409;
         throw error;
       }
-      return { restarting: true };
+      if (state.after) state.view = state.after;
+      return url === "/api/server/restart" ? { restarting: true } : { updating: true, id: "abcdef12" };
     }
     throw new Error(`unexpected ${url}`);
   });
@@ -94,6 +107,13 @@ function install({ initial, confirm = confirmYes, probeAnswers = [false, true] }
   return { request, state, probe };
 }
 
+// The result the updater leaves for the page, as GET /api/updates returns it.
+function finished(outcome, message, commands = []) {
+  return {
+    id: "abcdef12", action: "update", outcome, message, commands, finished_at: 1_793_000_000,
+  };
+}
+
 beforeEach(installIndex);
 afterEach(() => vi.restoreAllMocks());
 
@@ -115,17 +135,21 @@ describe("Updates markup", () => {
     const status = byId("updates-status");
     expect(status.getAttribute("role")).toBe("status");
     expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(document.querySelectorAll("#spanel-updates [aria-live='polite']")).toHaveLength(1);
     for (const id of ["updates-enabled", "updates-channel"]) {
       expect(document.querySelector(`label[for="${id}"]`), id).not.toBeNull();
     }
-    for (const id of ["updates-check", "updates-save", "updates-restart"]) {
+    for (const id of ["updates-check", "updates-save", "updates-restart", "updates-update",
+      "updates-go-back-button"]) {
       expect(byId(id).tagName).toBe("BUTTON");
       expect(byId(id).type).toBe("button");
     }
-    for (const id of ["updates-current", "updates-latest"]) {
+    for (const id of ["updates-current", "updates-latest", "updates-result"]) {
       expect(byId(id).getAttribute("aria-live"), id).toBe("off");
     }
-    expect(byId("updates-restart").hidden).toBe(true);
+    for (const id of ["updates-restart", "updates-update", "updates-go-back", "updates-last"]) {
+      expect(byId(id).hidden, id).toBe(true);
+    }
   });
 });
 
@@ -141,6 +165,8 @@ describe("Updates words", () => {
       "AutoDJ 0.21.0, commit abcdef1, release tag v0.21.0.  Channel: Stable, chosen in Update settings.",
     );
     expect(checkWords(view({ check: null }))).toBe("Not checked yet.");
+    expect(checkWords(view({ check: RELEASE }))).toBe("AutoDJ 0.22.0 is available.");
+    expect(checkWords(view())).toBe("AutoDJ master at 1234567 is available.");
   });
 
   // ADR-0016-09
@@ -164,7 +190,7 @@ describe("Updates panel", () => {
     expect(request).not.toHaveBeenCalled();
     open();
     await vi.waitFor(() => expect(byId("updates-current").textContent).toMatch(/^AutoDJ 0\.21\.0/));
-    expect(byId("updates-latest").textContent).toBe("master has new commits, up to 1234567.");
+    expect(byId("updates-latest").textContent).toBe("AutoDJ master at 1234567 is available.");
     expect(byId("updates-restart").hidden).toBe(true);
     expect(byId("updates-restart-note").textContent).toBe("Restart it yourself.");
     expect(byId("updates-channel-auto").textContent).toBe("Automatic: Development");
@@ -172,17 +198,8 @@ describe("Updates panel", () => {
   });
 
   // ADR-0016-09
-  it("links the release notes and lists the update commands while an update is available", async () => {
-    install({
-      initial: view({
-        check: {
-          status: "available", channel: "stable", channel_source: "installation",
-          message: "Release v0.22.0 is available.", latest: "v0.22.0", target: "v0.22.0",
-          checked_at: null,
-          notes_url: "https://github.com/blindndangerous/AutoDJ/releases/tag/v0.22.0",
-        },
-      }),
-    });
+  it("links the release notes and offers Update, with no command list, while an update is available", async () => {
+    install({ initial: view({ check: RELEASE }) });
     open();
     await vi.waitFor(() => expect(byId("updates-notes").hidden).toBe(false));
     const link = byId("updates-notes-link");
@@ -190,21 +207,59 @@ describe("Updates panel", () => {
     expect(link.getAttribute("href")).toBe(
       "https://github.com/blindndangerous/AutoDJ/releases/tag/v0.22.0",
     );
-    expect(byId("updates-how").hidden).toBe(false);
-    const items = [...byId("updates-commands").querySelectorAll("li > code")];
-    expect(items.map((code) => code.textContent)[0]).toBe("git fetch origin");
-    expect(byId("updates-how-note").textContent).toContain("on Windows use .\\autodj.cmd in place of ./autodj.");
-    expect(byId("updates-commands").getAttribute("aria-labelledby")).toBe("updates-how-heading");
+    expect(byId("updates-update").hidden).toBe(false);
+    expect(byId("updates-update").textContent).toBe("Update AutoDJ");
+    expect(byId("updates-install-note").hidden).toBe(true);
+    expect(byId("updates-how").hidden).toBe(true);
+    expect(byId("updates-commands").children).toHaveLength(0);
   });
 
-  it("hides the notes and commands when nothing is available", async () => {
-    install({ initial: view({ check: { status: "current", message: "This is the latest." },
-      commands: [] }) });
+  // ADR-0016-21
+  it("tells an installation that cannot update to update it the way it was installed", async () => {
+    const guide = "https://github.com/blindndangerous/AutoDJ/blob/master/docs/guides/operations/containers-and-windows.md#update-the-container";
+    install({
+      initial: view({
+        installation: { kind: "container", version: "0.21.0", commit: "0db0a92" },
+        check: RELEASE,
+        update: { available: false, mechanism: null, message: "Update it the way you installed it.",
+          guide_url: guide },
+      }),
+    });
+    open();
+    await vi.waitFor(() => expect(byId("updates-install-note").hidden).toBe(false));
+    expect(byId("updates-update").hidden).toBe(true);
+    expect(byId("updates-install-words").textContent).toBe("Update it the way you installed it.");
+    const link = byId("updates-guide-link");
+    expect(link.textContent).toBe("Update the container");
+    expect(link.getAttribute("href")).toBe(guide);
+    expect(byId("updates-how").hidden).toBe(true);
+  });
+
+  it("hides the notes, Update and commands when nothing is available", async () => {
+    install({ initial: view({ check: { status: "current", message: "This is the latest." } }) });
     open();
     await vi.waitFor(() => expect(byId("updates-latest").textContent).toBe("This is the latest."));
     expect(byId("updates-notes").hidden).toBe(true);
+    expect(byId("updates-update").hidden).toBe(true);
+    expect(byId("updates-install-note").hidden).toBe(true);
     expect(byId("updates-how").hidden).toBe(true);
     expect(byId("updates-commands").children).toHaveLength(0);
+  });
+
+  // ADR-0016-19
+  it("says development waits for the next release on the Stable channel, with no Update", async () => {
+    const waiting = "You'll move to Stable when the next release includes your version. "
+      + "Installed: 0.22.0, commit 0db0a92, on master. Latest release: v0.21.0.";
+    install({
+      initial: view({
+        channel: { name: "stable", source: "setting", inferred: "development" },
+        check: { status: "waiting-for-release", message: waiting, latest: "v0.21.0", target: null },
+      }),
+    });
+    open();
+    await vi.waitFor(() => expect(byId("updates-latest").textContent).toBe(waiting));
+    expect(byId("updates-update").hidden).toBe(true);
+    expect(byId("updates-install-note").hidden).toBe(true);
   });
 
   it("says the result of Check now once", async () => {
@@ -212,7 +267,7 @@ describe("Updates panel", () => {
     open();
     await vi.waitFor(() => expect(byId("updates-restart").hidden).toBe(false));
     byId("updates-check").click();
-    expect(await said()).toBe("master has new commits, up to 1234567.");
+    expect(await said()).toBe("AutoDJ master at 1234567 is available.");
     expect(request).toHaveBeenCalledWith("/api/updates/check", expect.objectContaining({ method: "POST" }));
   });
 
@@ -272,5 +327,116 @@ describe("Updates panel", () => {
     await vi.waitFor(() => expect(byId("updates-restart").hidden).toBe(false));
     byId("updates-restart").click();
     await vi.waitFor(() => expect(byId("updates-status").textContent).toMatch(/has not come back/));
+  });
+});
+
+describe("Update and Go back", () => {
+  // ADR-0016-21
+  it("asks before Update, says the stream goes off the air, and says once how it went", async () => {
+    const confirm = vi.fn(confirmYes);
+    const { state } = install({ initial: view({ check: RELEASE }), confirm });
+    state.after = view({
+      installation: { kind: "git", version: "0.22.0", commit: "2222222", tag: "v0.22.0" },
+      check: CURRENT,
+      last_update: finished("updated", "Updated to 0.22.0."),
+    });
+    open();
+    await vi.waitFor(() => expect(byId("updates-update").hidden).toBe(false));
+    byId("updates-update").focus();
+    byId("updates-update").click();
+    await vi.waitFor(() => expect(byId("updates-status").textContent).toBe("Updated to 0.22.0."));
+    const options = confirm.mock.calls[0][1];
+    expect(options.title).toBe("Update AutoDJ?");
+    expect(options.message).toMatch(/installs 0\.22\.0/);
+    expect(options.message).toMatch(/off the air/);
+    expect(options.confirmLabel).toBe("Update");
+    expect(state.posted).toEqual(["/api/server/update"]);
+    // Nothing left to update: focus moves to Check now rather than a hidden button.
+    expect(byId("updates-update").hidden).toBe(true);
+    expect(document.activeElement).toBe(byId("updates-check"));
+    expect(byId("updates-last").hidden).toBe(false);
+    expect(byId("updates-result").textContent).toBe("Updated to 0.22.0.");
+    expect(byId("updates-how").hidden).toBe(true);
+  });
+
+  // ADR-0016-21
+  it("says the update failed, why, and only then lists the commands for that failure", async () => {
+    const { state } = install({ initial: view({ check: RELEASE }) });
+    const message = "The update failed, so AutoDJ went back to 0.21.0. The new version needs a "
+      + "library migration, which AutoDJ does not run by itself.";
+    const commands = ["git switch --detach v0.22.0", "./autodj setup", "./autodj migrate-index"];
+    state.after = view({ check: RELEASE, last_update: finished("rolled-back", message, commands) });
+    open();
+    await vi.waitFor(() => expect(byId("updates-update").hidden).toBe(false));
+    byId("updates-update").click();
+    await vi.waitFor(() => expect(byId("updates-status").textContent).toBe(message));
+    expect(byId("updates-how").hidden).toBe(false);
+    expect([...byId("updates-commands").querySelectorAll("li > code")].map((code) => code.textContent))
+      .toEqual(commands);
+    expect(byId("updates-commands").getAttribute("aria-labelledby")).toBe("updates-how-heading");
+  });
+
+  it("says why a refused update did not happen", async () => {
+    const { state } = install({ initial: view({ check: RELEASE }) });
+    state.refuse = "AutoDJ updated a moment ago. Try again in 40 seconds.";
+    open();
+    await vi.waitFor(() => expect(byId("updates-update").hidden).toBe(false));
+    byId("updates-update").click();
+    expect(await said()).toBe(
+      "Could not update AutoDJ: AutoDJ updated a moment ago. Try again in 40 seconds.",
+    );
+  });
+
+  // ADR-0016-21
+  it("offers Go back with its version and date, and says what is lost before it starts", async () => {
+    const confirm = vi.fn(confirmYes);
+    const back = { available: true, tag: "v0.21.0", version: "0.21.0", date: "2026-10-27", message: "" };
+    const { state } = install({
+      initial: view({
+        channel: { name: "stable", source: "setting", inferred: "development" },
+        check: { status: "waiting-for-release", message: "You'll move to Stable later.", target: null },
+        go_back: back,
+      }),
+      confirm,
+    });
+    state.after = view({
+      check: CURRENT,
+      last_update: { ...finished("updated", "Went back to 0.21.0."), action: "go-back" },
+    });
+    open();
+    await vi.waitFor(() => expect(byId("updates-go-back").hidden).toBe(false));
+    const button = byId("updates-go-back-button");
+    expect(button.textContent).toBe("Go back to 0.21.0");
+    expect(byId("updates-go-back-note").textContent).toBe(
+      "You can go back to 0.21.0 now with the backup AutoDJ made on 2026-10-27, when it moved "
+      + "this installation to Development.",
+    );
+    button.click();
+    await vi.waitFor(() => expect(byId("updates-status").textContent).toBe("Went back to 0.21.0."));
+    const options = confirm.mock.calls[0][1];
+    expect(options.title).toBe("Go back to AutoDJ 0.21.0?");
+    expect(options.message).toContain("made on 2026-10-27");
+    expect(options.message).toContain(
+      "Settings, play history and library changes made since 2026-10-27 are lost.",
+    );
+    expect(options.message).toMatch(/off the air/);
+    expect(options.confirmLabel).toBe("Go back");
+    expect(state.posted).toEqual(["/api/server/go-back"]);
+  });
+
+  // ADR-0016-21
+  it("says in one sentence why Go back is not offered", async () => {
+    const reason = "Going back to 0.21.0 is not offered, because the backup AutoDJ made on "
+      + "2026-10-27 is missing.";
+    install({
+      initial: view({
+        go_back: { available: false, tag: "v0.21.0", version: "0.21.0", date: "2026-10-27",
+          message: reason },
+      }),
+    });
+    open();
+    await vi.waitFor(() => expect(byId("updates-go-back").hidden).toBe(false));
+    expect(byId("updates-go-back-note").textContent).toBe(reason);
+    expect(byId("updates-go-back-button").hidden).toBe(true);
   });
 });

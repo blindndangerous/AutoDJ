@@ -2807,8 +2807,9 @@
   <div class="card" role="tabpanel" id="spanel-updates" aria-labelledby="stab-updates" hidden>
     <h3>Updates</h3>
     <!-- updates.js loads this panel when it is seen.  The version and
-         result lines are plain text; only Check now, Save update settings
-         and Restart speak, once each, through #updates-status. -->
+         result lines are plain text; only Check now, Save update settings,
+         Update, Go back and Restart speak, once each, through
+         #updates-status. -->
     <div id="updates-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <h4>This installation</h4>
     <p id="updates-current" aria-live="off">Loading…</p>
@@ -2816,12 +2817,27 @@
     <p id="updates-latest" aria-live="off"></p>
     <p id="updates-notes" hidden><a id="updates-notes-link" href="#">Release notes</a></p>
     <button type="button" id="updates-check">Check now</button>
-    <!-- Shown while an update is available: AutoDJ does not update itself;
-         whoever installed it runs these, after a backup (#552). -->
-    <div id="updates-how" hidden>
-      <h4 id="updates-how-heading">How to update</h4>
-      <p id="updates-how-note" class="setting-desc"></p>
-      <ol id="updates-commands" aria-labelledby="updates-how-heading"></ol>
+    <!-- Update shows while an update is available and this installation's
+         updater can install it (#552).  Otherwise the note says to update
+         it the way it was installed, with a link to its guide. -->
+    <button type="button" id="updates-update" hidden>Update AutoDJ</button>
+    <p id="updates-install-note" class="setting-desc" hidden><span id="updates-install-words"></span> <a id="updates-guide-link" href="#"></a></p>
+    <!-- Shown on the Stable channel when the updater kept the backup of the
+         release it moved this installation to Development from. -->
+    <div id="updates-go-back" hidden>
+      <h4>Go back to Stable now</h4>
+      <p id="updates-go-back-note" class="setting-desc"></p>
+      <button type="button" id="updates-go-back-button" hidden>Go back</button>
+    </div>
+    <!-- How the last update went; commands only after a failure. -->
+    <div id="updates-last" hidden>
+      <h4>Last update</h4>
+      <p id="updates-result" aria-live="off"></p>
+      <div id="updates-how" hidden>
+        <h4 id="updates-how-heading">Commands to finish by hand</h4>
+        <p id="updates-how-note" class="setting-desc">Run these in order in the AutoDJ folder.</p>
+        <ol id="updates-commands" aria-labelledby="updates-how-heading"></ol>
+      </div>
     </div>
 
     <fieldset>
