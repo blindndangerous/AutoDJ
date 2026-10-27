@@ -741,8 +741,21 @@ async function openUpdatesConfirm(page, visit, id, name, words) {
   const message = await page.locator("#confirm-message").textContent();
   if (!words.test(message || "")) throw new Error(`${name}'s confirmation says: ${message}`);
   await visit(`settings/updates/${name.toLowerCase().replace(" ", "-")}`);
+  // The browser fires close a task after the dialog closes, and the page
+  // returns focus in that close handler.  Wait for it before moving on, so
+  // the next button's focus is not taken back by this dialog's late close.
+  await page.evaluate(() => {
+    const confirm = document.getElementById("confirm-dialog");
+    window.__autodjConfirmClosed = new Promise((resolve) => {
+      confirm.addEventListener("close", () => setTimeout(resolve, 0), { once: true });
+    });
+  });
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
+  await page.evaluate(() => Promise.race([
+    window.__autodjConfirmClosed,
+    new Promise((resolve) => { setTimeout(resolve, 5000); }),
+  ]));
   const back = await page.evaluate(() => document.activeElement?.id);
   if (back !== id) throw new Error(`Escape left focus on ${back}, not ${name}`);
 }
