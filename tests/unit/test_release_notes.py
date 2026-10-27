@@ -1,6 +1,7 @@
 """The GitHub release body comes from the release's CHANGELOG.md section."""
 
 import importlib.util
+import time
 from pathlib import Path
 
 import pytest
@@ -71,13 +72,44 @@ def test_a_lone_backtick_does_not_hide_the_next_paragraphs_links():
     assert f"[the guide]({BLOB}/docs/setup.md)" in notes
 
 
-def test_a_heading_inside_a_code_block_does_not_end_the_section():
-    changelog = CHANGELOG.replace(
-        "- Older.", "- Older.\n\n```markdown\n## Not a heading\n```\n\n- Still 1.1.0."
-    )
+@pytest.mark.parametrize(
+    "block",
+    [
+        "```markdown\n## Not a heading\n## [2.0.0] - not a release\n[x]: not a definition\n```",
+        "````markdown\n```\n## Inner\n```\n````",
+        "```\n~~~\n## Inner\n```",
+        "~~~\n## Inner\n~~~~",
+    ],
+)
+def test_headings_and_definitions_inside_a_code_block_do_not_end_the_section(block):
+    changelog = CHANGELOG.replace("- Older.", f"- Older.\n\n{block}\n\n- Still 1.1.0.")
     notes = release_notes.release_notes(changelog, "v1.1.0")
-    assert "## Not a heading" in notes and "- Still 1.1.0." in notes
+    assert block in notes and "- Still 1.1.0." in notes
     assert "A note on this file" not in notes
+
+
+def test_links_inside_a_code_block_are_left_alone():
+    text = "```markdown\n- one\n\n[guide](docs/setup.md)\n```\n\n[guide](docs/setup.md)"
+    notes = release_notes.absolute_links(text, "v1.2.0")
+    assert notes.startswith("```markdown\n- one\n\n[guide](docs/setup.md)\n```\n\n")
+    assert notes.endswith(f"[guide]({BLOB}/docs/setup.md)")
+
+
+def test_inline_code_at_the_start_of_a_line_is_not_a_fence():
+    changelog = CHANGELOG.replace("- Older.", "- Older.\n\n```x``` is inline.")
+    assert release_notes.release_notes(changelog, "v1.1.0").endswith("```x``` is inline.\n")
+
+
+def test_an_unclosed_code_fence_is_refused():
+    changelog = CHANGELOG.replace("- Older.", "- Older.\n\n```\nnever closed")
+    with pytest.raises(ValueError, match="unclosed code fence"):
+        release_notes.release_notes(changelog, "v1.1.0")
+
+
+def test_a_long_run_of_backticks_is_quick():
+    started = time.perf_counter()
+    release_notes.absolute_links("`" * 50_000 + " [a](docs/a.md)", "v1.2.0")
+    assert time.perf_counter() - started < 2
 
 
 def test_the_last_release_stops_before_notes_and_link_definitions():

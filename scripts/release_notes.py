@@ -24,32 +24,59 @@ _RELEASE_HEADING = re.compile(r"## \[(?P<version>[^\]]+)\]")
 # Anything that ends a release's section: the next level-2 heading, or the
 # link reference definitions at the bottom of the file.
 _SECTION_END = re.compile(r"## |\[[^\]]+\]:\s")
-# A code span never crosses a blank line, so a lone backtick in one paragraph
-# cannot hide the links of the next.
-_CODE_SPAN = re.compile(r"(`+)(?:(?!\n[ \t]*\n).)+?\1", re.DOTALL)
-_FENCE = re.compile(r" {0,3}(```|~~~)")
+# A code span opens and closes with backtick runs of the same length and never
+# crosses a blank line, so a lone backtick cannot hide the next paragraph's links.
+_CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n).)*?(?<!`)\1(?!`)", re.DOTALL)
+# CommonMark fences: three or more backticks (with no backtick after them on
+# the line) or tildes, closed by the same character at least as many times.
+_FENCE_OPEN = re.compile(r" {0,3}(?P<fence>`{3,}(?=[^`]*$)|~{3,})")
 _INLINE_LINK = re.compile(
     r"(?P<image>!?)\[(?P<text>[^\]]*)\]\((?P<target>[^)\s]+)(?P<title>\s+\"[^\"]*\")?\)"
 )
 _SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:|//")
 
 
+def _in_fence(lines: list[str]) -> tuple[list[bool], bool]:
+    """For each line, whether it belongs to a fenced code block, its fences included.
+
+    Also returns whether the last block is still open at the end.
+    """
+    marks: list[bool] = []
+    fence: str | None = None
+    for line in lines:
+        if fence is None:
+            opening = _FENCE_OPEN.match(line)
+            fence = opening["fence"] if opening else None
+            marks.append(fence is not None)
+        else:
+            marks.append(True)
+            stripped = line.strip()
+            if (
+                len(line) - len(line.lstrip(" ")) <= 3
+                and stripped.startswith(fence)
+                and set(stripped) == {fence[0]}
+            ):
+                fence = None
+    return marks, fence is not None
+
+
 def section(changelog: str, version: str) -> str:
     """The text under ``## [version]``, without its heading; raise if missing or empty."""
+    every = changelog.splitlines()
     lines: list[str] = []
     found = False
-    fenced = False
-    for line in changelog.splitlines():
-        if found and _FENCE.match(line):
-            fenced = not fenced
-        if found and not fenced and _SECTION_END.match(line):
-            break
-        heading = _RELEASE_HEADING.match(line)
-        if heading is not None:
-            found = heading["version"] == version
-            continue
+    for line, fenced in zip(every, _in_fence(every)[0], strict=True):
+        if not fenced:
+            if found and _SECTION_END.match(line):
+                break
+            heading = _RELEASE_HEADING.match(line)
+            if heading is not None:
+                found = heading["version"] == version
+                continue
         if found:
             lines.append(line)
+    if _in_fence(lines)[1]:
+        raise ValueError(f"CHANGELOG.md's section for {version} has an unclosed code fence")
     text = "\n".join(lines).strip()
     while text.endswith("---"):
         text = text.removesuffix("---").strip()
@@ -72,20 +99,36 @@ def _absolute(target: str, tag: str, *, image: bool) -> str:
 
 
 def absolute_links(text: str, tag: str) -> str:
-    """Point relative links at the files as they are at *tag*, outside code spans."""
+    """Point relative links at the files as they are at *tag*, outside code."""
 
     def link(match: re.Match[str]) -> str:
         target = _absolute(match["target"], tag, image=bool(match["image"]))
         return f"{match['image']}[{match['text']}]({target}{match['title'] or ''})"
 
-    pieces: list[str] = []
-    start = 0
-    for code in _CODE_SPAN.finditer(text):
-        pieces.append(_INLINE_LINK.sub(link, text[start : code.start()]))
-        pieces.append(code.group())
-        start = code.end()
-    pieces.append(_INLINE_LINK.sub(link, text[start:]))
-    return "".join(pieces)
+    def prose(chunk: str) -> str:
+        pieces: list[str] = []
+        start = 0
+        for code in _CODE_SPAN.finditer(chunk):
+            pieces.append(_INLINE_LINK.sub(link, chunk[start : code.start()]))
+            pieces.append(code.group())
+            start = code.end()
+        pieces.append(_INLINE_LINK.sub(link, chunk[start:]))
+        return "".join(pieces)
+
+    lines = text.split("\n")
+    out: list[str] = []
+    run: list[str] = []
+    for line, fenced in zip(lines, _in_fence(lines)[0], strict=True):
+        if fenced:
+            if run:
+                out.append(prose("\n".join(run)))
+                run = []
+            out.append(line)
+        else:
+            run.append(line)
+    if run:
+        out.append(prose("\n".join(run)))
+    return "\n".join(out)
 
 
 def release_notes(changelog: str, tag: str) -> str:
