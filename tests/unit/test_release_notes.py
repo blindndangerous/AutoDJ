@@ -106,6 +106,12 @@ def test_an_unclosed_code_fence_is_refused():
         release_notes.release_notes(changelog, "v1.1.0")
 
 
+def test_an_unclosed_fence_in_an_earlier_section_is_named():
+    changelog = CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n```\nwip\n")
+    with pytest.raises(ValueError, match=r"unclosed code fence before 1\.2\.0"):
+        release_notes.release_notes(changelog, "v1.2.0")
+
+
 def test_a_long_run_of_backticks_is_quick():
     started = time.perf_counter()
     release_notes.absolute_links("`" * 50_000 + " [a](docs/a.md)", "v1.2.0")

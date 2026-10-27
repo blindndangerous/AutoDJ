@@ -63,9 +63,10 @@ def _in_fence(lines: list[str]) -> tuple[list[bool], bool]:
 def section(changelog: str, version: str) -> str:
     """The text under ``## [version]``, without its heading; raise if missing or empty."""
     every = changelog.splitlines()
+    marks, left_open = _in_fence(every)
     lines: list[str] = []
     found = False
-    for line, fenced in zip(every, _in_fence(every)[0], strict=True):
+    for line, fenced in zip(every, marks, strict=True):
         if not fenced:
             if found and _SECTION_END.match(line):
                 break
@@ -77,6 +78,9 @@ def section(changelog: str, version: str) -> str:
             lines.append(line)
     if _in_fence(lines)[1]:
         raise ValueError(f"CHANGELOG.md's section for {version} has an unclosed code fence")
+    if not found and left_open:
+        # An earlier unclosed fence hides every heading after it.
+        raise ValueError(f"CHANGELOG.md has an unclosed code fence before {version}")
     text = "\n".join(lines).strip()
     while text.endswith("---"):
         text = text.removesuffix("---").strip()
