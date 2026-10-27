@@ -445,7 +445,7 @@ def test_real_player_ignores_a_track_start_left_over_from_a_stopped_set(monkeypa
             time.sleep(0.005)
         assert len(pending_starts) == 1
         leftover = pending_starts[0]  # Taken after promotion; its callback is delayed.
-        assert not leftover.handoff_pending
+        assert len(leftover.audio) > 0
         numbered = player._state.track_number
         stream.listener_count = 0
         station.tick()

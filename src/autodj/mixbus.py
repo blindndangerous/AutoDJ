@@ -189,8 +189,9 @@ class RenderedTrack:
             voice starts and its speech ends in *audio*, and its label.
         intro_assets: ``(intro_id, path)`` for exact selected audio files;
             paths stay internal unless the catalog identifies one as a liner.
-        handoff_pending: A live cursor awaiting promotion, with no audio or
-            successor prepared. The player must resolve it before bus admission.
+        handoff_pending: A live continuation awaiting successor selection, with no
+            successor prepared. Its existing deck can play during preparation;
+            an exhausted continuation still requires worker-side promotion.
     """
 
     entry: IndexEntry
