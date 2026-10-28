@@ -79,6 +79,7 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
     (scripts / "setup-profiles.json").write_bytes((SCRIPTS / "setup-profiles.json").read_bytes())
     (root / "pyproject.toml").write_text("[project]\nname = 'autodj-test'\n", encoding="utf-8")
     (root / "uv.lock").write_text("test lock\n", encoding="utf-8")
+    (root / ".python-version").write_text("3.14\n", encoding="utf-8")
     music = root / "Music # Café"
     music.mkdir()
     return root, music
@@ -909,3 +910,12 @@ def test_setup_runs_doctor_offline_with_a_time_limit(
     assert kwargs["timeout"] == setup_modules.setup.DOCTOR_TIMEOUT_SECONDS
     assert "Doctor did not finish" in capsys.readouterr().out
     assert setup_modules.support.read_json(root / setup_modules.support.STATE)["backend"] == "cpu"
+
+
+def test_empty_python_version_stops_setup_with_a_clear_message(
+    setup_modules, tmp_path: Path
+) -> None:
+    root, _ = _project(tmp_path)
+    (root / ".python-version").write_text("\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"\.python-version is empty"):
+        setup_modules.support.python_version(root)
