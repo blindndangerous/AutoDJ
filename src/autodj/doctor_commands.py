@@ -18,6 +18,7 @@ _COMMANDS = {
     "migrate-index": ("migrate-index", "--apply"),
     "rebuild-index": ("index", "--force"),
     "index": ("index",),
+    "download-model": ("download-model",),
     "rebuild-dj-meta": ("analyse",),
     "analyse": ("analyse",),
     "serve-lan": ("serve", "--lan"),
@@ -25,7 +26,8 @@ _COMMANDS = {
 _EFFECTS = {
     "migrate-index": "Stop AutoDJ serving/indexing first. Saves a recovery copy and imports older library data without re-embedding.",
     "rebuild-index": "Re-embeds the full library from scratch; may download models and take a long time.",
-    "index": "Indexes the library and downloads missing models; this may take a long time.",
+    "index": "Imports registered folders and runs pending analysis; this may download models and take a long time.",
+    "download-model": "Downloads or validates the configured model cache without analyzing songs.",
     "rebuild-dj-meta": "Stop AutoDJ serving/indexing first. Backs up the DJ metadata cache and rebuilds it.",
     "analyse": "Analyses indexed audio to fill missing DJ metadata; this may take a long time.",
     "serve-lan": "Starts the server on your network until you stop it; does not change your saved config.",
