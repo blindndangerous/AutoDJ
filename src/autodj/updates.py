@@ -61,8 +61,21 @@ _BRANCH_PATTERN = re.compile(r"[A-Za-z0-9._/-]{1,200}\Z")
 #: The exit status that asks the launcher, a service manager or a container
 #: runtime to start AutoDJ again (``EX_TEMPFAIL``).
 RESTART_EXIT_CODE = 75
+#: The exit status that asks the checkout's launcher to update AutoDJ, then
+#: start it again.  It is outside the ``sysexits`` range (64 to 78) and below
+#: the shell's 126, so it means nothing else.  Only a launcher that sets
+#: UPDATER_ENV acts on it; anything else sees a failed exit.
+UPDATE_EXIT_CODE = 85
 #: Set to ``1`` by the launcher for a ``serve`` it restarts on RESTART_EXIT_CODE.
 SUPERVISOR_ENV = "AUTODJ_SUPERVISOR"
+#: Set by an updater for the server it starts, naming itself: ``launcher``
+#: for a checkout launcher that updates the checkout when ``serve`` exits
+#: with UPDATE_EXIT_CODE.  A launcher from before the web update does not
+#: set it, so its server offers no Update.  The files they exchange are in
+#: :mod:`autodj.update_contract`.
+UPDATER_ENV = "AUTODJ_UPDATER"
+#: The updaters AutoDJ knows.  A helper on a container's host would add one.
+UPDATERS = ("launcher",)
 #: ``0`` turns the network check off for this process.  The tests set it, and
 #: so do setup's and restore's Doctor runs.
 CHECK_ENV = "AUTODJ_UPDATE_CHECK"
@@ -515,9 +528,14 @@ class UpdateCheck:
     - ``current``: this is the latest version on its channel;
     - ``available``: a newer one exists, named by ``latest`` (and ``target``,
       what an update would switch to: a tag, or ``master``), with
-      ``notes_url`` linking its release notes;
+      ``notes_url`` linking its release notes (for ``master``, the commits
+      since this one);
     - ``ahead``: this is newer than the latest release, or has commits
       ``master`` does not have yet;
+    - ``waiting-for-release``: the saved channel is stable, and this is
+      newer than the latest release (it came from ``master``).  It moves to
+      stable with the first release that includes it, which is then
+      ``available``;
     - ``branch``: a checkout on a branch other than ``master``, which no
       channel follows;
     - ``unknown``: no commit to compare with ``master``;
@@ -539,12 +557,20 @@ class UpdateCheck:
         return asdict(self)
 
 
-def release_notes_url(target: str | None) -> str | None:
-    """The GitHub release page of a tag, or the changelog on ``master``; else ``None``."""
+def release_notes_url(target: str | None, commit: str | None = None) -> str | None:
+    """Where to read what an update brings; ``None`` when there is no target.
+
+    A tag links its GitHub release page.  ``master`` links GitHub's compare
+    view from *commit* (this installation's full commit) to ``master``: the
+    changelog's Unreleased section stays empty between releases, so it would
+    say nothing.  Without a full commit, it links ``master``'s commit list.
+    """
     if target is not None and TAG_PATTERN.fullmatch(target):
         return f"{REPOSITORY_URL}/releases/tag/{target}"
     if target == DEVELOPMENT_BRANCH:
-        return f"{REPOSITORY_URL}/blob/{DEVELOPMENT_BRANCH}/CHANGELOG.md"
+        if commit is not None and _SHA_PATTERN.fullmatch(commit.lower()):
+            return f"{REPOSITORY_URL}/compare/{commit.lower()}...{DEVELOPMENT_BRANCH}"
+        return f"{REPOSITORY_URL}/commits/{DEVELOPMENT_BRANCH}"
     return None
 
 
@@ -790,8 +816,14 @@ def check_for_update(
         )
     try:
         if channel == "stable":
+            newest = latest_release_tag(installation, runner=runner, fetch_text=fetch_text)
             result = _compare_release(
-                installation, latest_release_tag(installation, runner=runner, fetch_text=fetch_text)
+                installation,
+                newest,
+                saved_stable=settings.channel == "stable",
+                contained=lambda: contained_in_release(
+                    installation, newest, runner=runner, fetch_text=fetch_text
+                ),
             )
         else:
             result = _compare_development(
@@ -814,27 +846,97 @@ def check_for_update(
         latest=latest,
         target=target,
         checked_at=clock(),
-        notes_url=release_notes_url(target),
+        notes_url=release_notes_url(target, installation.commit),
     )
 
 
+def contained_in_release(
+    installation: Installation,
+    tag: str,
+    *,
+    runner: Runner = run_bounded,
+    fetch_text: FetchText | None = None,
+) -> bool | None:
+    """Whether the release *tag* includes this installation's commit; ``None`` when unknown.
+
+    A checkout asks git (``merge-base --is-ancestor HEAD`` the tag), which
+    reads only what it already has: a tag not fetched yet is unknown.  An
+    installation without git asks GitHub's compare view.
+    """
+    commit = installation.commit
+    if commit is None or not TAG_PATTERN.fullmatch(tag):
+        return None
+    if installation.kind == "git" and installation.root is not None:
+        try:
+            done = git(
+                installation.root,
+                "merge-base",
+                "--is-ancestor",
+                "HEAD",
+                f"refs/tags/{tag}",
+                runner=runner,
+                timeout=5.0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return {0: True, 1: False}.get(done.returncode)
+    if not _SHORT_SHA_PATTERN.fullmatch(commit):
+        return None
+    fetch_text = fetch_text or _fetch_text
+    try:
+        body = fetch_text(
+            f"{REPOSITORY_API}/compare/{tag}...{commit}",
+            _api_headers(installation.version, "application/vnd.github+json"),
+            HTTP_TIMEOUT_SECONDS,
+        )
+        status = json.loads(body).get("status")
+    except (OSError, ValueError, AttributeError):
+        return None
+    # The commit is "behind" the tag (or the same) when the release includes it.
+    return {"behind": True, "identical": True, "ahead": False, "diverged": False}.get(status)
+
+
 def _compare_release(
-    installation: Installation, latest: str
+    installation: Installation,
+    latest: str,
+    *,
+    saved_stable: bool = False,
+    contained: Callable[[], bool | None] = lambda: None,
 ) -> tuple[str, str, str | None, str | None]:
-    """Compare with the newest release tag."""
-    mine, newest = version_key(installation.version), version_key(latest)
-    if mine > newest:
-        return "ahead", f"This is newer than the latest release, {latest}.", latest, None
-    if mine == newest:
-        if installation.kind == "git" and installation.tag != latest:
+    """Compare with the newest release tag.
+
+    Ahead of it, an installation whose saved channel is stable waits for the
+    first release that includes it (``waiting-for-release``); one that only
+    infers stable is ``ahead``.  A release that includes this commit is
+    ``available``, even with the same version number.
+    """
+
+    def beyond(message: str) -> tuple[str, str, str | None, str | None]:
+        if saved_stable:
             return (
-                "ahead",
-                f"This checkout has changes after the latest release, {latest}.",
+                "waiting-for-release",
+                "You'll move to Stable when the next release includes your version. "
+                f"Installed: {installation.describe()}. Latest release: {latest}.",
                 latest,
                 None,
             )
+        return "ahead", message, latest, None
+
+    available = ("available", f"Release {latest} is available.", latest, latest)
+    mine, newest = version_key(installation.version), version_key(latest)
+    if mine > newest:
+        return beyond(f"This is newer than the latest release, {latest}.")
+    if mine == newest:
+        if installation.kind == "git" and installation.tag != latest:
+            if installation.tag is None and contained() is True:
+                return available
+            return beyond(f"This checkout has changes after the latest release, {latest}.")
+        if installation.kind != "git" and contained() is False:
+            return beyond(f"This build has changes after the latest release, {latest}.")
         return "current", f"This is the latest release, {latest}.", latest, None
-    return "available", f"Release {latest} is available.", latest, latest
+    if installation.kind == "git" and installation.tag is None and contained() is False:
+        return beyond(f"The latest release, {latest}, does not include this commit.")
+    return available
 
 
 def _compare_development(
@@ -1108,6 +1210,112 @@ def restart_support(
     )
 
 
+# ---------------------------------------------------------------------------
+# Updating
+# ---------------------------------------------------------------------------
+
+#: Where each kind of installation's update procedure is described.
+UPDATE_GUIDES = {
+    "git": f"{REPOSITORY_URL}/blob/{DEVELOPMENT_BRANCH}/docs/guides/backups-and-updates.md"
+    "#update-a-source-checkout",
+    "container": f"{REPOSITORY_URL}/blob/{DEVELOPMENT_BRANCH}/docs/guides/operations/"
+    "containers-and-windows.md#update-the-container",
+    "package": f"{REPOSITORY_URL}/blob/{DEVELOPMENT_BRANCH}/docs/guides/backups-and-updates.md"
+    "#update-a-wheel-installation",
+}
+
+
+@dataclass(frozen=True)
+class UpdateSupport:
+    """Whether this installation can update itself from the web page, and how.
+
+    ``mechanism`` is the updater that does it, one of UPDATERS (``launcher``:
+    the checkout's launcher, between two runs of ``serve``), or ``None``.
+    ``message`` says how, or why not: then the person who installed AutoDJ
+    updates it the way they installed it, as ``guide_url`` describes.  The
+    page shows the message and the link and needs nothing else, so a new
+    mechanism (a helper on a container's host) changes neither.
+    """
+
+    mechanism: str | None
+    message: str
+    guide_url: str | None = None
+
+    @property
+    def available(self) -> bool:
+        """Whether the web page may offer Update."""
+        return self.mechanism is not None
+
+    def to_dict(self) -> dict[str, Any]:
+        """The JSON form for the page."""
+        return {
+            "available": self.available,
+            "mechanism": self.mechanism,
+            "message": self.message,
+            "guide_url": self.guide_url,
+        }
+
+
+def update_support(
+    installation: Installation, environ: Mapping[str, str] | None = None
+) -> UpdateSupport:
+    """Find out whether something here can update AutoDJ when the page asks.
+
+    Only a source checkout whose ``serve`` runs under a launcher that says it
+    updates (UPDATER_ENV) can, for now.  A wheel, a container and a checkout
+    started any other way update the way they were installed.
+    """
+    environment = os.environ if environ is None else environ
+    guide = UPDATE_GUIDES.get(installation.kind, UPDATE_GUIDES["git"])
+    if (
+        installation.kind == "git"
+        and installation.root is not None
+        and environment.get(SUPERVISOR_ENV) == "1"
+        and environment.get(UPDATER_ENV) in UPDATERS
+    ):
+        return UpdateSupport("launcher", "The AutoDJ launcher updates this checkout.", guide)
+    return UpdateSupport(None, "Update it the way you installed it.", guide)
+
+
+def go_back_moved(
+    installation: Installation, commit: str, version: str, *, runner: Runner = run_bounded
+) -> str | None:
+    """Why Go back to release *version* (at *commit*) no longer fits this checkout, or ``None``.
+
+    It fits while ``HEAD`` is not itself a release and that release's commit
+    is an ancestor of ``HEAD``: the checkout still came from it.  Development
+    that has since passed a newer release still fits, since that is when
+    someone waiting for Stable wants it; the updater forgets Go back when it
+    moves the checkout onto a release.  A checkout moved by hand drops it.
+    """
+    root = installation.root
+    unknown = (
+        f"AutoDJ cannot tell whether this checkout still came from {version}, so going back "
+        "to it is not offered."
+    )
+    if installation.kind != "git" or root is None:
+        return unknown
+    if installation.tag is not None:
+        return (
+            f"This checkout runs release {installation.tag} now, so going back to {version} "
+            "is not offered."
+        )
+    try:
+        ancestor = git(
+            root, "merge-base", "--is-ancestor", commit, "HEAD", runner=runner, timeout=5.0
+        ).returncode
+    except (OSError, subprocess.SubprocessError):
+        return unknown
+    if ancestor == 1:
+        return (
+            f"This checkout has moved away from {version}, so going back to it with its backup "
+            "is not offered."
+        )
+    if ancestor != 0:
+        return unknown
+    return None
+
+
 def channel_label(channel: str) -> str:
     """``Stable`` or ``Development``."""
     return "Development" if channel == "development" else "Stable"
@@ -1136,14 +1344,18 @@ __all__ = [
     "RESTART_EXIT_CODE",
     "SUPERVISOR_ENV",
     "TAG_PATTERN",
+    "UPDATER_ENV",
+    "UPDATE_EXIT_CODE",
     "Installation",
     "RestartSupport",
     "UpdateCheck",
     "UpdateChecker",
     "UpdateSettings",
+    "UpdateSupport",
     "check_for_update",
     "detect_installation",
     "load_settings",
     "restart_support",
     "save_settings",
+    "update_support",
 ]

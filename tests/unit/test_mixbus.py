@@ -746,6 +746,7 @@ def test_the_effect_is_made_on_the_skipping_thread_never_the_bus_thread() -> Non
 
     bus, _started = _tail_bus([first, second], maker)
     bus.start_set()
+    bus.render_block()  # Skip needs a current track, regardless of when the runner starts.
     stop = threading.Event()
     runner = threading.Thread(target=bus.run, args=(stop,))
     runner.start()

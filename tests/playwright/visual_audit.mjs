@@ -677,8 +677,9 @@ async function standInForSchedule(page) {
 }
 
 // Settings > Updates (#552): an update available, with its release notes,
-// the commands and Restart, which the audit server (no launcher loop) would
-// not offer.  Long command lines test reflow at 320 px.
+// Update, Go back, a failed last update with its recovery commands, and
+// Restart, which the audit server (no launcher loop) would not offer.  Long
+// command lines test reflow at 320 px.
 const UPDATES = {
   installation: { kind: "git", version: "0.21.0", commit: "0db0a92", branch: null, tag: "v0.21.0" },
   settings: { check: true, channel: null },
@@ -689,12 +690,23 @@ const UPDATES = {
     checked_at: 1792740000,
     notes_url: "https://github.com/blindndangerous/AutoDJ/releases/tag/v0.22.0",
   },
-  commands: [
-    "git fetch --tags origin", "git switch --detach v0.22.0", "./autodj setup",
-    "./autodj doctor --no-fix",
-    'uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/v0.22.0/autodj-0.22.0-py3-none-any.whl"',
-  ],
   restart: { available: true, mode: "launcher", message: "The AutoDJ launcher starts AutoDJ again." },
+  update: {
+    available: true, mechanism: "launcher", message: "The AutoDJ launcher updates this checkout.",
+    guide_url: "https://github.com/blindndangerous/AutoDJ/blob/master/docs/guides/backups-and-updates.md#update-a-source-checkout",
+  },
+  go_back: { available: true, tag: "v0.20.0", version: "0.20.0", date: "2026-10-01", message: "" },
+  last_update: {
+    id: "abcdef12", action: "update", outcome: "rolled-back", finished_at: 1792740000,
+    message: "The update failed, so AutoDJ went back to 0.21.0. The new version needs a library "
+      + "migration, which AutoDJ does not run by itself. To migrate, stop AutoDJ and run these "
+      + "commands in the AutoDJ folder.",
+    commands: [
+      "git switch --detach v0.22.0", "./autodj setup", "./autodj migrate-index",
+      "./autodj migrate-index --apply",
+      "./autodj --config /srv/night-owl-radio/configuration/with/a/long/unbroken/path/config.toml doctor --no-fix",
+    ],
+  },
 };
 const updatesPages = new WeakSet();
 
@@ -704,10 +716,13 @@ async function standInForUpdates(page) {
   await page.route("**/api/updates", (route) => (route.request().method() === "GET"
     ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(UPDATES) })
     : route.continue()));
-  // Restart is refused here, so a confirmed press restarts nothing.
-  await page.route("**/api/server/restart", (route) => route.fulfill({
-    status: 409, contentType: "application/json", body: JSON.stringify({ detail: "Audit" }),
-  }));
+  // Restart, Update and Go back are refused here, so a confirmed press
+  // restarts or updates nothing.
+  for (const action of ["restart", "update", "go-back"]) {
+    await page.route(`**/api/server/${action}`, (route) => route.fulfill({
+      status: 409, contentType: "application/json", body: JSON.stringify({ detail: "Audit" }),
+    }));
+  }
 }
 
 // Every focus change on the page from now on, as "out:<from>><to>" and
@@ -726,25 +741,35 @@ function watchFocus(page) {
 }
 
 // Close the open confirmation with *keys* and check focus went straight
-// from the dialog's button to Restart: never through the page body, where
-// NVDA read "Skip to main content" first (#602).  The close event comes a
-// task later, so the trail is read after it.
-async function closeRestartConfirm(page, keys, how) {
+// from the dialog's button back to the button *id* that opened it: never
+// through the page body, where NVDA read "Skip to main content" first
+// (#602).  The browser fires close a task after the dialog closes, and the
+// page may return focus in that close handler, so the trail is read after
+// it; the next button's focus is then not taken back by a late close.
+async function closeUpdatesConfirm(page, id, keys, how) {
   const dialog = page.locator("#confirm-dialog");
   // Measuring the open dialog may have moved focus; start from Cancel.
   await page.locator("#confirm-cancel").focus();
   await watchFocus(page);
   const start = await page.evaluate(() => `open ${document.getElementById("confirm-dialog").open}, active ${document.activeElement?.id || document.activeElement?.tagName}`);
+  await page.evaluate(() => {
+    const confirm = document.getElementById("confirm-dialog");
+    window.__autodjConfirmClosed = new Promise((resolve) => {
+      confirm.addEventListener("close", () => setTimeout(resolve, 0), { once: true });
+    });
+  });
   for (const key of keys) await page.keyboard.press(key);
   await dialog.waitFor({ state: "hidden" });
-  const trail = await page.evaluate(() => new Promise((resolve) => {
-    setTimeout(() => resolve({ trail: window.__autodjFocusTrail, active: document.activeElement?.id }), 50);
-  }));
+  await page.evaluate(() => Promise.race([
+    window.__autodjConfirmClosed,
+    new Promise((resolve) => { setTimeout(resolve, 5000); }),
+  ]));
+  const trail = await page.evaluate(() => ({ trail: window.__autodjFocusTrail, active: document.activeElement?.id }));
   const closing = trail.trail.slice(trail.trail.findLastIndex((step) => step.startsWith("out:confirm-")));
-  const straight = ["out:confirm-cancel>updates-restart", "out:confirm-accept>updates-restart"]
-    .includes(closing[0]) && closing.length === 2 && closing[1] === "in:updates-restart";
-  if (trail.active !== "updates-restart" || !straight) {
-    throw new Error(`${how} did not put focus straight back on Restart: ${trail.trail.join(", ")} (${start})`);
+  const straight = [`out:confirm-cancel>${id}`, `out:confirm-accept>${id}`]
+    .includes(closing[0]) && closing.length === 2 && closing[1] === `in:${id}`;
+  if (trail.active !== id || !straight) {
+    throw new Error(`${how} did not put focus straight back on ${id}: ${trail.trail.join(", ")} (${start})`);
   }
 }
 
@@ -752,7 +777,7 @@ async function closeRestartConfirm(page, keys, how) {
 // (#602, #627): marked aria-modal, not :modal, the form out of the tree,
 // Cancel last; the backdrop covers the page and a click on it changes
 // nothing; Tab and Shift+Tab go round the dialog's two buttons.
-async function restartConfirmShape(page) {
+async function updatesConfirmShape(page, name) {
   const shape = await page.evaluate(() => {
     const dialog = document.getElementById("confirm-dialog");
     // Two corners of the window, away from the dialog.
@@ -769,9 +794,10 @@ async function restartConfirmShape(page) {
   const expected = { ariaModal: "true", modal: false, formRole: "none",
     buttons: "confirm-accept,confirm-cancel", coveredBy: "confirm-backdrop" };
   if (JSON.stringify(shape) !== JSON.stringify(expected)) {
-    throw new Error(`Restart's confirmation is not as expected: ${JSON.stringify(shape)}`);
+    throw new Error(`${name}'s confirmation is not as expected: ${JSON.stringify(shape)}`);
   }
   await page.locator("#confirm-backdrop").click({ position: { x: 5, y: 5 } });
+  await page.locator("#confirm-cancel").focus();
   const stops = [];
   for (const key of ["Tab", "Tab", "Shift+Tab"]) {
     await page.keyboard.press(key);
@@ -779,40 +805,50 @@ async function restartConfirmShape(page) {
   }
   const open = await page.locator("#confirm-dialog").evaluate((dialog) => dialog.open);
   if (!open || stops.join(",") !== "confirm-accept,confirm-cancel,confirm-accept") {
-    throw new Error(`Restart's confirmation let go: open ${open}, Tab stops ${stops.join(",")}`);
+    throw new Error(`${name}'s confirmation let go: open ${open}, Tab stops ${stops.join(",")}`);
   }
 }
 
-async function reopenRestartConfirm(page) {
-  await page.locator("#updates-restart").focus();
+async function reopenUpdatesConfirm(page, id) {
+  await page.locator(`#${id}`).focus();
   await page.keyboard.press("Enter");
   await page.locator("#confirm-dialog").waitFor({ state: "visible" });
 }
 
-// Restart opens the shared confirmation on Cancel.  Escape and Cancel close
-// it, and Restart confirmed is refused; each time focus goes straight back
-// to Restart.  Restart is before Cancel, so Shift+Tab reaches it.
-async function openRestartConfirm(page, visit) {
-  const restart = page.locator("#updates-restart");
-  await restart.waitFor({ state: "visible" });
-  await page.locator("#updates-how").waitFor({ state: "visible" });
-  await restart.focus();
+// Update, Go back and Restart open the shared confirmation on Cancel;
+// Escape closes it and puts focus straight back on the button, with
+// nothing sent.
+async function openUpdatesConfirm(page, visit, id, name, words) {
+  const button = page.locator(`#${id}`);
+  await button.waitFor({ state: "visible" });
+  await button.focus();
   await page.keyboard.press("Enter");
   const dialog = page.locator("#confirm-dialog");
   await dialog.waitFor({ state: "visible" });
   const focused = await page.evaluate(() => document.activeElement?.id);
   if (focused !== "confirm-cancel") {
-    throw new Error(`Restart's confirmation opened with focus on ${focused}, not Cancel`);
+    throw new Error(`${name}'s confirmation opened with focus on ${focused}, not Cancel`);
   }
   const message = await page.locator("#confirm-message").textContent();
-  if (!/off the air/.test(message || "")) throw new Error(`Restart's confirmation says: ${message}`);
-  await visit("settings/updates/restart");
-  await restartConfirmShape(page);
-  await closeRestartConfirm(page, ["Escape"], "Escape");
-  await reopenRestartConfirm(page);
-  await closeRestartConfirm(page, ["Enter"], "Cancel");
-  await reopenRestartConfirm(page);
-  await closeRestartConfirm(page, ["Shift+Tab", "Enter"], "A refused Restart");
+  if (!words.test(message || "")) throw new Error(`${name}'s confirmation says: ${message}`);
+  await visit(`settings/updates/${name.toLowerCase().replace(" ", "-")}`);
+  await updatesConfirmShape(page, name);
+  await closeUpdatesConfirm(page, id, ["Escape"], `${name}: Escape`);
+}
+
+// Restart is also closed with Cancel, and confirmed and refused; Restart is
+// before Cancel, so Shift+Tab reaches it.
+async function openRestartConfirm(page, visit) {
+  await page.locator("#updates-how").waitFor({ state: "visible" });
+  await openUpdatesConfirm(page, visit, "updates-update", "Update", /off the air/);
+  await openUpdatesConfirm(
+    page, visit, "updates-go-back-button", "Go back", /made since 2026-10-01 are lost/,
+  );
+  await openUpdatesConfirm(page, visit, "updates-restart", "Restart", /off the air/);
+  await reopenUpdatesConfirm(page, "updates-restart");
+  await closeUpdatesConfirm(page, "updates-restart", ["Enter"], "Restart: Cancel");
+  await reopenUpdatesConfirm(page, "updates-restart");
+  await closeUpdatesConfirm(page, "updates-restart", ["Shift+Tab", "Enter"], "Restart: refused");
   // The refusal's status message would cover what is measured next.
   await showToast(page, "");
 }

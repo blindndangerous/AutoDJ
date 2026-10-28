@@ -324,14 +324,16 @@ must keep a refused create silent apart from the focused field. A stood-in succe
 must announce once in the panel's status region and move focus to Switch. The audit never
 creates a station; the stand-in answers every create request.
 
-Settings > Updates is shown with a stood-in update: its release notes link, the update commands
-(a long unbroken wheel address included, for reflow) and Restart AutoDJ. Enter on Restart must open
-the confirmation with focus on Cancel and a message that says the stream goes off the air. The
-open confirmation must be marked `aria-modal` without being modal, with its form out of the
-accessibility tree and Cancel after Restart; its backdrop must cover the page and ignore a click,
-and Tab and Shift+Tab must stay on its two buttons. Escape, Cancel and a refused Restart must each
-move focus straight from the dialog's button to Restart, never through the page body. The audit
-never restarts the server.
+Settings > Updates is shown with a stood-in update: its release notes link, Update AutoDJ, Go
+back, a failed last update with its recovery commands (a long unbroken path included, for reflow)
+and Restart AutoDJ. Enter on Update, Go back and Restart must each open the confirmation with focus
+on Cancel and a message that says the stream goes off the air or, for Go back, what is lost since
+the backup's date. Each open confirmation must be marked `aria-modal` without being modal, with its
+form out of the accessibility tree and Cancel as its last button; its backdrop must cover the page
+and ignore a click, and Tab and Shift+Tab must stay on its two buttons. Escape must close it, and
+for Restart Cancel and a refused Restart must too, each moving focus straight from the dialog's
+button back to the button that opened it, never through the page body. The audit never restarts
+or updates the server.
 
 ## Announcement contract
 

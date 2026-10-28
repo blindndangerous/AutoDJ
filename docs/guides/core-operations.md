@@ -131,6 +131,10 @@ you have recorded its result and confirmed it contains no sole copy of needed da
 
 ## Update and keep a rollback path
 
+A checkout started with its launcher can do these steps from **Settings**, **Updates** with
+**Update AutoDJ**, which goes back by itself when the new version fails; see
+[Update from the page](backups-and-updates.md#update-from-the-page). By hand:
+
 1. Stop serving and analysis/indexing, make a final backup, and keep the old
    version/configuration and separate assets/credentials. Read release changes
    since your version in [CHANGELOG.md](../../CHANGELOG.md).

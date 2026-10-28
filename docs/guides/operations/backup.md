@@ -57,7 +57,8 @@ lines look as before; another station's start with its slug:
 
 Each station is checked for its folder (can it be written), its saved settings, its stream
 (ffmpeg), its relays (from its own `relay-status.json`), its time checks and voice packs, DMCA
-mode, its recording folder and its liner folder. `autodj doctor --station nightowl` checks only
+mode, its categories, saved speech state, recording folder and liner folder.
+`autodj doctor --station nightowl` checks only
 that station beside the server; `--station default` checks only the default station. In
 `--json`, a station's checks carry `"station": "nightowl"`.
 

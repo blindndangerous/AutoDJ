@@ -79,6 +79,16 @@ afterEach(() => {
 });
 
 describe("confirmAction focus (#385)", () => {
+  it("returns focus to the opener when the close event comes a task later", async () => {
+    // The mounted dialog always fires close a task later, as a browser does.
+    const { dialog, opener } = mount();
+    opener.focus();
+    const answer = ask();
+    dialog.close("");
+    expect(await answer).toBe(false);
+    expect(document.activeElement).toBe(opener);
+  });
+
   // ADR-0011-03
   it("puts focus back on the opener only once the dialog has closed, after Cancel", async () => {
     const { opener, focusedWhileOpen } = mount();
