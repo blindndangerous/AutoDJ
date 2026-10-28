@@ -532,3 +532,59 @@ def test_a_stop_that_comes_while_the_server_starts_still_stops_it(
         launcher._run_child(["serve"], {})
     assert stop.value.signum == signal.SIGTERM
     started.send_signal.assert_called_with(signal.SIGTERM)
+
+
+def _serving_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The checkout launcher about to supervise ``serve``; returns its update folder."""
+    root = _project(tmp_path, monkeypatch)
+    environment = root / "runtime"
+    _save(root, environment)
+    monkeypatch.setattr(launcher.sys, "prefix", str(environment.resolve()))
+    monkeypatch.setattr(launcher.sys, "argv", ["autodj", "serve"])
+    monkeypatch.setenv("AUTODJ_BOOTSTRAP", "1")
+    monkeypatch.delenv(launcher.SUPERVISOR_ENV, raising=False)
+    return root / ".uv" / "update"
+
+
+def test_a_launcher_ended_by_a_signal_lets_go_of_its_serving_lock_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0016-18: dying of the signal skips the finally, so it lets go before."""
+    from autodj import update_contract as contract
+
+    folder = _serving_launch(tmp_path, monkeypatch)
+    mine = contract.serving_path(folder, os.getpid())
+    seen: list[bool] = []
+
+    def run_supervised(command, environment, **options) -> int:
+        assert mine.exists()
+        return options["end_with_signal"](15)
+
+    def end_with_signal(signum: int) -> int:
+        seen.append(mine.exists())
+        return 128 + signum
+
+    monkeypatch.setattr(launcher, "run_supervised", run_supervised)
+    monkeypatch.setattr(launcher, "_end_with_signal", end_with_signal)
+    assert launcher.main() == 143
+    assert seen == [False]
+
+
+def test_a_launcher_refuses_to_serve_while_an_update_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ADR-0016-18: the checkout is half switched until that update finishes."""
+    from autodj import update_contract as contract
+    from autodj.checkout_update import LOCK
+
+    folder = _serving_launch(tmp_path, monkeypatch)
+    held = contract.try_lock(folder / LOCK)  # another launcher's update
+    supervised = Mock()
+    monkeypatch.setattr(launcher, "run_supervised", supervised)
+    try:
+        assert launcher.main() == 1
+    finally:
+        contract.unlock(held)
+    supervised.assert_not_called()
+    assert launcher.UPDATE_RUNNING in capsys.readouterr().err
+    assert not contract.serving_path(folder, os.getpid()).exists()
