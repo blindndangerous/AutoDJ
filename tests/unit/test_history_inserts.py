@@ -137,6 +137,49 @@ def test_the_play_log_leaves_inserted_items_out_and_keeps_song_lengths(store, tm
     assert [row["title"] for row in store.play_log()] == ["Song a", "Song b"]
 
 
+def test_a_standalone_speech_segment_ends_the_song_before_it(store, tmp_path) -> None:
+    """ADR-0006-07."""
+    music = str(tmp_path / "song.flac")
+    store.write_history(
+        [
+            _song("skipped", music, 0),
+            # A liner over the skip still leaves the song playing under it.
+            _insert("liner", "liner", 20),
+            # A show's segment airs on its own: the song stopped when it began.
+            {
+                **_insert("segment", "speech", 30, path=str(tmp_path / "segment.wav")),
+                "duration": 60.0,
+            },
+            _song("next", music, 90),
+        ],
+        [],
+    )
+    window = (T0 - timedelta(hours=1), T0 + timedelta(hours=1))
+    songs = store.play_log(*window)
+    assert [(row["title"], row["following_at"]) for row in songs] == [
+        ("Song skipped", _at(30)),
+        ("Song next", None),
+    ]
+    everything = store.play_log(*window, include_inserts=True)
+    assert [(row["kind"], row["following_at"]) for row in everything] == [
+        ("song", _at(30)),
+        ("liner", None),
+        ("speech", _at(90)),
+        ("song", None),
+    ]
+
+
+def test_an_aired_item_before_the_saved_history_loads_is_kept(store, tmp_path) -> None:
+    store.write_history([_song("old", str(tmp_path / "old.flac"), 0)], [])
+    bridge = _bridge(ledger=StationLedger(store), library=SimpleNamespace())
+    bridge.player.restore_repeat_history = MagicMock()
+    bridge.record_aired("time_check", title="Time check", duration=3)
+    bridge.load_persistent_state()
+    assert [row["title"] for row in bridge.history_page(1, 50, liners=True)["items"]] == [
+        "Time check"
+    ]
+
+
 def test_the_play_log_can_include_inserted_items(store, tmp_path) -> None:
     _mixed(store, str(tmp_path / "song.flac"))
     rows = store.play_log(T0 - timedelta(hours=1), T0 + timedelta(hours=1), include_inserts=True)
@@ -268,11 +311,11 @@ def test_the_bridge_records_an_inserted_item_without_disturbing_song_history() -
 
     # Now playing and other song readers see the songs only, as before.
     assert [row["title"] for row in bridge.history_snapshot()] == ["Song"]
-    everything = bridge.history_snapshot(include_inserts=True)
+    everything = bridge.history_page(1, 50, liners=True)["items"]
     assert [(row["title"], row["kind"]) for row in everything] == [
-        ("Song", "song"),
-        ("Intro for Song", "matched_intro"),
         ("Station ID", "liner"),
+        ("Intro for Song", "matched_intro"),
+        ("Song", "song"),
     ]
     assert everything[1]["path"] is None
     assert everything[1]["duration"] == 4.5
@@ -297,10 +340,6 @@ def test_a_liner_file_played_as_a_track_stays_in_the_songs_view() -> None:
         ("A", "song"),
         ("ID", "liner"),
     ]
-    assert [row["kind"] for row in bridge.history_snapshot(include_inserts=True)] == [
-        "liner",
-        "song",
-    ]
 
 
 def test_a_show_speech_segment_is_speech_not_a_song(store, tmp_path) -> None:
@@ -318,9 +357,9 @@ def test_a_show_speech_segment_is_speech_not_a_song(store, tmp_path) -> None:
     bridge.on_track_started(segment)
 
     assert [row["title"] for row in bridge.history_snapshot()] == ["Song"]
-    assert [row["kind"] for row in bridge.history_snapshot(include_inserts=True)] == [
-        "song",
+    assert [row["kind"] for row in bridge.history_page(1, 50, liners=True)["items"]] == [
         "speech",
+        "song",
     ]
     assert segment.path not in ledger.last_played()
     assert [row["title"] for row in ledger.pending_history()] == ["Song"]
@@ -352,7 +391,7 @@ def test_the_bridge_refuses_a_kind_it_does_not_know() -> None:
     bridge = _bridge()
     with pytest.raises(ValueError, match="kind"):
         bridge.record_aired("song", title="Not an insert")
-    assert bridge.history_snapshot(include_inserts=True) == []
+    assert bridge.history_page(1, 50, liners=True)["items"] == []
 
 
 def test_inserted_items_never_push_songs_out_of_history(store, tmp_path) -> None:

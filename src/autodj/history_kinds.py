@@ -29,6 +29,11 @@ INSERT_KINDS = frozenset(
     }
 )
 
+#: Inserted kinds that air on their own between songs rather than mixed
+#: over one: a show's standalone speech segment.  Like the next song, one
+#: ends the song before it in a report.
+STANDALONE_KINDS = frozenset({"speech"})
+
 
 def history_kind(row: dict) -> str:
     """What a history row aired as: ``song``, ``live``, or one of :data:`INSERT_KINDS`.
@@ -42,4 +47,4 @@ def history_kind(row: dict) -> str:
     return kind
 
 
-__all__ = ["INSERT_KINDS", "history_kind"]
+__all__ = ["INSERT_KINDS", "STANDALONE_KINDS", "history_kind"]

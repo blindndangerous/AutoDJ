@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from autodj.catalog import DEFAULT_STATION, LibraryCatalog, _path
-from autodj.history_kinds import INSERT_KINDS
+from autodj.history_kinds import INSERT_KINDS, STANDALONE_KINDS
 from autodj.sqlite_utils import readonly_uri
 
 _SCHEMA = """
@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS station_migrations (name TEXT PRIMARY KEY, complete I
 
 # The rows that are songs or live sets, in SQL.
 _PLAY_ROWS = "kind IN ('song','live')"
+# The rows that end the song before them in a report: songs, live sets and
+# what airs on its own between them, never a liner mixed over a song's end.
+_BOUNDARY_ROWS = (
+    "kind IN ("
+    + ",".join(f"'{kind}'" for kind in sorted({"song", "live", *STANDALONE_KINDS}))
+    + ")"
+)
 
 
 class StationStore:
@@ -196,8 +203,9 @@ class StationStore:
 
         Songs and live sets only, unless *include_inserts* adds the liners,
         ads and other audio of :data:`INSERT_KINDS`.  A ranged row has the
-        time the next song or live set started (``following_at``), which
-        ends it in a report; an inserted item has none and keeps its length.
+        time the next song, live set or standalone segment started
+        (``following_at``), which ends it in a report; audio mixed over the
+        songs has none and keeps its length.
         """
         if (start is None) != (end is None):
             raise ValueError("Both start and end are required")
@@ -214,8 +222,8 @@ class StationStore:
 
             where += " AND in_report_range(played_at)"
             following = (
-                ", CASE WHEN h." + _PLAY_ROWS + " THEN (SELECT n.played_at FROM play_history n "
-                "WHERE n.interrupted=0 AND n." + _PLAY_ROWS + " AND n.rowid>h.rowid "
+                ", CASE WHEN h." + _BOUNDARY_ROWS + " THEN (SELECT n.played_at FROM play_history n "
+                "WHERE n.interrupted=0 AND n." + _BOUNDARY_ROWS + " AND n.rowid>h.rowid "
                 "ORDER BY n.rowid LIMIT 1) END AS following_at"
             )
         # Keep report parsing and its following-play lookup on one reader snapshot.

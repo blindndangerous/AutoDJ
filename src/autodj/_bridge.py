@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from autodj.audience import StreamAudience
 from autodj.history_kinds import INSERT_KINDS
-from autodj.history_pages import AIRED_ROWS, VIEW_ROWS, history_page, newest_rows, public_row
+from autodj.history_pages import AIRED_ROWS, VIEW_ROWS, history_page
 from autodj.identity_map import attached
 from autodj.settings_bodies import PAGE_SAVED_BREAKS, PAGE_SAVED_REQUESTS
 
@@ -810,19 +810,15 @@ class PlayerBridge(LibraryAccess):
         with self._history_lock:
             self._audience.disconnected(client)
 
-    def history_snapshot(self, *, include_inserts: bool = False) -> list[dict]:
+    def history_snapshot(self) -> list[dict]:
         """Return the latest plays across sessions, oldest first.
 
         A live DJ's set (#48) also has ``kind`` ``"live"`` and ``ended_at``
         (``None`` while it is on the air); songs keep their usual fields.
-        *include_inserts* adds the liners and other audio aired over or
-        between them (#601) and gives every row its ``kind``.
+        The liners and other audio aired between them (#601) are left out.
         """
         keys = ("event_id", "path", "title", "artist", "duration", "played_at")
         with self._history_lock:
-            if include_inserts:
-                rows = list(newest_rows(self._play_history, self._aired_history, True))
-                return [public_row(row) for row in reversed(rows)]
             return [
                 {key: row.get(key) for key in keys}
                 | (
@@ -881,6 +877,8 @@ class PlayerBridge(LibraryAccess):
         }
         with self._history_lock:
             self._keep_history_row(row)
+            # As for a song: the history loaded at start never replaces it.
+            self._history_started = True
             if (ledger := self._ledger()) is not None:
                 ledger.remember_history(row)
 
