@@ -35,7 +35,7 @@ runs:
           echo "::error::The variant must be cpu or cuda, not '$VARIANT'"
           exit 1
         fi
-    # The CUDA image is about 9 GB unpacked. Building it, the scanners' copies
+    # The CUDA image is about 7 GB unpacked. Building it, the scanners' copies
     # and the saved artifact need about 35 GB, more than a runner has free.
     - if: inputs.variant == 'cuda'
       uses: ./.github/actions/free-disk

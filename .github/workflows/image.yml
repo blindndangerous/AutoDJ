@@ -15,6 +15,11 @@ name: Container image
 # artifact. "push" holds the registry and attestation permissions, runs no
 # third-party binary, loads the saved image, pushes it and attests the pushed
 # digest. Pull requests never get here: CI builds and checks only.
+#
+# A version or sha- tag never changes. When a rerun finds its tag already in
+# the registry, from an earlier attempt that stopped part way, it pushes no new
+# build: it points the moving tags (:stable, :latest, :dev and their -cuda
+# forms) at the digest already there, byte for byte, and attests nothing new.
 on:
   push:
     branches: [master]
@@ -156,20 +161,107 @@ jobs:
         uses: ./.github/actions/free-disk
         with:
           need-gib: "20"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ${{ needs.build.outputs.artifact }}
-          path: ${{ runner.temp }}/image
-      - name: Load the checked image
-        run: zstd -dc "$RUNNER_TEMP/image/autodj-image.tar.zst" | docker load
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The version tag (or, for master, the sha- tag) names one build forever.
+      # The registry API keeps the manifest's exact bytes, so retagging it keeps
+      # its digest and the attestation made for it.
+      - name: Look for an earlier push of this version
+        id: earlier
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          TAGS: ${{ needs.build.outputs.tags }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pinned=""
+          while IFS= read -r tag; do
+            if [[ "${tag##*:}" =~ ^(sha-[0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)(-cuda)?$ ]]; then
+              pinned="${tag##*:}"
+            fi
+          done <<<"$TAGS"
+          if [[ -z "$pinned" ]]; then
+            echo "::error::None of these tags is a version or sha- tag: $TAGS"
+            exit 1
+          fi
+          repository="${IMAGE#ghcr.io/}"
+          token="$(printf 'user = "%s:%s"\n' "$ACTOR" "$TOKEN" |
+            curl --fail --silent --show-error --config - \
+              "https://ghcr.io/token?scope=repository:${repository}:pull,push" | jq -r .token)"
+          echo "::add-mask::$token"
+          accept="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json"
+          accept+=",application/vnd.docker.distribution.manifest.list.v2+json"
+          accept+=",application/vnd.docker.distribution.manifest.v2+json"
+          manifest="$RUNNER_TEMP/earlier-manifest"
+          status="$(curl --silent --show-error --output "$manifest" --dump-header "$manifest.headers" \
+            --write-out '%{http_code}' --header "Authorization: Bearer $token" --header "Accept: $accept" \
+            "https://ghcr.io/v2/${repository}/manifests/${pinned}")"
+          case "$status" in
+            404)
+              echo "$IMAGE:$pinned is new; pushing this build."
+              printf 'digest=\n' >>"$GITHUB_OUTPUT"
+              ;;
+            200)
+              digest="sha256:$(sha256sum "$manifest" | cut -d' ' -f1)"
+              type="$(sed -n 's/^[Cc]ontent-[Tt]ype: *\([^;[:space:]]*\).*/\1/p' "$manifest.headers" | tail -n 1)"
+              echo "::warning::$IMAGE:$pinned already exists at $digest from an earlier attempt. This rerun pushes no new build: it points the moving tags at that digest and attests nothing new."
+              {
+                printf 'digest=%s\n' "$digest"
+                printf 'type=%s\n' "$type"
+              } >>"$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::The registry answered $status when asked whether $IMAGE:$pinned exists; nothing was pushed."
+              exit 1
+              ;;
+          esac
+      - name: Point the moving tags at the earlier push
+        if: steps.earlier.outputs.digest != ''
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          TAGS: ${{ needs.build.outputs.tags }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TYPE: ${{ steps.earlier.outputs.type }}
+          DIGEST: ${{ steps.earlier.outputs.digest }}
+        run: |
+          set -euo pipefail
+          repository="${IMAGE#ghcr.io/}"
+          token="$(printf 'user = "%s:%s"\n' "$ACTOR" "$TOKEN" |
+            curl --fail --silent --show-error --config - \
+              "https://ghcr.io/token?scope=repository:${repository}:pull,push" | jq -r .token)"
+          echo "::add-mask::$token"
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            name="${tag##*:}"
+            [[ ! "$name" =~ ^(sha-[0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)(-cuda)?$ ]] || continue
+            pushed="$(curl --fail --silent --show-error --request PUT --dump-header - --output /dev/null \
+              --header "Authorization: Bearer $token" --header "Content-Type: $TYPE" \
+              --data-binary "@$RUNNER_TEMP/earlier-manifest" \
+              "https://ghcr.io/v2/${repository}/manifests/${name}" |
+              sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: *\(sha256:[0-9a-f]\{64\}\).*/\1/p')"
+            if [[ "$pushed" != "$DIGEST" ]]; then
+              echo "::error::Tagging $name gave digest '$pushed', expected '$DIGEST'"
+              exit 1
+            fi
+            echo "$IMAGE:$name now points at $DIGEST"
+          done <<<"$TAGS"
+      - if: steps.earlier.outputs.digest == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: ${{ runner.temp }}/image
+      - name: Load the checked image
+        if: steps.earlier.outputs.digest == ''
+        run: zstd -dc "$RUNNER_TEMP/image/autodj-image.tar.zst" | docker load
       # Every tag is the same image, so every push reports the same digest.
       - name: Push the checked image
         id: push
+        if: steps.earlier.outputs.digest == ''
         env:
           TAGS: ${{ needs.build.outputs.tags }}
         run: |
@@ -190,6 +282,7 @@ jobs:
           test -n "$digest"
           printf 'digest=%s\n' "$digest" >>"$GITHUB_OUTPUT"
       - name: Attest build provenance
+        if: steps.earlier.outputs.digest == ''
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ needs.build.outputs.image }}

@@ -128,7 +128,8 @@ jobs:
   # The opt-in CUDA image, :X.Y.Z-cuda and :stable-cuda, beside the CPU image.
   # Nothing waits for it: when it fails, the CPU image and the GitHub release
   # are still published, the run is marked failed, and :stable-cuda stays on
-  # the previous release until the maintainer reruns the failed jobs.
+  # the previous release until the maintainer reruns the failed jobs. A rerun
+  # never replaces an :X.Y.Z-cuda already pushed; it points :stable-cuda at it.
   image-cuda:
     needs: build-and-verify
     uses: ./.github/workflows/image.yml
