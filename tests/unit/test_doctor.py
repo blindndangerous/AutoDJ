@@ -532,7 +532,6 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "music-path",
         "beets-db",
         "index-path",
-        "model-path",
         "index",
         "saved-settings",
         "dj-meta-db",
@@ -685,13 +684,22 @@ def test_missing_audio_modules_warn(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "play or all extra" in check.detail
 
 
-def test_complete_model_cache_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _similarity_folder(cfg):
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
+        catalog.add_source(cfg.library.music_dir, kind="music", analysis="similarity")
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_used_model_cache_reports_recovery(tmp_path, monkeypatch, complete):
     cfg = _config(tmp_path)
-    status = SimpleNamespace(path=tmp_path / "model", complete=True, reason="complete")
+    _similarity_folder(cfg)
+    status = SimpleNamespace(path=tmp_path / "model", complete=complete, reason="cache status")
     monkeypatch.setattr("autodj.model_identity.model_analysis_available", lambda: True)
     monkeypatch.setattr(doctor, "inspect_model_cache", lambda *_args: status)
 
-    assert doctor._model_cache_check(cfg).status is doctor.CheckStatus.PASS
+    check = doctor._model_cache_check(cfg)
+    assert check.status is (doctor.CheckStatus.PASS if complete else doctor.CheckStatus.WARN)
+    assert check.repair == (None if complete else "download-model")
 
 
 @pytest.mark.parametrize("error_type", [PermissionError, ImportError, RuntimeError])
@@ -702,6 +710,7 @@ def test_model_cache_inspection_errors_fail_safely_and_redact(
 ) -> None:
     cfg = _config(tmp_path)
     secret = "model-error-secret"
+    _similarity_folder(cfg)
 
     def fail_inspection(*_args):
         raise error_type(secret)
@@ -722,6 +731,7 @@ def test_model_cache_check_does_not_catch_system_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = _config(tmp_path)
+    _similarity_folder(cfg)
 
     def stop(*_args):
         raise SystemExit(2)
@@ -1279,7 +1289,7 @@ def test_new_library_needs_no_music_root(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("disabled", [True, False])
-def test_unavailable_model_analysis_warns_without_cache_inspection(tmp_path, monkeypatch, disabled):
+def test_unavailable_model_analysis_needs_no_cache(tmp_path, monkeypatch, disabled):
     monkeypatch.setenv("AUTODJ_NO_MODEL", "1" if disabled else "0")
     if not disabled:
         monkeypatch.setattr("autodj.model_identity.importlib.util.find_spec", lambda name: None)
@@ -1287,8 +1297,25 @@ def test_unavailable_model_analysis_warns_without_cache_inspection(tmp_path, mon
         doctor, "inspect_model_cache", lambda *_: pytest.fail("unavailable model inspected")
     )
     check = doctor._model_cache_check(_config(tmp_path))
-    assert check.status is doctor.CheckStatus.WARN
-    assert "autodj setup --backend cpu" in check.detail
+    assert check.status is doctor.CheckStatus.PASS
+    assert "not in use" in check.summary
+    assert check.repair is None
+
+
+@pytest.mark.parametrize("analysis", [None, "basic", "audio"])
+def test_unused_model_needs_no_cache_or_model_directory(tmp_path, monkeypatch, analysis):
+    cfg = _config(tmp_path)
+    if analysis is not None:
+        with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
+            catalog.add_source(cfg.library.music_dir, kind="music", analysis=analysis)
+    cfg.index.model_dir = tmp_path / "not-a-model-folder"
+    cfg.index.model_dir.write_text("unused")
+    monkeypatch.setattr("autodj.model_identity.model_analysis_available", lambda: True)
+    monkeypatch.setattr(
+        doctor, "inspect_model_cache", lambda *_: pytest.fail("unused cache inspected")
+    )
+    check = doctor._model_cache_check(cfg)
+    assert check.status is doctor.CheckStatus.PASS
     assert check.repair is None
 
 

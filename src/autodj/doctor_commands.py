@@ -21,6 +21,7 @@ _COMMANDS = {
     "rebuild-dj-meta": ("analyse",),
     "analyse": ("analyse",),
     "serve-lan": ("serve", "--lan"),
+    "download-model": ("download-model",),
 }
 _EFFECTS = {
     "migrate-index": "Stop AutoDJ serving/indexing first. Saves a recovery copy and imports older library data without re-embedding.",
@@ -29,6 +30,7 @@ _EFFECTS = {
     "rebuild-dj-meta": "Stop AutoDJ serving/indexing first. Backs up the DJ metadata cache and rebuilds it.",
     "analyse": "Analyses indexed audio to fill missing DJ metadata; this may take a long time.",
     "serve-lan": "Starts the server on your network until you stop it; does not change your saved config.",
+    "download-model": "Downloads or validates the configured model cache without analyzing songs.",
 }
 
 

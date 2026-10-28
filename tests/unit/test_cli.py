@@ -1403,6 +1403,7 @@ def test_analyse_library_reports_embedded_track_count(completed: int, tmp_path: 
     "arguments",
     [
         ["analyse-library"],
+        ["download-model"],
         ["worker", "--server", "https://example.invalid", "--token", "unused"],
     ],
 )

@@ -740,12 +740,12 @@ def _doctor_create_directories(
 ) -> bool:
     """Offer only missing writable storage directories identified by the checks.
 
-    These are the index and model folders and each other station's own
+    These are the index folder and each other station's own
     folder.  A new, empty folder replaces nothing, so no backup is made.
     """
     from autodj.doctor import CheckStatus
 
-    paths = {"index-path": cfg.index.index_dir, "model-path": cfg.index.model_dir}
+    paths = {"index-path": cfg.index.index_dir}
     changed = False
     for check in report.checks:
         path: Path | None
@@ -1345,6 +1345,23 @@ def cmd_analyse_library(ctx: click.Context) -> None:
         click.echo(f"[AutoDJ] Similarity analysis embedded {completed} tracks.")
     except Exception as exc:
         raise click.ClickException(f"Library analysis failed: {exc}") from exc
+
+
+@cli.command("download-model")
+@click.pass_context
+def cmd_download_model(ctx: click.Context) -> None:
+    """Download or validate the configured model cache without analyzing songs."""
+    _require_model_analysis()
+    from autodj.model import download_model_if_needed, inspect_model_cache
+
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    try:
+        path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
+        if not inspect_model_cache(cfg.model, cfg.index).complete:
+            raise RuntimeError("Model cache is incomplete")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise click.ClickException("Model cache download or validation failed.") from exc
+    click.echo(f"Model cache ready: {path}")
 
 
 @cli.command("worker")
