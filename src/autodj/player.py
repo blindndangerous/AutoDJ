@@ -2543,6 +2543,10 @@ class Player:
                         self._chosen_clock_liner = picked.liner
                 cursor = marked_cursor
         elif self._cfg.playback.pick_mode == "clock" and self._clock is not None:
+            boundary = self._pending_clock_boundary or getattr(self, "_clock_next_boundary", None)
+            # The first render needs the station's restart time, including
+            # when a seed liner keeps its already selected song (#357, #616).
+            self._pending_clock_boundary = boundary
             if seed is not None:
                 self._chosen_clock_step = (
                     seed[3] if len(seed) > 3 else getattr(self, "_seed_clock_step", None)
@@ -2555,11 +2559,6 @@ class Player:
                     "",
                 )
             starting_cursor = (self._clock or {}).get("cursor", 0) if cursor is None else cursor
-            boundary = self._pending_clock_boundary or getattr(self, "_clock_next_boundary", None)
-            # Carry the restart time on with the cursor: a set's first render
-            # has none of its own, and a pick that did not restart would
-            # otherwise pass none on, so the wheel would never restart (#357).
-            self._pending_clock_boundary = boundary
             natural_restart = self._pending_clock_update is not None and boundary is None
             if natural_restart and starting_cursor == 0:
                 self._promote_pending_clock()
