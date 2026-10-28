@@ -176,6 +176,7 @@ def test_real_ffmpeg_wav_decode_preserves_stereo_sample_order(tmp_path):
 
 
 def test_lead_in_is_decoded_before_the_start_and_dropped():
+    """ADR-0004-19: The lead-in is decoded before the start and dropped."""
     lead_in = 1000
     source = np.arange(3000 * 2, dtype=np.float32).reshape(-1, 2)
     child = _Process(source.tobytes())
@@ -240,7 +241,7 @@ def _first_frames(decoder: StreamDecoder, frames: int) -> np.ndarray:
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs FFmpeg")
 def test_real_mp3_seek_with_lead_in_starts_on_audio(tmp_path):
-    """An MP3 input seek begins with the decoder delay as exact zeros; the lead-in drops it."""
+    """ADR-0004-19: An MP3 input seek begins with the decoder delay as exact zeros; the lead-in drops it."""
     path = _tone_mp3(tmp_path)
     decoder = StreamDecoder(path, start_seconds=2.0, lead_in_seconds=0.1)
     try:
@@ -255,7 +256,7 @@ def test_real_mp3_seek_with_lead_in_starts_on_audio(tmp_path):
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs FFmpeg")
 def test_closing_a_running_decoder_raises_in_no_reader_thread(tmp_path, monkeypatch):
-    """close() lets both pipe readers reach end-of-file before closing the pipes."""
+    """ADR-0004-20: close() lets both pipe readers reach end-of-file before closing the pipes."""
     failures = []
     monkeypatch.setattr(threading, "excepthook", lambda args: failures.append(args.exc_value))
     path = _tone_mp3(tmp_path)
@@ -271,7 +272,7 @@ def test_closing_a_running_decoder_raises_in_no_reader_thread(tmp_path, monkeypa
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs FFmpeg")
 def test_closing_a_decoder_blocked_on_a_full_pipe_is_quick(tmp_path):
-    """On Linux FFmpeg ignores SIGTERM while blocked writing to a full pipe.
+    """ADR-0004-20: On Linux FFmpeg ignores SIGTERM while blocked writing to a full pipe.
 
     close() must not wait out the 2 s SIGTERM grace and kill it: every deck
     seek closes a decoder like this one before it opens the next.
@@ -292,7 +293,7 @@ def test_closing_a_decoder_blocked_on_a_full_pipe_is_quick(tmp_path):
 
 
 def test_close_ends_a_decoder_blocked_on_a_full_pipe_without_a_kill():
-    """Linux FFmpeg blocked writing ignores SIGTERM but exits once its pipe closes."""
+    """ADR-0004-20: Linux FFmpeg blocked writing ignores SIGTERM but exits once its pipe closes."""
 
     class _BlockedWriter(_Process):
         killed = False

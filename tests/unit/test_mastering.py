@@ -776,6 +776,7 @@ def test_stereotool_output_true_peak_stays_below_ceiling_after_resample(signal: 
 
 
 def test_output_limiter_start_failure_cleans_up_stereotool() -> None:
+    """ADR-0004-20: A failed start kills and closes the Stereo Tool stage it started."""
     primary = MagicMock()
     primary.poll.return_value = None
     calls = 0

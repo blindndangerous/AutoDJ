@@ -184,7 +184,7 @@ Station section: `playback` in `station.json`.
 - `key_notation`. Values: `camelot` (Camelot (8A or 8B)) or `musical` (Musical (C, A minor, F sharp minor)). Default: `camelot`. Chooses how keys are shown. **Key notation**.
 - `key_prefer_flats`. Values: true or false. Default: false. Uses flat names when musical key notation is selected. **Use flats**.
 - `show_lyrics`. Values: true or false. Default: true. Shows the lyrics card when lyrics exist. **Show lyrics**.
-- `prefetch_next_track`. Values: true or false. Default: true. Loads the next song early for browser playback. **Load the next song early**.
+- `prefetch_next_track`. Values: true or false. Default: true. Loads the next song early for browser playback. Server sound-card and stream playback do not use it: they always prepare the next song while the current one plays. **Load the next song early**.
 - `silence_trigger_crossfade`. Values: true or false. Default: true. Starts a browser crossfade when the ending song falls silent. **Crossfade when a song goes quiet**.
 - `audio_device`. Values: device number, name fragment, or blank. Default: blank. Selects server speaker output; blank uses the system default.
 - `import_external_cues`. Values: true or false. Default: true. Imports cue points stored by supported DJ tools when songs are analysed.

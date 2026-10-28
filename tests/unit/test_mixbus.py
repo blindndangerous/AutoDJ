@@ -1095,7 +1095,7 @@ def _waiting_bus(reason=("the next song was still being prepared", "b.mp3")):
 
 
 def test_held_silence_between_tracks_is_counted_and_named(caplog) -> None:
-    """The bus names why it held silence, for how long, and for which track."""
+    """ADR-0004-21: The bus names why it held silence, for how long, and for which track."""
     bus, queue, _clock = _waiting_bus()
     queue.append(_track(0.5, 882 * 2, "a.mp3"))
     bus.start_set()
@@ -1115,6 +1115,7 @@ def test_held_silence_between_tracks_is_counted_and_named(caplog) -> None:
 
 
 def test_silence_before_the_first_track_is_not_a_hold(caplog) -> None:
+    """ADR-0004-21: Silence before a set plays its first track is startup, not a hold."""
     bus, queue, _clock = _waiting_bus()
     bus.start_set()
     with caplog.at_level("WARNING", logger="autodj.mixbus"):
@@ -1127,6 +1128,7 @@ def test_silence_before_the_first_track_is_not_a_hold(caplog) -> None:
 
 
 def test_hold_warnings_are_limited_to_one_a_minute(caplog) -> None:
+    """ADR-0004-21: Hold warnings are limited to one a minute and count the ones left out."""
     bus, queue, clock = _waiting_bus()
     bus.start_set()
 
@@ -1149,6 +1151,7 @@ def test_hold_warnings_are_limited_to_one_a_minute(caplog) -> None:
 
 
 def test_a_long_hold_is_reported_while_it_lasts(caplog) -> None:
+    """ADR-0004-21: A hold reaching 10 s is reported before it ends."""
     bus, queue, _clock = _waiting_bus()
     queue.append(_track(0.5, 882, "a.mp3"))
     bus.start_set()
@@ -1160,6 +1163,7 @@ def test_a_long_hold_is_reported_while_it_lasts(caplog) -> None:
 
 
 def test_a_deck_still_seeking_is_counted_as_held(caplog) -> None:
+    """ADR-0004-21: A playing deck that is still seeking holds silence and is named."""
     from autodj.live_audio import AudioLayer, BufferedFile, LiveAudio
 
     class _Seeking(BufferedFile):
@@ -1194,6 +1198,7 @@ def test_a_deck_still_seeking_is_counted_as_held(caplog) -> None:
 
 
 def test_master_warmup_after_a_track_started_is_counted_as_held(caplog) -> None:
+    """ADR-0004-21: A master warmup after the first track is counted as held silence."""
     bus, queue, clock = _waiting_bus()
     queue.append(_track(0.5, 882 * 100, "a.mp3"))
     calls = {"n": 0}

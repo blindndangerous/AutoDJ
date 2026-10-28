@@ -85,7 +85,7 @@ def _continuation_while_a_plays(tmp_path: Path, mode: str) -> tuple[Player, Rend
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs FFmpeg")
 @pytest.mark.parametrize("mode", ["full_intro_outro", "saved_points"])
 def test_continuation_deck_is_cued_before_promotion(tmp_path: Path, mode: str) -> None:
-    """ADR-0004-12: promotion never waits for the incoming deck to reseek.
+    """ADR-0004-18: promotion never waits for the incoming deck to reseek.
 
     The incoming deck opens at the song's saved start.  When the overlap came
     from decoded windows rather than that deck, the continuation reads it

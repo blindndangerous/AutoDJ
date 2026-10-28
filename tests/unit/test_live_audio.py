@@ -131,6 +131,7 @@ def test_overlap_underrun_preflight_consumes_no_source(monkeypatch) -> None:
 
 
 def test_buffered_file_seeks_asynchronously_and_closes_decoders(monkeypatch) -> None:
+    """ADR-0004-19: A deck seeks off the bus and decodes a short lead-in before its target."""
     made = threading.Condition()
     created: list[_FakeDecoder] = []
 

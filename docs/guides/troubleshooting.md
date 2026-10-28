@@ -28,6 +28,8 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 **Stereo Tool is unavailable.** Open **Settings**, **Sound** and follow its plugin library download steps after accepting Thimeo's terms. Check the panel's status message and run Doctor if the download or load fails.
 
+**The stream has short gaps of silence.** If the log shows "Mix bus held … s of silence", its cause names what the station was waiting for: the next song, a file decoder, or the mastering processor. See [Held silence warnings](../reference/operations/server-playback.md#held-silence-warnings) for what each cause means. "Mix bus fell behind" means the computer could not keep up at all; reduce other work on it, or run fewer stations.
+
 **Mastering startup messages.** Compare processor readiness timings and discarded-input counts across restarts before changing buffering. Non-silent discarded blocks may contain program audio; startup silence and overload warnings have different meanings. See [Mastering startup diagnostics](../reference/operations/server-playback.md#mastering-startup-diagnostics) for the fields, bypass behavior and timing exclusions.
 
 ## Streaming
