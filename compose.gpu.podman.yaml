@@ -1,7 +1,7 @@
 # The Podman form of compose.gpu.yaml: run the CUDA image and give it this
 # computer's NVIDIA GPUs, for song analysis. Podman ignores the deploy section
 # compose.gpu.yaml uses, so this file names the GPUs as a CDI device instead.
-# The host needs an NVIDIA driver that supports CUDA 13.0 (580 or newer), the
+# The host needs an NVIDIA driver that supports CUDA 13.2 (580 or newer), the
 # NVIDIA Container Toolkit, and its CDI specification:
 #
 #   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml

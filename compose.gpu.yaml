@@ -1,7 +1,7 @@
 # Run the CUDA image and give it this computer's NVIDIA GPUs, for song
 # analysis; playout does not use the GPU. This file is for Docker: Podman
 # ignores its deploy section, so use compose.gpu.podman.yaml there. The host needs an NVIDIA driver that
-# supports CUDA 13.0 (580 or newer) and the NVIDIA Container Toolkit. Name both
+# supports CUDA 13.2 (580 or newer) and the NVIDIA Container Toolkit. Name both
 # files on every Compose command, or set them once in .env:
 #
 #   COMPOSE_FILE=compose.yaml:compose.gpu.yaml

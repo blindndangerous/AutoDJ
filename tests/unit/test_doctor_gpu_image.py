@@ -87,7 +87,7 @@ def test_a_cuda_image_with_a_gpu_asks_pytorch_whether_it_can_use_it(tmp_path: Pa
     (unusable,) = _check(tmp_path, variant="cuda", gpu=True, torch_cuda=False)
     assert unusable.status is CheckStatus.WARN
     assert "falls back to the CPU" in unusable.summary
-    assert "CUDA 13.0" in str(unusable.detail)
+    assert "CUDA 13.2" in str(unusable.detail)
 
 
 def test_a_gpu_is_visible_by_its_device_file_or_nvidia_smi(

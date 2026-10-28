@@ -55,11 +55,15 @@ def _index_page(variant: str, name: str) -> str:
 
 
 def wheel_hashes(variant: str, name: str, version: str, tag: str) -> dict[str, str]:
-    """Return {platform tag: sha256} for the *tag* (such as cp314) wheels of *name*."""
+    """Return {platform tag: sha256} for the wheels of *name* that run on *tag* (such as cp314).
+
+    A wheel fits when it is built for that CPython (``cp314-cp314``) or for any
+    Python 3 (``py3-none``), as torchaudio 2.11.1 and torchvision 0.29.2 are.
+    """
     page = _index_page(variant, name)
     pattern = re.compile(
         rf"{re.escape(name)}-{re.escape(version)}(?:%2B|\+){re.escape(variant)}"
-        rf"-{tag}-{tag}-([a-z0-9_]+)\.whl#sha256=([0-9a-f]{{64}})"
+        rf"-(?:{tag}-{tag}|py3-none)-([a-z0-9_]+)\.whl#sha256=([0-9a-f]{{64}})"
     )
     return dict(pattern.findall(page))
 

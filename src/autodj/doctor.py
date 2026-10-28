@@ -652,7 +652,7 @@ def _gpu_image_check(
             CheckStatus.WARN,
             "this CUDA image sees an NVIDIA GPU that PyTorch cannot use, so song analysis "
             "falls back to the CPU",
-            "Action: the host's NVIDIA driver must support CUDA 13.0 (driver 580 or newer); "
+            "Action: the host's NVIDIA driver must support CUDA 13.2 (driver 580 or newer); "
             "`nvidia-smi` on the host shows its version.",
         ),
     )
