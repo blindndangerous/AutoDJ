@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 # Commands are defined here, never extracted from exception messages or file contents.
 _COMMANDS = {
     "migrate-index": ("migrate-index", "--apply"),
-    "rebuild-index": ("index", "--force"),
     "index": ("index",),
     "rebuild-dj-meta": ("analyse",),
     "analyse": ("analyse",),
@@ -24,7 +23,6 @@ _COMMANDS = {
 }
 _EFFECTS = {
     "migrate-index": "Stop AutoDJ serving/indexing first. Saves a recovery copy and imports older library data without re-embedding.",
-    "rebuild-index": "Re-embeds the full library from scratch; may download models and take a long time.",
     "index": "Indexes the library and downloads missing models; this may take a long time.",
     "rebuild-dj-meta": "Stop AutoDJ serving/indexing first. Backs up the DJ metadata cache and rebuilds it.",
     "analyse": "Analyses indexed audio to fill missing DJ metadata; this may take a long time.",
@@ -59,12 +57,8 @@ def run_recovery_commands(
         )
         if action is None:
             return report, failed
-        # A forced rebuild also covers ordinary indexing/model downloads. A
-        # metadata rebuild covers the ordinary analysis recommendation.
         attempted.add(action)
-        if action == "rebuild-index":
-            attempted.add("index")
-        elif action == "rebuild-dj-meta":
+        if action == "rebuild-dj-meta":
             attempted.add("analyse")
         args: list[str] = []
         if cfg.config_path is not None:
@@ -73,14 +67,7 @@ def run_recovery_commands(
         display = "autodj " + subprocess.list2cmdline(args)
         click.echo(f"Suggested recovery: {display}")
         click.echo(_EFFECTS[action])
-        # A full rebuild re-embeds the whole library: --fix never starts
-        # one on its own; it is asked for even then.
-        if action == "rebuild-index" and auto_fix and not sys.stdin.isatty():
-            click.echo("Not rebuilding the index without asking; run doctor in a terminal.")
-            continue
-        if (not auto_fix or action == "rebuild-index") and not click.confirm(
-            "Run this command now?", default=False
-        ):
+        if not auto_fix and not click.confirm("Run this command now?", default=False):
             continue
         try:
             if action == "rebuild-dj-meta":
