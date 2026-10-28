@@ -1958,7 +1958,7 @@ async def test_http_api_accessible_via_async_client() -> None:
 
 
 class TestLifespan:
-    def test_app_lifespan_starts_and_stops(self) -> None:
+    def test_app_lifespan_starts_and_stops(self, caplog) -> None:
         """Using TestClient as a context manager triggers lifespan startup/teardown."""
         from fastapi.testclient import TestClient
 
@@ -1967,9 +1967,10 @@ class TestLifespan:
         bridge = PlayerBridge(player=player, sim=sim)
         app = create_app(bridge)
 
-        with TestClient(app) as tc:
+        with caplog.at_level("INFO", logger="autodj.server"), TestClient(app) as tc:
             resp = tc.get("/api/status")
             assert resp.status_code == 200
+            assert "Startup: stations and background services started in" in caplog.text
 
     def test_api_accessible_during_lifespan(self) -> None:
         from fastapi.testclient import TestClient
@@ -2215,6 +2216,7 @@ class TestServeFunction:
         assert mock_uvicorn.call_args.kwargs["port"] == 8080
         assert "http://127.0.0.1:8080" in caplog.text
         assert "http://localhost:8080" not in caplog.text
+        assert "Startup: server app construction took" in caplog.text
         app = mock_uvicorn.call_args.args[0]
         with (
             patch("autodj.player.Player.run", player_run),

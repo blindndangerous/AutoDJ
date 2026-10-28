@@ -428,6 +428,41 @@ class TestResolveSeedBeets:
 
 
 class TestCmdServe:
+    def test_welcome_and_progress_precede_server_import(self) -> None:
+        import builtins
+        import logging
+
+        from autodj import __version__
+
+        events = []
+        original_import = builtins.__import__
+
+        def record_import(name, *args, **kwargs):
+            if name == "autodj.server":
+                events.append("server import")
+            return original_import(name, *args, **kwargs)
+
+        with (
+            patch("autodj.config.load_config", return_value=_make_cfg()),
+            patch("autodj.cli._load_index_for_serve", return_value=_make_sim()),
+            patch("autodj.server.serve"),
+            patch(
+                "autodj.cli.console.print",
+                side_effect=lambda message, *a, **kw: events.append(str(message)),
+            ),
+            patch.object(
+                logging.getLogger("autodj.cli"),
+                "info",
+                side_effect=lambda message, *a: events.append(message),
+            ),
+            patch("builtins.__import__", side_effect=record_import),
+        ):
+            result = CliRunner().invoke(cli, ["serve"])
+        assert result.exit_code == 0, result.output
+        assert f"Welcome to AutoDJ {__version__}" in events[0]
+        assert events[1] == "Starting the server: loading configuration and audio components..."
+        assert events.index("server import") > 1
+
     def test_serve_exits_zero(self) -> None:
         cfg_mock = _make_cfg()
         sim_mock = _make_sim()
@@ -1214,6 +1249,8 @@ def test_third_party_info_logs_are_quiet_unless_verbose() -> None:
     CliRunner().invoke(cli, ["-v", "doctor", "--help"])
     for name in ("faiss.loader", "httpx", "httpx2"):
         assert logging.getLogger(name).getEffectiveLevel() == logging.DEBUG
+    assert logging.getLogger("numba.core.ssa").getEffectiveLevel() == logging.WARNING
+    assert logging.getLogger("autodj.kernels").getEffectiveLevel() == logging.DEBUG
 
 
 @pytest.mark.parametrize(

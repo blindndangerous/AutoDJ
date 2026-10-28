@@ -21,7 +21,9 @@ def _noise(frames: int, seed: int = 0) -> np.ndarray:
 
 def test_compile_kernel_retries_without_cache_at_decoration(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level("DEBUG", logger="autodj.kernels")
     njit = kernels.numba.njit
 
     def without_cache(signature: str):
@@ -44,6 +46,8 @@ def test_compile_kernel_retries_without_cache_at_decoration(
 
     assert increment(4) == 5
     assert increment.signatures == [(kernels.numba.int64,)]
+    assert "increment prepared in" in caplog.text
+    assert "cache load or compilation" in caplog.text
 
 
 def test_compile_kernel_propagates_other_runtime_errors(monkeypatch: pytest.MonkeyPatch) -> None:
