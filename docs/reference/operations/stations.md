@@ -183,6 +183,8 @@ station settings, uploads and saved dates still have their own station paths.
 
 Normal runs show INFO, WARNING and ERROR messages. Use `autodj -v serve` to
 include DEBUG messages. The server writes logs to `<index_dir>/logs/autodj.log`.
+Before loading configuration and server audio components, the terminal shows
+the AutoDJ version and a startup progress message.
 Four INFO entries per startup time server imports/configuration, library preparation,
 app construction, and station/background-service startup. These measure work inside
 the server, not launcher time or time until a listener hears audio. Master processing

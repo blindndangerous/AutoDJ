@@ -1955,13 +1955,17 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
       uv run autodj serve --lan
       uv run autodj serve --server-audio
     """
+    from autodj import __version__
+
+    console.print(f"[bold green]Welcome to AutoDJ {escape(__version__)}[/]")
+    logger = logging.getLogger(__name__)
+    logger.info("Starting the server: loading configuration and audio components...")
     started = time.perf_counter()
     cfg = _load_cfg_or_exit(ctx.obj["config_path"], log_file=True)
     configured = time.perf_counter()
     from autodj.server import serve
 
     imported = time.perf_counter()
-    logger = logging.getLogger(__name__)
     logger.info(
         "Startup: server imports took %.2f s; configuration and logging took %.2f s",
         imported - configured,
