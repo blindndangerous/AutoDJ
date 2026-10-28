@@ -1529,9 +1529,20 @@ class PlayerBridge(LibraryAccess):
                 else 0.0,
                 # 20 ms blocks of silence the mix bus held for audio that was
                 # not ready, since it started (the held-silence warnings).
-                "held_blocks": getattr(getattr(self.player, "bus", None), "held_blocks", 0),
+                "held_blocks": self._held_blocks(),
             },
         }
+
+    def _held_blocks(self) -> int:
+        """The mix bus's held-silence block count, or 0 without a mix bus.
+
+        Only a real bus is read: the status must stay JSON whatever stands in
+        for the player, and a stand-in's attribute would not be a count.
+        """
+        from autodj.mixbus import MixBus
+
+        bus = getattr(self.player, "bus", None)
+        return int(bus.held_blocks) if isinstance(bus, MixBus) else 0
 
     def _next_transition_fx(self, current: Any, upcoming: Any) -> str | None:
         """The effect for the crossfade from *current* into *upcoming*.
