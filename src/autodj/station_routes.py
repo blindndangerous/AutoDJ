@@ -43,6 +43,8 @@ from pydantic import Field as PydanticField
 from starlette.requests import HTTPConnection
 
 from autodj._bridge import (
+    HISTORY_ROWS,
+    HISTORY_VIEW_ROWS,
     SEEK_TRACK_CHANGED,
     STREAM_SEEK_UNAVAILABLE,
     SeekTrackChanged,
@@ -67,6 +69,7 @@ from autodj.config import (
     RelayConfig,
     _relay_target,
 )
+from autodj.history_kinds import history_kind
 from autodj.live_queue import VoiceQueueConflict
 from autodj.playlog import (
     missing_fields,
@@ -429,6 +432,29 @@ class NewClockNameBody(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers that act on one station
 # ---------------------------------------------------------------------------
+
+
+def _anchor_position(rows: list[dict], newest: list[dict], anchor: str) -> int | None:
+    """Where History's page should start looking for *anchor*, newest first.
+
+    *rows* is every kept row, oldest first, and *newest* the rows the view
+    shows, newest first.  The anchor's own place in the view, or that of the
+    next older row the view shows: a hidden liner leads to the song before
+    it.  ``None`` when no kept row has that ``event_id``; past the view's
+    oldest row, its last place.
+    """
+    found = next(
+        (index for index in range(len(rows) - 1, -1, -1) if rows[index].get("event_id") == anchor),
+        None,
+    )
+    if found is None:
+        return None
+    places = {id(row): place for place, row in enumerate(newest)}
+    for index in range(found, -1, -1):
+        place = places.get(id(rows[index]))
+        if place is not None:
+            return place
+    return max(0, len(newest) - 1)
 
 
 def _catalog_library(station: StationRuntime) -> Any:
@@ -1961,26 +1987,40 @@ def install_station_routes(router: StationRouter) -> None:
         station: SavedStationDep,
         page: int = Query(1, ge=1),
         per_page: int = Query(50, ge=1, le=500),
+        liners: bool = False,
+        anchor: Annotated[str | None, Query(max_length=64)] = None,
     ) -> JSONResponse:
-        """Return recent play history across restarts (newest first), one page."""
-        hist = (
-            station.bridge.history_snapshot()
-            if station.player is not None
-            else station.ledger.recent_history()
-        )
-        total = len(hist)
+        """Return recent play history across restarts (newest first), one page.
+
+        Songs and live sets, or with *liners* everything that aired (#601):
+        liners, ads, matched intros and the rest, each with its ``kind``.
+        With *anchor*, a row's ``event_id``, the page is the one holding
+        that row, or the next older row this view shows; switching views
+        keeps the listener near the same place.
+        """
+        if station.player is not None:
+            rows = station.bridge.history_snapshot(include_inserts=True)
+        else:
+            rows = [
+                {**row, "kind": history_kind(row)}
+                for row in station.ledger.recent_history(HISTORY_ROWS)
+            ]
+            for row in rows:
+                row.pop("track_kind", None)
+        for row in rows:
+            row["kind"] = row.get("kind") or "song"
+        shown = [row for row in rows if liners or row["kind"] in ("song", "live")]
+        shown = shown[-HISTORY_VIEW_ROWS:]
+        newest = shown[::-1]
+        total = len(newest)
         pages = max(1, (total + per_page - 1) // per_page)
+        if anchor is not None:
+            position = _anchor_position(rows, newest, anchor)
+            if position is not None:
+                page = position // per_page + 1
         page = max(1, min(page, pages))
         start = (page - 1) * per_page
-        end = start + per_page
-        # Slice from the "newest-first" perspective: index ``start`` from
-        # the end of the deque becomes ``total - 1 - start`` walking back.
-        if total == 0:
-            items: list = []
-        else:
-            hi = total - start
-            lo = max(0, total - end)
-            items = list(reversed([hist[i] for i in range(lo, hi)]))
+        items = newest[start : start + per_page]
         return JSONResponse({"items": items, "total": total, "page": page, "pages": pages})
 
     @router.get("/history/export")
@@ -1991,13 +2031,16 @@ def install_station_routes(router: StationRouter) -> None:
         report_format: Annotated[Literal["csv", "soundexchange"], Query(alias="format")] = "csv",
         service: Annotated[str, Query(max_length=200)] = "",
         category: Annotated[str, Query(max_length=1)] = "A",
+        liners: bool = False,
     ) -> Response:
         """Download the play log between two dates (see :mod:`autodj.playlog`).
 
         Dates are ``YYYY-MM-DD`` in the server's time zone and ``to`` is
         included.  ``format=soundexchange`` gives a Report of Use for
         *service* and transmission *category* instead of the CSV.  The CSV
-        also lists the ad spots that aired (#51), as ``kind`` ``ad``.
+        also lists the ad spots that aired (#51), as ``kind`` ``ad``, and
+        with *liners* the other audio aired over or between the songs (#601);
+        a Report of Use lists songs only either way.
         ``X-Play-Count`` and ``X-Songs-Missing-Fields`` give the page the
         numbers it announces.
         """
@@ -2005,14 +2048,21 @@ def install_station_routes(router: StationRouter) -> None:
         try:
             start = parse_bound(from_text)
             end = parse_bound(to_text, end=True)
+            inserts = liners and report_format == "csv"
             plays = await asyncio.to_thread(
                 functools.partial(
-                    plays_between, station=station.slug, station_store=station.ledger.store
+                    plays_between,
+                    station=station.slug,
+                    station_store=station.ledger.store,
+                    include_inserts=inserts,
                 ),
                 library.catalog,
                 start,
                 end,
             )
+            if inserts:
+                # The ad play log below is the record of the spots that aired.
+                plays = [play for play in plays if play.kind != "ad"]
             last_day = end - timedelta(microseconds=1)
             count = len(plays)
             if report_format == "soundexchange":

@@ -16,6 +16,8 @@ function mount() {
       <select id="hist-export-format">
         <option value="csv">Play log</option><option value="soundexchange">SoundExchange</option>
       </select>
+      <input type="checkbox" id="hist-export-liners">
+      <label for="hist-export-liners">Include liners</label>
       <fieldset id="hist-export-soundexchange" hidden>
         <label for="hist-export-service">Name of service</label><input id="hist-export-service">
         <label for="hist-export-category">Category</label>
@@ -187,9 +189,11 @@ describe("history export control", () => {
     format.value = "soundexchange";
     format.dispatchEvent(new Event("change"));
     expect(fields.hidden).toBe(false);
-    expect(announce.mock.calls).toEqual([["SoundExchange fields shown", "info"]]);
-    format.dispatchEvent(new Event("change")); // already shown: nothing new to say
-    expect(announce).toHaveBeenCalledTimes(1);
+    // The fields follow the format choice in reading order; nothing is said
+    // while the choice is still being made (#601).
+    expect(announce).not.toHaveBeenCalled();
+    // Liners are never part of a Report of Use, so the choice is not sent.
+    document.getElementById("hist-export-liners").checked = true;
     submit();
     expect(announce).toHaveBeenLastCalledWith(
       "Enter the name of the service for the SoundExchange report.", "error",
@@ -209,6 +213,20 @@ describe("history export control", () => {
     mount();
     install();
     expect(document.getElementById("hist-export-service").value).toBe("My Station");
+  });
+
+  it("asks for liners and other non-music items when chosen", async () => {
+    request.mockResolvedValue(csvResponse("start\r\n", { "X-Play-Count": "5" }));
+    install();
+    const liners = document.getElementById("hist-export-liners");
+    expect(liners.checked).toBe(false);
+    liners.checked = true;
+    submit();
+    await settle();
+    expect(request).toHaveBeenCalledWith(
+      "/api/history/export?from=2026-09-01&to=2026-09-17&liners=true", ["text/csv", "text/plain"],
+    );
+    expect(announce).toHaveBeenLastCalledWith("Play log saved: 5 plays.", "info");
   });
 
   it("works when the browser refuses storage", () => {
@@ -270,19 +288,18 @@ describe("export wording", () => {
     expect(exportMessage("3", "2", "Play log", "2")).toMatch(/2 songs have .* match them\.$/);
   });
 
-  it("announces the SoundExchange fields each time they appear", () => {
+  it("shows and hides the SoundExchange fields without announcing them", () => {
     mount();
     const announce = vi.fn();
     installHistoryExport({ document, request: vi.fn(), save: vi.fn(), announce, storage: null });
     const format = document.getElementById("hist-export-format");
+    const fields = document.getElementById("hist-export-soundexchange");
     for (const value of ["soundexchange", "csv", "soundexchange"]) {
       format.value = value;
       format.dispatchEvent(new Event("change"));
+      expect(fields.hidden).toBe(value !== "soundexchange");
     }
-    expect(announce.mock.calls).toEqual([
-      ["SoundExchange fields shown", "info"],
-      ["SoundExchange fields shown", "info"],
-    ]);
+    expect(announce).not.toHaveBeenCalled();
   });
 });
 

@@ -289,7 +289,7 @@ async function setupApp({
 function cleanupApp() {
   // A switch remembers its station per browser (#70); every test starts fresh.
   for (const storage of new Set([globalThis.localStorage, window.localStorage].filter(Boolean))) {
-    for (const key of ["autodj.station", "autodj.announceTrackChanges", "autodj.announceTrackChangesEverywhere"]) {
+    for (const key of ["autodj.station", "autodj.announceTrackChanges", "autodj.announceTrackChangesEverywhere", "autodj.history.showLiners"]) {
       try { storage.removeItem(key); } catch { /* No storage here: nothing was remembered. */ }
     }
   }
@@ -2079,6 +2079,113 @@ describe("app request behavior", () => {
       expect(rows[0].cells[1].getAttribute("role")).toBe("gridcell");
       expect(rows[0].cells[1].hasAttribute("data-name")).toBe(true);
       expect(rows.map((row) => row.dataset.historyId)).toEqual(["live-1", "live-0", "play-1"]);
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("shows liners in History when asked, keeping focus and the place in the list", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const params = (url) => new URL(url, "http://x").searchParams;
+    const music = {
+      total: 60, page: 2, pages: 2, items: [
+        { event_id: "song-2", kind: "song", path: "M:/two.flac", played_at: "2026-01-01T00:02:00Z",
+          title: "Two", artist: "A", duration: 60 },
+      ],
+    };
+    const everything = {
+      total: 75, page: 2, pages: 2, items: [
+        { event_id: "song-2", kind: "song", path: "M:/two.flac", played_at: "2026-01-01T00:02:00Z",
+          title: "Two", artist: "A", duration: 60 },
+        { event_id: "liner-1", kind: "liner", path: "L:/id.wav", played_at: "2026-01-01T00:01:59Z",
+          title: "Station ID", artist: "", duration: 5 },
+        { event_id: "intro-1", kind: "matched_intro", path: null, played_at: "2026-01-01T00:01:58Z",
+          title: "Intro for Two", artist: "", duration: 4 },
+      ],
+    };
+    try {
+      const { fetchImpl } = await setupApp({
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse(params(url).get("liners") === "true" ? everything : music)
+          : jsonResponse({ ok: true }),
+      });
+      const historyCalls = () => fetchImpl.mock.calls
+        .map(([url]) => url).filter((url) => url.startsWith("/api/history"));
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+      const box = document.querySelector("#hist-show-liners");
+      const label = document.querySelector('label[for="hist-show-liners"]');
+      expect(box.type).toBe("checkbox");
+      expect(label.textContent).toBe("Show liners");
+      expect(box.checked).toBe(false);
+      await vi.waitFor(() => expect(historyCalls()).toHaveLength(1));
+      expect(params(historyCalls()[0]).get("liners")).toBeNull();
+      const headings = () => [...document.querySelectorAll("#history-table thead th")]
+        .map((cell) => cell.textContent);
+      await vi.waitFor(() => expect(document.querySelectorAll("#history-tbody tr[data-played-at]"))
+        .toHaveLength(1));
+      expect(headings()).not.toContain("Type");
+      const status = document.querySelector("#sr-status");
+      const said = [];
+      new window.MutationObserver(() => { if (status.textContent) said.push(status.textContent); })
+        .observe(status, { childList: true, characterData: true, subtree: true });
+
+      box.focus();
+      box.click();
+      await vi.waitFor(() => expect(status.textContent).toBe("Liners shown.  75 items, page 2 of 2."));
+      const asked = params(historyCalls().at(-1));
+      expect(asked.get("liners")).toBe("true");
+      expect(asked.get("anchor")).toBe("song-2");
+      expect(document.activeElement).toBe(box);
+      expect(headings()).toEqual(["Played", "Title", "Artist", "Duration", "Type", "Track info"]);
+      const rows = [...document.querySelectorAll("#history-tbody tr[data-played-at]")];
+      const text = (row) => [...row.cells].map((cell) => cell.textContent.trim());
+      expect(rows.map((row) => text(row).slice(1, 5))).toEqual([
+        ["Two", "A", "1:00", "Song"],
+        ["Station ID", "", "0:05", "Liner"],
+        ["Intro for Two", "", "0:04", "Matched intro"],
+      ]);
+      // A liner from the library opens in Track info; a matched intro has none.
+      expect(rows[1].querySelector(".history-info").dataset.kind).toBe("liner");
+      expect(rows[2].querySelector(".history-info")).toBeNull();
+      expect(document.querySelector("#history-tbody .history-date td").colSpan).toBe(6);
+      expect(window.localStorage.getItem("autodj.history.showLiners")).toBe("true");
+
+      box.click();
+      await vi.waitFor(() => expect(status.textContent).toBe("Liners hidden.  60 items, page 2 of 2."));
+      expect(params(historyCalls().at(-1)).get("liners")).toBeNull();
+      expect(params(historyCalls().at(-1)).get("anchor")).toBe("song-2");
+      expect(headings()).not.toContain("Type");
+      expect(document.activeElement).toBe(box);
+      expect(window.localStorage.getItem("autodj.history.showLiners")).toBe("false");
+      // Each change was said once, and nothing else was.
+      expect(said.map((text) => text.trim())).toEqual([
+        "Liners shown.  75 items, page 2 of 2.",
+        "Liners hidden.  60 items, page 2 of 2.",
+      ]);
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("opens History with liners shown when this browser chose them", async () => {
+    window.localStorage.setItem("autodj.history.showLiners", "true");
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      const { fetchImpl } = await setupApp({
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse({ total: 0, page: 1, pages: 1, items: [] })
+          : jsonResponse({ ok: true }),
+      });
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+      await vi.waitFor(() => expect(fetchImpl.mock.calls
+        .some(([url]) => url.startsWith("/api/history") && url.includes("liners=true"))).toBe(true));
+      expect(document.querySelector("#hist-show-liners").checked).toBe(true);
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));
