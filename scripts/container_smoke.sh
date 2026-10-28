@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 # Build the image and smoke-test the Compose service: LAN mode on the host
-# network, pairing, the health check, folder ownership, the CPU-only torch
-# build, and stream mode switched on through the saved station definition.
+# network, pairing, the health check, folder ownership, the torch build, and
+# stream mode switched on through the saved station definition.
 #
 # By default it builds the image from this checkout with compose.build.yaml.
 # With AUTODJ_SMOKE_IMAGE set to an image already in Docker, as CI does after
 # building with buildx, it runs that image through compose.yaml alone and never
 # pulls or builds.
+#
+# AUTODJ_SMOKE_VARIANT names the image's variant, cpu (the default) or cuda.
+# The CUDA image runs here without a GPU, as it does on a CI runner, so the
+# test checks that it is the CUDA build and that it falls back to the CPU.
 set -euo pipefail
+
+smoke_variant="${AUTODJ_SMOKE_VARIANT:-cpu}"
+case "$smoke_variant" in
+  cpu | cuda) ;;
+  *)
+    echo "AUTODJ_SMOKE_VARIANT must be cpu or cuda, not '$smoke_variant'" >&2
+    exit 1
+    ;;
+esac
 
 temp_parent="${RUNNER_TEMP:-/tmp}"
 temp_parent="${temp_parent%/}"
@@ -105,6 +118,7 @@ else
   export COMPOSE_FILE=compose.yaml:compose.build.yaml
   export COMPOSE_PATH_SEPARATOR=:
   expected_image=autodj:local
+  export AUTODJ_TORCH_VARIANT="$smoke_variant"
   docker compose config >/dev/null
   docker compose build --pull
 fi
@@ -125,15 +139,29 @@ docker compose exec -T autodj sh -ceu 'touch /index/.write-test; rm /index/.writ
 docker compose exec -T autodj sh -ceu 'touch /models/.write-test; rm /models/.write-test'
 # The server secret is created on first start and saved in the index folder.
 test -s "$AUTODJ_INDEX_DIR/.access-token"
-# Tag reading needs mutagen in the image; torch must be the CPU build with no CUDA wheels.
-docker compose exec -T autodj /opt/venv/bin/python -c '
+# Tag reading needs mutagen in the image. The CPU image's torch is the CPU build with no CUDA
+# wheels; the CUDA image's is the CUDA build, which without a GPU computes on the CPU.
+test "$(docker compose exec -T autodj printenv AUTODJ_IMAGE_VARIANT)" = "$smoke_variant"
+docker compose exec -T autodj /opt/venv/bin/python - "$smoke_variant" <<'PY'
 import importlib.metadata
+import sys
+
 import mutagen, scipy, torch, torchaudio
-assert torch.version.cuda is None, torch.version.cuda
+
 names = [dist.metadata["Name"].lower() for dist in importlib.metadata.distributions()]
 cuda = [name for name in names if name.startswith(("nvidia-", "cuda-")) or name == "triton"]
-assert not cuda, cuda
-'
+if sys.argv[1] == "cpu":
+    assert torch.version.cuda is None, torch.version.cuda
+    assert not cuda, cuda
+else:
+    assert torch.version.cuda, "torch is not a CUDA build"
+    assert cuda, "no CUDA runtime wheels"
+    from autodj.compute import device_string
+
+    if not torch.cuda.is_available():
+        assert device_string() == "cpu", device_string()
+assert float(torch.ones(4).sum()) == 4.0
+PY
 
 # LAN mode hides library details until a browser pairs.
 test "$(curl --fail --silent --show-error "$base_url/healthz")" = '{"status":"ok"}'

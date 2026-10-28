@@ -4,11 +4,24 @@ name: Container image
 # and :sha-<short commit>; release.yml calls this for a vX.Y.Z tag on master,
 # after its checks, to publish :X.Y.Z, :stable and :latest.
 #
+# With the variant cuda, it publishes the opt-in CUDA image under the same
+# tags with -cuda added, except :latest, which exists only for a pull without
+# a tag. image-cuda.yml calls it for master and release.yml for a release, as
+# separate runs or jobs, so a CUDA failure never stops or withdraws the CPU
+# image or the GitHub release.
+#
 # Two jobs. "build" has read-only permissions: it builds the image, smoke-tests
 # it, writes the SBOM, scans it with Trivy and saves that exact image as an
 # artifact. "push" holds the registry and attestation permissions, runs no
 # third-party binary, loads the saved image, pushes it and attests the pushed
 # digest. Pull requests never get here: CI builds and checks only.
+#
+# A version or sha- tag never changes. When a rerun finds its tag already in
+# the registry, from an earlier attempt that stopped part way, it pushes no new
+# build: it points the moving tags (:stable, :latest, :dev and their -cuda
+# forms) at the digest already there, byte for byte, and attests that digest
+# again, in case the earlier attempt stopped before attesting it. A moving tag
+# never moves backwards: see "Choose the tags this run may move".
 on:
   push:
     branches: [master]
@@ -18,25 +31,30 @@ on:
         description: Publish a release tag's image instead of master's.
         type: boolean
         required: true
+      variant:
+        description: The PyTorch build, cpu or cuda.
+        type: string
+        default: cpu
 
 permissions:
   contents: read
 
 concurrency:
-  # One publish per ref at a time, in push order, so :dev ends on the
-  # newest commit.
-  group: image-${{ github.ref }}
+  # One publish per variant and ref at a time, in push order, so :dev and
+  # :dev-cuda end on the newest commit.
+  group: image-${{ inputs.variant || 'cpu' }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Build and check the image
+    name: Build and check the ${{ inputs.variant || 'cpu' }} image
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: ${{ inputs.variant == 'cuda' && 120 || 60 }}
     permissions:
       contents: read
     outputs:
       image: ${{ steps.name.outputs.image }}
+      artifact: ${{ steps.name.outputs.artifact }}
       tags: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -64,29 +82,51 @@ jobs:
             echo "::error::A development image is published only from master, not $GITHUB_REF"
             exit 1
           fi
+      # The CUDA image's tags end in -cuda; the CPU image's have no suffix.
       - name: Name the image
         id: name
         env:
           OWNER: ${{ github.repository_owner }}
-        run: printf 'image=ghcr.io/%s/autodj\n' "${OWNER,,}" >>"$GITHUB_OUTPUT"
+          VARIANT: ${{ inputs.variant || 'cpu' }}
+        run: |
+          set -euo pipefail
+          case "$VARIANT" in
+            cpu) suffix="" ;;
+            cuda) suffix="-cuda" ;;
+            *)
+              echo "::error::The variant must be cpu or cuda, not '$VARIANT'"
+              exit 1
+              ;;
+          esac
+          {
+            printf 'image=ghcr.io/%s/autodj\n' "${OWNER,,}"
+            printf 'variant=%s\n' "$VARIANT"
+            printf 'artifact=autodj-image%s\n' "$suffix"
+            printf 'flavor<<FLAVOR\nlatest=false\n'
+            if [[ -n "$suffix" ]]; then
+              printf 'suffix=%s\n' "$suffix"
+            fi
+            printf 'FLAVOR\n'
+          } >>"$GITHUB_OUTPUT"
       - name: Choose tags and labels
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.name.outputs.image }}
-          flavor: latest=false
+          flavor: ${{ steps.name.outputs.flavor }}
           tags: |
             type=raw,value=dev,enable=${{ !inputs.release }}
             type=sha,prefix=sha-,format=short,enable=${{ !inputs.release }}
             type=semver,pattern={{version}},enable=${{ inputs.release == true }}
             type=raw,value=stable,enable=${{ inputs.release == true }}
-            type=raw,value=latest,enable=${{ inputs.release == true }}
+            type=raw,value=latest,enable=${{ inputs.release == true && steps.name.outputs.variant == 'cpu' }}
       - name: Build and check the image
         uses: ./.github/actions/build-image
         with:
           channel: ${{ inputs.release && 'stable' || 'development' }}
           labels: ${{ steps.meta.outputs.labels }}
-          sbom-artifact: image-sbom
+          sbom-artifact: ${{ steps.name.outputs.variant == 'cuda' && 'image-sbom-cuda' || 'image-sbom' }}
+          variant: ${{ steps.name.outputs.variant }}
       # The image is several GB; zstd keeps the artifact and its transfer small.
       - name: Save the checked image
         run: |
@@ -95,39 +135,262 @@ jobs:
           ls -l "$RUNNER_TEMP/autodj-image.tar.zst"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: autodj-image
+          name: ${{ steps.name.outputs.artifact }}
           path: ${{ runner.temp }}/autodj-image.tar.zst
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
   push:
-    name: Publish the image
+    name: Publish the ${{ inputs.variant || 'cpu' }} image
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.variant == 'cuda' && 60 || 30 }}
     permissions:
       contents: read
       packages: write
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      # The CUDA image's artifact and its loaded copy need about 20 GB. The
+      # local action needs the checkout; nothing from it runs with the token.
+      - if: inputs.variant == 'cuda'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          name: autodj-image
-          path: ${{ runner.temp }}/image
-      - name: Load the checked image
-        run: zstd -dc "$RUNNER_TEMP/image/autodj-image.tar.zst" | docker load
+          persist-credentials: false
+          sparse-checkout: .github/actions
+      - if: inputs.variant == 'cuda'
+        uses: ./.github/actions/free-disk
+        with:
+          need-gib: "20"
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # :stable, :latest and :dev (and their -cuda forms) never move backwards.
+      # A release moves :stable and :latest only when its tag is the highest
+      # vX.Y.Z tag in git. A newer tag pushed while this release still runs, or
+      # a stray tag shaped like a release, holds :stable back; rerun this
+      # release's image job once that tag is released or deleted. A master run
+      # moves :dev only when the tag is missing or this commit is ahead of, or
+      # the same as, the commit :dev holds now (its image's revision label,
+      # compared through GitHub's API), so a slow build still moves it unless a
+      # newer one already has. Any error asking stops the job before it pushes.
+      - name: Choose the tags this run may move
+        id: tags
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          TAGS: ${{ needs.build.outputs.tags }}
+          RELEASE: ${{ inputs.release == true }}
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pinned_pattern='^(sha-[0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)(-cuda)?$'
+          ask() {
+            local attempt
+            for attempt in 1 2 3; do
+              if gh api "$@"; then
+                return 0
+              fi
+              sleep $((attempt * 5))
+            done
+            echo "::error::GitHub's API did not answer gh api $*; nothing was pushed." >&2
+            return 1
+          }
+          # The commit a moving tag's image was built from; empty when the tag
+          # does not exist yet.
+          revision_of() {
+            local repository token accept body status digest config revision
+            repository="${IMAGE#ghcr.io/}"
+            token="$(printf 'user = "%s:%s"\n' "$ACTOR" "$TOKEN" |
+              curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 30 --config - \
+                "https://ghcr.io/token?scope=repository:${repository}:pull" | jq -r .token)"
+            accept="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json"
+            accept+=",application/vnd.docker.distribution.manifest.list.v2+json"
+            accept+=",application/vnd.docker.distribution.manifest.v2+json"
+            body="$RUNNER_TEMP/moving-tag.json"
+            get() {
+              curl --silent --show-error --location --retry 3 --retry-connrefused --max-time 60 \
+                --output "$body" --write-out '%{http_code}' \
+                --header "Authorization: Bearer $token" --header "Accept: $accept" \
+                "https://ghcr.io/v2/${repository}/$1"
+            }
+            status="$(get "manifests/$1")"
+            if [[ "$status" == 404 ]]; then
+              return 0
+            elif [[ "$status" != 200 ]]; then
+              echo "::error::The registry answered $status for $IMAGE:$1; nothing was pushed." >&2
+              return 1
+            fi
+            if jq -e '.manifests' "$body" >/dev/null; then
+              digest="$(jq -r '[.manifests[] | select(.platform.os == "linux" and
+                .platform.architecture == "amd64")][0].digest // empty' "$body")"
+              [[ -n "$digest" && "$(get "manifests/$digest")" == 200 ]] || {
+                echo "::error::Could not read the linux/amd64 image of $IMAGE:$1; nothing was pushed." >&2
+                return 1
+              }
+            fi
+            config="$(jq -r '.config.digest // empty' "$body")"
+            [[ -n "$config" && "$(get "blobs/$config")" == 200 ]] || {
+              echo "::error::Could not read the configuration of $IMAGE:$1; nothing was pushed." >&2
+              return 1
+            }
+            revision="$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' "$body")"
+            if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::$IMAGE:$1 has no commit in its revision label; nothing was pushed." >&2
+              return 1
+            fi
+            printf '%s\n' "$revision"
+          }
+          if [[ "$RELEASE" == true ]]; then
+            refs="$(ask --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --jq '.[].ref')"
+            newest="$(grep -E '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$refs" | sed 's#^refs/tags/##' |
+              sort -V | tail -n 1)"
+            current=false
+            [[ "$newest" != "$GITHUB_REF_NAME" ]] || current=true
+            why="the newest release tag is $newest; rerun this job once it is released or deleted"
+          else
+            moving=""
+            while IFS= read -r tag; do
+              if [[ -n "$tag" && ! "${tag##*:}" =~ $pinned_pattern ]]; then
+                moving="${tag##*:}"
+              fi
+            done <<<"$TAGS"
+            current=true
+            why=""
+            if [[ -n "$moving" ]]; then
+              held="$(revision_of "$moving")"
+              if [[ -n "$held" ]]; then
+                compared="$(ask "repos/$GITHUB_REPOSITORY/compare/${held}...${GITHUB_SHA}" --jq .status)"
+                case "$compared" in
+                  ahead | identical) ;;
+                  behind | diverged)
+                    current=false
+                    why="it holds ${held:0:7}, which this commit is not ahead of ($compared)"
+                    ;;
+                  *)
+                    echo "::error::GitHub compared ${held:0:7} with this commit as '$compared'; nothing was pushed." >&2
+                    exit 1
+                    ;;
+                esac
+              fi
+            fi
+          fi
+          {
+            echo 'tags<<TAGS'
+            while IFS= read -r tag; do
+              [[ -n "$tag" ]] || continue
+              if [[ "$current" == true || "${tag##*:}" =~ $pinned_pattern ]]; then
+                printf '%s\n' "$tag"
+              else
+                echo "::notice::Leaving $tag where it is: $why." >&2
+              fi
+            done <<<"$TAGS"
+            echo 'TAGS'
+          } >>"$GITHUB_OUTPUT"
+      # The version tag (or, for master, the sha- tag) names one build forever.
+      # The registry API keeps the manifest's exact bytes, so retagging it keeps
+      # its digest and the attestation made for it.
+      - name: Look for an earlier push of this version
+        id: earlier
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pinned=""
+          while IFS= read -r tag; do
+            if [[ "${tag##*:}" =~ ^(sha-[0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)(-cuda)?$ ]]; then
+              pinned="${tag##*:}"
+            fi
+          done <<<"$TAGS"
+          if [[ -z "$pinned" ]]; then
+            echo "::error::None of these tags is a version or sha- tag: $TAGS"
+            exit 1
+          fi
+          repository="${IMAGE#ghcr.io/}"
+          token="$(printf 'user = "%s:%s"\n' "$ACTOR" "$TOKEN" |
+            curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 30 --config - \
+              "https://ghcr.io/token?scope=repository:${repository}:pull,push" | jq -r .token)"
+          echo "::add-mask::$token"
+          accept="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json"
+          accept+=",application/vnd.docker.distribution.manifest.list.v2+json"
+          accept+=",application/vnd.docker.distribution.manifest.v2+json"
+          manifest="$RUNNER_TEMP/earlier-manifest"
+          status="$(curl --silent --show-error --retry 3 --retry-connrefused --max-time 60 \
+            --output "$manifest" --dump-header "$manifest.headers" \
+            --write-out '%{http_code}' --header "Authorization: Bearer $token" --header "Accept: $accept" \
+            "https://ghcr.io/v2/${repository}/manifests/${pinned}")"
+          case "$status" in
+            404)
+              echo "$IMAGE:$pinned is new; pushing this build."
+              printf 'digest=\n' >>"$GITHUB_OUTPUT"
+              ;;
+            200)
+              digest="sha256:$(sha256sum "$manifest" | cut -d' ' -f1)"
+              type="$(sed -n 's/^[Cc]ontent-[Tt]ype: *\([^;[:space:]]*\).*/\1/p' "$manifest.headers" | tail -n 1)"
+              echo "::warning::$IMAGE:$pinned already exists at $digest from an earlier attempt. This rerun pushes no new build: it points the moving tags at that digest and attests it again."
+              {
+                printf 'digest=%s\n' "$digest"
+                printf 'type=%s\n' "$type"
+              } >>"$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::The registry answered $status when asked whether $IMAGE:$pinned exists; nothing was pushed."
+              exit 1
+              ;;
+          esac
+      - name: Point the moving tags at the earlier push
+        if: steps.earlier.outputs.digest != ''
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TYPE: ${{ steps.earlier.outputs.type }}
+          DIGEST: ${{ steps.earlier.outputs.digest }}
+        run: |
+          set -euo pipefail
+          repository="${IMAGE#ghcr.io/}"
+          token="$(printf 'user = "%s:%s"\n' "$ACTOR" "$TOKEN" |
+            curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 30 --config - \
+              "https://ghcr.io/token?scope=repository:${repository}:pull,push" | jq -r .token)"
+          echo "::add-mask::$token"
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            name="${tag##*:}"
+            [[ ! "$name" =~ ^(sha-[0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)(-cuda)?$ ]] || continue
+            pushed="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 60 \
+              --request PUT --dump-header - --output /dev/null \
+              --header "Authorization: Bearer $token" --header "Content-Type: $TYPE" \
+              --data-binary "@$RUNNER_TEMP/earlier-manifest" \
+              "https://ghcr.io/v2/${repository}/manifests/${name}" |
+              sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: *\(sha256:[0-9a-f]\{64\}\).*/\1/p')"
+            if [[ "$pushed" != "$DIGEST" ]]; then
+              echo "::error::Tagging $name gave digest '$pushed', expected '$DIGEST'"
+              exit 1
+            fi
+            echo "$IMAGE:$name now points at $DIGEST"
+          done <<<"$TAGS"
+      - if: steps.earlier.outputs.digest == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: ${{ runner.temp }}/image
+      - name: Load the checked image
+        if: steps.earlier.outputs.digest == ''
+        run: zstd -dc "$RUNNER_TEMP/image/autodj-image.tar.zst" | docker load
       # Every tag is the same image, so every push reports the same digest.
       - name: Push the checked image
         id: push
+        if: steps.earlier.outputs.digest == ''
         env:
-          TAGS: ${{ needs.build.outputs.tags }}
+          TAGS: ${{ steps.tags.outputs.tags }}
         run: |
           set -euo pipefail
           digest=""
@@ -145,11 +408,14 @@ jobs:
           done <<<"$TAGS"
           test -n "$digest"
           printf 'digest=%s\n' "$digest" >>"$GITHUB_OUTPUT"
+      # Also on a rerun that reused an earlier push: the likeliest partial
+      # failure is the attestation itself, and attesting a digest twice is
+      # harmless.
       - name: Attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ needs.build.outputs.image }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ steps.push.outputs.digest || steps.earlier.outputs.digest }}
           push-to-registry: true
           # Storage records exist only for organization-owned repositories.
           create-storage-record: false

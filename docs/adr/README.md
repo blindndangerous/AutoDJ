@@ -31,7 +31,7 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | [13: Speech production](0013-produce-speech-outside-playout.md) | Accepted; verification limits apply | Provider comparisons, shared credentials, station speech assets, bounded synthesis and generated time checks |
 | [14: Programme review](0014-isolate-programme-review-and-export.md) | Accepted | Frozen private audio reviews, shortened timelines, exports, storage and worker lifecycle |
 | [15: Prepared editions](0015-prepare-speech-for-specific-show-editions.md) | Accepted | Occurrence-bound recordings, full-target review receipts, explicit approval, local playout and interrupted-edition recovery |
-| [16: Updates and restart](0016-update-and-restart-from-the-web.md) | Proposed | Update channels, the update check and notice, restart from the web page, the launcher restart loop |
+| [16: Updates and restart](0016-update-and-restart-from-the-web.md) | Proposed | Update channels, the update check and notice, restart from the web page, the launcher restart loop, published container images and the CUDA image |
 | [17: Explicit settings saves](0017-save-settings-through-one-draft-boundary.md) | Proposed | Shared drafts, revision conflicts, separate storage owners and removal of superseded writes |
 
 [ADR 13](0013-produce-speech-outside-playout.md) describes selected

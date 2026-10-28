@@ -11,15 +11,17 @@ names and carry no slug.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
 import shutil
 import socket
 import sqlite3
+import subprocess  # nosec B404 -- nvidia-smi with a fixed argv, never a shell
 import sys
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import closing
 from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
@@ -533,6 +535,126 @@ def _model_cache_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
+def _nvidia_gpu_visible(dev: Path = Path("/dev")) -> bool:
+    """Whether an NVIDIA GPU is visible: a GPU's device file, or ``nvidia-smi -L`` naming one.
+
+    The NVIDIA Container Toolkit passes both into a container that asks for
+    the GPU.  Nothing is allocated on the GPU.
+    """
+    with contextlib.suppress(OSError):
+        if any(dev.glob("nvidia[0-9]*")):
+            return True
+    smi = shutil.which("nvidia-smi")
+    if smi is None:
+        return False
+    from autodj.updates import run_bounded
+
+    try:
+        done = run_bounded([smi, "-L"], timeout=5.0)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0 and "GPU" in done.stdout
+
+
+#: How long Doctor waits for PyTorch to say whether it can use the GPU.
+TORCH_PROBE_SECONDS = 20.0
+_TORCH_PROBE = "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 3)"
+
+
+def _torch_sees_cuda() -> bool | None:
+    """Whether PyTorch can use a CUDA GPU, asked in a child process with a time limit.
+
+    ``None`` when it did not answer in time.  Only the CUDA image asks.  The
+    child runs isolated (``-I``), so the working directory is not on its
+    path, with warnings off; its output is discarded.  A wedged driver
+    cannot stall Doctor, and any other failure counts as "cannot use it".
+    """
+    from autodj.updates import run_bounded
+
+    argv = [sys.executable, "-I", "-W", "ignore", "-c", _TORCH_PROBE]
+    try:
+        done = run_bounded(argv, timeout=TORCH_PROBE_SECONDS)
+    except subprocess.TimeoutExpired:
+        return None
+    except Exception:  # any other failure means PyTorch cannot use the GPU
+        return False
+    return done.returncode == 0
+
+
+def _gpu_image_check(
+    *,
+    environ: Mapping[str, str] | None = None,
+    markers: Iterable[Path] | None = None,
+    gpu_visible: Callable[[], bool] | None = None,
+    torch_sees_cuda: Callable[[], bool | None] | None = None,
+) -> tuple[DoctorCheck, ...]:
+    """In a container, whether its image fits the NVIDIA GPU it sees; nothing elsewhere.
+
+    Only song analysis uses a GPU.  A CPU image that sees one is told about
+    the CUDA image and the GPU analysis worker; a CUDA image that sees none,
+    or whose PyTorch cannot use it, is told that analysis runs on the CPU.
+    A CPU image without a GPU, and any installation outside a container,
+    gets no line.
+    """
+    from autodj.updates import CONTAINER_MARKERS, IMAGE_VARIANT_ENV
+
+    environment = os.environ if environ is None else environ
+    if not any(marker.exists() for marker in (CONTAINER_MARKERS if markers is None else markers)):
+        return ()
+    cuda_image = (environment.get(IMAGE_VARIANT_ENV) or "").strip() == "cuda"
+    visible = (gpu_visible or _nvidia_gpu_visible)()
+    if not cuda_image:
+        if not visible:
+            return ()
+        return (
+            DoctorCheck(
+                "gpu-image",
+                CheckStatus.WARN,
+                "this CPU image sees an NVIDIA GPU it cannot use; for GPU song analysis, run "
+                "the -cuda image with compose.gpu.yaml, or a GPU analysis worker",
+            ),
+        )
+    if not visible:
+        return (
+            DoctorCheck(
+                "gpu-image",
+                CheckStatus.WARN,
+                "this CUDA image sees no NVIDIA GPU, so song analysis falls back to the CPU",
+                "Action: install the NVIDIA Container Toolkit on the host (Docker Desktop on "
+                "Windows has GPU support built in), add compose.gpu.yaml to COMPOSE_FILE in "
+                ".env, then run `docker compose up -d`.",
+            ),
+        )
+    usable = (torch_sees_cuda or _torch_sees_cuda)()
+    if usable is None:
+        return (
+            DoctorCheck(
+                "gpu-image",
+                CheckStatus.WARN,
+                "this CUDA image sees an NVIDIA GPU, but the GPU check timed out, so song "
+                "analysis may fall back to the CPU",
+                f"PyTorch did not answer within {TORCH_PROBE_SECONDS:.0f} seconds. Action: run "
+                "`nvidia-smi` on the host to check that the GPU and its driver respond.",
+            ),
+        )
+    if usable:
+        return (
+            DoctorCheck(
+                "gpu-image", CheckStatus.PASS, "CUDA image; song analysis uses the NVIDIA GPU"
+            ),
+        )
+    return (
+        DoctorCheck(
+            "gpu-image",
+            CheckStatus.WARN,
+            "this CUDA image sees an NVIDIA GPU that PyTorch cannot use, so song analysis "
+            "falls back to the CPU",
+            "Action: the host's NVIDIA driver must support CUDA 13.0 (driver 580 or newer); "
+            "`nvidia-smi` on the host shows its version.",
+        ),
+    )
+
+
 def _lan_network_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Report what ``serve`` in LAN mode will bind, allow and authenticate with.
 
@@ -839,6 +961,7 @@ def run_doctor(
         _dj_meta_database_check(cfg),
         _dependency_check(),
         _model_cache_check(cfg),
+        *_gpu_image_check(),
         _network_check(cfg),
         _update_check(cfg, network=check_updates),
     ]

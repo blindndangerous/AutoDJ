@@ -125,8 +125,30 @@ jobs:
       id-token: write
       attestations: write
 
+  # The opt-in CUDA image, :X.Y.Z-cuda and :stable-cuda, beside the CPU image.
+  # Nothing waits for it: when it fails, the CPU image and the GitHub release
+  # are still published, the run is marked failed, and :stable-cuda stays on
+  # the previous release until the maintainer reruns the failed jobs. A rerun
+  # never replaces an :X.Y.Z-cuda already pushed; it points :stable-cuda at it,
+  # and only while this is still the highest release tag in git, so rerunning
+  # an older release never moves :stable or :stable-cuda back. The same rule
+  # means a newer tag pushed while this release runs, or a stray release-style
+  # tag, holds :stable and :stable-cuda back: rerun the image jobs once that
+  # tag is released or deleted.
+  image-cuda:
+    needs: build-and-verify
+    uses: ./.github/workflows/image.yml
+    with:
+      release: true
+      variant: cuda
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
   # The GitHub release, which the update check reads as the latest release,
-  # appears only once the image it points to is published.
+  # appears only once the CPU image it points to is published.
   publish:
     needs: [build-and-verify, image]
     runs-on: ubuntu-latest

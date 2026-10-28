@@ -79,10 +79,14 @@ build each image, run the same container smoke test and vulnerability scan as fo
 request, then push it. The tags:
 
 - `stable`, the default in `compose.yaml`: the newest release. `latest` is the same image.
-- `development`: the newest commit on `master`, published after every change to it.
+- `dev`: the newest commit on `master`, published after every change to it.
 - A version such as `0.22.0`: that release. It never changes.
 - `sha-` and the first seven digits of a commit, such as `sha-0db0a92`: that development build.
   It never changes.
+
+These images analyse songs on the processor. Each one also has a CUDA image for an NVIDIA
+graphics card, tagged with `-cuda` added: `stable-cuda`, `dev-cuda`, `0.22.0-cuda` and
+`sha-0db0a92-cuda`. There is no `latest-cuda`. See [Use an NVIDIA GPU](#use-an-nvidia-gpu).
 
 To choose one, set `AUTODJ_IMAGE` in `.env` beside `compose.yaml`, then pull and start it:
 
@@ -136,6 +140,78 @@ runs the published image instead.
 An image you build follows the channel of the checkout it is built from: `master` is
 Development, anything else is Stable.
 
+## Use an NVIDIA GPU
+
+Only song analysis uses a graphics card; playout and streaming run the same either way. The
+default image analyses on the processor. The CUDA image, the same image with NVIDIA's CUDA build
+of PyTorch, analyses on an NVIDIA card. It is about 7 GB unpacked, against about 2 GB for the
+default image. Use it on the computer that runs AutoDJ, or keep the default image and run an
+[analysis worker](gpu-worker.md#using-a-gpu-machine) on another computer that has the card.
+
+The computer that runs the container needs:
+
+- An NVIDIA card that CUDA 13.0 supports (Turing, the GeForce 16 and RTX 20 series, or newer),
+  and an NVIDIA driver for CUDA 13.0, version 580 or newer. `nvidia-smi` shows the driver
+  version.
+- The [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html),
+  set up for Docker as its guide says. Docker Desktop on Windows, with the WSL 2 backend, has GPU
+  support built in and needs only the Windows NVIDIA driver.
+
+`compose.gpu.yaml` runs the CUDA image's `stable-cuda` tag and asks Docker for every NVIDIA card.
+To use it:
+
+1. Add this line to `.env` beside `compose.yaml`:
+
+   ```dotenv
+   COMPOSE_FILE=compose.yaml:compose.gpu.yaml
+   ```
+
+   To follow development or stay on one release, also set `AUTODJ_IMAGE` to a `-cuda` tag, such
+   as `ghcr.io/blindndangerous/autodj:dev-cuda`.
+2. Pull and start the image:
+
+   ```bash
+   docker compose pull
+   docker compose up -d
+   ```
+
+3. Check it: `docker compose exec autodj autodj doctor --offline` should report
+   `gpu-image: CUDA image; song analysis uses the NVIDIA GPU`.
+
+Doctor also says when the image and the card do not match. In the default image with a card
+passed in, it suggests the CUDA image or a worker. In the CUDA image with no card visible, it says
+that analysis falls back to the processor; the image still works there, only slower to analyse.
+
+To go back to the default image, remove `compose.gpu.yaml` from `COMPOSE_FILE`, set
+`AUTODJ_IMAGE` back to a tag without `-cuda` if you set one, then pull and start it again.
+
+The CUDA image's tags follow the same rules as the default image's, and an update keeps the
+`-cuda` suffix. When a release or a commit on `master` is published, its CUDA image can follow
+by the length of its longer build, about two hours at most, or later if that build has to run
+again. Until then `stable-cuda` and `dev-cuda` still pull the previous image, and a version or
+`sha-` tag with `-cuda`, which `autodj check-update` may already name, makes `docker compose pull`
+say `manifest unknown`. Try again later.
+
+Podman reaches NVIDIA cards through the toolkit's CDI specification (`nvidia-ctk cdi generate`)
+instead. This setup has not been tested with Podman. If your podman-compose does not pass the
+card in, copy `compose.gpu.yaml` to a file of your own, replace its `deploy` section with
+`devices: ["nvidia.com/gpu=all"]`, and name that file in `COMPOSE_FILE` in place of
+`compose.gpu.yaml`. Another override added after `compose.gpu.yaml` cannot remove its `deploy`
+section.
+
+To build the CUDA image yourself, add `AUTODJ_TORCH_VARIANT=cuda` to `.env` and name
+`compose.build.yaml` last, so the local image replaces the published one:
+
+```dotenv
+AUTODJ_TORCH_VARIANT=cuda
+COMPOSE_FILE=compose.yaml:compose.gpu.yaml:compose.build.yaml
+```
+
+On a computer without an NVIDIA GPU, for example to build the CUDA image for another computer,
+leave `compose.gpu.yaml` out of `COMPOSE_FILE`, and out of the update commands that
+`autodj check-update` prints for a CUDA build: Docker cannot start a container that asks for a GPU
+the computer does not have.
+
 ## Update the container
 
 AutoDJ in a container checks for updates like any installation and says in **Settings**,
@@ -156,7 +232,8 @@ from it. The library, settings and models stay in their folders. With Podman, us
 
 A version or `sha-` tag never changes, so pulling it changes nothing: set `AUTODJ_IMAGE` in `.env`
 to the new tag first. To switch channels, set `AUTODJ_IMAGE` to the `stable` or `dev` tag
-the same way.
+the same way. For the CUDA image, use the same tags with `-cuda` added; the commands
+`autodj check-update` prints name them.
 
 Pulling updates AutoDJ itself. Keep the checkout matched to the image too, so `compose.yaml` and
 the example settings fit it: for a release, run `git fetch --tags origin` and

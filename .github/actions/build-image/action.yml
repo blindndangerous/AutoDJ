@@ -3,6 +3,8 @@ description: >-
   Builds the image with buildx and a GitHub Actions layer cache, loads it into
   Docker, runs the Compose smoke test, writes a CycloneDX SBOM and fails on a
   fixable HIGH or CRITICAL finding. A publishing job then pushes the same build.
+  The CUDA variant frees disk space first and builds without the layer cache,
+  which is too small for its layers; its smoke test runs on the CPU.
 inputs:
   image:
     description: The local tag of the built image.
@@ -18,10 +20,34 @@ inputs:
   sbom-artifact:
     description: The name of the uploaded SBOM artifact.
     default: container-sbom
+  variant:
+    description: The PyTorch build, cpu or cuda (the Containerfile's TORCH_VARIANT).
+    default: cpu
 runs:
   using: composite
   steps:
+    - name: Check the variant
+      shell: bash
+      env:
+        VARIANT: ${{ inputs.variant }}
+      run: |
+        if [[ "$VARIANT" != cpu && "$VARIANT" != cuda ]]; then
+          echo "::error::The variant must be cpu or cuda, not '$VARIANT'"
+          exit 1
+        fi
+    # The CUDA image is about 7 GB unpacked. Building it, the scanners' copies
+    # and the saved artifact need about 35 GB, more than a runner has free.
+    - if: inputs.variant == 'cuda'
+      uses: ./.github/actions/free-disk
+      with:
+        need-gib: "35"
+    # The CPU image builds in a builder container with the GitHub Actions
+    # cache. The CUDA image builds straight into Docker, so its layers are not
+    # stored twice, and without that cache: its layers would push the CPU
+    # image's out of the repository's cache.
     - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      with:
+        driver: ${{ inputs.variant == 'cuda' && 'docker' || 'docker-container' }}
     - name: Build image
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       with:
@@ -35,14 +61,16 @@ runs:
         build-args: |
           AUTODJ_COMMIT=${{ github.sha }}
           AUTODJ_IMAGE_CHANNEL=${{ inputs.channel }}
+          TORCH_VARIANT=${{ inputs.variant }}
         provenance: false
         sbom: false
-        cache-from: type=gha,scope=autodj-image
-        cache-to: type=gha,mode=max,scope=autodj-image
+        cache-from: ${{ inputs.variant == 'cpu' && 'type=gha,scope=autodj-image' || '' }}
+        cache-to: ${{ inputs.variant == 'cpu' && 'type=gha,mode=max,scope=autodj-image' || '' }}
     - name: Smoke-test unprivileged image
       shell: bash
       env:
         AUTODJ_SMOKE_IMAGE: ${{ inputs.image }}
+        AUTODJ_SMOKE_VARIANT: ${{ inputs.variant }}
       run: bash scripts/container_smoke.sh
     - name: Generate image SBOM
       uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
@@ -57,7 +85,7 @@ runs:
         severity: HIGH,CRITICAL
         ignore-unfixed: true
         exit-code: "1"
-        timeout: 15m0s
+        timeout: ${{ inputs.variant == 'cuda' && '30m0s' || '15m0s' }}
     - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       if: always()
       with:

@@ -1,0 +1,26 @@
+# Run the CUDA image and give it this computer's NVIDIA GPUs, for song
+# analysis; playout does not use the GPU. The host needs an NVIDIA driver that
+# supports CUDA 13.0 (580 or newer) and the NVIDIA Container Toolkit. Name both
+# files on every Compose command, or set them once in .env:
+#
+#   COMPOSE_FILE=compose.yaml:compose.gpu.yaml
+#
+# The image is the published CUDA image's :stable-cuda tag. For another one,
+# set AUTODJ_IMAGE in .env to a -cuda tag, such as :dev-cuda or :0.22.0-cuda.
+# To build the CUDA image yourself, set AUTODJ_TORCH_VARIANT=cuda in .env and
+# name compose.build.yaml after this file. Details:
+# docs/guides/operations/containers-and-windows.md#use-an-nvidia-gpu
+
+services:
+  autodj:
+    image: &image ${AUTODJ_IMAGE:-ghcr.io/blindndangerous/autodj:stable-cuda}
+    environment:
+      # The image above, so Settings, Updates gives the commands that update it.
+      AUTODJ_IMAGE: *image
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

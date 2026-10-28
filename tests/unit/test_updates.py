@@ -695,6 +695,154 @@ def test_a_container_on_another_channel_or_pinned_is_told_which_image_to_name() 
     assert switch(None, "stable", development) == updates.IMAGE_REPOSITORY + ":dev"
 
 
+def test_a_cuda_image_reads_its_variant_and_a_cpu_image_has_none_to_lose(tmp_path: Path) -> None:
+    """ADR-0016-22: the Containerfile names the variant; anything else is unknown."""
+    marker = tmp_path / ".dockerenv"
+    marker.touch()
+
+    def variant(environ: dict[str, str]) -> str | None:
+        found = updates.detect_installation(
+            root=tmp_path / "no-checkout",
+            environ=environ,
+            markers=(marker,),
+            version="0.22.0",
+            working_dir=tmp_path,
+        )
+        return found.image_variant
+
+    assert variant({"AUTODJ_IMAGE_CHANNEL": "stable", "AUTODJ_IMAGE_VARIANT": "cuda"}) == "cuda"
+    assert variant({"AUTODJ_IMAGE_CHANNEL": "development", "AUTODJ_IMAGE_VARIANT": "cpu"}) == "cpu"
+    assert variant({"AUTODJ_IMAGE_VARIANT": "cuda"}) == "cuda"
+    assert variant({"AUTODJ_IMAGE_CHANNEL": "stable", "AUTODJ_IMAGE_VARIANT": "rocm"}) is None
+    assert variant({"AUTODJ_IMAGE_CHANNEL": "stable"}) is None
+
+
+def test_a_cuda_image_is_told_its_own_cuda_tag_and_a_cpu_image_never_is() -> None:
+    """ADR-0016-22: an update never swaps the CUDA image for the CPU one, or back."""
+    release = updates.UpdateCheck(
+        status="available",
+        channel="stable",
+        channel_source="installation",
+        message="Release v0.22.0 is available.",
+        latest="v0.22.0",
+        target="v0.22.0",
+    )
+    development = replace(release, channel="development", latest="1234567", target="master")
+    repository = "registry.example:5000/radio/autodj"
+
+    def switch(
+        image: str | None, channel: str, variant: str | None, result: updates.UpdateCheck
+    ) -> str | None:
+        container = Installation(
+            kind="container",
+            version="0.21.0",
+            image=image,
+            image_channel=channel,
+            image_variant=variant,
+        )
+        commands = updates.update_commands(container, result)
+        assert commands[-2:] == [
+            "docker compose pull && docker compose up -d",
+            "podman compose pull && podman compose up -d",
+        ]
+        prefix = "# In .env beside compose.yaml, set AUTODJ_IMAGE="
+        return commands[0].removeprefix(prefix) if commands[0].startswith(prefix) else None
+
+    # Pulling a moving CUDA tag on its own channel is enough.
+    assert switch(f"{repository}:stable-cuda", "stable", "cuda", release) is None
+    assert switch(f"{repository}:dev-cuda", "development", "cuda", development) is None
+    assert switch(None, "stable", "cuda", release) is None
+    assert switch(None, "development", "cuda", development) is None
+    # Pinned or on the other channel: the new tag keeps the suffix.
+    assert switch(f"{repository}:0.21.0-cuda", "stable", "cuda", release) == (
+        f"{repository}:0.22.0-cuda"
+    )
+    assert switch(f"{repository}@sha256:{'c' * 64}", "stable", "cuda", release) == (
+        f"{repository}:0.22.0-cuda"
+    )
+    assert switch(f"{repository}:stable-cuda", "stable", "cuda", development) == (
+        f"{repository}:dev-cuda"
+    )
+    assert switch(f"{repository}:dev-cuda", "development", "cuda", release) == (
+        f"{repository}:stable-cuda"
+    )
+    assert switch(f"{repository}:sha-abcdef0-cuda", "development", "cuda", development) == (
+        f"{repository}:sha-1234567-cuda"
+    )
+    assert switch(None, "stable", "cuda", development) == updates.IMAGE_REPOSITORY + ":dev-cuda"
+    # There is no latest-cuda; the CUDA image's moving release tag is stable-cuda.
+    assert switch(f"{repository}:latest", "stable", "cuda", release) == (
+        f"{repository}:stable-cuda"
+    )
+    # The image says what it is, whatever .env names: never the other variant's tag.
+    assert switch(f"{repository}:stable", "stable", "cuda", release) == (
+        f"{repository}:stable-cuda"
+    )
+    assert switch(f"{repository}:stable-cuda", "stable", "cpu", release) == f"{repository}:stable"
+    assert switch(f"{repository}:0.21.0-cuda", "stable", "cpu", release) == f"{repository}:0.22.0"
+    assert switch(f"{repository}:latest", "stable", "cpu", release) is None
+    assert switch(f"{repository}:dev", "development", "cpu", release) == f"{repository}:stable"
+    # An image that does not say its variant keeps its tag's.
+    assert switch(f"{repository}:0.21.0-cuda", "stable", None, release) == (
+        f"{repository}:0.22.0-cuda"
+    )
+    assert switch(f"{repository}:0.21.0", "stable", None, release) == f"{repository}:0.22.0"
+
+
+def test_a_pinned_cuda_tag_may_still_be_building_and_a_local_cuda_build_keeps_its_gpu() -> None:
+    """ADR-0016-22: the CUDA build is longer, and -f overrides COMPOSE_FILE."""
+    release = updates.UpdateCheck(
+        status="available",
+        channel="stable",
+        channel_source="installation",
+        message="Release v0.22.0 is available.",
+        latest="v0.22.0",
+        target="v0.22.0",
+    )
+    development = replace(release, channel="development", latest="1234567", target="master")
+    repository = "registry.example:5000/radio/autodj"
+
+    def notice(image: str, channel: str, variant: str, result: updates.UpdateCheck) -> list[str]:
+        container = Installation(
+            kind="container",
+            version="0.21.0",
+            image=image,
+            image_channel=channel,
+            image_variant=variant,
+        )
+        return updates.update_commands(container, result)[:-2]
+
+    building = "may still be building; if pull says manifest unknown, try again later"
+    pinned = notice(f"{repository}:0.21.0-cuda", "stable", "cuda", release)
+    assert pinned[0].endswith(f"={repository}:0.22.0-cuda")
+    assert pinned[1] == f"# The CUDA image 0.22.0-cuda {building}"
+    commit = notice(f"{repository}:sha-abcdef0-cuda", "development", "cuda", development)
+    assert commit[1] == f"# The CUDA image sha-1234567-cuda {building}"
+    # A moving tag pulls the previous image meanwhile, and the CPU image is not delayed.
+    assert len(notice(f"{repository}:dev-cuda", "development", "cuda", release)) == 1
+    assert len(notice(f"{repository}:stable-cuda", "stable", "cuda", development)) == 1
+    assert len(notice(f"{repository}:0.21.0", "stable", "cpu", release)) == 1
+
+    def local(variant: str | None) -> list[str]:
+        built = Installation(
+            kind="container", version="0.21.0", image="autodj:local", image_variant=variant
+        )
+        return updates.update_commands(built, release)[-2:]
+
+    build = "AUTODJ_COMMIT=$(git rev-parse --short HEAD)"
+    assert local("cuda") == [
+        f"{build} docker compose -f compose.yaml -f compose.gpu.yaml -f compose.build.yaml "
+        "up -d --build",
+        f"{build} podman compose -f compose.yaml -f compose.gpu.yaml -f compose.build.yaml "
+        "up -d --build",
+    ]
+    for variant in ("cpu", None):
+        assert local(variant) == [
+            f"{build} docker compose -f compose.yaml -f compose.build.yaml up -d --build",
+            f"{build} podman compose -f compose.yaml -f compose.build.yaml up -d --build",
+        ]
+
+
 # ---------------------------------------------------------------------------
 # Bounded git and one check at a time
 # ---------------------------------------------------------------------------

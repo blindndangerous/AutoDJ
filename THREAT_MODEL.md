@@ -1425,6 +1425,16 @@ image it checked. A separate job, the only one holding `packages: write`, `id-to
 and attests its digest with Sigstore. The GitHub release waits for the image. Pull requests build
 and check without registry credentials. Operators can check an image with `gh attestation verify`.
 
+The opt-in CUDA image (`-cuda` tags) goes through the same jobs, smoke test, SBOM, Trivy scan and
+attestation, from `.github/workflows/image-cuda.yml` for `master` and from the release workflow
+for a tag. It adds NVIDIA's CUDA runtime wheels from PyPI, the `torch`, `nvidia-*`, `cuda-*` and
+`triton` versions `uv.lock` pins and hash-checks, so it trusts PyPI's NVIDIA and PyTorch
+publishers as a bare-metal Linux install does; no NVIDIA base image is used. The GPU reaches the
+container only through the NVIDIA Container Toolkit on the host, which the operator installs and
+opts into with `compose.gpu.yaml`; it adds the host's driver libraries and device files, not new
+capabilities. Pull requests do not build the CUDA image, so its first check is on `master`. The
+GitHub release does not wait for it.
+
 `uv.lock` and `package-lock.json` are committed. CI uses frozen installs, runs `pip-audit` and
 `npm audit`, scans source tree with Trivy and OSV-Scanner, checks secrets with Gitleaks, and produces
 dependency and container SBOM artifacts. Neither `pip-audit` nor OSV-Scanner ignores any

@@ -1,0 +1,25 @@
+name: CUDA container image
+
+# Publishes the opt-in CUDA image through image.yml: a push to master publishes
+# :dev-cuda and :sha-<short commit>-cuda. release.yml calls image.yml itself for
+# a release's :X.Y.Z-cuda and :stable-cuda. This is a workflow of its own, so a
+# CUDA build that fails, for example on a runner's limited disk, never stops or
+# withdraws the CPU image that image.yml publishes from the same push.
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    uses: ./.github/workflows/image.yml
+    with:
+      release: false
+      variant: cuda
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write

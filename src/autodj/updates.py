@@ -95,6 +95,15 @@ IMAGE_ENV = "AUTODJ_IMAGE"
 #: Set in a published image by the workflow that publishes it: ``stable`` or
 #: ``development``.  An image built on the operator's computer leaves it empty.
 IMAGE_CHANNEL_ENV = "AUTODJ_IMAGE_CHANNEL"
+#: Set in every image by the Containerfile: ``cpu``, or ``cuda`` for the image
+#: with NVIDIA's CUDA build of PyTorch.  An image from before it leaves it empty.
+IMAGE_VARIANT_ENV = "AUTODJ_IMAGE_VARIANT"
+IMAGE_VARIANTS = ("cpu", "cuda")
+#: The CUDA image's tags are the CPU image's with this suffix: ``:stable-cuda``,
+#: ``:dev-cuda``, ``:X.Y.Z-cuda`` and ``:sha-<commit>-cuda``.  There is no
+#: ``:latest-cuda``: ``:latest`` exists for a pull without a tag, which never
+#: names the suffix.
+CUDA_TAG_SUFFIX = "-cuda"
 _IMAGE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}\Z")
 
 GIT_TIMEOUT_SECONDS = 15.0
@@ -190,9 +199,10 @@ class Installation:
     (a Docker or Podman image) or ``package`` (a wheel or tool install).
     ``commit`` is the full commit of a checkout, or the build stamp of an
     image; ``branch`` and ``tag`` describe a checkout's HEAD.  A container
-    has ``image``, the image Compose says it runs, and ``image_channel``, the
-    channel a published image was published for; ``None`` for an image built
-    on this computer.
+    has ``image``, the image Compose says it runs, ``image_channel``, the
+    channel a published image was published for (``None`` for an image built
+    on this computer), and ``image_variant``, ``cpu`` or ``cuda`` (``None``
+    for an image from before the CUDA image).
     """
 
     kind: str
@@ -203,6 +213,7 @@ class Installation:
     root: Path | None = None
     image: str | None = None
     image_channel: str | None = None
+    image_variant: str | None = None
 
     @property
     def inferred_channel(self) -> str:
@@ -479,17 +490,29 @@ def detect_installation(
         named = (environment.get(IMAGE_ENV) or "").strip()
         image = named if _IMAGE_PATTERN.fullmatch(named) else None
         channel = (environment.get(IMAGE_CHANNEL_ENV) or "").strip()
+        named_variant = (environment.get(IMAGE_VARIANT_ENV) or "").strip()
+        variant = named_variant if named_variant in IMAGE_VARIANTS else None
         if channel in CHANNELS:
             # A published image follows the channel it was published for,
             # whatever checkout, if any, holds compose.yaml.
             return Installation(
-                kind="container", version=version, commit=commit, image=image, image_channel=channel
+                kind="container",
+                version=version,
+                commit=commit,
+                image=image,
+                image_channel=channel,
+                image_variant=variant,
             )
         # An image built here: the Compose file mounts the checkout it was
         # built from as the working directory, so its HEAD says the channel.
         branch, head = read_head_file((working_dir or Path.cwd()) / ".git")
         return Installation(
-            kind="container", version=version, commit=commit or head, branch=branch, image=image
+            kind="container",
+            version=version,
+            commit=commit or head,
+            branch=branch,
+            image=image,
+            image_variant=variant,
         )
     return Installation(kind="package", version=version, commit=commit)
 
@@ -598,8 +621,11 @@ def update_commands(installation: Installation, result: UpdateCheck) -> list[str
     if installation.kind == "container":
         if installation.image_channel is None:
             # Built on this computer from the checkout, with compose.build.yaml.
+            # Naming files with -f overrides COMPOSE_FILE, so a CUDA build names
+            # compose.gpu.yaml too, or the rebuilt container would lose the GPU.
             build = "AUTODJ_COMMIT=$(git rev-parse --short HEAD)"
-            files = "-f compose.yaml -f compose.build.yaml"
+            gpu = " -f compose.gpu.yaml" if installation.image_variant == "cuda" else ""
+            files = f"-f compose.yaml{gpu} -f compose.build.yaml"
             return [
                 *checkout,
                 f"{build} docker compose {files} up -d --build",
@@ -632,27 +658,48 @@ def _image_switch(installation: Installation, result: UpdateCheck) -> list[str]:
 
     Pulling updates a tag that moves (``:stable``, ``:latest``, ``:dev``) on
     the channel the image follows.  A container on the other channel, or
-    pinned to one release or commit, names a new image.
+    pinned to one release or commit, names a new image.  The new image keeps
+    this image's variant: a CUDA image is told a ``-cuda`` tag, a CPU image
+    never is.  An image that does not say its variant keeps its tag's.
     """
+    variant = installation.image_variant
     if installation.image is not None:
         repository, tag = _split_image(installation.image)
     else:
         repository = IMAGE_REPOSITORY
         tag = CHANNEL_IMAGE_TAGS.get(installation.image_channel or "")
+        if tag is not None and variant == "cuda":
+            tag += CUDA_TAG_SUFFIX
+    base = tag.removesuffix(CUDA_TAG_SUFFIX) if tag is not None else None
+    if variant is None:
+        variant = "cuda" if base != tag else "cpu"
+    suffix = CUDA_TAG_SUFFIX if variant == "cuda" else ""
     if result.channel == "development":
-        if tag is not None and tag.startswith("sha-") and result.latest:
+        if base is not None and base.startswith("sha-") and result.latest:
             wanted = f"sha-{result.latest}"
         else:
             wanted = CHANNEL_IMAGE_TAGS["development"]
-    elif tag in ("stable", "latest"):
-        wanted = tag
-    elif (tag is None or TAG_PATTERN.fullmatch(f"v{tag}")) and result.target:
+    elif base == "stable" or (base == "latest" and not suffix):
+        wanted = base
+    elif (base is None or TAG_PATTERN.fullmatch(f"v{base}")) and result.target:
         wanted = result.target.removeprefix("v")
     else:
+        # Anything else, and ``latest`` for the CUDA image, which has no
+        # ``latest-cuda``, moves to the stable tag.
         wanted = "stable"
+    pinned = wanted not in ("stable", "latest", CHANNEL_IMAGE_TAGS["development"])
+    wanted += suffix
     if tag == wanted:
         return []
-    return [f"# In .env beside compose.yaml, set {IMAGE_ENV}={repository}:{wanted}"]
+    lines = [f"# In .env beside compose.yaml, set {IMAGE_ENV}={repository}:{wanted}"]
+    if suffix and pinned:
+        # The CUDA image is published by a longer build that nothing waits
+        # for, so its pinned tag can appear well after the release or commit.
+        lines.append(
+            f"# The CUDA image {wanted} may still be building; "
+            "if pull says manifest unknown, try again later"
+        )
+    return lines
 
 
 def channel_for(installation: Installation, settings: UpdateSettings) -> tuple[str, str]:

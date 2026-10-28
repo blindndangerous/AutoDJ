@@ -155,7 +155,9 @@ Some things to know:
   `config.local.toml` beside `compose.yaml`. Give paths inside that folder as relative paths,
   such as `ssl_certfile = "certs/fullchain.pem"`. Restart with `docker compose restart autodj` after a change.
   Set a station's **Playback output** in **Settings**, **Stations**.
-- The image includes FFmpeg, and its analysis runs on the processor.
+- The image includes FFmpeg, and its analysis runs on the processor. On a computer with an
+  NVIDIA graphics card, the `-cuda` image can analyse on the card instead; see
+  [Use an NVIDIA GPU](operations/containers-and-windows.md#use-an-nvidia-gpu).
 - The music folder is mounted read-only, so AutoDJ cannot write tag edits into your files.
 - To use a [beets](https://beets.io/) library, set `AUTODJ_BEETS_PATH` to the folder that holds
   beets' `library.db`, and set `beets_db = "/beets/library.db"` in the `[library]` section of
