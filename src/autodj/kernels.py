@@ -16,6 +16,8 @@ writable.
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 import numba
@@ -34,12 +36,20 @@ def compile_kernel(signature: str) -> Any:
     cached = numba.njit(signature, cache=True)
 
     def decorate(function: Any) -> Any:
+        started = time.perf_counter()
         try:
-            return cached(function)
+            compiled = cached(function)
         except RuntimeError as exc:
             if "no locator available" not in str(exc).lower():
                 raise
-            return numba.njit(signature)(function)
+            compiled = numba.njit(signature)(function)
+        logging.getLogger(__name__).debug(
+            "Startup: audio kernel %s.%s prepared in %.2f s (cache load or compilation)",
+            function.__module__,
+            function.__name__,
+            time.perf_counter() - started,
+        )
+        return compiled
 
     return decorate
 

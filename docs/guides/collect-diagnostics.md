@@ -52,6 +52,9 @@ commands, including expensive analysis or indexing. See
    `<index_dir>/logs/autodj.log`. Serving rotates this file at midnight and
    keeps seven rotated files. Check the matching dated file if necessary.
    When serving cannot open the log file, use the terminal output instead.
+   A station's lines start with its station ID in brackets, such as `[nightowl]`,
+   or with its log label, such as `[nor]`, when it has one. Say which station
+   each label belongs to in the report.
 3. Read your copy before sharing. Replace private music paths, names, hostnames,
    IP addresses, usernames and private endpoint URLs with consistent placeholders.
    Remove tokens, pairing codes, cookies, authorization headers, passwords and keys.

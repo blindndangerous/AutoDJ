@@ -19,6 +19,7 @@ import logging
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -436,6 +437,8 @@ def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
     # Face hub) logs every model-download request.  -v shows them again.
     for name in ("faiss.loader", "httpx", "httpx2"):
         logging.getLogger(name).setLevel(logging.NOTSET if verbose else logging.WARNING)
+    # Compiler dumps overwhelm app diagnostics and distort startup timings.
+    logging.getLogger("numba").setLevel(logging.WARNING)
     # Without a terminal, the hub's download progress bars only add control
     # characters to the journal or log.  A value the user set is kept.
     if not verbose and not sys.stderr.isatty():
@@ -737,12 +740,12 @@ def _doctor_create_directories(
 ) -> bool:
     """Offer only missing writable storage directories identified by the checks.
 
-    These are the index and model folders and each other station's own
+    These are the index folder and each other station's own
     folder.  A new, empty folder replaces nothing, so no backup is made.
     """
     from autodj.doctor import CheckStatus
 
-    paths = {"index-path": cfg.index.index_dir, "model-path": cfg.index.model_dir}
+    paths = {"index-path": cfg.index.index_dir}
     changed = False
     for check in report.checks:
         path: Path | None
@@ -1342,6 +1345,23 @@ def cmd_analyse_library(ctx: click.Context) -> None:
         click.echo(f"[AutoDJ] Similarity analysis embedded {completed} tracks.")
     except Exception as exc:
         raise click.ClickException(f"Library analysis failed: {exc}") from exc
+
+
+@cli.command("download-model")
+@click.pass_context
+def cmd_download_model(ctx: click.Context) -> None:
+    """Download or validate the configured model cache without analyzing songs."""
+    _require_model_analysis()
+    from autodj.model import download_model_if_needed, inspect_model_cache
+
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    try:
+        path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
+        if not inspect_model_cache(cfg.model, cfg.index).complete:
+            raise RuntimeError("Model cache is incomplete")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise click.ClickException("Model cache download or validation failed.") from exc
+    click.echo(f"Model cache ready: {path}")
 
 
 @cli.command("worker")
@@ -1953,9 +1973,22 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
       uv run autodj serve --lan
       uv run autodj serve --server-audio
     """
+    from autodj import __version__
+
+    console.print(f"[bold green]Welcome to AutoDJ {escape(__version__)}[/]")
+    logger = logging.getLogger(__name__)
+    logger.info("Starting the server: loading configuration and audio components...")
+    started = time.perf_counter()
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"], log_file=True)
+    configured = time.perf_counter()
     from autodj.server import serve
 
-    cfg = _load_cfg_or_exit(ctx.obj["config_path"], log_file=True)
+    imported = time.perf_counter()
+    logger.info(
+        "Startup: server imports took %.2f s; configuration and logging took %.2f s",
+        imported - configured,
+        configured - started,
+    )
     from autodj.config import is_loopback_bind
 
     original_server = cfg.server
@@ -2010,6 +2043,10 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     ctx.call_on_close(library.close)
     _print_serve_banner(console, library)
     seed_entry = _resolve_seed(library, cfg, seed, console)
+    logger.info(
+        "Startup: network configuration, library and seed preparation took %.2f s",
+        time.perf_counter() - imported,
+    )
     url = _print_serve_url_banner(console, staged_server)
     cfg.server = staged_server
     if stream is not None:

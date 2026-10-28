@@ -14,7 +14,9 @@ launcher's supervise loop (:func:`autodj.launcher.run_supervised`) asks a
 3. ``fetch``, then ``switch``: a release tag detached, or ``master``
    fast-forwarded to ``origin/master``;
 4. ``setup``: run the checkout's setup unattended (``setup --yes``), which
-   reuses and verifies the saved runtime without changing its packages;
+   synchronizes a setup-managed runtime to the new release's lock and backend
+   profile, so new Python packages are installed, then verifies it; an
+   environment adopted with ``--environment`` keeps its packages;
 5. ``migration-check``: run Doctor read-only, and stop if the library
    needs a migration.
 
@@ -23,7 +25,8 @@ The loop then starts the new server (``start``) and
 still running, and answering ``GET /healthz`` with 200 and ``"ok"`` within
 HEALTH_TIMEOUT_SECONDS.  Anything that fails after the switch puts the
 checkout back on the commit it was on, restores the runtime selection,
-runs setup for it and starts the old version (``rollback``).  A stop
+runs setup for it, which synchronizes the runtime back to the old lock, and
+starts the old version (``rollback``).  A stop
 signal puts the checkout back and stops.  Progress goes into
 ``state.json`` and the outcome into ``result.json``.
 
@@ -84,7 +87,9 @@ FETCH_TIMEOUT_SECONDS = 300.0
 GIT_TIMEOUT_SECONDS = 120.0
 BACKUP_TIMEOUT_SECONDS = 1800.0
 RESTORE_TIMEOUT_SECONDS = 1800.0
-SETUP_TIMEOUT_SECONDS = 1800.0
+#: Setup synchronizes a managed runtime, which may download packages: a new
+#: PyTorch build for a GPU is several gigabytes.
+SETUP_TIMEOUT_SECONDS = 3600.0
 DOCTOR_TIMEOUT_SECONDS = 600.0
 #: How long a new server has to answer ``/healthz`` before it is rolled back.
 HEALTH_TIMEOUT_SECONDS = 180.0
@@ -226,6 +231,8 @@ class CheckoutUpdater:
         self._backup: Path | None = None
         self._backup_at = 0.0
         self._restored = False
+        #: Setup ran for the new version, so the runtime may have its packages.
+        self._synced = False
         #: The new version has started, so it may have changed the data.
         self._started = False
         self._go_back: GoBack | None = None
@@ -873,9 +880,12 @@ class CheckoutUpdater:
         self._begin("rollback", f"going back to {self._previous_label}.")
         problem = self._restore_checkout()
         if problem is None and not self._stopped:
+            # Synchronizes a managed runtime back to the old version's lock.
             status = self._setup(self._previous_label)
             if status != 0:
                 problem = f"Setup for {self._previous_label} failed (exit status {status})."
+            else:
+                self._synced = False
         data_back = False
         if (
             problem is None
@@ -919,20 +929,35 @@ class CheckoutUpdater:
             if self._data_changed and self._backup is not None
             else []
         )
+        # No setup while stopping, as no restore: a service manager would kill
+        # it half done.  The runtime may still have the new version's packages.
+        resync = [self._cli("setup")] if self._synced else []
+        packages = (
+            " The runtime may still have the new version's packages: run setup before "
+            "starting AutoDJ."
+            if self._synced
+            else ""
+        )
         if problem is None and self._data_changed:
-            # No restore while stopping: a service manager would kill it half done.
             message = (
                 f"AutoDJ was stopped during the update. The checkout is back at "
+                f"{self._previous_label}, but the new version had "
+                + ("restored an older backup" if self._restored else "started")
+                + " and may have changed the data. Before starting AutoDJ, run these commands "
+                "in the AutoDJ folder: setup puts back the old version's packages, and the "
+                "restore the data from before the update."
+                if self._synced
+                else f"AutoDJ was stopped during the update. The checkout is back at "
                 f"{self._previous_label}, but the new version had "
                 + ("restored an older backup" if self._restored else "started")
                 + " and may have changed the data. Before starting AutoDJ, restore the backup "
                 "from before the update with this command in the AutoDJ folder."
             )
-            commands: list[str] = restore
+            commands: list[str] = [*resync, *restore]
         elif problem is None:
             back = f"; the checkout is back at {self._previous_label}." if self._switched else "."
-            message = "AutoDJ was stopped during the update, so it did not update" + back
-            commands = []
+            message = "AutoDJ was stopped during the update, so it did not update" + back + packages
+            commands = resync
         else:
             head = self._head()
             message = (
@@ -1062,6 +1087,7 @@ class CheckoutUpdater:
         self._check_stop()
         self._switched_to(target, commit, None if TAG_PATTERN.fullmatch(target) else "master")
         self._begin("setup", f"running setup for {self._target_label}.")
+        self._synced = True
         status = self._setup(self._target_label)
         self._check_stop()
         if status != 0:
@@ -1107,6 +1133,7 @@ class CheckoutUpdater:
         self._check_stop()
         self._switched_to(record.tag, record.commit, None)
         self._begin("setup", f"running setup for {self._target_label}.")
+        self._synced = True
         status = self._setup(self._target_label)
         self._check_stop()
         if status != 0:

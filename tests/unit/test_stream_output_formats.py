@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
 import threading
 import time
 from typing import ClassVar
@@ -10,6 +12,7 @@ from typing import ClassVar
 import numpy as np
 import pytest
 
+import autodj.stream as stream
 from autodj.stream import StreamOutput
 from autodj.stream_formats import AAC, OPUS
 from tests.unit._fakes import FakeEncoder
@@ -52,6 +55,26 @@ class ScriptedEncoder(FakeEncoder):
             if self._left:
                 self._chunks.append(self._left.pop(0))
                 self._cond.notify_all()
+
+
+def test_ffmpeg_encoder_isolated_from_terminal_interrupt(monkeypatch) -> None:
+    """ADR-0004-17. FFmpeg does not receive Ctrl+C with the server."""
+    launched = {}
+
+    class Process:
+        stderr = None
+
+    def popen(*args, **kwargs):
+        launched.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(stream.subprocess, "Popen", popen)
+    stream.FfmpegEncoder(64)
+    if os.name == "nt":
+        assert launched["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+        assert not launched["start_new_session"]
+    else:
+        assert launched["start_new_session"]
 
 
 def _output(fmt, script: list[bytes], **kwargs) -> StreamOutput:
@@ -300,3 +323,62 @@ async def test_an_encoder_that_exits_has_its_last_words_logged_and_shown(
         finally:
             out.close()
     assert "Opus stream encoder exited; restarting. ffmpeg said: Unknown encoder" in caplog.text
+
+
+async def test_shutdown_stops_recovery_on_station_outputs_but_not_new_instances() -> None:
+    """ADR-0004-17. Shutdown stops owned outputs; a later instance recovers normally."""
+    made = 0
+
+    class Counting(FakeEncoder):
+        def __init__(self, bitrate: int) -> None:
+            nonlocal made
+            made += 1
+            super().__init__(bitrate)
+
+    stopped = [
+        StreamOutput(64, 8, encoder_factory=Counting, loop=asyncio.get_running_loop())
+        for _ in range(2)
+    ]
+    try:
+        for output in stopped:
+            output.stop_recovery()
+            output._encoder.close()
+        _wait_until(lambda: all(not output._reader.is_alive() for output in stopped))
+        assert made == 2
+        fresh = StreamOutput(64, 8, encoder_factory=Counting, loop=asyncio.get_running_loop())
+        fresh._encoder.close()
+        _wait_until(lambda: made == 4)
+        assert fresh._encoder.alive
+    finally:
+        for output in stopped:
+            output.close()
+        if "fresh" in locals():
+            fresh.close()
+
+
+async def test_shutdown_closes_encoder_created_by_an_inflight_retry() -> None:
+    """ADR-0004-17. A replacement made during shutdown is closed instead of installed."""
+    entered, release = threading.Event(), threading.Event()
+    encoders = []
+
+    class BlockingRetry(FakeEncoder):
+        def __init__(self, bitrate: int) -> None:
+            super().__init__(bitrate)
+            encoders.append(self)
+            if len(encoders) == 1:
+                self.close()
+            else:
+                entered.set()
+                release.wait(5)
+
+    out = StreamOutput(64, 8, encoder_factory=BlockingRetry, loop=asyncio.get_running_loop())
+    try:
+        assert entered.wait(2)
+        out.stop_recovery()
+        release.set()
+        _wait_until(lambda: not out._reader.is_alive())
+        assert out._encoder is encoders[0]
+        assert not encoders[1].alive
+    finally:
+        release.set()
+        out.close()

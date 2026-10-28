@@ -172,11 +172,7 @@ def test_directory_repairs_recheck_and_preserve_failure_exit(tmp_path: Path) -> 
     cfg = load_config(config, environ={})
     cfg.index.index_dir = tmp_path / "missing-index"
     cfg.index.model_dir = tmp_path / "missing-model"
-    initial = DoctorReport(
-        tuple(
-            DoctorCheck(name, CheckStatus.WARN, "missing") for name in ("index-path", "model-path")
-        )
-    )
+    initial = DoctorReport((DoctorCheck("index-path", CheckStatus.WARN, "missing"),))
     final = DoctorReport((DoctorCheck("python", CheckStatus.FAIL, "unsupported"),))
     with (
         patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
@@ -186,7 +182,7 @@ def test_directory_repairs_recheck_and_preserve_failure_exit(tmp_path: Path) -> 
         result = CliRunner().invoke(cli, ["doctor", "--fix"])
     assert result.exit_code == 1, result.output
     assert cfg.index.index_dir.is_dir()
-    assert cfg.index.model_dir.is_dir()
+    assert not cfg.index.model_dir.exists()
     assert run.call_count == 2
     assert "Rechecking" in result.output
     confirm.assert_not_called()

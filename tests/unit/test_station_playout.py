@@ -1664,6 +1664,61 @@ def test_a_pick_without_a_restart_carries_the_restart_time_on(station, monkeypat
     assert player._pending_clock_boundary == now + 3600
 
 
+@pytest.mark.parametrize("station_delay,pending_delay", [(3600, None), (3600, 7200), (None, None)])
+def test_seed_liner_carries_restart_through_following_song(
+    station, monkeypatch, station_delay, pending_delay
+):
+    from autodj.clockwheel import ClockPick
+
+    player, (a, b, _, jingle), _points = station
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {
+        "name": "Morning",
+        "cursor": 0,
+        "resync_minutes": [59] if station_delay else [],
+    }
+    player._clock_slots = [object()] * 4
+    now = 1_791_621_000.0
+    boundary = now + (pending_delay or station_delay) if station_delay else None
+    player._clock_next_boundary = now + station_delay if station_delay else None
+    monkeypatch.setattr(player, "_now", lambda: now)
+    pick = MagicMock(return_value=ClockPick(b, jingle, 2, [], liner_requires_following=True))
+    monkeypatch.setattr(player, "_clock_pick", pick)
+    assert player._random_start_entry() is jingle
+    player._set_render_cursor(
+        jingle,
+        0,
+        "clock",
+        clock_cursor=player._seed_clock_cursor,
+        clock_name="Morning",
+        clock_revision=player._clock_revision,
+        clock_boundary=now + pending_delay if pending_delay else None,
+    )
+    first = player._next_rendered()
+    assert first.next_entry is b
+    assert first.next_clock_cursor == 2
+    assert first.next_clock_boundary == boundary
+    pick.assert_called_once()
+
+    player._start_playing(first)
+    player._on_position(len(first.audio))
+    assert player._clock_next_boundary == boundary
+    assert player._pending_clock_boundary == boundary
+
+    pick.reset_mock()
+    pick.return_value = ClockPick(a, None, 3, [], step_index=2)
+    monkeypatch.setattr(player, "_handoff_time", lambda *_a, **_k: boundary or now)
+    following = player._next_rendered()
+    assert following.entry is b
+    if boundary is None:
+        assert following.next_clock_boundary is None
+        pick.assert_called_once()
+    else:
+        assert following.next_clock_boundary > boundary
+        assert pick.call_count == 2
+        assert pick.call_args.args[1] == 0
+
+
 def test_clock_mode_without_a_loaded_wheel_keeps_playing(station):
     player, (a, *_), _points = station
     player._cfg.playback.pick_mode = "clock"

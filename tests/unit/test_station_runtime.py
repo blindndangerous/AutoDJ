@@ -24,7 +24,10 @@ from autodj.station_log import (
     CURRENT_STATION_SCOPE,
     enter_station,
     install_log_prefix,
+    log_label,
     new_station_scope,
+    set_log_label,
+    set_log_labels,
     station_thread,
     thread_name,
     wait_for_station_threads,
@@ -167,6 +170,62 @@ def test_threads_and_log_lines_carry_the_station_name(caplog: pytest.LogCaptureF
     assert thread_name("autodj-player") == "autodj-player"
 
 
+@pytest.fixture
+def no_log_labels() -> Any:
+    set_log_labels({})
+    yield
+    set_log_labels({})
+
+
+def _log_as(slug: str, log: logging.Logger) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+
+    def work() -> None:
+        seen["name"] = threading.current_thread().name
+        log.warning("tick failed")
+
+    def as_station() -> None:
+        CURRENT_STATION.set(slug)
+        thread = station_thread(target=work, name="autodj-worker")
+        thread.start()
+        thread.join(5)
+
+    runner = threading.Thread(target=as_station)
+    runner.start()
+    runner.join(5)
+    return seen
+
+
+def test_a_log_label_replaces_the_slug_only_in_the_prefix(
+    caplog: pytest.LogCaptureFixture, no_log_labels: None
+) -> None:
+    install_log_prefix()
+    log = logging.getLogger("autodj.test_station_runtime")
+    with caplog.at_level(logging.WARNING, logger="autodj.test_station_runtime"):
+        set_log_label("nightowl", "nor")
+        seen = _log_as("nightowl", log)
+        record = caplog.records[-1]
+        assert record.getMessage() == "[nor] tick failed"
+        # Machine-readable fields and thread names keep the slug.
+        assert record.station == "nightowl"
+        assert seen["name"] == "autodj-worker-nightowl"
+        assert log_label("nightowl") == "nor"
+
+        set_log_label("default", "main")
+        _log_as("default", log)
+        assert caplog.records[-1].getMessage() == "[main] tick failed"
+        assert caplog.records[-1].station == "default"
+
+        # Cleared, the slug is used exactly as before.
+        set_log_label("nightowl", "")
+        _log_as("nightowl", log)
+        assert caplog.records[-1].getMessage() == "[nightowl] tick failed"
+        set_log_labels({"nightowl": "nor"})
+        _log_as("default", log)
+        assert caplog.records[-1].getMessage() == "[default] tick failed"
+        assert log_label("other") == "other"
+
+
 # -- the registry ---------------------------------------------------------------
 
 
@@ -180,6 +239,7 @@ class _Runtime:
         self._log = log
         self._stereo = stereo
         self._fail = fail
+        self.recovery_stopped = False
         self.paths = SimpleNamespace(liners=Path("liners") / slug)
         self.cfg = SimpleNamespace(playback=SimpleNamespace(stereotool_preset=f"{slug}.sts"))
 
@@ -204,6 +264,9 @@ class _Runtime:
 
     async def close(self) -> None:
         self._log.append(f"{self.slug} closed")
+
+    def stop_stream_recovery(self) -> None:
+        self.recovery_stopped = True
 
 
 def _extra(slug: str, build: Any, tmp_path: Path, autostart: bool = True) -> ExtraStation:
@@ -573,12 +636,16 @@ class _Library:
 
 
 def test_a_start_cut_off_at_shutdown_still_ends_stopped(tmp_path: Path) -> None:
+    """ADR-0004-17. A station finishing startup during shutdown stops encoder recovery."""
     log: list[str] = []
     release = threading.Event()
+    built: list[_Runtime] = []
 
     def build(_registry: StationRegistry) -> _Runtime:
         release.wait(5)
-        return _Runtime("nightowl", log)
+        runtime = _Runtime("nightowl", log)
+        built.append(runtime)
+        return runtime
 
     registry = StationRegistry(
         _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
@@ -602,6 +669,7 @@ def test_a_start_cut_off_at_shutdown_still_ends_stopped(tmp_path: Path) -> None:
             await registry.start("daybreak")  # nothing starts once shutdown began
 
     asyncio.run(scenario())
+    assert built[0].recovery_stopped
     # The station the cut-off request built was started, then stopped
     # before the library closed, and closed with the others.
     assert log == [

@@ -37,10 +37,12 @@ asks for a web port, and shows the installation plan before changing anything. A
 starts with an empty library; add music folders from the Library page after starting AutoDJ.
 It installs the selected PyTorch build before the application so it does not download a CPU build
 just to replace it with a GPU build. GPU packages are pinned by the installation profiles; the
-application's other dependency requirements are resolved during setup.
+application's other dependency versions come from the release lock.
 
-Setup verifies an actual tensor calculation and audio-library imports before remembering the
-runtime. Unsupported hardware or unavailable hardware detection gets a clearly reported CPU
+Setup synchronizes setup-managed runtimes on every run from the frozen lock and selected backend
+profile, then verifies dependency compatibility, application imports and an actual tensor
+calculation before remembering the runtime. It reuses the existing environment when its backend is
+unchanged. Unsupported hardware or unavailable hardware detection gets a clearly reported CPU
 recommendation. A supported GPU whose driver/runtime fails the calculation is reported as a setup
 failure; retry after fixing the driver or choose `setup --backend cpu`. No automatic GPU installation
 can guarantee support for every driver, operating system release, or graphics card.
@@ -166,6 +168,7 @@ Use `setup --help` to see all options. Common examples (replace `./autodj` with 
 ./autodj setup --port 8080 --yes
 ./autodj setup --backend cpu
 ./autodj setup --backend amd --environment .uv/existing-amd
+./autodj setup --manage-environment
 ./autodj setup --test-import
 ```
 
@@ -175,8 +178,12 @@ installation; on Windows it also installs missing uv and FFmpeg through WinGet. 
 is unavailable, install these tools beforehand. Help and `--dry-run` never install tools,
 even with `--yes`. Optional
 `--test-import` and `--serve` actions still require their flags in unattended mode. `--environment`
-validates and adopts an existing installation without replacing its packages. Rerunning setup uses
-the remembered runtime rather than creating a duplicate.
+adopts an existing installation without changing its Python packages. A remembered adopted
+environment also stays externally managed on reruns. Use `--manage-environment` to explicitly let
+setup synchronize that remembered environment or a supplied `--environment`; after successful
+verification it becomes setup managed. A failed update leaves the saved selection unchanged.
+`--dry-run` shows the target environment and planned synchronization without writing files or
+installing packages.
 
 See [AMD GPU support](windows-amd.md) for the supported AMD families and driver requirements.
 NVIDIA setup uses the configured CUDA wheel channel on Windows/Linux x86-64; CPU is the fallback on
@@ -188,7 +195,10 @@ Setup records its verified choice in ignored `.uv/setup.json`; users do not need
 The ordinary installed `autodj` and `python -m autodj` entry points honor it too. A missing or invalid
 saved runtime produces an error instead of silently switching to another installation.
 
-The normal launchers do not sync GPU packages against the CPU dependency lock. `uv run autodj`
+The normal launchers do not sync GPU packages against the CPU dependency lock. Setup synchronizes
+the selected managed runtime using locked application requirements while retaining its backend
+wheel profile; external environments remain the operator's package responsibility unless opted in.
+`uv run autodj`
 also honors the saved runtime, but uv first creates or syncs its own `.venv`; use the root launcher
 to avoid that duplicate. For development, `uv sync --frozen --all-extras` remains available and
 `AUTODJ_RUNTIME=current` bypasses the saved selection. `AUTODJ_GPU=0` explicitly forces CPU.

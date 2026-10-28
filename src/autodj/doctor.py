@@ -491,14 +491,31 @@ def _model_cache_check(cfg: AutoDJConfig) -> DoctorCheck:
     if not model_analysis_available():
         return DoctorCheck(
             "model-cache",
-            CheckStatus.WARN,
-            "local model analysis unavailable",
-            "Model analysis is disabled or its packages are not installed; "
-            "run `autodj setup --backend cpu` to enable it. Imported songs remain available.",
+            CheckStatus.PASS,
+            "local model analysis not in use",
+            "Model support is disabled or not installed; no local model cache is required.",
         )
     try:
+        path = cfg.index.library_dir / "library.db"
+        used = False
+        if path.is_file():
+            with closing(_connect(readonly_uri(path), uri=True)) as db:
+                used = (
+                    db.execute(
+                        "SELECT 1 FROM catalog_sources WHERE kind='music' AND advanced=1 LIMIT 1"
+                    ).fetchone()
+                    is not None
+                )
+        if not used:
+            return DoctorCheck(
+                "model-cache", CheckStatus.PASS, "no music folders use similarity analysis"
+            )
+        if cfg.model.manual_path is None:
+            location = _path_check("model-cache", cfg.index.model_dir, writable=True)
+            if location.status is CheckStatus.FAIL:
+                return location
         status = inspect_model_cache(cfg.model, cfg.index)
-    except (ImportError, OSError, RuntimeError, ValueError):
+    except (ImportError, OSError, RuntimeError, ValueError, sqlite3.Error):
         return DoctorCheck(
             "model-cache",
             CheckStatus.FAIL,
@@ -511,8 +528,8 @@ def _model_cache_check(cfg: AutoDJConfig) -> DoctorCheck:
         "model-cache",
         CheckStatus.WARN,
         str(status.path),
-        f"{status.reason}; run `autodj index` to download or validate the model",
-        "index",
+        f"{status.reason}; run `autodj download-model` to download or validate the model",
+        "download-model",
     )
 
 
@@ -814,7 +831,6 @@ def run_doctor(
         _beets_db_check(cfg),
         *_beets_paths_check(cfg),
         _path_check("index-path", cfg.index.index_dir, writable=True),
-        _path_check("model-path", cfg.index.model_dir, writable=True),
         _index_check(cfg),
     ]
     if default:
@@ -1127,6 +1143,15 @@ def _categories_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> D
         return DoctorCheck("categories", CheckStatus.PASS, "no categories saved")
     try:
         songs = _catalog_songs(cfg)
+        catalog_path = cfg.index.library_dir / "library.db"
+        if catalog_path.is_file():
+            with closing(_connect(readonly_uri(catalog_path), uri=True)) as db:
+                sources_by_id = {
+                    row[0]: dict(zip(("id", "path", "kind", "recursive"), row, strict=True))
+                    for row in db.execute("SELECT id, path, kind, recursive FROM catalog_sources")
+                }
+        else:
+            sources_by_id = {}
     except sqlite3.Error as exc:
         return DoctorCheck(
             "categories", CheckStatus.WARN, "the library could not be read", str(exc)
@@ -1137,6 +1162,7 @@ def _categories_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> D
         beets=beets_source(cfg),
         music_dir=cfg.library.music_dir,
         folder=playlists_folder(cfg),
+        sources_by_id=sources_by_id,
         remember_check=False,
     )
     cause = check.cause if check is not None else None

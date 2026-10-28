@@ -1174,7 +1174,9 @@ def test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh(
     )
     versions = [0]
     source.library.catalog.change_versions = lambda: {"entries": versions[0]}
-    source.player._cfg = SimpleNamespace(playback=SimpleNamespace(repeat_rules="one"))
+    source.player._cfg = SimpleNamespace(
+        playback=SimpleNamespace(repeat_rules="one", pick_mode="clock")
+    )
     previews = HourPreviews()
 
     previews.get(source, 60)

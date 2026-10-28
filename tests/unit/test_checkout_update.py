@@ -675,10 +675,17 @@ def test_a_stop_signal_during_the_update_puts_the_checkout_back(
     assert result["outcome"] == "stopped"
     assert result["message"].startswith("AutoDJ was stopped during the update")
     assert not updater.locked
+    # Setup synchronizes the runtime to the new lock; a stop does not run it
+    # again, so the result says to.
+    if during == "setup":
+        assert "run setup before starting AutoDJ" in result["message"]
+        assert result["commands"] == ["./autodj --config 'night owl.toml' setup"]
+    else:
+        assert result["commands"] == []
 
 
 def test_a_stop_after_the_new_version_started_says_to_restore_the_data(tmp_path: Path) -> None:
-    """ADR-0016-17: no restore while stopping, but the result says so and gives the command."""
+    """ADR-0016-17: no setup or restore while stopping, but the result gives both commands."""
     checkout = FakeCheckout(tmp_path / "checkout")
     updater = _updater(checkout)
     assert updater.update().switched is True
@@ -691,8 +698,10 @@ def test_a_stop_after_the_new_version_started_says_to_restore_the_data(tmp_path:
     result = _result(checkout)
     assert result["outcome"] == "stopped"
     assert "the new version had started and may have changed the data" in result["message"]
+    assert "setup puts back the old version's packages" in result["message"]
     assert result["commands"] == [
-        f"./autodj --config 'night owl.toml' restore --force {shlex.quote(str(updater._backup))}"
+        "./autodj --config 'night owl.toml' setup",
+        f"./autodj --config 'night owl.toml' restore --force {shlex.quote(str(updater._backup))}",
     ]
 
 

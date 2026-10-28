@@ -257,7 +257,7 @@ describe("Updates panel", () => {
   });
 
   // ADR-0016-21
-  it("says quietly that a long update is still working, and waits up to 3 hours", async () => {
+  it("says quietly that a long update is still working, and waits up to 4 hours", async () => {
     const { state, progressSeen } = install({
       initial: view({ check: RELEASE }),
       probeAnswers: Array(60).fill(false),
@@ -277,7 +277,7 @@ describe("Updates panel", () => {
       "AutoDJ is updating.  The stream is off the air until it is back.  "
       + "It has been working for 30 minutes.",
     );
-    expect(UPDATE_WAIT_MS).toBe(3 * 3600000);
+    expect(UPDATE_WAIT_MS).toBe(4 * 3600000);
   });
 
   it("hides the notes, Update and commands when nothing is available", async () => {

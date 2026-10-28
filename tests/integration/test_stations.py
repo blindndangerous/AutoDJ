@@ -26,7 +26,10 @@ from autodj.stations import (
     StationRegistry,
     StationRuntime,
 )
+from autodj.stream import StreamOutput
+from autodj.stream_mounts import StreamMounts
 from tests._server import create_app
+from tests.unit._fakes import FakeEncoder
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
@@ -118,6 +121,40 @@ def test_the_app_registers_exactly_the_default_station() -> None:
         registry.get("nightowl")
 
 
+async def test_registry_shutdown_stops_and_closes_every_stream_output() -> None:
+    """ADR-0004-17. Registry shutdown reaches and then closes every station encoder."""
+    bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
+    registry = create_app(bridge).state.stations
+    loop = asyncio.get_running_loop()
+    main = StreamOutput(64, 8, encoder_factory=FakeEncoder, loop=loop)
+    mounts = StreamMounts(
+        main,
+        lambda fmt, bitrate: StreamOutput(
+            bitrate, 8, encoder_factory=FakeEncoder, loop=loop, fmt=fmt
+        ),
+        lambda _output: None,
+        lambda _output: None,
+    )
+    relay = StreamOutput(64, 8, encoder_factory=FakeEncoder, loop=loop)
+    mounts.start({"aac": 96})
+    extra = mounts.acquire("aac")
+    assert extra is not None
+    bridge.attach_stream(
+        stream=main,
+        station=registry.default,
+        relays=SimpleNamespace(outputs=[relay]),
+        mounts=mounts,
+    )
+
+    registry.begin_shutdown()
+
+    assert main._stop_recovery and extra._stop_recovery and relay._stop_recovery
+    mounts.close()
+    main.close()
+    relay.close()
+    assert not main._encoder.alive and not extra._encoder.alive and not relay._encoder.alive
+
+
 class _Player:
     """Records being told to stop, and the wait for background analysis."""
 
@@ -155,18 +192,27 @@ def _rig(
     bridge: Any = SimpleNamespace(
         player=player,
         stream_mode=True,
+        stream=None,
         relays=SimpleNamespace(
-            outputs=[SimpleNamespace(name="relay encoder")],
+            outputs=[SimpleNamespace(name="relay encoder", stop_recovery=lambda: None)],
             close=lambda: log.append("relays closed"),
         ),
-        mounts=SimpleNamespace(close=lambda: log.append("extra formats closed")),
+        mounts=SimpleNamespace(
+            stop_recovery=lambda: None,
+            close=lambda: log.append("extra formats closed"),
+        ),
         liner_scheduler=None,
         station=None,
         library=None,
         scheduler_track_changed=None,
         shutdown_liner_worker=lambda: log.append("liner worker stopped"),
     )
-    stream_out = SimpleNamespace(name="stream encoder", close=lambda: log.append("stream closed"))
+    stream_out = SimpleNamespace(
+        name="stream encoder",
+        stop_recovery=lambda: None,
+        close=lambda: log.append("stream closed"),
+    )
+    bridge.stream = stream_out
 
     class Recorder:
         def __init__(self, *_args: Any) -> None:

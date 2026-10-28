@@ -47,6 +47,7 @@ from autodj.station_log import (
     DEFAULT_SLUG,
     StationThreadScope,
     new_station_scope,
+    set_log_label,
     wait_for_station_threads,
 )
 from autodj.station_name import listener_name, sync_name
@@ -1427,6 +1428,17 @@ class StationRuntime:
         """Whether its player or mastering process is still running after the close."""
         return self.player_running() or self.master_left
 
+    def stop_stream_recovery(self) -> None:
+        """Stop this station's stream encoders recovering during server shutdown."""
+        outputs = [self.bridge.stream]
+        if self.bridge.relays is not None:
+            outputs.extend(self.bridge.relays.outputs)
+        for output in outputs:
+            if output is not None:
+                output.stop_recovery()
+        if self.bridge.mounts is not None:
+            self.bridge.mounts.stop_recovery()
+
     async def close(self) -> None:
         """Close the mastering process and stop the WebSocket push, once; after :meth:`stop`.
 
@@ -1790,6 +1802,12 @@ class StationRegistry:
             if (station := self._running.get(slug)) is not None
         )
 
+    def begin_shutdown(self) -> None:
+        """Refuse new stations and stop encoder recovery on every running station."""
+        self._closing = True
+        for station in self.all():
+            station.stop_stream_recovery()
+
     def relay_configs(self) -> dict[str, dict[str, Any]]:
         """Current relay definitions for every configured station, including stopped ones."""
         from autodj.relay_settings import load_relays
@@ -1865,13 +1883,34 @@ class StationRegistry:
         """Saved configuration is available independently of the running engine."""
         return self._extras[slug].paths._cfg
 
+    def log_labels(self) -> dict[str, str]:
+        """Every configured station's saved log label; empty for one logging as its slug."""
+        with self.configuration_lock:
+            return {slug: self.configuration(slug).station.log_label for slug in self._extras}
+
+    def log_label_problem(self, slug: str, label: str) -> str | None:
+        """Why *slug* may not log as *label* beside the other stations, or ``None``."""
+        from autodj.config import log_label_conflict
+
+        return log_label_conflict(slug, label, self.log_labels())
+
     def save_options(self, slug: str, changes: dict[str, Any]) -> dict[str, Any]:
-        """Validate and save station options; output/time-zone changes apply on start."""
+        """Validate and save station options.
+
+        Output and time-zone changes apply when the station next starts; the
+        upload cap and the log label apply at once.
+
+        Raises:
+            ValueError: An invalid option, or a log label another station uses.
+        """
         from autodj.fsutil import atomic_write
 
         with self.configuration_lock:
             cfg = self.configuration(slug)
             proposed = replace(cfg.station, **changes)
+            problem = self.log_label_problem(slug, proposed.log_label)
+            if problem is not None:
+                raise ValueError(problem)
             paths = self._extras[slug].paths
             document = json.loads(paths.definition.read_text(encoding="utf-8"))
             document["station"]["station"] = asdict(proposed)
@@ -1881,6 +1920,8 @@ class StationRegistry:
             running = self._running.get(slug)
             if running is not None:
                 running.cfg.station.liner_upload_max_mib = proposed.liner_upload_max_mib
+                running.cfg.station.log_label = proposed.log_label
+            set_log_label(slug, proposed.log_label)
             return asdict(proposed)
 
     def public_settings(self, slug: str) -> dict[str, Any]:
@@ -2015,6 +2056,8 @@ class StationRegistry:
                 return running
             try:
                 running = await _run_as(slug, self._start_extra(extra))
+                if self._closing:
+                    running.stop_stream_recovery()
                 self._running[slug] = running
             finally:
                 with self.configuration_lock:
@@ -2212,7 +2255,7 @@ class StationRegistry:
         # stopped too and one stopping now has finished; none starts later.
         # A stop asked for after this finds the station already stopped
         # (a runtime stops and closes once).
-        self._closing = True
+        self.begin_shutdown()
         async with contextlib.AsyncExitStack() as held:
             for lock in self._locks.values():
                 await held.enter_async_context(lock)

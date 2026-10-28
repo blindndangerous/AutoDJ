@@ -45,6 +45,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           test "$(uv version --short)" = "$version"
           grep -q "^## \[$version\]" CHANGELOG.md
+          python3 scripts/release_notes.py "$GITHUB_REF_NAME" > /dev/null
       - name: Smoke-install exact wheel
         run: |
           uv venv .release-venv --python 3.14
@@ -147,4 +148,7 @@ jobs:
           git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           tag_commit="$(git rev-parse "$GITHUB_REF_NAME^{commit}")"
           test "$tag_commit" = "$GITHUB_SHA"
-          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*
+          # The changelog section first, then GitHub's list of merged pull requests.
+          python3 scripts/release_notes.py "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$GITHUB_REF_NAME" --verify-tag \
+            --notes-file "$RUNNER_TEMP/release-notes.md" --generate-notes dist/*

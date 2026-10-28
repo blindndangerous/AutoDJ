@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -76,15 +75,6 @@ def run(command: list[str], root: Path, env: dict[str, str] | None = None) -> No
     subprocess.run([executable, *command[1:]], cwd=root, env=env, check=True)
 
 
-def fingerprint(root: Path, paths: tuple[str, ...], extra: str = "") -> str:
-    """Identify installation inputs so reruns can skip completed installations."""
-    digest = hashlib.sha256(extra.encode())
-    for name in paths:
-        digest.update(name.encode())
-        digest.update((root / name).read_bytes())
-    return digest.hexdigest()
-
-
 def profiles(root: Path) -> dict:
     """Read the single installation recipe catalog."""
     return read_json(root / "scripts/setup-profiles.json")
@@ -121,6 +111,30 @@ def install_commands(
     platform_recipe = _platform_recipe(root, backend, system, machine, amd_arch)
     if backend not in {"cpu", "no-model"} and platform_recipe is None:
         raise ValueError(f"No automatic {backend} installation recipe for {system}.")
+    requirements = root / ".uv" / f"setup-{backend}-requirements.txt"
+    export = [
+        "uv",
+        "export",
+        "--frozen",
+        "--no-default-groups",
+        "--no-hashes",
+        "--no-emit-project",
+    ]
+    if backend != "no-model":
+        export.extend(["--extra", "all"])
+    if platform_recipe and platform_recipe.get("packages"):
+        export.extend(
+            [
+                "--prune",
+                "torch",
+                "--prune",
+                "torchvision",
+                "--prune",
+                "torchaudio",
+            ]
+        )
+    export.extend(["--output-file", str(requirements)])
+    commands.append(export)
     if platform_recipe and platform_recipe.get("packages"):
         constraints = root / ".uv" / f"setup-{backend}-constraints.txt"
         commands.append(
@@ -144,6 +158,8 @@ def install_commands(
                 str(python_path(environment)),
                 "--constraint",
                 str(constraints),
+                "-r",
+                str(requirements),
                 "-e",
                 ".[all]",
             ]
@@ -156,6 +172,8 @@ def install_commands(
                 "install",
                 "--python",
                 str(python_path(environment)),
+                "-r",
+                str(requirements),
                 "-e",
                 "." if backend == "no-model" else ".[all]",
             ]
@@ -171,20 +189,12 @@ def install_python(
     machine: str = "x86_64",
     amd_arch: str | None = None,
 ) -> None:
-    """Install into a dedicated environment, leaving the project's .venv alone."""
-    stamp = environment / ".autodj-setup.json"
-    signature = fingerprint(
-        root,
-        ("pyproject.toml", "scripts/setup-profiles.json"),
-        f"{backend}:{system}:{machine}:{amd_arch or ''}",
-    )
-    if python_path(environment).exists() and read_json(stamp).get("dependencies") == signature:
-        print("Python dependencies are already set up.")
-        return
+    """Synchronize a dedicated environment, leaving the project's .venv alone."""
     env = os.environ.copy()
     env["AUTODJ_RUNTIME"] = "current"
     env["UV_PROJECT_ENVIRONMENT"] = str(environment)
     env.pop("VIRTUAL_ENV", None)
+    (root / ".uv").mkdir(parents=True, exist_ok=True)
     platform_recipe = _platform_recipe(root, backend, system, machine, amd_arch)
     if platform_recipe and platform_recipe.get("packages"):
         constraints = root / ".uv" / f"setup-{backend}-constraints.txt"
@@ -199,7 +209,6 @@ def install_python(
     for command in install_commands(root, environment, backend, system, machine, amd_arch):
         run(command, root, env)
     run(["uv", "pip", "check", "--python", str(python_path(environment))], root, env)
-    write_json(stamp, {"dependencies": signature})
 
 
 def create_configuration(root: Path, port: int) -> None:

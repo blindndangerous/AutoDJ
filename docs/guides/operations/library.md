@@ -14,6 +14,14 @@ outro, beat-grid and cue data; `--no-analyse` skips it, while advanced embedding
 In a terminal, analysis commands show completed-track progress. Redirected output and web job
 logs keep plain progress messages.
 
+Doctor checks the local model cache only when model support is installed and enabled and a
+music folder uses similarity analysis. Basic/Audio-only libraries and installations without
+local model support do not need model weights. Model-directory checks are part of that same
+conditional diagnostic. When the cache is needed, `autodj download-model` downloads or validates
+the configured model without loading it for inference or analyzing songs; it also works when
+there are no pending similarity jobs. Doctor offers this command through its normal recovery
+confirmation.
+
 In the web page, add, remove and rescan music and voice liner folders in the **Library tools**
 tab. Its folder table shows each folder's type, path and scan options. Automatic rescan every N hours
 and M minutes runs the same scan as the Rescan button, and its setting is kept in `library.db`.

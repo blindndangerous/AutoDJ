@@ -292,6 +292,67 @@ def test_recording_folders_must_differ(tmp_path: Path) -> None:
         _load(tmp_path, two)
 
 
+def test_a_log_label_is_saved_in_the_station_definition(tmp_path: Path) -> None:
+    text = BASE + NIGHTOWL + '\n[stations.nightowl.station]\nlog_label = "nor"\n'
+    cfg = _load(tmp_path, text)
+    (owl,) = cfg.stations
+    assert owl.cfg.station.log_label == "nor"
+    assert cfg.station.log_label == ""
+    definition = tmp_path / "index" / "stations" / "nightowl" / "station.json"
+    document = json.loads(definition.read_text(encoding="utf-8"))
+    assert document["station"]["station"]["log_label"] == "nor"
+    reloaded = load_config(cfg.config_path, environ={})
+    assert reloaded.stations[0].cfg.station.log_label == "nor"
+
+
+@pytest.mark.parametrize(
+    ("label", "reason"),
+    [("nor", "already used by station nightowl"), ("NightOwl", "ID of station nightowl")],
+)
+def test_log_labels_must_tell_stations_apart(tmp_path: Path, label: str, reason: str) -> None:
+    text = (
+        BASE
+        + NIGHTOWL
+        + '\n[stations.nightowl.station]\nlog_label = "nor"\n'
+        + '\n[stations.daybreak.recording]\nfolder = "recordings/daybreak"\n'
+        + f'\n[stations.daybreak.station]\nlog_label = "{label}"\n'
+    )
+    with pytest.raises(ValueError, match=reason):
+        _load(tmp_path, text)
+
+
+@pytest.mark.parametrize(
+    ("edited", "label", "reason"),
+    [
+        ("daybreak", "nor", "already used by station nightowl"),
+        ("daybreak", "nor\nfake line", "station.log_label must be"),
+        # The default's own label takes another station's ID: that station is skipped.
+        ("default", "daybreak", "ID of station daybreak"),
+    ],
+)
+def test_a_hand_edited_log_label_that_breaks_the_rules_skips_a_station(
+    tmp_path: Path, edited: str, label: str, reason: str
+) -> None:
+    text = (
+        BASE
+        + NIGHTOWL
+        + '\n[stations.nightowl.station]\nlog_label = "nor"\n'
+        + '\n[stations.daybreak.recording]\nfolder = "recordings/daybreak"\n'
+    )
+    cfg = _load(tmp_path, text)
+    assert [spec.slug for spec in cfg.stations] == ["nightowl", "daybreak"]
+    stations = tmp_path / "index" / "stations"
+    edited_definition = stations / edited / "station.json"
+    document = json.loads(edited_definition.read_text(encoding="utf-8"))
+    document["station"].setdefault("station", {})["log_label"] = label
+    edited_definition.write_text(json.dumps(document), encoding="utf-8")
+    reloaded = load_config(cfg.config_path, environ={})
+    assert [spec.slug for spec in reloaded.stations] == ["nightowl"]
+    ((path, why),) = reloaded.skipped_definitions
+    assert path == str(stations / "daybreak" / "station.json")
+    assert reason in why
+
+
 def test_relay_targets_must_differ_across_stations(tmp_path: Path) -> None:
     text = (
         BASE

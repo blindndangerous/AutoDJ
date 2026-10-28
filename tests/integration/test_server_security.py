@@ -382,6 +382,11 @@ def test_secured_route_categories_require_session(path: str) -> None:
         ("post", "/api/library/remove-missing", {"json": {}}),
         ("put", "/api/library/auto-rescan", {"json": {}}),
         ("patch", "/api/settings", {"json": {}}),
+        (
+            "patch",
+            "/api/settings",
+            {"json": {"revision": "x", "changes": {"station": {"log_label": "nor"}}}},
+        ),
     ],
 )
 def test_unsafe_route_categories_reject_before_parsing_body(

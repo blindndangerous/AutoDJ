@@ -53,7 +53,7 @@ Otherwise the page says to restart AutoDJ the way you started it. AutoDJ exits w
 
 1. Read the release notes the page links.
 2. Choose **Update AutoDJ**. The confirmation says every station's stream goes off the air while AutoDJ updates, usually for a few minutes. Choose **Update**.
-3. Wait. The page says quietly how long the update has been working, for up to 3 hours, then says once how it went: "Updated to X", or "The update failed, so AutoDJ went back to Y" and the reason. **Last update** keeps that sentence for a day. After an update, **Load the new version of this page** loads the new version's page.
+3. Wait. The page says quietly how long the update has been working, for up to 4 hours, then says once how it went: "Updated to X", or "The update failed, so AutoDJ went back to Y" and the reason. **Last update** keeps that sentence for a day. After an update, **Load the new version of this page** loads the new version's page.
 
 While no server runs, the launcher follows the [upgrade checklist](operations/upgrade.md#upgrade-checklist) for you, in the window AutoDJ runs in, where it prints each step:
 
@@ -61,13 +61,13 @@ While no server runs, the launcher follows the [upgrade checklist](operations/up
 2. It refuses when `git status --porcelain` lists anything: a changed file, or a file git does not track. Save those changes on a branch, or move the files out of the AutoDJ folder, then try again.
 3. It makes a backup with `autodj backup` in `.uv/update/backups` in the AutoDJ folder. It keeps the three newest of these.
 4. For Stable it fetches only that release's tag and runs `git switch --detach vX.Y.Z`; if that tag differs from the one in your AutoDJ folder, it stops and says so. For Development it runs `git fetch origin master`, `git switch master` and `git merge --ff-only origin/master`.
-5. It runs `setup --yes`, which checks the saved runtime without changing its packages.
+5. It runs `setup --yes`, which synchronizes the runtime setup manages to the new release's lock, installing any new Python packages, and checks it. An environment you adopted with `setup --environment` keeps its packages unless you chose `setup --manage-environment`.
 6. It runs Doctor. If the library needs a migration, it does not migrate: it goes back, and the page lists the commands that migrate by hand.
 7. It starts the new version. The new version must answer `/healthz` within 3 minutes, or AutoDJ goes back.
 
 Going back puts the checkout on the commit it was on, puts the runtime selection back, runs setup for it, and starts the old version. If the new version had already started, AutoDJ also restores the backup it made just before, since the new version may have changed the data as it started; changes made while the new version ran are lost, and **Last update** says so. Ctrl+C during that time does not restore: **Last update** gives the `restore` command to run before starting AutoDJ. If even that fails, AutoDJ does not start; the window and, after the next start, **Last update** say where the checkout is and list the commands to put it right. Ctrl+C or a stop from the service manager during an update puts the checkout back and stops AutoDJ. Updates are limited to one a minute and six an hour.
 
-A release that needs new Python packages may not start after setup, since setup keeps the runtime's packages; AutoDJ then goes back. Run `./autodj setup` by hand, as in [Update a source checkout](#update-a-source-checkout), to see why.
+Going back runs setup for the old version too, which synchronizes the runtime back to its lock. With an adopted environment that setup does not synchronize, a release that needs new Python packages may not start; AutoDJ then goes back. Install them yourself, or opt the environment in with `setup --manage-environment`, then update again.
 
 ### Move from Development to Stable
 
@@ -87,7 +87,7 @@ These are the steps by hand: for a checkout not started with its launcher, or to
 
 1. Make a backup and stop AutoDJ.
 2. Check `git status --short`. Save local changes before switching versions.
-3. Fetch the release and switch to its tag, then let launcher setup verify or adopt its runtime. Do not sync a GPU runtime against the CPU development lock:
+3. Fetch the release and switch to its tag, then run setup to synchronize the setup-managed runtime from the release lock and selected backend profile. Do not sync a GPU runtime against the CPU development lock:
 
 ```bash
 git fetch --tags origin
@@ -95,6 +95,9 @@ git switch --detach vX.Y.Z
 ./autodj setup
 ./autodj doctor --no-fix
 ```
+
+An externally adopted environment remains package-owned by its operator; use
+`setup --manage-environment` to opt it into synchronization.
 
 On Windows, use `.\autodj.cmd setup` and `.\autodj.cmd doctor --no-fix`. The [core operations guide](core-operations.md#update-and-keep-a-rollback-path) gives both shell paths and rollback precautions. Read the changes since your version in [CHANGELOG.md](../../CHANGELOG.md), especially removed settings. Start AutoDJ and confirm the version in the page footer.
 

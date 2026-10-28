@@ -21,7 +21,7 @@ configure every station in its `station.json`; existing settings can also be cha
 Stations.
 
 The top-level `station` object in `station.json` contains the station's settings sections. Its
-nested `station` section holds output, time zone and upload size, for example:
+nested `station` section holds output, time zone, upload size and log label, for example:
 
 ```json
 {
@@ -33,7 +33,8 @@ nested `station` section holds output, time zone and upload size, for example:
       "output": "stream",
       "server_audio_too": false,
       "timezone": "America/New_York",
-      "liner_upload_max_mib": 50
+      "liner_upload_max_mib": 50,
+      "log_label": "nor"
     }
   }
 }
@@ -42,7 +43,8 @@ nested `station` section holds output, time zone and upload size, for example:
 Settings > Stations edits these options for the selected station, including while it is stopped.
 Output can be `browser`, `server` (sound card), or `stream`. In stream mode, `server_audio_too`
 also sends audio to the sound card. Stations may play on the same sound card simultaneously.
-Output and timezone changes take effect on that station's next start. Time display format remains
+Output and timezone changes take effect on that station's next start; upload size and log label
+changes apply at once. Time display format remains
 shared across the interface. A station that cannot start reports its error while the interface
 and other stations stay available.
 
@@ -179,10 +181,34 @@ station settings, uploads and saved dates still have their own station paths.
 
 ## Logs
 
+Normal runs show INFO, WARNING and ERROR messages. Use `autodj -v serve` to
+include DEBUG messages. The server writes logs to `<index_dir>/logs/autodj.log`.
+Before loading configuration and server audio components, the terminal shows
+the AutoDJ version and a startup progress message.
+Four INFO entries per startup time server imports/configuration, library preparation,
+app construction, and station/background-service startup. These measure work inside
+the server, not launcher time or time until a listener hears audio. Master processing
+logs its readiness separately. Shutdown steps over two seconds appear at INFO;
+faster steps appear at DEBUG.
+DEBUG also records preparation time for each compiled audio kernel, including
+loading its cached machine code or compiling it. Numba compiler internals stay at
+WARNING even with `-v`. For a complete import breakdown,
+run `python -X importtime -c "import autodj.cli; import autodj.server"` using the
+installation's Python environment; this imports modules without starting the server.
+
 A log line from a station starts with its slug, such as `[nightowl] Stream station tick failed`
-or `[default] Stream station tick failed`. Station threads carry extra station slugs in their
-names (`autodj-player-nightowl`, `autodj-stream-writer-nightowl`); default thread names are
-unchanged.
+or `[default] Stream station tick failed`. A station with a log label (`station.log_label`, or
+**Log label** in Settings, Stations) shows the label instead, such as `[nor] Stream station tick
+failed`. A label change applies to the next line logged, without a restart.
+
+AutoDJ refuses a label that another station uses or that is another station's ID, ignoring case.
+It also refuses a new station whose ID is another station's log label. Each prefix then names one
+station. When hand-edited `station.json` files break this rule, AutoDJ skips the later station at
+startup and logs why.
+
+The label changes only the visible prefix: the log record's `station` field and thread names keep
+the slug. Station threads carry extra station slugs in their names (`autodj-player-nightowl`,
+`autodj-stream-writer-nightowl`); default thread names are unchanged.
 
 
 ## Related tasks and contracts

@@ -29,8 +29,9 @@ export const RESTART_WAIT_MS = 180000;
 // An update makes a backup, fetches, runs setup and Doctor, waits for the
 // new version and may roll back, restoring the backup: each step has its own
 // time limit in the launcher (autodj.checkout_update), which add up to under
-// three hours.  The page waits that long, saying quietly how long so far.
-export const UPDATE_WAIT_MS = 3 * 3600000;
+// four hours with setup's package downloads.  The page waits that long,
+// saying quietly how long so far.
+export const UPDATE_WAIT_MS = 4 * 3600000;
 const MINUTE_MS = 60000;
 // After a confirmation closes, focus moves back to its button; a live-region
 // change in the same moment can be lost in NVDA's focus speech.  What is said
@@ -393,7 +394,7 @@ export function installUpdates({
     const back = await waitForServer(UPDATE_WAIT_MS, (elapsed) => showProgress(away, elapsed));
     progress.hidden = true;
     if (!back) {
-      say("AutoDJ has not come back after 3 hours.  Check the computer it runs on; the "
+      say("AutoDJ has not come back after 4 hours.  Check the computer it runs on; the "
         + "window AutoDJ runs in says what happened.", "error");
       return;
     }
