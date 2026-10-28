@@ -44,14 +44,19 @@ def test_amd_recipes_cover_only_explicit_targets_on_supported_platforms(
     )
     expected = set(setup_hardware._AMD_MODEL_TARGETS)
 
-    for system in ("Windows", "Linux"):
+    # AMD publishes newer builds for Linux than for Windows.
+    builds = {
+        "Windows": ("2.12.0+rocm7.14.1", "0.27.0+rocm7.14.1", "2.11.0+rocm7.14.1"),
+        "Linux": ("2.13.0+rocm7.14.0", "0.28.0+rocm7.14.0", "2.11.0.2+rocm7.14.0"),
+    }
+    for system, (torch, torchvision, torchaudio) in builds.items():
         platform_recipe = profiles["amd"]["platforms"][system]
         assert set(platform_recipe["architectures"]) == expected
         for target, packages in platform_recipe["architectures"].items():
             assert packages == [
-                f"torch[device-{target}]==2.12.0+rocm7.14.1",
-                f"torchvision[device-{target}]==0.27.0+rocm7.14.1",
-                "torchaudio==2.11.0+rocm7.14.1",
+                f"torch[device-{target}]=={torch}",
+                f"torchvision[device-{target}]=={torchvision}",
+                f"torchaudio=={torchaudio}",
             ]
 
 

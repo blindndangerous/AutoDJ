@@ -15,7 +15,9 @@ launcher or manual settings file is required. The driver must already be install
 
 The Windows/Linux x86-64 installer maps explicit Radeon model names to device-specific
 packages from AMD's [PyTorch installer](https://rocm.docs.amd.com/projects/ai-ecosystem/en/latest/frameworks/pytorch/install.html).
-It uses ROCm 7.14.1 with PyTorch 2.12.0, torchvision 0.27.0, and torchaudio 2.11.0.
+On Windows it uses ROCm 7.14.1 with PyTorch 2.12.0, torchvision 0.27.0, and torchaudio 2.11.0.
+On Linux it uses ROCm 7.14.0 with PyTorch 2.13.0, torchvision 0.28.0, and torchaudio 2.11.0.2,
+the newest builds AMD publishes there.
 The model mappings live in `scripts/setup_hardware.py`; package recipes live in
 `scripts/setup-profiles.json`.
 

@@ -5,7 +5,8 @@
 # the image build fails otherwise.
 # Each package lists the sha256 of its cp314 manylinux_2_28 wheel for x86_64 and
 # aarch64, copied from the #sha256= fragments on the download.pytorch.org/whl/cpu
-# index pages. When uv.lock moves any of these versions, update this file too.
+# index pages. When uv.lock moves any of these versions, update this file too:
+# `uv run --frozen --no-sync python scripts/update_torch_pins.py` rewrites it.
 # The CUDA image (TORCH_VARIANT=cuda) has no file of its own: it installs the
 # PyPI builds uv.lock pins and hashes, so updating uv.lock covers it.
 torch==2.14.1+cpu \

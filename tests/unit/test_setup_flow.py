@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
+import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -15,6 +17,26 @@ import pytest
 
 REPOSITORY = Path(__file__).parents[2]
 SCRIPTS = REPOSITORY / "scripts"
+TORCH_FAMILY = ("torch", "torchvision", "torchaudio")
+
+
+def _locked_torch_versions() -> dict[str, str]:
+    """Return the torch, torchvision and torchaudio versions uv.lock records."""
+    lock = tomllib.loads((REPOSITORY / "uv.lock").read_text(encoding="utf-8"))
+    return {
+        package["name"]: package["version"]
+        for package in lock["package"]
+        if package["name"] in TORCH_FAMILY
+    }
+
+
+def _profile_versions(packages: list[str]) -> dict[str, str]:
+    """Map each ``name[extra]==version+local`` install spec to its public version."""
+    versions = {}
+    for spec in packages:
+        name, _, version = spec.partition("==")
+        versions[name.split("[")[0]] = version.split("+")[0]
+    return versions
 
 
 def _load_script(name: str, path: Path):
@@ -645,11 +667,17 @@ def test_cpu_and_no_model_package_exports(
             "cpu",
             "Linux",
             None,
-            "torch==2.14.0+cpu\ntorchvision==0.29.0+cpu\ntorchaudio==2.11.0+cpu\n",
+            "".join(f"{name}=={_locked_torch_versions()[name]}+cpu\n" for name in TORCH_FAMILY),
         ),
         (
             "amd",
             "Linux",
+            "gfx1201",
+            "torch==2.13.0+rocm7.14.0\ntorchvision==0.28.0+rocm7.14.0\ntorchaudio==2.11.0.2+rocm7.14.0\n",
+        ),
+        (
+            "amd",
+            "Windows",
             "gfx1201",
             "torch==2.12.0+rocm7.14.1\ntorchvision==0.27.0+rocm7.14.1\ntorchaudio==2.11.0+rocm7.14.1\n",
         ),
@@ -672,6 +700,28 @@ def test_backend_constraint_files_keep_profile_versions(
     )
 
     assert (root / ".uv" / f"setup-{backend}-constraints.txt").read_text() == expected
+
+
+@pytest.mark.parametrize("backend", ["cpu", "nvidia"])
+def test_pytorch_index_profiles_match_the_locked_torch(backend: str) -> None:
+    """The CPU and NVIDIA recipes install the torch family that uv.lock tests.
+
+    A lock upgrade that moves torch must move these install specs too, so a
+    setup-managed runtime never falls behind the tested snapshot.
+    """
+    profiles = json.loads((SCRIPTS / "setup-profiles.json").read_text(encoding="utf-8"))
+    locked = _locked_torch_versions()
+
+    for system, recipe in profiles[backend]["platforms"].items():
+        assert _profile_versions(recipe["packages"]) == locked, (backend, system)
+
+
+def test_container_cpu_torch_matches_the_lock() -> None:
+    """container/torch-cpu.txt names the locked torch family, as the image build asserts."""
+    text = (REPOSITORY / "container" / "torch-cpu.txt").read_text(encoding="utf-8")
+    pins = dict(re.findall(r"^(torch|torchaudio|torchvision)==(\S+)\+cpu ", text, re.M))
+
+    assert pins == _locked_torch_versions()
 
 
 def test_setup_run_preserves_arguments_and_environment(setup_modules, tmp_path, monkeypatch):
