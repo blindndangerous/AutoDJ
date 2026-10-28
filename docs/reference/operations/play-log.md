@@ -35,11 +35,15 @@ What the play log holds and leaves out:
 
 - By default the log holds the songs, liner files and live sets the mixer starts. A file played
   from a liner folder is marked `liner`. In stream and server audio modes, AutoDJ also logs the
-  liners mixed over a handoff, matched intros, time checks, carts, voice tracks and breaks as they
-  air. They are in the export only with **Include liners** checked, and never in a SoundExchange
+  liners mixed over a handoff, matched intros, time checks, carts, voice tracks, breaks and a
+  show's speech segments as they air. They are in the export only with **Include liners** checked, and never in a SoundExchange
   report, the repeat rules or a song's `duration_played`. History lists them when **Show
   liners** is checked; this browser remembers the choice. Liners that the browser plays in
   browser playback mode are not logged.
+- An AutoDJ from before History could show liners reads the liners and other non-music items
+  logged since as songs: it lists them in History, the play log and SoundExchange reports, and
+  ends a song's `duration_played` at the next one. To go back, restore a backup that the older
+  release made.
 - Ad spots that aired are merged from the station's ad play log and exported with `kind` `ad`,
   the advertiser as artist and campaign as album. There is no separate `id` kind for station
   IDs; keep IDs in a liner folder so they are not reported as songs.

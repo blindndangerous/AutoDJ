@@ -48,6 +48,10 @@ one reads differently:
   `station.db`. AutoDJ 0.21.0 and older do not read that layout. To go back, restore a backup
   that the older release made.
 
+- An AutoDJ from before History could show liners reads the liners and other non-music items
+  logged since as songs: it lists them in History, the play log and SoundExchange reports, and
+  ends a song's `duration_played` at the next one. To go back, restore a backup that the older
+  release made.
 - An every-N-minutes schedule event that keeps to chosen days: AutoDJ 0.20.0 and older ignore its
   days and run it every day. Edit the event, or delete it, before going back.
 - A schedule event with a date range, a category with days, hours or dates, a clockwheel step with
