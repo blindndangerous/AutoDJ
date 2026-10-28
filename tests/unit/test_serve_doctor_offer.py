@@ -10,11 +10,15 @@ from click.testing import CliRunner
 
 from autodj import server
 from autodj.cli import _ServeCommand
+from autodj.update_contract import UPDATE_DIR_ENV
+from autodj.updates import SUPERVISOR_ENV
 
 
 @pytest.fixture(autouse=True)
-def _not_started():
+def _not_started(monkeypatch):
     """Other tests run the app's lifespan, which marks startup complete."""
+    monkeypatch.delenv(SUPERVISOR_ENV, raising=False)
+    monkeypatch.delenv(UPDATE_DIR_ENV, raising=False)
     server.STARTUP_COMPLETE.clear()
     yield
     server.STARTUP_COMPLETE.clear()
@@ -116,3 +120,27 @@ def test_a_requested_restart_exits_quietly_without_offering_doctor():
     assert result.exit_code == RESTART_EXIT_CODE
     assert "troubleshoot" not in result.output
     subprocess_run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "variable,value",
+    [(SUPERVISOR_ENV, "1"), (UPDATE_DIR_ENV, "/srv/autodj/.uv/update")],
+)
+def test_no_offer_under_a_launcher_or_updater(variable, value):
+    """A watched server fails at once, so an update rolls back on its exit status."""
+    failure = RuntimeError("the new version cannot start")
+
+    @click.command(cls=_ServeCommand)
+    def command():
+        raise failure
+
+    with (
+        patch("click.testing._NamedTextIOWrapper.isatty", return_value=True),
+        patch.dict(os.environ, {"AUTODJ_DOCTOR_ACTIVE": "", variable: value}),
+        patch("subprocess.run") as subprocess_run,
+    ):
+        result = CliRunner().invoke(command, input="y\n")
+    assert result.exception is failure
+    assert not subprocess_run.called
+    assert "Run AutoDJ Doctor now?" not in result.output
+    assert "autodj doctor" in result.output
