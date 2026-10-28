@@ -24,7 +24,7 @@
 
 services:
   autodj:
-    image: &image ${AUTODJ_IMAGE:-ghcr.io/blindndangerous/autodj:stable}
+    image: &image ${AUTODJ_IMAGE:-ghcr.io/blindndangerous/autodj:stable@sha256:d8b43991bd61f1e7e9230d95bf039d8a6f60385560ae47e40b8000b4ebd3af6b}
     container_name: autodj
     restart: unless-stopped
     # How long a stop or recreation waits before it kills AutoDJ, which saves
