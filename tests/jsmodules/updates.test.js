@@ -379,9 +379,8 @@ describe("Updates panel", () => {
     expect(document.activeElement).toBe(byId("updates-restart"));
     expect(byId("updates-restart-refused").hidden).toBe(false);
     expect(byId("updates-restart-refused").getAttribute("aria-live")).toBe("off");
-    // Focus back on the button reads it: no second, live announcement.
-    await Promise.resolve();
-    expect(byId("updates-status").textContent).toBe("");
+    // Said aloud as well: with descriptions off, the button alone is its name.
+    expect(await said()).toBe(words);
     byId("updates-check").click();
     expect(byId("updates-restart-refused").hidden).toBe(true);
     expect(byId("updates-restart").hasAttribute("aria-describedby")).toBe(false);
@@ -477,8 +476,7 @@ describe("Update and Go back", () => {
     expect(seen.describedBy).toBe("updates-update-refused");
     const note = byId("updates-update-refused");
     expect(note.getAttribute("aria-live")).toBe("off");
-    await Promise.resolve();
-    expect(byId("updates-status").textContent).toBe("");
+    expect(await said()).toBe(words);
     byId("updates-check").click();
     expect(note.hidden).toBe(true);
     expect(note.textContent).toBe("");

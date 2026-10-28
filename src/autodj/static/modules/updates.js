@@ -186,10 +186,10 @@ export function installUpdates({
     }
   }
 
-  // Said aloud only when focus did not come back to the refused button,
-  // which already reads it, and only once focus has settled.
-  async function sayRefusal(button, message) {
-    if (doc.activeElement === button) return;
+  // Also said aloud once focus has settled, even when focus came back to the
+  // refused button: someone with descriptions turned off hears only the
+  // button's name there.  Hearing it twice is the lesser problem.
+  async function sayRefusal(_button, message) {
     await settle();
     say(message, "error");
   }

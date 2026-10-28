@@ -1268,11 +1268,5 @@ class CheckoutUpdater:
         }
         if self._record.get("action") not in contract.ACTIONS:
             self._record["action"] = "update"
-        steps = state.get("steps")
-        if isinstance(steps, list):
-            self._steps = [
-                step
-                for step in steps
-                if isinstance(step, dict) and step.get("name") in contract.STEPS
-            ] or self._steps
+        self._steps = contract.known_steps(state.get("steps")) or self._steps
         self._finish("failed", message, commands, "interrupted")

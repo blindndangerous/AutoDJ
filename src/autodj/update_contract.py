@@ -534,13 +534,27 @@ def read_result(folder: Path) -> dict[str, Any] | None:
         return None
     if commands and record["outcome"] not in FAILURES:
         return None
-    steps = record.get("steps", [])
-    if not isinstance(steps, list) or not all(
-        isinstance(step, dict) and step.get("name") in STEPS and step.get("status") in STEP_STATUSES
-        for step in steps
-    ):
-        return None
+    # A later updater may add steps or statuses: they never cost the
+    # sentence and the commands, which are what the page shows.
+    record["steps"] = known_steps(record.get("steps"))
     return record
+
+
+def known_steps(raw: object) -> list[dict[str, str]]:
+    """The steps of a record this contract knows; an unknown status reads as skipped.
+
+    A step with a name not in STEPS is left out, never the whole record.
+    """
+    if not isinstance(raw, list):
+        return []
+    return [
+        {
+            "name": str(step["name"]),
+            "status": str(step["status"]) if step.get("status") in STEP_STATUSES else "skipped",
+        }
+        for step in raw
+        if isinstance(step, dict) and step.get("name") in STEPS
+    ]
 
 
 @dataclass(frozen=True)

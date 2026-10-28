@@ -318,3 +318,31 @@ def test_a_server_started_by_the_launcher_skips_its_own_launchers_lock(tmp_path:
         assert unnamed.stdout.strip() == f"[{os.getpid()}]"
     finally:
         updater.release_serving()
+
+
+def test_a_later_updaters_extra_steps_keep_its_sentence_and_commands(tmp_path: Path) -> None:
+    """ADR-0016-12: unknown steps are left out, unknown statuses read as skipped."""
+    contract.write(
+        tmp_path / contract.RESULT,
+        {
+            "id": "0123abcd",
+            "action": "update",
+            "outcome": "refused",
+            "message": "AutoDJ did not update: the image could not be pulled.",
+            "commands": ["docker compose pull"],
+            "steps": [
+                {"name": "check", "status": "done"},
+                {"name": "pull-image", "status": "failed"},
+                {"name": "backup", "status": "waiting"},
+                "not a step",
+            ],
+        },
+    )
+    result = contract.read_result(tmp_path)
+    assert result is not None
+    assert result["message"] == "AutoDJ did not update: the image could not be pulled."
+    assert result["commands"] == ["docker compose pull"]
+    assert result["steps"] == [
+        {"name": "check", "status": "done"},
+        {"name": "backup", "status": "skipped"},
+    ]
