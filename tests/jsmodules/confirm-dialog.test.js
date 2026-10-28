@@ -611,6 +611,46 @@ describe("confirmAction without showModal (#602, #627)", () => {
     }
   });
 
+  it("shows the next confirmation idle when a running one is replaced after saying it is busy", async () => {
+    for (const ending of ["resolves", "throws"]) {
+      const { dialog } = mount();
+      const editor = document.createElement("dialog");
+      editor.innerHTML = '<button id="editor-a">Revoke</button>';
+      editor.setAttribute("open", "");
+      const matches = editor.matches.bind(editor);
+      editor.matches = (selector) => selector === ":modal" || matches(selector);
+      document.body.append(editor);
+      document.getElementById("editor-a").focus();
+      let release;
+      const slow = confirmAction(document, {
+        title: "Slow", message: "s", confirmLabel: "Revoke", pendingText: "Removing…",
+        onConfirm: () => new Promise((resolve, reject) => {
+          release = () => (ending === "throws" ? reject(new Error("refused")) : resolve(null));
+        }),
+      });
+      const confirmButton = document.getElementById("confirm-accept");
+      confirmButton.click();
+      // Past the moment the dialog says the action is still running.
+      await new Promise((resolve) => { setTimeout(resolve, 350); });
+      const status = document.getElementById("confirm-status");
+      expect(status.textContent).toBe("Removing…");
+      expect(confirmButton.getAttribute("aria-busy")).toBe("true");
+      // The browser closes it on a second Escape; another confirmation opens.
+      dialog.close();
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+      const next = confirmAction(document, { title: "Two", message: "2", confirmLabel: "Go" });
+      const idle = () => ({ busy: confirmButton.hasAttribute("aria-busy"), status: status.textContent });
+      expect(idle()).toEqual({ busy: false, status: "" });
+      release();
+      expect(await slow).toBe(true);
+      expect(idle()).toEqual({ busy: false, status: "" });
+      expect(document.getElementById("confirm-title").textContent).toBe("Two");
+      document.getElementById("confirm-cancel").click();
+      expect(await next).toBe(false);
+      editor.remove();
+    }
+  });
+
   it("marks Cancel for the browser's own focus as the dialog opens", async () => {
     const { dialog } = mount();
     const answer = ask();

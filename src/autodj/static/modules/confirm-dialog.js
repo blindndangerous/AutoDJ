@@ -162,6 +162,11 @@ function ask(doc, {
     else previous.settle("cancel");
     if (!previous.closeCame) state.checks.push(() => {});
   }
+  // This opening shows the dialog idle, whatever a replaced opening, still
+  // waiting for its action, left: a busy confirm button, "Removing…".
+  confirmButton.removeAttribute("aria-busy");
+  const status = doc.getElementById("confirm-status");
+  if (status && dialog.contains(status)) status.textContent = "";
   heading.textContent = title;
   text.textContent = message;
   confirmButton.textContent = confirmLabel;
