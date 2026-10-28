@@ -284,3 +284,23 @@ def test_existing_runtime_without_state_checks_tools_for_interactive_setup(
     assert result.returncode == 0, result.stderr
     assert json.loads((tmp_path / "run.json").read_text()) == ["serve"]
     assert "uv" not in result.stderr
+
+
+def test_the_launcher_never_passes_on_an_inherited_update_watch(tmp_path: Path) -> None:
+    """Only the launcher marks a start an update watches, so run.ps1 clears the mark."""
+    root, script = _project(tmp_path)
+    _saved_cpu(root)
+    (root / "scripts" / "run.py").write_text(
+        "import json, os\n"
+        "open(os.environ['AUTODJ_TEST_LOG'], 'w').write("
+        "json.dumps(os.environ.get('AUTODJ_UPDATE_WATCH')))\n",
+        encoding="utf-8",
+    )
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    environment = {**_env(tmp_path, empty), "AUTODJ_UPDATE_WATCH": "1"}
+
+    result = _run(script, "serve", env=environment)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path / "run.json").read_text()) is None

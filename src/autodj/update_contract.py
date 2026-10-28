@@ -64,6 +64,10 @@ UPDATE_DIR_ENV = "AUTODJ_UPDATE_DIR"
 #: always the launcher's direct child: on Windows a virtual environment's
 #: ``python.exe`` starts the real interpreter as its own child.
 LAUNCHER_PID_ENV = "AUTODJ_LAUNCHER_PID"
+#: Set by the launcher only for a start an update waits on: the new version it
+#: watches, and the old one a rollback starts.  That server never asks a
+#: question on the terminal when it fails; it exits so the update can go on.
+UPDATE_WATCH_ENV = "AUTODJ_UPDATE_WATCH"
 #: The update folder in the index folder, when no updater names one.
 INDEX_UPDATE_DIR = "updates"
 REQUEST = "request.json"

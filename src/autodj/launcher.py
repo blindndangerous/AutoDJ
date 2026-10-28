@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.child_jobs import bind_to_autodj
-from autodj.update_contract import LAUNCHER_PID_ENV, UPDATE_DIR_ENV
+from autodj.update_contract import LAUNCHER_PID_ENV, UPDATE_DIR_ENV, UPDATE_WATCH_ENV
 from autodj.updates import RESTART_EXIT_CODE, SUPERVISOR_ENV, UPDATE_EXIT_CODE, UPDATER_ENV
 
 if TYPE_CHECKING:
@@ -273,28 +273,44 @@ def run_supervised(
     setup may change the runtime.  A new version is watched as it starts and
     rolled back when it is not healthy; a stop signal before it is healthy
     puts the checkout back too.  Updates count as restarts for the limit.
+    The watched start, and the old version's start after a rollback, get
+    UPDATE_WATCH_ENV; no other start does, whatever the launcher inherited.
     """
     extra = {SUPERVISOR_ENV: "1"}
     if updater is not None:
         extra[UPDATER_ENV] = "launcher"
         extra[UPDATE_DIR_ENV] = str(updater.folder)
         extra[LAUNCHER_PID_ENV] = str(os.getpid())
-    child_environment = {**environment, **extra}
+
+    def without_watch(base: Mapping[str, str]) -> dict[str, str]:
+        # Only the launcher says a start is watched, and only for that start.
+        return {key: value for key, value in {**base, **extra}.items() if key != UPDATE_WATCH_ENV}
+
+    child_environment = without_watch(environment)
     restarts: deque[float] = deque(maxlen=MAX_RESTARTS)
     watching = False
+    #: The next start is the old version a rollback put back.
+    restoring = False
 
     def replan() -> None:
         nonlocal command, child_environment
         if plan is not None:
             command, fresh = plan()
-            child_environment = {**fresh, **extra}
+            child_environment = without_watch(fresh)
 
     while True:
+        # The update waits on these starts: their server never asks a question.
+        started_environment = (
+            {**child_environment, UPDATE_WATCH_ENV: "1"}
+            if watching or restoring
+            else child_environment
+        )
+        restoring = False
         try:
             if watching and updater is not None:
-                status = run_child(command, child_environment, watch=updater.watch)
+                status = run_child(command, started_environment, watch=updater.watch)
             else:
-                status = run_child(command, child_environment)
+                status = run_child(command, started_environment)
         except StopRequested as stop:
             if watching and updater is not None and updater.pending:
                 updater.stopped_while_starting(stop.signum)
@@ -313,6 +329,7 @@ def run_supervised(
                 if attempt.failed:
                     return 1
                 replan()
+                restoring = True
                 continue
         if status == UPDATE_EXIT_CODE and updater is not None:
             attempt = updater.update()
@@ -322,6 +339,7 @@ def run_supervised(
                 return 1
             replan()
             watching = attempt.switched
+            restoring = updater.rolled_back
         elif status != RESTART_EXIT_CODE:
             return status
         now = clock()

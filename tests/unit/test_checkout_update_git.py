@@ -284,6 +284,7 @@ def test_a_rollback_from_a_release_puts_master_back(repos) -> None:
     assert attempt.switched is True
     assert updater.failed_start() == Attempt()
     assert _result(checkout)["outcome"] == "rolled-back"
+    assert updater.rolled_back is True
     assert _git(checkout, "rev-parse", "HEAD") == release
     assert subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=checkout).returncode != 0
     assert _git(checkout, "rev-parse", "refs/heads/master") == master
@@ -347,8 +348,9 @@ def test_a_refused_request_is_deleted_too(repos) -> None:
     _origin, checkout = repos
     (checkout / "untracked.txt").write_text("not ours", encoding="utf-8")
 
-    attempt, _updater_used = _run(checkout, "stable")
+    attempt, updater = _run(checkout, "stable")
 
     assert attempt == Attempt()
     assert _result(checkout)["outcome"] == "refused"
+    assert updater.rolled_back is False
     assert not (checkout / ".uv" / "update" / contract.REQUEST).exists()

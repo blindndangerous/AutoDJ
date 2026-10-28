@@ -245,6 +245,8 @@ class CheckoutUpdater:
         self._moved_branch_tip: str | None = None
         self._lock_handle: Any = None
         self._start_failure = ""
+        #: The last update was put back, so the old version starts again.
+        self._rolled_back = False
 
     # ------------------------------------------------------------------
     # Running commands
@@ -957,6 +959,7 @@ class CheckoutUpdater:
                 "while it ran are gone."
             )
         self._finish("rolled-back", message, commands, reason)
+        self._rolled_back = True
         return Attempt()
 
     @property
@@ -1282,6 +1285,11 @@ class CheckoutUpdater:
                 _stop_process(process)
                 return
             self._sleep(HEALTH_POLL_SECONDS)
+
+    @property
+    def rolled_back(self) -> bool:
+        """Whether the last update was put back: the next start is the old version's."""
+        return self._rolled_back
 
     @property
     def pending(self) -> bool:

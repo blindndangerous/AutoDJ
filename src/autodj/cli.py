@@ -1778,8 +1778,8 @@ class _ServeCommand(click.Command):
         except click.Abort:
             raise
         except (Exception, SystemExit) as exc:
-            from autodj.update_contract import UPDATE_DIR_ENV
-            from autodj.updates import RESTART_EXIT_CODE, SUPERVISOR_ENV, UPDATE_EXIT_CODE
+            from autodj.update_contract import UPDATE_WATCH_ENV
+            from autodj.updates import RESTART_EXIT_CODE, UPDATE_EXIT_CODE
 
             # A restart or update asked for from the web page is not a failure either.
             clean_exit = (
@@ -1793,11 +1793,9 @@ class _ServeCommand(click.Command):
                 click.echo(hint, err=True)
                 server = sys.modules.get("autodj.server")
                 started = server is not None and server.STARTUP_COMPLETE.is_set()
-                # A launcher or updater waits for this exit status, and an
-                # update rolls back on it: never wait for an answer.
-                watched = os.environ.get(SUPERVISOR_ENV) == "1" or bool(
-                    os.environ.get(UPDATE_DIR_ENV, "").strip()
-                )
+                # An update waits for this start: it rolls back on the exit
+                # status, so never wait for an answer.
+                watched = os.environ.get(UPDATE_WATCH_ENV) == "1"
                 if (
                     sys.stdin.isatty()
                     and not started

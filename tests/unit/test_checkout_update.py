@@ -893,10 +893,13 @@ def test_reaching_a_release_forgets_go_back(tmp_path: Path) -> None:
 
 
 class _StubUpdater:
-    def __init__(self, attempt: checkout_update.Attempt, healthy: bool = True) -> None:
+    def __init__(
+        self, attempt: checkout_update.Attempt, healthy: bool = True, rolled_back: bool = False
+    ) -> None:
         self.attempt = attempt
         self.healthy = healthy
         self.pending = False
+        self.rolled_back = rolled_back
         self.folder = Path("update-folder")
         self.events: list[str] = []
 
@@ -913,6 +916,7 @@ class _StubUpdater:
     def failed_start(self) -> checkout_update.Attempt:
         self.events.append("rollback")
         self.pending = False
+        self.rolled_back = True
         return checkout_update.Attempt()
 
     def stopped_while_starting(self, signum: int) -> checkout_update.Attempt:
@@ -936,13 +940,14 @@ def test_the_loop_updates_while_no_server_runs_then_starts_and_watches_it(health
     plans = iter([(["new", "serve"], {"B": "2"}), (["old", "serve"], {"B": "3"})])
     status = launcher.run_supervised(
         ["old", "serve"],
-        {"A": "1"},
+        {"A": "1", contract.UPDATE_WATCH_ENV: "1"},
         run_child=run_child,
         clock=lambda: 0.0,
         updater=stub,  # type: ignore[arg-type]
         plan=lambda: next(plans),
     )
 
+    watched = {contract.UPDATE_WATCH_ENV: "1"}
     marks = {
         updates.SUPERVISOR_ENV: "1",
         updates.UPDATER_ENV: "launcher",
@@ -950,15 +955,45 @@ def test_the_loop_updates_while_no_server_runs_then_starts_and_watches_it(health
         # The server is not always the launcher's direct child: it is told the launcher.
         contract.LAUNCHER_PID_ENV: str(os.getpid()),
     }
+    # A normal start is never marked watched, even when the launcher inherited it.
     assert started[0][1] == {"A": "1", **marks}
-    assert started[1] == (["new", "serve"], {"B": "2", **marks}, True)
+    assert started[1] == (["new", "serve"], {"B": "2", **marks, **watched}, True)
     if healthy:
         assert stub.events == ["update", "watch"]
         assert status == 1
     else:
         assert stub.events == ["update", "watch", "rollback"]
-        assert started[2][0] == ["old", "serve"]
+        # The old version a rollback starts again is waited on too.
+        assert started[2] == (["old", "serve"], {"B": "3", **marks, **watched}, False)
         assert status == 0
+
+
+@pytest.mark.parametrize("rolled_back", [True, False])
+def test_only_a_rollback_marks_the_start_after_an_update_that_did_not_switch(
+    rolled_back: bool,
+) -> None:
+    """A rollback before the start (setup failed) marks the old start; a refusal does not."""
+    stub = _StubUpdater(checkout_update.Attempt(), rolled_back=rolled_back)
+    statuses = iter([updates.UPDATE_EXIT_CODE, 0])
+    started: list[dict[str, str]] = []
+
+    def run_child(command, environment, watch=None) -> int:
+        assert watch is None
+        started.append(dict(environment))
+        return next(statuses)
+
+    launcher.run_supervised(
+        ["serve"],
+        {},
+        run_child=run_child,
+        clock=lambda: 0.0,
+        updater=stub,  # type: ignore[arg-type]
+        plan=lambda: (["serve"], {}),
+    )
+    assert [contract.UPDATE_WATCH_ENV in environment for environment in started] == [
+        False,
+        rolled_back,
+    ]
 
 
 def test_a_stop_while_the_new_version_starts_puts_the_checkout_back() -> None:
