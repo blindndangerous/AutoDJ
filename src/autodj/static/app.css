@@ -659,6 +659,11 @@
     #history-table col.hist-artist   { width: 19%; }
     #history-table col.hist-duration { width: 12%; }
     #history-table col.hist-info     { width: 26%; }
+    /* With liners shown (#601) a Type column follows Duration. */
+    #history-table.has-type col.hist-title { width: 24%; }
+    #history-table.has-type col.hist-artist { width: 16%; }
+    #history-table.has-type col.hist-type { width: 13%; }
+    #history-table.has-type col.hist-info { width: 20%; }
     #history-table th,
     #history-table td {
       padding: 0.5rem 0.7rem;

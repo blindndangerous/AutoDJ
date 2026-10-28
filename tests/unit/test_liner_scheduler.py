@@ -538,7 +538,11 @@ def test_carts_decode_like_fire_and_play_without_resetting_the_triggers(tmp_path
 
     scheduler.on_track_start()
     scheduler.play_cart(trimmed, float("-inf"))
-    bus.play_liner.assert_called_once_with(trimmed, duck_db=float("-inf"))
+    bus.play_liner.assert_called_once()
+    assert bus.play_liner.call_args.args == (trimmed,)
+    # on_start lists the cart in History once it airs (#601).
+    assert set(bus.play_liner.call_args.kwargs) == {"duck_db", "on_start"}
+    assert bus.play_liner.call_args.kwargs["duck_db"] == float("-inf")
     scheduler.stop_cart()
     bus.stop_liner.assert_called_once_with()
     # A cart is not a liner: the every-2-songs count carries on.

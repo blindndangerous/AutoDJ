@@ -12,10 +12,14 @@ import time
 from collections import deque
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from autodj.child_jobs import bind_to_autodj
-from autodj.updates import RESTART_EXIT_CODE, SUPERVISOR_ENV
+from autodj.update_contract import LAUNCHER_PID_ENV, UPDATE_DIR_ENV
+from autodj.updates import RESTART_EXIT_CODE, SUPERVISOR_ENV, UPDATE_EXIT_CODE, UPDATER_ENV
+
+if TYPE_CHECKING:
+    from autodj.checkout_update import CheckoutUpdater
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE = Path(".uv/setup.json")
@@ -23,6 +27,9 @@ BACKENDS = {"amd", "nvidia", "cpu", "no-model"}
 #: More restarts than this within RESTART_WINDOW_SECONDS stop the loop.
 MAX_RESTARTS = 5
 RESTART_WINDOW_SECONDS = 60.0
+UPDATE_RUNNING = (
+    "AutoDJ: an update is running from this AutoDJ folder; start AutoDJ again when it finishes."
+)
 
 
 def _python_path(environment: Path) -> Path:
@@ -90,8 +97,8 @@ def run_setup(arguments: list[str]) -> int:
         return 1
 
 
-def runs_serve(arguments: list[str]) -> bool:
-    """Whether *arguments* start the server: ``serve`` after the global options."""
+def _command_index(arguments: list[str]) -> int:
+    """The index of the command word after the global options (``len`` when there is none)."""
     index = 0
     while index < len(arguments):
         word = arguments[index]
@@ -100,8 +107,19 @@ def runs_serve(arguments: list[str]) -> bool:
         elif word.startswith("--config=") or word in {"-v", "--verbose"}:
             index += 1
         else:
-            return word == "serve"
-    return False
+            return index
+    return len(arguments)
+
+
+def runs_serve(arguments: list[str]) -> bool:
+    """Whether *arguments* start the server: ``serve`` after the global options."""
+    index = _command_index(arguments)
+    return index < len(arguments) and arguments[index] == "serve"
+
+
+def global_options(arguments: list[str]) -> list[str]:
+    """The options before the command (``--config``, ``-v``), for the update's own commands."""
+    return arguments[: _command_index(arguments)]
 
 
 def _supervised(arguments: list[str], environ: Mapping[str, str]) -> bool:
@@ -142,8 +160,17 @@ def _signal_came_from_the_terminal() -> bool:
         return False
 
 
-def _run_child(command: list[str], environment: Mapping[str, str]) -> int:
+Watch = Callable[[subprocess.Popen[bytes], Callable[[], bool]], None]
+
+
+def _run_child(
+    command: list[str], environment: Mapping[str, str], watch: Watch | None = None
+) -> int:
     """Run the server once and wait for it.
+
+    *watch*, when given, is called with the started server and a function
+    that says whether a stop signal has arrived, before the launcher waits:
+    an update watches its new version start (``CheckoutUpdater.watch``).
 
     The server stays in the launcher's process group and the terminal's
     foreground, so Ctrl+C, a closed terminal and Ctrl+\\ reach it directly
@@ -191,6 +218,11 @@ def _run_child(command: list[str], environment: Mapping[str, str]) -> int:
             # A stop that came between the check above and the start.
             with contextlib.suppress(OSError):
                 process.send_signal(signal.SIGTERM)
+        if watch is not None:
+            try:
+                watch(process, lambda: bool(stopped))
+            except KeyboardInterrupt:
+                stopped.append(signal.SIGINT)
         while True:
             try:
                 status = process.wait()
@@ -222,9 +254,11 @@ def run_supervised(
     command: list[str],
     environment: Mapping[str, str],
     *,
-    run_child: Callable[[list[str], Mapping[str, str]], int] = _run_child,
+    run_child: Callable[..., int] = _run_child,
     clock: Callable[[], float] = time.monotonic,
     end_with_signal: Callable[[int], int] = _end_with_signal,
+    updater: CheckoutUpdater | None = None,
+    plan: Callable[[], tuple[list[str], dict[str, str]]] | None = None,
 ) -> int:
     """Run ``serve`` and start it again each time it exits with RESTART_EXIT_CODE.
 
@@ -232,15 +266,63 @@ def run_supervised(
     MAX_RESTARTS restarts fall within RESTART_WINDOW_SECONDS the loop ends
     with that code, so a server that asks again and again does not spin.
     A Ctrl+C or SIGTERM always wins over a pending restart.
+
+    With an *updater*, the server is told it may ask for an update
+    (UPDATER_ENV), and exit status UPDATE_EXIT_CODE runs the update while no
+    server runs.  *plan* then gives the command and environment again, since
+    setup may change the runtime.  A new version is watched as it starts and
+    rolled back when it is not healthy; a stop signal before it is healthy
+    puts the checkout back too.  Updates count as restarts for the limit.
     """
-    child_environment = {**environment, SUPERVISOR_ENV: "1"}
+    extra = {SUPERVISOR_ENV: "1"}
+    if updater is not None:
+        extra[UPDATER_ENV] = "launcher"
+        extra[UPDATE_DIR_ENV] = str(updater.folder)
+        extra[LAUNCHER_PID_ENV] = str(os.getpid())
+    child_environment = {**environment, **extra}
     restarts: deque[float] = deque(maxlen=MAX_RESTARTS)
+    watching = False
+
+    def replan() -> None:
+        nonlocal command, child_environment
+        if plan is not None:
+            command, fresh = plan()
+            child_environment = {**fresh, **extra}
+
     while True:
         try:
-            status = run_child(command, child_environment)
+            if watching and updater is not None:
+                status = run_child(command, child_environment, watch=updater.watch)
+            else:
+                status = run_child(command, child_environment)
         except StopRequested as stop:
+            if watching and updater is not None and updater.pending:
+                updater.stopped_while_starting(stop.signum)
             return end_with_signal(stop.signum)
-        if status != RESTART_EXIT_CODE:
+        except OSError:
+            if not (watching and updater is not None and updater.pending):
+                raise
+            # The new version could not even start: put the old one back.
+            status = -1
+        if watching and updater is not None:
+            watching = False
+            if updater.pending:
+                attempt = updater.failed_start()
+                if attempt.stopped is not None:
+                    return end_with_signal(attempt.stopped)
+                if attempt.failed:
+                    return 1
+                replan()
+                continue
+        if status == UPDATE_EXIT_CODE and updater is not None:
+            attempt = updater.update()
+            if attempt.stopped is not None:
+                return end_with_signal(attempt.stopped)
+            if attempt.failed:
+                return 1
+            replan()
+            watching = attempt.switched
+        elif status != RESTART_EXIT_CODE:
             return status
         now = clock()
         restarts.append(now)
@@ -252,6 +334,74 @@ def run_supervised(
             )
             return status
         print("AutoDJ: restarting.", file=sys.stderr)
+
+
+def _runtime_environment(environment: Path, backend: str) -> dict[str, str]:
+    """The environment for AutoDJ in the selected runtime: its device and cache policy."""
+    child_environment = os.environ.copy()
+    if backend != "no-model":
+        child_environment.pop("AUTODJ_NO_MODEL", None)
+    if backend in {"cpu", "no-model"}:
+        child_environment["AUTODJ_GPU"] = "0"
+        if backend == "no-model":
+            child_environment["AUTODJ_NO_MODEL"] = "1"
+    elif backend == "amd":
+        for relative, variable in (
+            ("miopen/db", "MIOPEN_USER_DB_PATH"),
+            ("miopen/cache", "MIOPEN_CUSTOM_CACHE_DIR"),
+        ):
+            cache = environment / relative
+            cache.mkdir(parents=True, exist_ok=True)
+            child_environment[variable] = str(cache)
+    return child_environment
+
+
+def _child_plan(selected: tuple[Path, str]) -> tuple[list[str], dict[str, str]]:
+    """``python -m autodj`` in the selected runtime, and its environment."""
+    environment, backend = selected
+    child_environment = _runtime_environment(environment, backend)
+    if environment != Path(sys.prefix).resolve():
+        return [str(_python_path(environment)), "-m", "autodj"], child_environment
+    child_environment["AUTODJ_RUNTIME"] = "current"
+    return [sys.executable, "-m", "autodj"], child_environment
+
+
+def _supervise(arguments: list[str], selected: tuple[Path, str]) -> int:
+    """Run ``serve`` as a child, so Restart and Update can start it again."""
+    from autodj.checkout_update import CheckoutUpdater
+
+    def current() -> tuple[list[str], dict[str, str]]:
+        # Setup may change the selection; read it again for each start.
+        return _child_plan(_selection(ROOT) or selected)
+
+    def plan() -> tuple[list[str], dict[str, str]]:
+        base, environment = current()
+        return [*base, *arguments], environment
+
+    updater = CheckoutUpdater(ROOT, global_options(arguments), current)
+    updater.hold_serving()
+
+    def end_with_signal(signum: int) -> int:
+        # Dying of the signal skips the finally below: let go first.
+        updater.release_serving()
+        return _end_with_signal(signum)
+
+    try:
+        if updater.update_running():
+            # Its checkout is half switched until it finishes.
+            print(UPDATE_RUNNING, file=sys.stderr)
+            return 1
+        updater.recover_interrupted()
+        base, child_environment = _child_plan(selected)
+        return run_supervised(
+            [*base, *arguments],
+            child_environment,
+            updater=updater,
+            plan=plan,
+            end_with_signal=end_with_signal,
+        )
+    finally:
+        updater.release_serving()
 
 
 def main() -> int:
@@ -289,29 +439,11 @@ def main() -> int:
                 return 0 if help_requested else 1
         if selected is not None:
             environment, backend = selected
-            child_environment = os.environ.copy()
-            if backend != "no-model":
-                child_environment.pop("AUTODJ_NO_MODEL", None)
-            if backend in {"cpu", "no-model"}:
-                child_environment["AUTODJ_GPU"] = "0"
-                if backend == "no-model":
-                    child_environment["AUTODJ_NO_MODEL"] = "1"
-            elif backend == "amd":
-                for relative, variable in (
-                    ("miopen/db", "MIOPEN_USER_DB_PATH"),
-                    ("miopen/cache", "MIOPEN_CUSTOM_CACHE_DIR"),
-                ):
-                    cache = environment / relative
-                    cache.mkdir(parents=True, exist_ok=True)
-                    child_environment[variable] = str(cache)
+            child_environment = _runtime_environment(environment, backend)
             # Compare prefixes, since venv executables can be symlinks.
             other_runtime = environment != Path(sys.prefix).resolve()
             if _supervised(arguments, os.environ):
-                # The server runs as a child, so Restart can start it again.
-                python = str(_python_path(environment)) if other_runtime else sys.executable
-                if not other_runtime:
-                    child_environment["AUTODJ_RUNTIME"] = "current"
-                return run_supervised([python, "-m", "autodj", *arguments], child_environment)
+                return _supervise(arguments, selected)
             if other_runtime:
                 completed = subprocess.run(  # nosec B603 -- user-selected runtime, argv only
                     [str(_python_path(environment)), "-m", "autodj", *sys.argv[1:]],

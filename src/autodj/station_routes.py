@@ -43,6 +43,8 @@ from pydantic import Field as PydanticField
 from starlette.requests import HTTPConnection
 
 from autodj._bridge import (
+    HISTORY_AIRED_ROWS,
+    HISTORY_VIEW_ROWS,
     SEEK_TRACK_CHANGED,
     STREAM_SEEK_UNAVAILABLE,
     SeekTrackChanged,
@@ -67,6 +69,8 @@ from autodj.config import (
     RelayConfig,
     _relay_target,
 )
+from autodj.history_kinds import INSERT_KINDS
+from autodj.history_pages import history_page
 from autodj.live_queue import VoiceQueueConflict
 from autodj.playlog import (
     missing_fields,
@@ -1961,27 +1965,32 @@ def install_station_routes(router: StationRouter) -> None:
         station: SavedStationDep,
         page: int = Query(1, ge=1),
         per_page: int = Query(50, ge=1, le=500),
+        liners: bool = False,
+        anchor: Annotated[str | None, Query(max_length=64)] = None,
     ) -> JSONResponse:
-        """Return recent play history across restarts (newest first), one page."""
-        hist = (
-            station.bridge.history_snapshot()
-            if station.player is not None
-            else station.ledger.recent_history()
-        )
-        total = len(hist)
-        pages = max(1, (total + per_page - 1) // per_page)
-        page = max(1, min(page, pages))
-        start = (page - 1) * per_page
-        end = start + per_page
-        # Slice from the "newest-first" perspective: index ``start`` from
-        # the end of the deque becomes ``total - 1 - start`` walking back.
-        if total == 0:
-            items: list = []
+        """Return recent play history across restarts (newest first), one page.
+
+        Songs and live sets, or with *liners* everything that aired (#601):
+        liners, ads, matched intros and the rest, each with its ``kind``.
+        With *anchor*, a row's ``event_id``, the page is the one holding
+        that row, or the next older row this view shows; switching views
+        keeps the listener near the same place.
+        """
+        if station.player is not None:
+            result = station.bridge.history_page(page, per_page, liners=liners, anchor=anchor)
         else:
-            hi = total - start
-            lo = max(0, total - end)
-            items = list(reversed([hist[i] for i in range(lo, hi)]))
-        return JSONResponse({"items": items, "total": total, "page": page, "pages": pages})
+            rows = station.ledger.recent_history(HISTORY_VIEW_ROWS, inserts=HISTORY_AIRED_ROWS)
+            for order, row in enumerate(rows):
+                row["_seq"] = order
+            result = history_page(
+                [row for row in rows if row["kind"] not in INSERT_KINDS],
+                [row for row in rows if row["kind"] in INSERT_KINDS],
+                page=page,
+                per_page=per_page,
+                liners=liners,
+                anchor=anchor,
+            )
+        return JSONResponse(result)
 
     @router.get("/history/export")
     async def api_history_export(
@@ -1991,13 +2000,16 @@ def install_station_routes(router: StationRouter) -> None:
         report_format: Annotated[Literal["csv", "soundexchange"], Query(alias="format")] = "csv",
         service: Annotated[str, Query(max_length=200)] = "",
         category: Annotated[str, Query(max_length=1)] = "A",
+        liners: bool = False,
     ) -> Response:
         """Download the play log between two dates (see :mod:`autodj.playlog`).
 
         Dates are ``YYYY-MM-DD`` in the server's time zone and ``to`` is
         included.  ``format=soundexchange`` gives a Report of Use for
         *service* and transmission *category* instead of the CSV.  The CSV
-        also lists the ad spots that aired (#51), as ``kind`` ``ad``.
+        also lists the ad spots that aired (#51), as ``kind`` ``ad``, and
+        with *liners* the other audio aired over or between the songs (#601);
+        a Report of Use lists songs only either way.
         ``X-Play-Count`` and ``X-Songs-Missing-Fields`` give the page the
         numbers it announces.
         """
@@ -2005,14 +2017,21 @@ def install_station_routes(router: StationRouter) -> None:
         try:
             start = parse_bound(from_text)
             end = parse_bound(to_text, end=True)
+            inserts = liners and report_format == "csv"
             plays = await asyncio.to_thread(
                 functools.partial(
-                    plays_between, station=station.slug, station_store=station.ledger.store
+                    plays_between,
+                    station=station.slug,
+                    station_store=station.ledger.store,
+                    include_inserts=inserts,
                 ),
                 library.catalog,
                 start,
                 end,
             )
+            if inserts:
+                # The ad play log below is the record of the spots that aired.
+                plays = [play for play in plays if play.kind != "ad"]
             last_day = end - timedelta(microseconds=1)
             count = len(plays)
             if report_format == "soundexchange":

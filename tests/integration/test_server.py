@@ -2158,10 +2158,13 @@ class TestServeFunction:
 
     @pytest.mark.parametrize(
         ("stop", "expected"),
-        [("restart", True), ("ctrl-c", False), ("signal", False)],
+        [("restart", 75), ("update", 85), ("ctrl-c", None), ("signal", None)],
     )
     def test_a_stop_signal_wins_over_a_pending_restart(self, tmp_path, stop, expected) -> None:
-        """ADR-0016-10: Ctrl+C or SIGTERM during a restart's shutdown stops AutoDJ."""
+        """ADR-0016-10: Ctrl+C or SIGTERM during a restart's shutdown stops AutoDJ.
+
+        ADR-0016-18: an update request exits with the update status instead.
+        """
         import signal as signals
         from unittest.mock import MagicMock, patch
 
@@ -2177,6 +2180,8 @@ class TestServeFunction:
         def run() -> None:
             app = config.call_args.args[0]
             app.state.restart_requested = True
+            if stop == "update":
+                app.state.exit_status = 85
             if stop == "ctrl-c":
                 raise KeyboardInterrupt
 
@@ -4943,7 +4948,11 @@ class TestHistoryEndpoint:
         assert data["page"] == 1
 
     def test_play_history_default_is_bounded_deque(self) -> None:
-        """New PlayerBridge instances start with a bounded deque (cap 500)."""
+        """New PlayerBridge instances start with bounded deques.
+
+        500 songs and live sets (cap 500), and beside them their own room
+        for the liners and other audio aired between them (#601).
+        """
         from collections import deque
 
         from autodj.server import PlayerBridge
@@ -4952,6 +4961,7 @@ class TestHistoryEndpoint:
         bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
         assert isinstance(bridge._play_history, deque)
         assert bridge._play_history.maxlen == 500
+        assert bridge._aired_history.maxlen == 1500
 
     def test_pagination_with_deque_backing(self) -> None:
         """Ensure /api/history slicing works when history is a real deque

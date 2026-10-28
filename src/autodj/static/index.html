@@ -636,6 +636,13 @@
     <!-- History does not refresh by itself while the tab is open; this
          reloads the page being shown. -->
     <button type="button" id="hist-refresh">Refresh history</button>
+    <!-- Off by default and remembered in this browser (#601).  A change
+         is said once through #sr-status; focus stays on the checkbox. -->
+    <div class="settings-check">
+      <input type="checkbox" id="hist-show-liners" aria-describedby="hist-show-liners-desc">
+      <label for="hist-show-liners">Show liners</label>
+    </div>
+    <span class="setting-desc" id="hist-show-liners-desc">Also lists ads, matched intros, time checks and other non-music items.</span>
     <p id="history-empty">No playback history yet.</p>
     <div class="data-table-scroll">
     <table id="history-table" role="grid" aria-label="History" hidden>
@@ -683,6 +690,15 @@
         <option value="csv">Play log (CSV)</option>
         <option value="soundexchange">SoundExchange Report of Use</option>
       </select>
+      <!-- For the CSV only, so hidden while SoundExchange is chosen: a
+           Report of Use lists songs only. -->
+      <div id="hist-export-csv">
+        <div class="settings-check">
+          <input type="checkbox" id="hist-export-liners" aria-describedby="hist-export-liners-help">
+          <label for="hist-export-liners">Include liners</label>
+        </div>
+        <span class="setting-desc" id="hist-export-liners-help">Adds matched intros, time checks and other non-music items to the play log.</span>
+      </div>
       <fieldset id="hist-export-soundexchange" hidden>
         <legend>SoundExchange report</legend>
         <label for="hist-export-service">Name of service</label>
@@ -2818,8 +2834,9 @@
   <div class="card" role="tabpanel" id="spanel-updates" aria-labelledby="stab-updates" hidden>
     <h3>Updates</h3>
     <!-- updates.js loads this panel when it is seen.  The version and
-         result lines are plain text; only Check now, Save update settings
-         and Restart speak, once each, through #updates-status. -->
+         result lines are plain text; only Check now, Save update settings,
+         Update, Go back and Restart speak, once each, through
+         #updates-status. -->
     <div id="updates-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <h4>This installation</h4>
     <p id="updates-current" aria-live="off">Loading…</p>
@@ -2827,12 +2844,34 @@
     <p id="updates-latest" aria-live="off"></p>
     <p id="updates-notes" hidden><a id="updates-notes-link" href="#">Release notes</a></p>
     <button type="button" id="updates-check">Check now</button>
-    <!-- Shown while an update is available: AutoDJ does not update itself;
-         whoever installed it runs these, after a backup (#552). -->
-    <div id="updates-how" hidden>
-      <h4 id="updates-how-heading">How to update</h4>
-      <p id="updates-how-note" class="setting-desc"></p>
-      <ol id="updates-commands" aria-labelledby="updates-how-heading"></ol>
+    <!-- Update shows while an update is available and this installation's
+         updater can install it (#552).  Otherwise the note says to update
+         it the way it was installed, with a link to its guide. -->
+    <button type="button" id="updates-update" hidden>Update AutoDJ</button>
+    <p id="updates-install-note" class="setting-desc" hidden><span id="updates-install-words"></span> <a id="updates-guide-link" hidden></a></p>
+    <!-- While an update runs: how long AutoDJ has been away, quietly. -->
+    <p id="updates-progress" aria-live="off" hidden></p>
+    <button type="button" id="updates-reload" hidden>Load the new version of this page</button>
+    <!-- Why the last Update was refused, until the next action; the button
+         points at it with aria-describedby meanwhile. -->
+    <p id="updates-update-refused" aria-live="off" hidden></p>
+    <!-- Shown on the Stable channel when the updater kept the backup of the
+         release it moved this installation to Development from. -->
+    <div id="updates-go-back" hidden>
+      <h4>Go back to Stable now</h4>
+      <p id="updates-go-back-note" class="setting-desc"></p>
+      <button type="button" id="updates-go-back-button" hidden>Go back</button>
+      <p id="updates-go-back-refused" aria-live="off" hidden></p>
+    </div>
+    <!-- How the last update went; commands only after a failure. -->
+    <div id="updates-last" hidden>
+      <h4>Last update</h4>
+      <p id="updates-result" aria-live="off"></p>
+      <div id="updates-how" hidden>
+        <h5 id="updates-how-heading">Commands to finish by hand</h5>
+        <p id="updates-how-note" class="setting-desc">Run these in order in the AutoDJ folder.</p>
+        <ol id="updates-commands" aria-labelledby="updates-how-heading"></ol>
+      </div>
     </div>
 
     <fieldset>
@@ -2857,6 +2896,7 @@
     <h4>Restart</h4>
     <p id="updates-restart-note" class="setting-desc"></p>
     <button type="button" id="updates-restart" hidden>Restart AutoDJ</button>
+    <p id="updates-restart-refused" aria-live="off" hidden></p>
   </div>
 
   </section>

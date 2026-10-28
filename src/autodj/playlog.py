@@ -17,8 +17,11 @@ that started inside the requested range:
 - ``isrc`` and ``label``, read from the file's tags at export time, so no
   re-index is needed.  An ISRC is written as 12 characters without
   hyphens; a tag that does not hold a valid one counts as missing.
-- ``kind``: ``song``, ``liner``, ``ad`` or ``live``.  The mix bus logs only
-  the tracks it starts, so liners mixed over a transition are not in the log.
+- ``kind``: ``song``, ``liner``, ``ad`` or ``live``.  By default the log
+  holds the tracks the mix bus starts.  Asked for everything
+  (``include_inserts``), it also has the audio aired over or between them
+  (#601), each with its kind from :data:`~autodj.history_kinds.INSERT_KINDS`:
+  liners mixed into a handoff, matched intros, time checks and so on.
   The ad spots that aired come from the station's ad play log
   (:func:`autodj.ads.aired_plays`, #51): the advertiser as the artist and
   the campaign as the album.  A live DJ's set (#48) has the DJ's name as
@@ -53,6 +56,7 @@ from pathlib import PurePath
 
 from autodj.audio_meta import read_reporting_tags
 from autodj.catalog import DEFAULT_STATION, LibraryCatalog, _under, history_start
+from autodj.history_kinds import INSERT_KINDS
 from autodj.station_store import StationStore
 
 COLUMNS = (
@@ -162,8 +166,12 @@ def plays_between(
     read_tags: Callable[[str], tuple[str, str]] = read_reporting_tags,
     station: str = DEFAULT_STATION,
     station_store: StationStore | None = None,
+    include_inserts: bool = False,
 ) -> list[Play]:
     """Return *station*'s plays that started at or after *start* and before *end*.
+
+    Songs, liner tracks and live sets; *include_inserts* adds the audio a
+    station's database logged over or between them, such as matched intros.
 
     Raises:
         ValueError: *end* is not after *start*.
@@ -173,7 +181,7 @@ def plays_between(
     sources = catalog.sources()
     liner_sources = [source for source in sources if source["kind"] == "liner"]
     rows = (
-        station_store.play_log(start, end)
+        station_store.play_log(start, end, include_inserts=include_inserts)
         if station_store is not None
         else catalog.play_log(station, start=start, end=end)
     )
@@ -211,7 +219,7 @@ def plays_between(
                 album=row["album"] or "",
                 isrc=isrc,
                 label=label,
-                kind="live" if kind == "live" else "liner" if kind == "liner" else "song",
+                kind=kind if kind in {"live", *INSERT_KINDS} else "song",
                 path=relative,
                 performances=row["performances"],
             )

@@ -301,12 +301,68 @@ def test_stable_compares_with_the_newest_release_tag(
 def test_master_after_a_release_is_ahead_of_it_on_the_stable_channel(tmp_path: Path) -> None:
     """ADR-0016-03: the same version number with commits after the tag."""
     result = updates.check_for_update(
-        _git_checkout(tmp_path),
-        UpdateSettings(channel="stable"),
+        _git_checkout(tmp_path, branch=None),
+        UpdateSettings(),
         runner=_ls_remote(tags=["v0.21.0"]),
     )
     assert result.status == "ahead"
     assert "after the latest release" in result.message
+
+
+@pytest.mark.parametrize("version", ["0.21.0", "0.22.0"])
+def test_development_on_a_saved_stable_channel_waits_for_the_next_release(
+    tmp_path: Path, version: str
+) -> None:
+    """ADR-0016-19: never a downgrade; the release that includes this commit is the update."""
+    waiting = updates.check_for_update(
+        _git_checkout(tmp_path, version=version),
+        UpdateSettings(channel="stable"),
+        runner=_ls_remote(tags=["v0.21.0"]),
+    )
+    assert waiting.status == "waiting-for-release"
+    assert waiting.target is None
+    assert waiting.message == (
+        "You'll move to Stable when the next release includes your version. "
+        f"Installed: {version}, commit {LOCAL_SHA[:7]}, on master. Latest release: v0.21.0."
+    )
+    released = updates.check_for_update(
+        _git_checkout(tmp_path, version="0.21.0"),
+        UpdateSettings(channel="stable"),
+        runner=_ls_remote(tags=["v0.21.0"], ancestor=True),
+    )
+    assert released.status == "available"
+    assert released.target == "v0.21.0"
+    # A newer release that does not include this commit does not count either.
+    later = updates.check_for_update(
+        _git_checkout(tmp_path, version="0.21.0"),
+        UpdateSettings(channel="stable"),
+        runner=_ls_remote(tags=["v0.22.0"], ancestor=False),
+    )
+    assert later.status == "waiting-for-release"
+
+
+def test_an_installation_without_git_asks_github_whether_the_release_includes_it(
+    tmp_path: Path,
+) -> None:
+    """ADR-0016-19: GitHub's compare view says whether the commit is behind the tag."""
+    asked: list[str] = []
+
+    def fetch(url: str, _headers: object, _timeout: float) -> str:
+        asked.append(url)
+        if url.endswith("/releases/latest"):
+            return json.dumps({"tag_name": "v0.21.0"})
+        return json.dumps({"status": status})
+
+    container = Installation(kind="container", version="0.21.0", commit="abcdef1", branch="master")
+    status = "ahead"
+    waiting = updates.check_for_update(
+        container, UpdateSettings(channel="stable"), fetch_text=fetch
+    )
+    assert waiting.status == "waiting-for-release"
+    assert asked[-1] == updates.REPOSITORY_API + "/compare/v0.21.0...abcdef1"
+    status = "behind"
+    assert updates.contained_in_release(container, "v0.21.0", fetch_text=fetch) is True
+    assert updates.contained_in_release(container, "nightly", fetch_text=fetch) is None
 
 
 @pytest.mark.parametrize(
@@ -520,7 +576,20 @@ def test_an_available_release_links_its_release_notes(tmp_path: Path) -> None:
     development = updates.check_for_update(
         _git_checkout(tmp_path), UpdateSettings(), runner=_ls_remote(master=MASTER_SHA)
     )
-    assert development.notes_url == updates.REPOSITORY_URL + "/blob/master/CHANGELOG.md"
+    # The changelog's Unreleased section stays empty between releases, so
+    # development links the commits between this one and master.
+    assert development.notes_url == (f"{updates.REPOSITORY_URL}/compare/{LOCAL_SHA}...master")
+    unknown = updates.check_for_update(
+        _git_checkout(tmp_path, commit=None), UpdateSettings(), runner=_ls_remote()
+    )
+    assert unknown.status == "unknown"
+    assert updates.release_notes_url("master", None) == updates.REPOSITORY_URL + "/commits/master"
+    assert updates.release_notes_url("master", "abc1234") == (
+        updates.REPOSITORY_URL + "/commits/master"
+    )
+    assert (
+        updates.release_notes_url("master", "x" * 40) == updates.REPOSITORY_URL + "/commits/master"
+    )
     assert updates.release_notes_url(None) is None
     assert updates.release_notes_url("v0.21.0; rm -rf /") is None
 
@@ -775,3 +844,64 @@ def test_closing_a_checks_job_ends_exactly_the_processes_in_it() -> None:
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# Updating from the web page
+# ---------------------------------------------------------------------------
+
+
+def test_only_a_checkout_under_an_updating_launcher_can_update(tmp_path: Path) -> None:
+    """ADR-0016-11: other installations update the way they were installed."""
+    checkout = _git_checkout(tmp_path)
+    launched = {updates.SUPERVISOR_ENV: "1", updates.UPDATER_ENV: "launcher"}
+    support = updates.update_support(checkout, launched)
+    assert support.available is True
+    assert support.mechanism == "launcher"
+    # A launcher from before the web update restarts but cannot update.
+    older = updates.update_support(checkout, {updates.SUPERVISOR_ENV: "1"})
+    assert older.available is False
+    assert older.message == "Update it the way you installed it."
+    assert older.guide_url.endswith("backups-and-updates.md#update-a-source-checkout")
+    container = updates.update_support(Installation(kind="container", version="0.21.0"), launched)
+    assert container.available is False
+    assert container.guide_url.endswith("containers-and-windows.md#update-the-container")
+    package = updates.update_support(Installation(kind="package", version="0.21.0"), launched)
+    assert package.available is False
+    assert package.guide_url.endswith("backups-and-updates.md#update-a-wheel-installation")
+    assert support.to_dict()["available"] is True
+    assert updates.UPDATE_EXIT_CODE not in (0, updates.RESTART_EXIT_CODE)
+
+
+@pytest.mark.parametrize(
+    ("ancestor", "words"),
+    [(0, None), (1, "has moved away from 0.21.0"), (128, "cannot tell whether")],
+)
+def test_go_back_fits_only_while_the_checkout_came_from_that_release(
+    tmp_path: Path, ancestor: int, words: str | None
+) -> None:
+    """ADR-0016-20: a checkout moved by hand drops the offer, with one sentence.
+
+    Development that has passed a newer release still fits; a checkout at a
+    release does not.
+    """
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(command[1:])
+        if command[1:3] == ["merge-base", "--is-ancestor"]:
+            return _done(returncode=ancestor)
+        raise AssertionError(command)
+
+    reason = updates.go_back_moved(_git_checkout(tmp_path), LOCAL_SHA, "0.21.0", runner=run)
+    assert calls == [["merge-base", "--is-ancestor", LOCAL_SHA, "HEAD"]]
+    if words is None:
+        assert reason is None
+    else:
+        assert reason is not None and words in reason
+    released = _git_checkout(tmp_path, branch=None, tag="v0.22.0")
+    assert updates.go_back_moved(released, LOCAL_SHA, "0.21.0", runner=run) == (
+        "This checkout runs release v0.22.0 now, so going back to 0.21.0 is not offered."
+    )
+    package = Installation(kind="package", version="0.22.0")
+    assert "cannot tell" in (updates.go_back_moved(package, LOCAL_SHA, "0.21.0", runner=run) or "")

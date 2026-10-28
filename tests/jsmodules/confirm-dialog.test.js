@@ -6,7 +6,7 @@ import { confirmAction } from "../../src/autodj/static/modules/confirm-dialog.js
 // the opener while the dialog is still closing, when focus is still in the
 // dialog (or always, *restoreAlways*, as an older browser may).  That
 // return, made while the page was still inert, is what NVDA missed.
-function mount({ restoreAlways = false } = {}) {
+function mount({ restoreAlways = false, lateClose = false } = {}) {
   document.body.innerHTML = `
     <button id="opener">Delete Legacy set</button>
     <dialog id="confirm-dialog"><form method="dialog">
@@ -26,7 +26,9 @@ function mount({ restoreAlways = false } = {}) {
     const inside = dialog.contains(document.activeElement);
     if ((inside || restoreAlways) && before?.isConnected) before.focus();
     dialog.removeAttribute("open");
-    dialog.dispatchEvent(new Event("close"));
+    // A browser fires close a task later; *lateClose* keeps that gap.
+    if (lateClose) setTimeout(() => dialog.dispatchEvent(new Event("close")), 0);
+    else dialog.dispatchEvent(new Event("close"));
   };
   const opener = document.getElementById("opener");
   // Each time the opener takes focus: whether the dialog was still open.
@@ -42,6 +44,16 @@ const ask = () => confirmAction(document, {
 afterEach(() => document.body.replaceChildren());
 
 describe("confirmAction focus (#385)", () => {
+  it("returns focus to the opener when the close event comes a task later", async () => {
+    const { dialog, opener } = mount({ lateClose: true });
+    opener.focus();
+    const answer = ask();
+    dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+    dialog.close("");
+    expect(await answer).toBe(false);
+    expect(document.activeElement).toBe(opener);
+  });
+
   // ADR-0011-03
   it("puts focus back on the opener only once the dialog has closed, after Cancel", async () => {
     const { opener, focusedWhileOpen } = mount();

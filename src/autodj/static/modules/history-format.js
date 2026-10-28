@@ -8,6 +8,8 @@ function localDay(date) {
 
 export function updateHistoryDateHeadings(tbody, locale = undefined) {
   const headings = [...tbody.querySelectorAll(".history-date")];
+  // A heading spans every column, Type included when liners are shown.
+  const columns = tbody.closest("table")?.querySelectorAll("thead th").length || 5;
   const used = new Set();
   let previousDay = null;
   for (const row of tbody.querySelectorAll("tr[data-played-at]")) {
@@ -22,7 +24,7 @@ export function updateHistoryDateHeadings(tbody, locale = undefined) {
       heading.className = "history-date";
       heading.dataset.day = day;
       const cell = tbody.ownerDocument.createElement("td");
-      cell.colSpan = 5;
+      cell.colSpan = columns;
       const title = tbody.ownerDocument.createElement("h3");
       title.textContent = valid
         ? played.toLocaleDateString(locale, { day: "numeric", month: "short", year: "numeric" })
@@ -30,6 +32,7 @@ export function updateHistoryDateHeadings(tbody, locale = undefined) {
       cell.append(title);
       heading.append(cell);
     }
+    heading.firstElementChild.colSpan = columns;
     used.add(heading);
     if (row.previousElementSibling !== heading) row.before(heading);
   }

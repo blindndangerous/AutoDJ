@@ -1778,11 +1778,12 @@ class _ServeCommand(click.Command):
         except click.Abort:
             raise
         except (Exception, SystemExit) as exc:
-            from autodj.updates import RESTART_EXIT_CODE
+            from autodj.updates import RESTART_EXIT_CODE, UPDATE_EXIT_CODE
 
-            # A restart asked for from the web page is not a failure either.
+            # A restart or update asked for from the web page is not a failure either.
             clean_exit = (
-                isinstance(exc, click.exceptions.Exit) and exc.exit_code in (0, RESTART_EXIT_CODE)
+                isinstance(exc, click.exceptions.Exit)
+                and exc.exit_code in (0, RESTART_EXIT_CODE, UPDATE_EXIT_CODE)
             ) or (isinstance(exc, SystemExit) and exc.code in (None, 0))
             if not clean_exit:
                 hint = "Run `autodj doctor` to troubleshoot."
@@ -2063,7 +2064,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
 
     try:
-        restart = serve(
+        requested = serve(
             cfg=cfg,
             sim=sim,
             library=library,
@@ -2077,12 +2078,18 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")
         return
-    if restart is True:
-        from autodj.updates import RESTART_EXIT_CODE
+    from autodj.updates import RESTART_EXIT_CODE, UPDATE_EXIT_CODE
 
-        # The launcher, a systemd service or the container starts it again.
-        console.print("[yellow]Restarting AutoDJ...[/]")
-        raise click.exceptions.Exit(RESTART_EXIT_CODE)
+    # Only a restart or an update asked for from the web page exits with its
+    # status; anything else serve returns ends as before.
+    if isinstance(requested, int) and requested in (RESTART_EXIT_CODE, UPDATE_EXIT_CODE):
+        # The launcher, a systemd service or the container starts it again;
+        # for an update, the checkout's launcher updates it first.
+        if requested == UPDATE_EXIT_CODE:
+            console.print("[yellow]Stopping AutoDJ to update it...[/]")
+        else:
+            console.print("[yellow]Restarting AutoDJ...[/]")
+        raise click.exceptions.Exit(requested)
 
 
 # ---------------------------------------------------------------------------
