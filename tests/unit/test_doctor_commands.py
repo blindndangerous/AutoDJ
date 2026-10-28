@@ -51,36 +51,6 @@ def test_failed_ffmpeg_recovery_is_reported(tmp_path):
     assert failed
 
 
-def test_rebuild_supersedes_index_and_rechecks_before_analyse(tmp_path: Path) -> None:
-    cfg = config_for(tmp_path)
-    initial = report_for("index", "rebuild-index", "analyse")
-    healthy = DoctorReport(())
-    with (
-        patch("autodj.doctor_commands.click.confirm", return_value=True) as confirm,
-        patch(
-            "autodj.doctor_commands.subprocess.run", return_value=SimpleNamespace(returncode=0)
-        ) as run,
-        patch("autodj.doctor.run_doctor", return_value=healthy) as recheck,
-    ):
-        final, failed = run_recovery_commands(cfg, initial, auto_fix=False)
-    assert final is healthy
-    assert not failed
-    assert confirm.call_count == 1
-    recheck.assert_called_once_with(cfg, station=None, check_updates=False)
-    run.assert_called_once_with(
-        [
-            sys.executable,
-            "-m",
-            "autodj",
-            "--config",
-            str(cfg.config_path),
-            "index",
-            "--force",
-        ],
-        check=False,
-    )
-
-
 def test_migration_recovery_preserves_config_and_named_index(tmp_path: Path) -> None:
     cfg = config_for(tmp_path)
     initial = report_for("migrate-index")
@@ -110,7 +80,7 @@ def test_migration_recovery_preserves_config_and_named_index(tmp_path: Path) -> 
 
 
 def test_declining_all_commands_does_not_execute_or_recheck(tmp_path: Path) -> None:
-    initial = report_for("rebuild-index", "index", "analyse", "serve-lan")
+    initial = report_for("index", "analyse", "serve-lan")
     with (
         patch("autodj.doctor_commands.click.confirm", return_value=False) as confirm,
         patch("autodj.doctor_commands.subprocess.run") as run,
@@ -165,9 +135,7 @@ def test_unresolved_successful_action_runs_only_once(tmp_path: Path) -> None:
 def test_readonly_modes_never_run_recovery(tmp_path: Path, flags) -> None:
     with (
         patch("autodj.cli._load_cfg_or_exit", return_value=config_for(tmp_path)),
-        patch(
-            "autodj.doctor.run_doctor", return_value=report_for("rebuild-index", "install-ffmpeg")
-        ),
+        patch("autodj.doctor.run_doctor", return_value=report_for("index", "install-ffmpeg")),
         patch("autodj.host_tools.ensure_ffmpeg") as install,
         patch("autodj.doctor_commands.subprocess.run") as run,
     ):
@@ -175,24 +143,6 @@ def test_readonly_modes_never_run_recovery(tmp_path: Path, flags) -> None:
     assert result.exit_code == 1
     run.assert_not_called()
     install.assert_not_called()
-
-
-def test_interactive_doctor_offers_index_rebuild(tmp_path: Path) -> None:
-    with (
-        patch("autodj.cli._load_cfg_or_exit", return_value=config_for(tmp_path)),
-        patch(
-            "autodj.doctor.run_doctor", side_effect=[report_for("rebuild-index"), DoctorReport(())]
-        ),
-        patch("click.testing._NamedTextIOWrapper.isatty", return_value=True),
-        patch(
-            "autodj.doctor_commands.subprocess.run", return_value=SimpleNamespace(returncode=0)
-        ) as run,
-    ):
-        result = CliRunner().invoke(cli, ["doctor"], input="y\n")
-    assert result.exit_code == 0, result.output
-    assert "index --force" in result.output
-    assert "Run this command now?" in result.output
-    run.assert_called_once()
 
 
 def test_cache_backup_happens_before_analyse(tmp_path: Path) -> None:
@@ -234,31 +184,4 @@ def test_backup_failure_does_not_start_analyse(tmp_path: Path) -> None:
         final, failed = run_recovery_commands(config_for(tmp_path), initial, auto_fix=True)
     assert final is initial
     assert failed
-    run.assert_not_called()
-
-
-def test_rebuild_index_is_asked_for_even_with_fix(tmp_path: Path) -> None:
-    cfg = config_for(tmp_path)
-    initial = report_for("rebuild-index")
-    with (
-        patch("autodj.doctor_commands.sys.stdin.isatty", return_value=True),
-        patch("autodj.doctor_commands.click.confirm", return_value=False) as confirm,
-        patch("autodj.doctor_commands.subprocess.run") as run,
-    ):
-        _final, failed = run_recovery_commands(cfg, initial, auto_fix=True)
-    assert confirm.call_count == 1
-    run.assert_not_called()
-    assert not failed
-
-
-def test_rebuild_index_never_runs_unasked_outside_a_terminal(tmp_path: Path) -> None:
-    cfg = config_for(tmp_path)
-    initial = report_for("rebuild-index")
-    with (
-        patch("autodj.doctor_commands.sys.stdin.isatty", return_value=False),
-        patch("autodj.doctor_commands.click.confirm") as confirm,
-        patch("autodj.doctor_commands.subprocess.run") as run,
-    ):
-        run_recovery_commands(cfg, initial, auto_fix=True)
-    confirm.assert_not_called()
     run.assert_not_called()

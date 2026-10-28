@@ -169,7 +169,9 @@ def test_import_and_empty_index_check_do_not_import_heavy_runtimes(tmp_path: Pat
 
 
 @pytest.mark.parametrize("remaining", ["tracks.db", "vectors.index"])
-def test_index_without_manifest_fails_actionably(tmp_path: Path, remaining: str) -> None:
+def test_legacy_index_artifacts_without_manifest_require_migration(
+    tmp_path: Path, remaining: str
+) -> None:
     cfg = _config(tmp_path)
     cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
     cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
@@ -183,7 +185,7 @@ def test_index_without_manifest_fails_actionably(tmp_path: Path, remaining: str)
     assert check.repair == "migrate-index"
 
 
-def test_corrupt_catalog_fails_without_rebuild_offer(tmp_path: Path) -> None:
+def test_corrupt_catalog_fails_without_repair_recommendation(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
     cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
@@ -647,7 +649,7 @@ def test_index_path_that_is_a_file_fails(tmp_path: Path) -> None:
     assert doctor._index_check(cfg).status is doctor.CheckStatus.FAIL
 
 
-def test_generation_artifacts_without_manifest_fail(tmp_path: Path) -> None:
+def test_generation_artifacts_without_manifest_are_rejected(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
     cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
