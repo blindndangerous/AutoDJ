@@ -79,6 +79,7 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
     (scripts / "setup-profiles.json").write_bytes((SCRIPTS / "setup-profiles.json").read_bytes())
     (root / "pyproject.toml").write_text("[project]\nname = 'autodj-test'\n", encoding="utf-8")
     (root / "uv.lock").write_text("test lock\n", encoding="utf-8")
+    (root / ".python-version").write_text("3.14\n", encoding="utf-8")
     music = root / "Music # Café"
     music.mkdir()
     return root, music

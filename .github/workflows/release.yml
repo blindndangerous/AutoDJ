@@ -30,7 +30,7 @@ jobs:
         with: {fetch-depth: 0}
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with: {python-version: "3.14"}
+        with: {python-version-file: .python-version}
       - name: Export build constraints
         run: >-
           uv export --frozen --only-group build --no-emit-project
@@ -49,7 +49,7 @@ jobs:
           python3 scripts/release_notes.py "$GITHUB_REF_NAME" > /dev/null
       - name: Smoke-install exact wheel
         run: |
-          uv venv .release-venv --python 3.14
+          uv venv .release-venv --python "$(cat .python-version)"
           uv pip install --python .release-venv/bin/python dist/*.whl
           test "$(.release-venv/bin/python -c 'import autodj; print(autodj.__version__)')" = "${GITHUB_REF_NAME#v}"
           .release-venv/bin/python -c 'import autodj, pathlib; static = pathlib.Path(autodj.__file__).parent / "static"; missing = [name for name in ("index.html", "app.js") if not (static / name).is_file()]; assert not missing, f"wheel lacks static/{missing}"'

@@ -1,4 +1,4 @@
-"""Guided local installation. Bootstrap with uv run --no-project --python 3.14."""
+"""Guided local installation. Bootstrap with uv run --no-project --python <.python-version>."""
 
 from __future__ import annotations
 

@@ -96,6 +96,11 @@ def _platform_recipe(
     return platform_recipe
 
 
+def python_version(root: Path) -> str:
+    """Return the Python minor that .python-version picks for every setup, such as 3.14."""
+    return (root / ".python-version").read_text(encoding="utf-8").strip()
+
+
 def install_commands(
     root: Path,
     environment: Path,
@@ -107,7 +112,9 @@ def install_commands(
     """Build a dependency installation plan without executing it."""
     commands: list[list[str]] = []
     if not python_path(environment).is_file():
-        commands.append(["uv", "venv", "--python", "3.14", "--seed", str(environment)])
+        commands.append(
+            ["uv", "venv", "--python", python_version(root), "--seed", str(environment)]
+        )
     platform_recipe = _platform_recipe(root, backend, system, machine, amd_arch)
     if backend not in {"cpu", "no-model"} and platform_recipe is None:
         raise ValueError(f"No automatic {backend} installation recipe for {system}.")
