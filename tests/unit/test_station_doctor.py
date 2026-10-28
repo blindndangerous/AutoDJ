@@ -17,6 +17,7 @@ from autodj.doctor import CheckStatus, DoctorCheck, DoctorReport, render_text, r
 
 STATION_CHECKS = [
     "station-folder",
+    "speech",
     "saved-settings",
     "dmca",
     "stream",
@@ -145,6 +146,28 @@ def test_station_filter(
     assert ((None, "dmca") in names) is default_checks
     # The server's own checks always run.
     assert {(None, "python"), (None, "index"), (None, "config-keys")} <= names
+
+
+def test_station_filter_includes_only_selected_station_speech_and_categories(
+    tmp_path: Path,
+) -> None:
+    from autodj.stations import StationPaths
+
+    cfg = _config(tmp_path)
+    root = StationPaths.for_station(cfg, "nightowl").speech
+    root.mkdir(parents=True)
+    (root / "speech.json").write_text("{")
+
+    checks = {
+        (check.station, check.name): check
+        for check in run_doctor(cfg, python_version=(3, 14), station="nightowl").checks
+    }
+
+    assert checks[("nightowl", "speech")].status is CheckStatus.FAIL
+    assert checks[("nightowl", "time-checks")].summary.startswith("disabled")
+    assert ("nightowl", "categories") in checks
+    assert (None, "speech") not in checks
+    assert (None, "categories") not in checks
 
 
 def test_station_relay_reads_its_own_status_file(tmp_path: Path) -> None:
