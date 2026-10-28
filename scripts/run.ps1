@@ -24,7 +24,6 @@ function Get-ManualInstallMessage([string]$tool) {
 try {
     Update-ProcessPath
     $projectRoot = Split-Path -Parent $PSScriptRoot
-    $pythonVersion = (Get-Content -LiteralPath (Join-Path $projectRoot '.python-version') -TotalCount 1).Trim()
     $statePath = Join-Path $projectRoot '.uv\setup.json'
     $runtimePath = Join-Path $projectRoot '.venv'
     $setupRequested = $args.Count -gt 0 -and $args[0] -eq 'setup'
@@ -82,6 +81,11 @@ try {
         }
     }
     if (-not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
+        $versionPath = Join-Path $projectRoot '.python-version'
+        $pythonVersion = "$(Get-Content -LiteralPath $versionPath -TotalCount 1)".Trim()
+        if (-not $pythonVersion) {
+            throw "$versionPath is empty; it must name a Python version such as 3.14."
+        }
         & uv run --no-project --python $pythonVersion (Join-Path $PSScriptRoot 'run.py') @args
     } else {
         & $runtimePython (Join-Path $PSScriptRoot 'run.py') @args

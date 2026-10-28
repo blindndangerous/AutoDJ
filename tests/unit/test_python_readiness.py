@@ -8,10 +8,12 @@ import pytest
 from scripts import python_readiness as readiness
 
 PY315 = (3, 15)
+# Renovate titles a group's approval line by the group, without a version.
 DASHBOARD = (
     "## Pending Approval\n\n"
+    "The following branches are pending approval. To create them, click on a checkbox below.\n\n"
     " - [ ] <!-- approve-branch=renovate/python-minor-release -->"
-    "chore(deps): update python to v3.15.2\n"
+    "chore(deps): update python minor release\n"
     " - [ ] <!-- approve-branch=renovate/other -->chore(deps): update other to v3.15.0\n"
 )
 
@@ -322,26 +324,30 @@ def test_main_reports_a_failed_check_with_status_two(monkeypatch, capsys):
 # --- Renovate approval ------------------------------------------------------
 
 
-def test_approve_ticks_only_the_python_box_for_the_target():
-    body, status = readiness.approve(DASHBOARD, "3.15")
+def test_approve_ticks_only_the_python_box():
+    body, status = readiness.approve(DASHBOARD)
     assert status == "approved"
-    assert " - [x] <!-- approve-branch=renovate/python-minor-release -->" in body
-    assert " - [ ] <!-- approve-branch=renovate/other -->" in body
+    assert body == DASHBOARD.replace(
+        " - [ ] <!-- approve-branch=renovate/python", " - [x] <!-- approve-branch=renovate/python"
+    )
 
 
-def test_approve_leaves_an_approved_or_different_update_alone():
+def test_approve_also_ticks_a_line_that_names_a_version():
+    versioned = DASHBOARD.replace("update python minor release", "update python to v3.15.2")
+    assert readiness.approve(versioned)[1] == "approved"
+
+
+def test_approve_leaves_an_approved_or_missing_box_alone():
     ticked = DASHBOARD.replace(
         " - [ ] <!-- approve-branch=renovate/python", " - [x] <!-- approve-branch=renovate/python"
     )
-    assert readiness.approve(ticked, "3.15") == (ticked, "already-approved")
-    assert readiness.approve(DASHBOARD, "3.1") == (DASHBOARD, "not-offered")
-    assert readiness.approve(DASHBOARD, "3.16") == (DASHBOARD, "not-offered")
-    assert readiness.approve("## Open\n", "3.15") == ("## Open\n", "not-offered")
+    assert readiness.approve(ticked) == (ticked, "already-approved")
+    assert readiness.approve("## Open\n") == ("## Open\n", "not-offered")
 
 
 def test_approve_option_rewrites_the_saved_body(tmp_path, capsys):
     body = tmp_path / "dashboard.md"
     body.write_bytes(DASHBOARD.encode("utf-8"))
-    assert readiness.main(["--approve", str(body), "3.15"]) == 0
+    assert readiness.main(["--approve", str(body)]) == 0
     assert capsys.readouterr().out == "approved\n"
     assert "- [x] <!-- approve-branch=renovate/python-minor-release -->" in body.read_text()

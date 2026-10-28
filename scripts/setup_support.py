@@ -98,7 +98,11 @@ def _platform_recipe(
 
 def python_version(root: Path) -> str:
     """Return the Python minor that .python-version picks for every setup, such as 3.14."""
-    return (root / ".python-version").read_text(encoding="utf-8").strip()
+    path = root / ".python-version"
+    version = path.read_text(encoding="utf-8").strip()
+    if not version:
+        raise ValueError(f"{path} is empty; it must name a Python version such as 3.14.")
+    return version
 
 
 def install_commands(

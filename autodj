@@ -3,4 +3,8 @@
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
 # .python-version picks the Python minor for every setup.
 python=$(tr -d '[:space:]' < "$root/.python-version") || exit 1
+if [ -z "$python" ]; then
+    echo "AutoDJ: $root/.python-version is empty; it must name a Python version such as 3.14." >&2
+    exit 1
+fi
 exec uv run --no-project --python "$python" "$root/scripts/run.py" "$@"

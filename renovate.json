@@ -57,6 +57,18 @@
       ]
     },
     {
+      "description": "The same gate by depName, which is python for every manager (asdf's packageName is python/cpython), so no Python minor bump falls through to minor automerge.",
+      "matchDepNames": [
+        "python"
+      ],
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "groupName": "python minor release",
+      "automerge": false,
+      "dependencyDashboardApproval": true
+    },
+    {
       "description": ".python-version holds a plain Python version for uv and actions/setup-python, never a digest.",
       "matchManagers": [
         "pyenv"

@@ -910,3 +910,12 @@ def test_setup_runs_doctor_offline_with_a_time_limit(
     assert kwargs["timeout"] == setup_modules.setup.DOCTOR_TIMEOUT_SECONDS
     assert "Doctor did not finish" in capsys.readouterr().out
     assert setup_modules.support.read_json(root / setup_modules.support.STATE)["backend"] == "cpu"
+
+
+def test_empty_python_version_stops_setup_with_a_clear_message(
+    setup_modules, tmp_path: Path
+) -> None:
+    root, _ = _project(tmp_path)
+    (root / ".python-version").write_text("\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"\.python-version is empty"):
+        setup_modules.support.python_version(root)

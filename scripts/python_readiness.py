@@ -24,7 +24,7 @@ missing (or there is no newer minor), 1 when something is missing, 2 when the
 check itself fails. When GITHUB_OUTPUT is set, ``target`` and ``ready`` are
 written to it for the workflow.
 
-``--approve BODY_FILE TARGET`` is the workflow's second step: it ticks the box
+``--approve BODY_FILE`` is the workflow's second step: it ticks the box
 that approves Renovate's "python minor release" update in a saved Dependency
 Dashboard body, and prints approved, already-approved or not-offered.
 """
@@ -463,30 +463,31 @@ def run(
 # --- Renovate approval ------------------------------------------------------
 
 
-def approve(body: str, target: str, branch: str = RENOVATE_BRANCH) -> tuple[str, str]:
+def approve(body: str, branch: str = RENOVATE_BRANCH) -> tuple[str, str]:
     """Tick the Dependency Dashboard box that approves Renovate's Python update.
 
-    Return the new body and one of: "approved" (the box for *target* was
-    ticked), "already-approved", or "not-offered" (no box for *target*).
+    The box is found by its approve-branch marker alone: a group's line is
+    titled by the group and often names no version. The caller has already
+    found the next minor ready. Return the new body and one of: "approved",
+    "already-approved", or "not-offered" (no box for the branch).
     """
-    comment = f"<!-- approve-branch={branch} -->"
-    offers_target = re.compile(rf"v{re.escape(target)}(?:\.\d+)*(?!\d)")
+    marker = f"<!-- approve-branch={branch} -->"
     lines = body.splitlines(keepends=True)
     for number, line in enumerate(lines):
-        if comment not in line:
+        if marker not in line:
             continue
         if line.lstrip().startswith("- [x]"):
             return body, "already-approved"
-        if line.lstrip().startswith("- [ ]") and offers_target.search(line):
+        if line.lstrip().startswith("- [ ]"):
             lines[number] = line.replace("- [ ]", "- [x]", 1)
             return "".join(lines), "approved"
     return body, "not-offered"
 
 
-def approve_file(path: Path, target: str) -> int:
+def approve_file(path: Path) -> int:
     """Approve in a saved dashboard body, print the outcome, and save any change."""
     body = path.read_text(encoding="utf-8")
-    new_body, status = approve(body, target)
+    new_body, status = approve(body)
     if new_body != body:
         path.write_bytes(new_body.encode("utf-8"))
     print(status)
@@ -498,14 +499,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.partition("\n")[0])
     parser.add_argument(
         "--approve",
-        nargs=2,
-        metavar=("BODY_FILE", "TARGET"),
-        help="tick the Renovate approval box for Python TARGET in a saved dashboard body",
+        metavar="BODY_FILE",
+        type=Path,
+        help="tick the Renovate approval box for the Python update in a saved dashboard body",
     )
     args = parser.parse_args(argv)
     try:
         if args.approve:
-            return approve_file(Path(args.approve[0]), args.approve[1])
+            return approve_file(args.approve)
         return run()
     except Exception as error:
         print(f"error: the readiness check failed: {error}", file=sys.stderr)

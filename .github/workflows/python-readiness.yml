@@ -62,12 +62,22 @@ jobs:
             --json number --jq '.[0].number // empty')
           outcome=not-offered
           if [ -n "$dashboard" ]; then
+            read_body() {
+              gh issue view "$dashboard" --repo "$GITHUB_REPOSITORY" --json body --jq .body
+            }
+            original="$RUNNER_TEMP/dashboard-read.md"
             body="$RUNNER_TEMP/dashboard.md"
-            gh issue view "$dashboard" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$body"
-            outcome=$(uv run --no-project python scripts/python_readiness.py --approve "$body" "$TARGET")
+            read_body > "$original"
+            cp "$original" "$body"
+            outcome=$(uv run --no-project python scripts/python_readiness.py --approve "$body")
           fi
           case "$outcome" in
             approved)
+              # Renovate rewrites the body on its own runs; do not overwrite a newer one.
+              if ! read_body | cmp -s - "$original"; then
+                echo "The Dependency Dashboard changed while this ran; trying again next week."
+                exit 0
+              fi
               gh issue edit "$dashboard" --repo "$GITHUB_REPOSITORY" --body-file "$body"
               echo "Approved the Python $TARGET update on the Dependency Dashboard (#$dashboard)."
               ;;
