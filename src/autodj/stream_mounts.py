@@ -260,6 +260,12 @@ class StreamMounts:
             output = self._make(fmt, bitrate)
             if title is not None:
                 output.set_title(*title)
+            with self._lock:
+                stale = self._closed or self._mounts.get(name) is not mount
+            if stale:
+                output.stop_recovery()
+                output.close()
+                return None
             try:
                 self._attach(output)
             except BaseException:
@@ -278,6 +284,7 @@ class StreamMounts:
                 logger.info("Started the %s encoder for a listener", fmt.label)
                 return output
         # Turned off, changed or stopped while ffmpeg started: no orphan.
+        output.stop_recovery()
         self._retire(fmt, output)
         return None
 
@@ -320,3 +327,11 @@ class StreamMounts:
         for mount in mounts:
             if mount.output is not None:
                 self._retire(mount.fmt, mount.output)
+
+    def stop_recovery(self) -> None:
+        """Prevent this station's extra formats from starting or recovering at shutdown."""
+        with self._lock:
+            self._closed = True
+            outputs = [m.output for m in self._mounts.values() if m.output is not None]
+        for output in outputs:
+            output.stop_recovery()

@@ -1042,6 +1042,7 @@ def create_app(
         try:
             yield
         finally:
+            stations.begin_shutdown()
             logger.info("Shutting down...")
             # The scan winds down while the rest stops; the library waits for
             # it before the DJ-meta cache closes.

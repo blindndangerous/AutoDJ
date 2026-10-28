@@ -24,6 +24,7 @@ import collections
 import contextlib
 import io
 import logging
+import os
 import subprocess  # nosec B404 -- ffmpeg MP3 encoder with fixed argv, no shell
 import threading
 import time
@@ -152,6 +153,8 @@ class FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test_
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=os.name != "nt",
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
         )
         thread = threading.Thread(
             target=self._read_errors, name="autodj-encoder-stderr", daemon=True
@@ -349,6 +352,7 @@ class StreamOutput:
         self._retry_at = 0.0
         self._needs_retry = False
         self._retry_in_progress = False
+        self._stop_recovery = False
         self._retry_delay = 1.0
         self._factory_failure_logged = False
         self._failure_recorded_for_retry = False
@@ -386,6 +390,11 @@ class StreamOutput:
         )
         thread.start()
         return thread
+
+    def stop_recovery(self) -> None:
+        """Prevent this station output from restarting or installing encoders."""
+        with self._lock:
+            self._stop_recovery = True
 
     def _record_failure(self) -> None:
         """Note an encoder failure and start a cooldown after too many."""
@@ -451,6 +460,7 @@ class StreamOutput:
             now = self._clock()
             if (
                 self._closed
+                or self._stop_recovery
                 or not self._needs_retry
                 or self._retry_in_progress
                 or now < max(self._cooldown_until, self._retry_at)
@@ -462,7 +472,12 @@ class StreamOutput:
             new_encoder = self._factory(bitrate)
         except Exception as exc:
             with self._lock:
-                active = self._needs_retry and not self._closed and self._bitrate == bitrate
+                active = (
+                    self._needs_retry
+                    and not self._closed
+                    and not self._stop_recovery
+                    and self._bitrate == bitrate
+                )
                 if active:
                     if not self._failure_recorded_for_retry:
                         self._record_failure()
@@ -482,7 +497,12 @@ class StreamOutput:
                     )
             return
         with self._lock:
-            stale = self._closed or not self._needs_retry or self._bitrate != bitrate
+            stale = (
+                self._closed
+                or self._stop_recovery
+                or not self._needs_retry
+                or self._bitrate != bitrate
+            )
             if not stale:
                 self._install_encoder(new_encoder)
             self._retry_in_progress = False
@@ -535,7 +555,7 @@ class StreamOutput:
             if not data:
                 break
             self._on_encoded(encoder, data)
-        if not self._closed and encoder is self._encoder:
+        if not self._closed and not self._stop_recovery and encoder is self._encoder:
             said = list(getattr(encoder, "errors", ()))
             logger.warning(
                 "%s stream encoder exited; restarting%s",
@@ -550,7 +570,7 @@ class StreamOutput:
         Args:
             message: The warning to log the first time in an episode.
         """
-        if not self._pcm_write_problem_logged:
+        if not self._stop_recovery and not self._pcm_write_problem_logged:
             logger.warning(message)
             self._pcm_write_problem_logged = True
 
