@@ -1,0 +1,13 @@
+# Codecov reports coverage for information only. The test suite's own floor
+# (fail_under in pyproject.toml) is the gate, so these statuses never fail.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+comment: false
+github_checks:
+  annotations: false

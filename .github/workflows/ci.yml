@@ -135,6 +135,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
+      id-token: write  # Codecov upload through OIDC; no token secret
     strategy:
       fail-fast: false
       matrix:
@@ -172,9 +173,21 @@ jobs:
         run: choco install ffmpeg --yes --no-progress
 
       - name: Pytest — test suite
-        run: uv run --frozen --no-sync python scripts/ci_pytest.py --profile full --require-executed tests/unit/test_review_render.py --durations=30
+        run: uv run --frozen --no-sync python scripts/ci_pytest.py --profile full --require-executed tests/unit/test_review_render.py --durations=30 --cov-report=xml:coverage.xml
         env:
           AUTODJ_PYTEST_WORKERS: "2"
+
+      # Informational only: the suite's own 90% floor stays the gate, and a
+      # Codecov outage or a fork without OIDC never fails the job.
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() && hashFiles('coverage.xml') != '' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: coverage.xml
+          disable_search: true
+          flags: python-${{ runner.os }}
+          fail_ci_if_error: false
 
   browser:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
