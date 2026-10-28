@@ -137,7 +137,8 @@ def test_unexpected_pipe_read_failure_becomes_decoder_error():
             while decoder.error is None and time.monotonic() < deadline:
                 time.sleep(0.005)
             assert "pipe read failed" in decoder.error
-            assert child.terminated
+            # Its stdout is closed first, which stops a real FFmpeg blocked writing.
+            assert child.stdout.closed and child.poll() is not None
         finally:
             decoder.close()
 
@@ -266,3 +267,58 @@ def test_closing_a_running_decoder_raises_in_no_reader_thread(tmp_path, monkeypa
             time.sleep(0.01)
         decoder.close()
     assert failures == []
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs FFmpeg")
+def test_closing_a_decoder_blocked_on_a_full_pipe_is_quick(tmp_path):
+    """On Linux FFmpeg ignores SIGTERM while blocked writing to a full pipe.
+
+    close() must not wait out the 2 s SIGTERM grace and kill it: every deck
+    seek closes a decoder like this one before it opens the next.
+    """
+    path = _tone_mp3(tmp_path)
+    for _ in range(3):
+        decoder = StreamDecoder(path, start_seconds=0.5)
+        assert decoder.wait_ready(5)
+        deadline = time.monotonic() + 5
+        while decoder.buffered_frames < 2 * SAMPLE_RATE and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.3)  # FFmpeg fills the OS pipe behind the full buffer and blocks
+        assert decoder._process.poll() is None
+        began = time.monotonic()
+        decoder.close()
+        assert time.monotonic() - began < 0.5
+        assert decoder._process.poll() is not None
+
+
+def test_close_ends_a_decoder_blocked_on_a_full_pipe_without_a_kill():
+    """Linux FFmpeg blocked writing ignores SIGTERM but exits once its pipe closes."""
+
+    class _BlockedWriter(_Process):
+        killed = False
+
+        def terminate(self):
+            self.terminated = True  # ignored while the write is blocked
+
+        def kill(self):
+            self.killed = True
+            self.stdout.close()
+
+        def wait(self, timeout=None):
+            if not self.stdout.closed:
+                raise subprocess.TimeoutExpired("ffmpeg", timeout)
+            return self.returncode
+
+    child = _BlockedWriter(np.zeros((3 * SAMPLE_RATE, 2), np.float32).tobytes())
+    with (
+        patch("autodj.stream_decode.shutil.which", return_value="ffmpeg"),
+        patch("autodj.stream_decode.subprocess.Popen", return_value=child),
+    ):
+        decoder = StreamDecoder("music.mp3")
+        deadline = time.monotonic() + 2
+        while decoder.buffered_frames < 2 * SAMPLE_RATE and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert decoder.buffered_frames == 2 * SAMPLE_RATE
+        decoder.close()
+    assert child.stdout.closed
+    assert not child.killed

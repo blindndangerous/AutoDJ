@@ -189,21 +189,34 @@ class StreamDecoder:
             self._buffered_frames = 0
             self._condition.notify_all()
         process = self._process
-        self._reap_process()
-        readers = [
-            thread
+        stdout = getattr(process, "stdout", None)
+        stderr = getattr(process, "stderr", None)
+        producer, stderr_reader = (
+            thread if thread is not None and thread is not threading.current_thread() else None
             for thread in (self._producer, self._stderr_reader)
-            if thread is not None and thread is not threading.current_thread()
-        ]
+        )
+        deadline = time.monotonic() + _READER_GRACE_SECONDS
+        # A full buffer leaves FFmpeg blocked writing to stdout, where SIGTERM
+        # does not end it on Linux: _reap_process would wait 2 s and kill it.
+        # The producer, told to stop, leaves at once when it is waiting for
+        # room; closing stdout then fails FFmpeg's write (EPIPE) so it exits
+        # at once. A producer still in read() is draining the pipe instead,
+        # and SIGTERM ends FFmpeg; stdout is closed only after it leaves.
+        if producer is not None:
+            producer.join(timeout=_READER_GRACE_SECONDS)
+        if stdout is not None and (producer is None or not producer.is_alive()):
+            with contextlib.suppress(OSError):
+                stdout.close()
+        self._reap_process()
         # The ended process closed its ends of both pipes, so the readers
         # normally reach end-of-file at once; join them before closing ours.
         # A launcher shim (Chocolatey's ffmpeg.exe, say) can leave the real
         # FFmpeg holding the pipes after its own exit: closing them then ends
         # that process, and a reader that was still in read() stops quietly.
-        deadline = time.monotonic() + _READER_GRACE_SECONDS
+        readers = [thread for thread in (producer, stderr_reader) if thread is not None]
         for thread in readers:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        for pipe in (getattr(process, "stdout", None), getattr(process, "stderr", None)):
+        for pipe in (stdout, stderr):
             if pipe is not None:
                 with contextlib.suppress(OSError):
                     pipe.close()
@@ -306,5 +319,9 @@ class StreamDecoder:
                         self._eof = True
                         self._condition.notify_all()
         except Exception as exc:
+            # This thread is stdout's only reader: closing it first ends an
+            # FFmpeg blocked writing, which SIGTERM alone does not on Linux.
+            with contextlib.suppress(OSError, ValueError):
+                pipe.close()
             self._reap_process()
             self._fail(f"FFmpeg could not decode {self.path}: {exc}")
