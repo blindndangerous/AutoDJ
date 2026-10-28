@@ -1,5 +1,8 @@
 # AutoDJ
 
+[![CI status](https://github.com/blindndangerous/AutoDJ/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/blindndangerous/AutoDJ/actions/workflows/ci.yml)
+[![Test coverage on Codecov](https://codecov.io/gh/blindndangerous/AutoDJ/branch/master/graph/badge.svg)](https://codecov.io/gh/blindndangerous/AutoDJ)
+
 AutoDJ runs a music station from your own files. It can choose the next song by sound, follow a clockwheel and rotation categories, or play a queue you build. It also supports beatmatched sets with cues, tempo, key, and transition effects. You can listen in the browser, stream to a network player, or relay a station to Icecast or Shoutcast.
 
 Music stays on your computer or server. A new library starts empty, so you choose which folders AutoDJ can read. The web page handles most daily work: add music, build a clockwheel, set repeat rules, adjust sound, schedule events, and manage stations.
