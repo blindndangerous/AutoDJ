@@ -13,11 +13,20 @@ COPY --from=ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02d
 # site-packages, so the base image's pip and the pip wheel that ensurepip
 # bundles are never used. Their vendored msgpack, urllib3 and setuptools lag
 # behind security releases, so remove both.
+#
+# The image has no Tk libraries, so tkinter cannot even import; it goes with
+# IDLE and turtledemo, which need it. It has no C compiler either, so nothing
+# builds against Python's C headers in /usr/local/include. The copyright files
+# in /usr/share/doc stay.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates ffmpeg libsndfile1 libpcre2-8-0 perl-base libssl3 openssl \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip uninstall --yes --no-input --root-user-action ignore pip \
-    && rm -rf /usr/local/lib/python3.*/ensurepip
+    && rm -rf /usr/local/lib/python3.*/ensurepip \
+        /usr/local/lib/python3.*/idlelib /usr/local/lib/python3.*/tkinter \
+        /usr/local/lib/python3.*/turtledemo /usr/local/lib/python3.*/turtle.py \
+        /usr/local/lib/python3.*/lib-dynload/_tkinter.* /usr/local/bin/idle* \
+        /usr/local/include
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md LICENSE ./
@@ -39,8 +48,12 @@ COPY container/torch-cpu.txt ./container/
 #
 # Bare-metal installs are unaffected and keep the locked PyPI builds.
 #
-# PyTorch's CPU builds also ship its C++ unit-test programs in torch/test, about 85 MB that nothing
-# imports or runs, so the CPU image removes them. PyPI's CUDA build does not ship them.
+# Both images then drop what no runtime path loads:
+# - every tests and test folder in site-packages. Only test runners and other tests import them;
+#   the testing modules, such as numpy.testing and torch.testing, are real modules and stay. In the
+#   CPU build this includes torch/test, PyTorch's C++ unit-test programs.
+# - torch/include, the C++ headers that torch.compile and torch.utils.cpp_extension build against.
+#   AutoDJ never compiles C++, and the image has no compiler to do it.
 ARG TORCH_VARIANT=cpu
 RUN set -eu; \
     case "$TORCH_VARIANT" in \
@@ -49,14 +62,17 @@ RUN set -eu; \
     esac; \
     if [ "$TORCH_VARIANT" = cuda ]; then \
         uv sync --frozen --no-dev --extra index --no-install-project; \
-        exit 0; \
+    else \
+        python -c 'import re, tomllib; lock = {p["name"]: p["version"] for p in tomllib.load(open("uv.lock", "rb"))["package"]}; pins = dict(re.findall(r"^(torch|torchaudio|torchvision)==(\S+)\+cpu ", open("container/torch-cpu.txt").read(), re.M)); want = {n: lock[n] for n in ("torch", "torchaudio", "torchvision")}; assert pins == want, f"container/torch-cpu.txt {pins} != uv.lock {want}"'; \
+        skipped="$(python -c 'import re, tomllib; names = sorted(p["name"] for p in tomllib.load(open("uv.lock", "rb"))["package"]); print(" ".join(f"--no-install-package {n}" for n in names if re.fullmatch(r"(nvidia|cuda)-.+|triton|torch|torchaudio|torchvision", n)))')"; \
+        uv sync --frozen --no-dev --extra index --no-install-project $skipped; \
+        uv pip install --python /opt/venv/bin/python --no-deps --require-hashes \
+            --index-url https://download.pytorch.org/whl/cpu -r container/torch-cpu.txt; \
     fi; \
-    python -c 'import re, tomllib; lock = {p["name"]: p["version"] for p in tomllib.load(open("uv.lock", "rb"))["package"]}; pins = dict(re.findall(r"^(torch|torchaudio|torchvision)==(\S+)\+cpu ", open("container/torch-cpu.txt").read(), re.M)); want = {n: lock[n] for n in ("torch", "torchaudio", "torchvision")}; assert pins == want, f"container/torch-cpu.txt {pins} != uv.lock {want}"'; \
-    skipped="$(python -c 'import re, tomllib; names = sorted(p["name"] for p in tomllib.load(open("uv.lock", "rb"))["package"]); print(" ".join(f"--no-install-package {n}" for n in names if re.fullmatch(r"(nvidia|cuda)-.+|triton|torch|torchaudio|torchvision", n)))')"; \
-    uv sync --frozen --no-dev --extra index --no-install-project $skipped; \
-    uv pip install --python /opt/venv/bin/python --no-deps --require-hashes \
-        --index-url https://download.pytorch.org/whl/cpu -r container/torch-cpu.txt; \
-    rm -rf /opt/venv/lib/python3.*/site-packages/torch/test
+    site_packages="$(/opt/venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"; \
+    find "$site_packages" -type d \( -name tests -o -name test \) -not -path '*.dist-info/*' -prune \
+        -exec rm -rf {} +; \
+    rm -rf "$site_packages/torch/include"
 
 FROM python-base AS package
 COPY src ./src
