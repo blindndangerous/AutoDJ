@@ -32,15 +32,12 @@ CREATE TABLE IF NOT EXISTS catalog_settings (key TEXT PRIMARY KEY, value TEXT NO
 CREATE TABLE IF NOT EXISTS station_migrations (name TEXT PRIMARY KEY, complete INTEGER NOT NULL);
 """
 
-# The rows that are songs or live sets, in SQL.
-_PLAY_ROWS = "kind IN ('song','live')"
-# The rows that end the song before them in a report: songs, live sets and
-# what airs on its own between them, never a liner mixed over a song's end.
-_BOUNDARY_ROWS = (
-    "kind IN ("
-    + ",".join(f"'{kind}'" for kind in sorted({"song", "live", *STANDALONE_KINDS}))
-    + ")"
-)
+# Kinds passed to SQL as one JSON parameter, read with json_each(?), so
+# every query text is a fixed literal.  Songs and live sets:
+_PLAY_KINDS = json.dumps(["song", "live"])
+# and the rows that end the song before them in a report: those, and what
+# airs on its own between them, never a liner mixed over a song's end.
+_BOUNDARY_KINDS = json.dumps(sorted({"song", "live", *STANDALONE_KINDS}))
 
 
 class StationStore:
@@ -161,17 +158,16 @@ class StationStore:
         """
         _check_limit(limit)
         _check_limit(inserts)
-        columns = (
-            "rowid,event_id,entry_id,path,title,artist,duration,played_at,kind,ended_at,track_kind"
-        )
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM (SELECT " + columns + " FROM play_history "  # nosec B608 - fixed SQL
-                "WHERE interrupted=0 AND " + _PLAY_ROWS + " ORDER BY rowid DESC LIMIT ?) "
-                "UNION ALL SELECT * FROM (SELECT " + columns + " FROM play_history "
-                "WHERE interrupted=0 AND NOT " + _PLAY_ROWS + " ORDER BY rowid DESC LIMIT ?) "
-                "ORDER BY rowid ASC",
-                (limit, inserts),
+                "SELECT * FROM (SELECT rowid,event_id,entry_id,path,title,artist,duration,"
+                "played_at,kind,ended_at,track_kind FROM play_history WHERE interrupted=0 "
+                "AND kind IN (SELECT value FROM json_each(?)) ORDER BY rowid DESC LIMIT ?) "
+                "UNION ALL SELECT * FROM (SELECT rowid,event_id,entry_id,path,title,artist,"
+                "duration,played_at,kind,ended_at,track_kind FROM play_history WHERE "
+                "interrupted=0 AND kind NOT IN (SELECT value FROM json_each(?)) "
+                "ORDER BY rowid DESC LIMIT ?) ORDER BY rowid ASC",
+                (_PLAY_KINDS, limit, _PLAY_KINDS, inserts),
             ).fetchall()
         result = []
         for row in rows:
@@ -211,8 +207,10 @@ class StationStore:
             raise ValueError("Both start and end are required")
         if start is not None and end is not None and end <= start:
             raise ValueError("The end of the range must be after its start.")
+        # Fixed SQL fragments; the kinds and range test are parameters.
         following = ""
-        where = "" if include_inserts else " AND h." + _PLAY_ROWS
+        params: list[str] = []
+        where = "" if include_inserts else " AND h.kind IN (SELECT value FROM json_each(?))"
         if start is not None and end is not None:
             from autodj.catalog import history_start
 
@@ -222,10 +220,13 @@ class StationStore:
 
             where += " AND in_report_range(played_at)"
             following = (
-                ", CASE WHEN h." + _BOUNDARY_ROWS + " THEN (SELECT n.played_at FROM play_history n "
-                "WHERE n.interrupted=0 AND n." + _BOUNDARY_ROWS + " AND n.rowid>h.rowid "
-                "ORDER BY n.rowid LIMIT 1) END AS following_at"
+                ", CASE WHEN h.kind IN (SELECT value FROM json_each(?)) THEN (SELECT n.played_at "
+                "FROM play_history n WHERE n.interrupted=0 AND n.kind IN (SELECT value FROM "
+                "json_each(?)) AND n.rowid>h.rowid ORDER BY n.rowid LIMIT 1) END AS following_at"
             )
+            params += [_BOUNDARY_KINDS, _BOUNDARY_KINDS]
+        if not include_inserts:
+            params.append(_PLAY_KINDS)
         # Keep report parsing and its following-play lookup on one reader snapshot.
         with closing(sqlite3.connect(readonly_uri(self.path), uri=True, timeout=30)) as db:
             db.row_factory = sqlite3.Row
@@ -236,7 +237,8 @@ class StationStore:
                 "SELECT h.played_at,h.duration,h.title,h.artist,h.path,h.album,"  # nosec B608 - fixed SQL fragments only
                 "CASE WHEN h.kind!='song' THEN h.kind ELSE COALESCE(NULLIF(h.track_kind,''),h.kind) END AS kind,"
                 "h.performances,h.ended_at" + following + " FROM play_history h "
-                "WHERE h.interrupted=0" + where + " ORDER BY h.rowid"
+                "WHERE h.interrupted=0" + where + " ORDER BY h.rowid",
+                params,
             ).fetchall()
         return [dict(row) for row in rows]
 
