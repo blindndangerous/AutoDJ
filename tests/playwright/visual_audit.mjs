@@ -704,14 +704,59 @@ async function standInForUpdates(page) {
   await page.route("**/api/updates", (route) => (route.request().method() === "GET"
     ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(UPDATES) })
     : route.continue()));
-  // Restart is only ever cancelled here; a press that got through is refused.
+  // Restart is refused here, so a confirmed press restarts nothing.
   await page.route("**/api/server/restart", (route) => route.fulfill({
     status: 409, contentType: "application/json", body: JSON.stringify({ detail: "Audit" }),
   }));
 }
 
-// Restart opens the shared confirmation on Cancel; Escape closes it and puts
-// focus back on Restart, with nothing sent.
+// Every focus change on the page from now on, as "out:<from>><to>" and
+// "in:<to>"; "body" is focus going nowhere.
+function watchFocus(page) {
+  return page.evaluate(() => {
+    const name = (element) => (!element || element === document.body ? "body" : element.id || element.tagName);
+    window.__autodjFocusTrail = [];
+    if (window.__autodjFocusWatched) return;
+    window.__autodjFocusWatched = true;
+    document.addEventListener("focusout", (event) => window.__autodjFocusTrail
+      .push(`out:${name(event.target)}>${name(event.relatedTarget)}`), true);
+    document.addEventListener("focusin", (event) => window.__autodjFocusTrail
+      .push(`in:${name(event.target)}`), true);
+  });
+}
+
+// Close the open confirmation with *keys* and check focus went straight
+// from the dialog's button to Restart: never through the page body, where
+// NVDA read "Skip to main content" first (#602).  The close event comes a
+// task later, so the trail is read after it.
+async function closeRestartConfirm(page, keys, how) {
+  const dialog = page.locator("#confirm-dialog");
+  // Measuring the open dialog may have moved focus; start from Cancel.
+  await page.locator("#confirm-cancel").focus();
+  await watchFocus(page);
+  const start = await page.evaluate(() => `open ${document.getElementById("confirm-dialog").open}, active ${document.activeElement?.id || document.activeElement?.tagName}`);
+  for (const key of keys) await page.keyboard.press(key);
+  await dialog.waitFor({ state: "hidden" });
+  const trail = await page.evaluate(() => new Promise((resolve) => {
+    setTimeout(() => resolve({ trail: window.__autodjFocusTrail, active: document.activeElement?.id }), 50);
+  }));
+  const closing = trail.trail.slice(trail.trail.findLastIndex((step) => step.startsWith("out:confirm-")));
+  const straight = ["out:confirm-cancel>updates-restart", "out:confirm-accept>updates-restart"]
+    .includes(closing[0]) && closing.length === 2 && closing[1] === "in:updates-restart";
+  if (trail.active !== "updates-restart" || !straight) {
+    throw new Error(`${how} did not put focus straight back on Restart: ${trail.trail.join(", ")} (${start})`);
+  }
+}
+
+async function reopenRestartConfirm(page) {
+  await page.locator("#updates-restart").focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#confirm-dialog").waitFor({ state: "visible" });
+}
+
+// Restart opens the shared confirmation on Cancel.  Escape and Cancel close
+// it, and Restart confirmed is refused; each time focus goes straight back
+// to Restart.
 async function openRestartConfirm(page, visit) {
   const restart = page.locator("#updates-restart");
   await restart.waitFor({ state: "visible" });
@@ -727,10 +772,13 @@ async function openRestartConfirm(page, visit) {
   const message = await page.locator("#confirm-message").textContent();
   if (!/off the air/.test(message || "")) throw new Error(`Restart's confirmation says: ${message}`);
   await visit("settings/updates/restart");
-  await page.keyboard.press("Escape");
-  await dialog.waitFor({ state: "hidden" });
-  const back = await page.evaluate(() => document.activeElement?.id);
-  if (back !== "updates-restart") throw new Error(`Escape left focus on ${back}, not Restart`);
+  await closeRestartConfirm(page, ["Escape"], "Escape");
+  await reopenRestartConfirm(page);
+  await closeRestartConfirm(page, ["Enter"], "Cancel");
+  await reopenRestartConfirm(page);
+  await closeRestartConfirm(page, ["Tab", "Enter"], "A refused Restart");
+  // The refusal's status message would cover what is measured next.
+  await showToast(page, "");
 }
 
 const hourFitPages = new WeakSet();

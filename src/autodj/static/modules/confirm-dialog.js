@@ -1,5 +1,5 @@
 import {
-  dialogReturnPlace, dialogStatusLine, focusAfterDialog, focusSteadyPlace, releaseDialogFocus,
+  dialogReturnPlace, dialogStatusLine, focusAfterDialog, focusSteadyPlace,
 } from "./dom-helpers.js";
 import { sayIfStillPending } from "./live-region.js";
 
@@ -10,9 +10,19 @@ import { sayIfStillPending } from "./live-region.js";
 // A native modal <dialog>: NVDA hears the title and the message when it
 // opens, focus starts on Cancel so a stray Enter changes nothing, and
 // Escape cancels.  Cancel and Escape put focus back on the control that
-// opened the dialog once it has closed: put back by the browser as it
-// closed, focus was not reported, and NVDA read the Station menu at the top
-// of the page instead (#385).
+// opened the dialog.
+//
+// Focus goes straight from the dialog's button to where it belongs, never
+// through the page body: a dialog control that let go of focus first left
+// it on the body for a moment, and NVDA in Firefox read "Skip to main
+// content" before the control (#602).  As a modal dialog closes, the
+// browser itself puts focus back on the control that opened it, which is
+// right for Cancel and Escape.  When focus belongs somewhere else, the
+// opener is made inert while the dialog closes, so the browser has nothing
+// to put back, and focus moves on in the same task.  The close event comes
+// a task later; it puts focus back only when it is not already on the
+// opener (#385), as when the opener was gone and the browser had nowhere
+// to put it.
 //
 // onConfirm, when given, does the action while the dialog is still open
 // and returns the element that should have focus afterwards.  The page
@@ -55,8 +65,26 @@ export function confirmAction(doc, {
       [dialog, "close", closed],
     ];
     // Back on the opener, or somewhere steady near it; never the page body.
+    // Focus already there, put back by the browser, stays: letting go of it
+    // to take it again would rest it on the page body (#602).
     function returnFocus() {
+      if (opener && doc.activeElement === opener) return;
       if (!focusAfterDialog(opener)) focusSteadyPlace(doc, place);
+    }
+    // Close the dialog with focus going straight to *target*, or back to the
+    // opener when there is none.
+    function closeOnto(value, target) {
+      const elsewhere = target?.isConnected && target !== opener;
+      // The browser would put focus back on the opener first; an inert
+      // control cannot take it.
+      const hold = elsewhere && opener?.isConnected && !opener.hasAttribute("inert");
+      if (hold) opener.setAttribute("inert", "");
+      try {
+        dialog.close(value);
+      } finally {
+        if (hold) opener.removeAttribute("inert");
+      }
+      if (!(elsewhere && focusAfterDialog(target))) returnFocus();
     }
     function settle(value) {
       for (const [target, type, listener] of listeners) {
@@ -83,28 +111,26 @@ export function confirmAction(doc, {
           confirmButton.removeAttribute("aria-busy");
         }
       }
-      releaseDialogFocus(dialog);
-      dialog.close("confirm");
-      if (!(target?.isConnected && focusAfterDialog(target))) returnFocus();
+      closeOnto("confirm", target);
       settle(true);
     }
     function cancel(event) {
       event.preventDefault();
       if (pending) return;
-      releaseDialogFocus(dialog);
-      dialog.close("cancel");
+      closeOnto("cancel", null);
     }
     // Escape: held while the action runs; otherwise the browser closes the
-    // dialog once Cancel has let go of focus.
+    // dialog and puts focus back on the opener.
     function holdWhilePending(event) {
       if (pending) event.preventDefault();
-      else releaseDialogFocus(dialog);
     }
-    // Cancel, Escape, or a browser that closed the dialog anyway.
+    // Cancel, Escape, or a browser that closed the dialog anyway.  Focus
+    // still in the closed dialog, or on the page body, goes back.
     function closed() {
       if (pending) return;
       settle(false);
-      returnFocus();
+      const active = doc.activeElement;
+      if (!active || active === doc.body || dialog.contains(active)) returnFocus();
     }
     for (const [target, type, listener] of listeners) {
       target?.addEventListener(type, listener);
@@ -133,9 +159,9 @@ export async function chooseAction(doc, {
   const actions = acceptButton.parentElement;
   actions.append(acceptButton, alternate, cancelButton);
   cancelButton.textContent = cancelLabel;
+  // Focus goes back as for Cancel, put back by the browser as it closes.
   const discard = (event) => {
     event.preventDefault();
-    releaseDialogFocus(dialog);
     dialog.close("alternate");
   };
   alternate.addEventListener("click", discard);

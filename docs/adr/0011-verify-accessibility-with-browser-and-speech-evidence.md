@@ -75,8 +75,21 @@ or evidence limits. Narrative above retains rationale and scope.
 | --- | --- | --- | --- |
 | `ADR-0011-01` | The visual status mirror does not add a second automatic announcement path. | automated | `tests/jsmodules/live-region.test.js::keeps the visible mirror out of the accessibility tree` |
 | `ADR-0011-02` | An unchanged status does not rewrite its live region during passive updates. | automated | `tests/jsmodules/live-region.test.js::does not rewrite a region that already carries the message` |
-| `ADR-0011-03` | Cancel returns focus to the opener after the dialog closes. | automated | `tests/jsmodules/confirm-dialog.test.js::puts focus back on the opener only once the dialog has closed, after Cancel` |
+| `ADR-0011-03` | Cancel and Escape return focus to the opener after the dialog closes, straight from the dialog's button and never through the page body. | automated | `tests/jsmodules/confirm-dialog.test.js::puts focus back on the opener only once the dialog has closed, after Cancel`, `tests/jsmodules/confirm-dialog.test.js::does the same for Escape, and holds Escape while the action runs` |
 | `ADR-0011-04` | A release records the required real-browser and screen-reader sample with scope and limitations. | manual | Follow docs/accessibility-testing.md; record exact engine, screen reader, flows, defects, and whether a person listened. |
+| `ADR-0011-05` | A confirmed action that names another control moves focus straight to it from the dialog's button, never through the opener or the page body. | automated | `tests/jsmodules/confirm-dialog.test.js::moves focus to the action's target, not the opener, after a confirm` |
+
+## Amendment 2026-10-27: dialog focus never rests on the page body
+
+The confirmation's buttons no longer let go of focus before it closes. Focus
+rested on the page body for a moment, and NVDA in Firefox read the page's
+first link before the control focus returned to
+([#602](https://github.com/blindndangerous/AutoDJ/issues/602)). Focus now goes
+from the dialog's button straight to the opener, which the browser restores
+as a modal dialog closes, or straight to the control an action names, with
+the opener inert while the dialog closes so the browser does not restore it
+first. `ADR-0011-03` gains Escape and the page-body condition; `ADR-0011-05`
+is new. Whether NVDA reads each close correctly remains a manual check.
 
 ## Verification
 
