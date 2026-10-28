@@ -22,8 +22,44 @@ is pending; the detailed interaction and release-sampling rules remain here.
 
 AutoDJ uses automated checks and requires a screen-reader sample before release to catch accessibility regressions. The results apply only to the paths that the checks exercise. They do not certify the whole application.
 
-Each modal dialog starts with an H1 title referenced by its `aria-labelledby`.
+Each dialog starts with an H1 title referenced by its `aria-labelledby`.
 Verify level-one heading navigation inside the dialog as well as its initial field focus.
+
+### Confirmations with NVDA
+
+The shared confirmation (Clear queue, Delete profile, Restart AutoDJ and the
+rest, in `modules/confirm-dialog.js`) opens with `show()` and `aria-modal="true"`,
+not `showModal()`. A backdrop keeps the page out of reach, Cancel is its last
+button, and its form is not exposed as a landmark. Behind a `showModal()` dialog
+the browser hides the page from assistive technology, so NVDA lost its place on
+the page and read "Skip to main content" as the dialog closed
+([#602](https://github.com/blindndangerous/AutoDJ/issues/602)). This also
+resolves D14 from the 0.18.0 sample for these dialogs. NVDA reads a new dialog
+through and leaves its cursor on the last button, so Enter pressed the confirm
+button when it came last
+([#627](https://github.com/blindndangerous/AutoDJ/issues/627)). Opened over
+another modal dialog, such as an editor's discard question, the confirmation is
+modal and this section does not apply.
+
+Expected with NVDA in browse mode, in Chrome and Firefox:
+
+- Opening reads the title, the message and both buttons, with focus on Cancel.
+- Enter straight after opening cancels.
+- Tab and Shift+Tab move only between the two buttons; a click outside the
+  dialog does nothing.
+- Escape or Cancel returns focus to the control that opened the dialog. NVDA
+  reads that control twice, first as the line at its browse-mode cursor (for
+  example "button Restart AutoDJ"), then as the focus ("Restart AutoDJ button").
+  It never reads "Skip to main content" or another line from the top of the page.
+
+To check, open a confirmation by keyboard, for example Restart AutoDJ in
+**Settings**, **Updates** or Clear queue in **Queue & Search**. Listen to the
+opening speech, then press Enter and confirm that nothing happened. Open it again
+and close it with Escape, then again with Cancel; the first thing read each time
+must be the control that opened it. Record the revision, browser and NVDA
+versions, and whether a person listened, as for any sample. The record of the
+first check is in
+[ADR 0011](adr/0011-verify-accessibility-with-browser-and-speech-evidence.md#amendment-2026-10-28-the-confirmation-opens-without-showmodal).
 
 ## Disposable SSO browser audit
 
@@ -290,8 +326,12 @@ creates a station; the stand-in answers every create request.
 
 Settings > Updates is shown with a stood-in update: its release notes link, the update commands
 (a long unbroken wheel address included, for reflow) and Restart AutoDJ. Enter on Restart must open
-the confirmation with focus on Cancel and a message that says the stream goes off the air, and
-Escape must close it with focus back on Restart. The audit never restarts the server.
+the confirmation with focus on Cancel and a message that says the stream goes off the air. The
+open confirmation must be marked `aria-modal` without being modal, with its form out of the
+accessibility tree and Cancel after Restart; its backdrop must cover the page and ignore a click,
+and Tab and Shift+Tab must stay on its two buttons. Escape, Cancel and a refused Restart must each
+move focus straight from the dialog's button to Restart, never through the page body. The audit
+never restarts the server.
 
 ## Announcement contract
 

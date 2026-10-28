@@ -748,6 +748,41 @@ async function closeRestartConfirm(page, keys, how) {
   }
 }
 
+// The open confirmation keeps the page out of reach without showModal()
+// (#602, #627): marked aria-modal, not :modal, the form out of the tree,
+// Cancel last; the backdrop covers the page and a click on it changes
+// nothing; Tab and Shift+Tab go round the dialog's two buttons.
+async function restartConfirmShape(page) {
+  const shape = await page.evaluate(() => {
+    const dialog = document.getElementById("confirm-dialog");
+    // Two corners of the window, away from the dialog.
+    const hits = [[5, 5], [window.innerWidth - 5, window.innerHeight - 5]]
+      .map(([x, y]) => document.elementFromPoint(x, y)?.id || "page");
+    return {
+      ariaModal: dialog.getAttribute("aria-modal"),
+      modal: dialog.matches(":modal"),
+      formRole: dialog.querySelector("form").getAttribute("role"),
+      buttons: [...dialog.querySelectorAll("button")].map((button) => button.id).join(","),
+      coveredBy: [...new Set(hits)].join(","),
+    };
+  });
+  const expected = { ariaModal: "true", modal: false, formRole: "none",
+    buttons: "confirm-accept,confirm-cancel", coveredBy: "confirm-backdrop" };
+  if (JSON.stringify(shape) !== JSON.stringify(expected)) {
+    throw new Error(`Restart's confirmation is not as expected: ${JSON.stringify(shape)}`);
+  }
+  await page.locator("#confirm-backdrop").click({ position: { x: 5, y: 5 } });
+  const stops = [];
+  for (const key of ["Tab", "Tab", "Shift+Tab"]) {
+    await page.keyboard.press(key);
+    stops.push(await page.evaluate(() => document.activeElement?.id));
+  }
+  const open = await page.locator("#confirm-dialog").evaluate((dialog) => dialog.open);
+  if (!open || stops.join(",") !== "confirm-accept,confirm-cancel,confirm-accept") {
+    throw new Error(`Restart's confirmation let go: open ${open}, Tab stops ${stops.join(",")}`);
+  }
+}
+
 async function reopenRestartConfirm(page) {
   await page.locator("#updates-restart").focus();
   await page.keyboard.press("Enter");
@@ -756,7 +791,7 @@ async function reopenRestartConfirm(page) {
 
 // Restart opens the shared confirmation on Cancel.  Escape and Cancel close
 // it, and Restart confirmed is refused; each time focus goes straight back
-// to Restart.
+// to Restart.  Restart is before Cancel, so Shift+Tab reaches it.
 async function openRestartConfirm(page, visit) {
   const restart = page.locator("#updates-restart");
   await restart.waitFor({ state: "visible" });
@@ -772,11 +807,12 @@ async function openRestartConfirm(page, visit) {
   const message = await page.locator("#confirm-message").textContent();
   if (!/off the air/.test(message || "")) throw new Error(`Restart's confirmation says: ${message}`);
   await visit("settings/updates/restart");
+  await restartConfirmShape(page);
   await closeRestartConfirm(page, ["Escape"], "Escape");
   await reopenRestartConfirm(page);
   await closeRestartConfirm(page, ["Enter"], "Cancel");
   await reopenRestartConfirm(page);
-  await closeRestartConfirm(page, ["Tab", "Enter"], "A refused Restart");
+  await closeRestartConfirm(page, ["Shift+Tab", "Enter"], "A refused Restart");
   // The refusal's status message would cover what is measured next.
   await showToast(page, "");
 }

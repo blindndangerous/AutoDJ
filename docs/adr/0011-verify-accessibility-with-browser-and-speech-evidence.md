@@ -78,6 +78,8 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0011-03` | Cancel and Escape return focus to the opener after the dialog closes, straight from the dialog's button and never through the page body. | automated | `tests/jsmodules/confirm-dialog.test.js::puts focus back on the opener only once the dialog has closed, after Cancel`, `tests/jsmodules/confirm-dialog.test.js::does the same for Escape, and holds Escape while the action runs` |
 | `ADR-0011-04` | A release records the required real-browser and screen-reader sample with scope and limitations. | manual | Follow docs/accessibility-testing.md; record exact engine, screen reader, flows, defects, and whether a person listened. |
 | `ADR-0011-05` | A confirmed action that names another control moves focus straight to it from the dialog's button, never through the opener or the page body. | automated | `tests/jsmodules/confirm-dialog.test.js::moves focus to the action's target, not the opener, after a confirm` |
+| `ADR-0011-06` | The shared confirmation opens with `show()`, not `showModal()`, unless another modal dialog is open; it is marked `aria-modal`, its form has `role="none"`, Cancel is its last button, and while it is open a backdrop takes clicks, Tab and Shift+Tab stay in it, and focus sent to the page returns to Cancel. | automated | `tests/jsmodules/confirm-dialog.test.js::opens with show(), aria-modal, the form out of the tree, Cancel last and the backdrop shown`, `tests/jsmodules/confirm-dialog.test.js::keeps Tab, Shift+Tab and focus in the dialog, and the backdrop does nothing` |
+| `ADR-0011-07` | With NVDA in browse mode, Enter on a newly opened confirmation cancels it, and closing it reads the control focus returns to, not the top of the page. | manual | Open and close a confirmation such as Restart AutoDJ in Settings, Updates with NVDA in Chrome and Firefox; record the revision, versions, flows, speech, and whether a person listened. |
 
 ## Amendment 2026-10-27: dialog focus never rests on the page body
 
@@ -90,6 +92,35 @@ as a modal dialog closes, or straight to the control an action names, with
 the opener inert while the dialog closes so the browser does not restore it
 first. `ADR-0011-03` gains Escape and the page-body condition; `ADR-0011-05`
 is new. Whether NVDA reads each close correctly remains a manual check.
+
+## Amendment 2026-10-28: the confirmation opens without showModal()
+
+The 2026-10-27 change did not stop NVDA reading "Skip to main content".
+NVDA reads a web dialog in a browse-mode document of its own. Behind a
+`showModal()` dialog, Chrome marks every other node ignored
+(`activeModalDialog`: 195 exposed nodes fell to 16), so NVDA's page
+document lost its caret, and when the dialog closed NVDA spoke the page
+document's line at the caret, its top line, before the focused control.
+On opening, NVDA reads a new dialog document through (say all on page
+load), leaving its cursor on the last button, so Enter in browse mode
+pressed Restart in Chrome
+([#627](https://github.com/blindndangerous/AutoDJ/issues/627)).
+
+The shared confirmation therefore opens with `show()` and `aria-modal`,
+which leaves the page in the accessibility tree, with Cancel as the last
+button (`ADR-0011-06`). Opened over another modal dialog, it still uses
+`showModal()`. NVDA evidence for `ADR-0011-07`: on 2026-10-28, with
+NVDA 2026.2 in Chrome and Firefox (browser versions not recorded), on
+revision f075dfd7 with this behaviour selected for the trial. Flows: the
+Restart AutoDJ confirmation in Settings, Updates opened, Tab and Shift+Tab
+inside it, Enter on opening, Escape, and Cancel. Enter on opening
+cancelled. Tab went round Restart and Cancel. Escape and Cancel returned
+focus to Restart AutoDJ, with no skip link in either browser. NVDA
+said "button Restart AutoDJ", the page document's line at its caret,
+then "Restart AutoDJ button", the focus. NVDA speaks the caret line
+whenever focus moves into another browse-mode document, so the page
+cannot avoid this double read. An agent read NVDA's speech; no person
+listened.
 
 ## Verification
 

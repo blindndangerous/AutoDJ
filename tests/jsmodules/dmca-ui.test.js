@@ -29,8 +29,8 @@ function mount({ playNow } = {}) {
     .forEach((element) => element.remove());
   document.body.replaceChildren(template.content.cloneNode(true));
   const dialog = byId("confirm-dialog");
-  // jsdom has no modal dialogs: open and close as a browser would.
-  dialog.showModal = vi.fn(() => { dialog.open = true; });
+  // Open and close as a browser would; the confirmation opens with show().
+  dialog.show = vi.fn(() => { dialog.open = true; });
   dialog.close = vi.fn((value = "") => {
     dialog.returnValue = value;
     dialog.open = false;
@@ -139,7 +139,7 @@ describe("queueing a song over a DMCA limit", () => {
     (await resultButton("Add to queue")).click();
     await vi.waitFor(() => expect(announced())
       .toBe("Could not add Come Together to the queue. Busy."));
-    expect(dialog.showModal).not.toHaveBeenCalled();
+    expect(dialog.show).not.toHaveBeenCalled();
   });
 });
 
@@ -208,7 +208,7 @@ describe("upcoming voice track choices", () => {
       }],
     ]);
     expect([...dialog.querySelectorAll("button")].map((button) => button.id))
-      .toEqual(["confirm-cancel", "confirm-accept"]);
+      .toEqual(["confirm-accept", "confirm-cancel"]);
   });
 
   it("asks again for a newer conflict and preserves DMCA confirmation", async () => {

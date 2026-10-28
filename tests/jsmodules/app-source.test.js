@@ -4296,7 +4296,7 @@ describe("several stations (#70)", () => {
     });
     const sockets = trackSockets(app.WebSocketImpl);
     const confirm = document.getElementById("confirm-dialog");
-    confirm.showModal = vi.fn(() => { confirm.open = true; });
+    confirm.show = vi.fn(() => { confirm.open = true; });
     confirm.close = vi.fn((value) => {
       confirm.open = false;
       confirm.returnValue = value;
@@ -4304,7 +4304,7 @@ describe("several stations (#70)", () => {
     });
 
     chooseOwl();
-    await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
+    await vi.waitFor(() => expect(confirm.show).toHaveBeenCalled());
     expect(document.getElementById("confirm-title").textContent).toBe("Switch to Night Owl Radio?");
     document.getElementById("confirm-cancel").click();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -4313,7 +4313,7 @@ describe("several stations (#70)", () => {
     expect(document.getElementById("page-heading").textContent).toBe("AutoDJ");
 
     chooseOwl();
-    await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(confirm.show).toHaveBeenCalledTimes(2));
     document.getElementById("confirm-accept").click();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     expect(stopAllDecks).toHaveBeenCalled();
@@ -4338,7 +4338,7 @@ describe("several stations (#70)", () => {
       });
       const sockets = trackSockets(app.WebSocketImpl);
       const confirm = document.getElementById("confirm-dialog");
-      confirm.showModal = vi.fn(() => { confirm.open = true; });
+      confirm.show = vi.fn(() => { confirm.open = true; });
       confirm.close = vi.fn((value) => {
         confirm.open = false;
         confirm.returnValue = value;
@@ -4346,7 +4346,7 @@ describe("several stations (#70)", () => {
       });
 
       chooseOwl();
-      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
+      await vi.waitFor(() => expect(confirm.show).toHaveBeenCalled());
       // One dialog names both losses: the decks that stop and the work dropped.
       expect(document.getElementById("confirm-title").textContent).toBe("Switch to Night Owl Radio?");
       expect(document.getElementById("confirm-message").textContent).toBe(
@@ -4360,10 +4360,10 @@ describe("several stations (#70)", () => {
       expect(stopAllDecks).not.toHaveBeenCalled();
 
       chooseOwl();
-      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(confirm.show).toHaveBeenCalledTimes(2));
       document.getElementById("confirm-accept").click();
       await vi.waitFor(() => expect(sockets).toHaveLength(1));
-      expect(confirm.showModal).toHaveBeenCalledTimes(2);
+      expect(confirm.show).toHaveBeenCalledTimes(2);
       expect(clockwheel.clearProtectedData).toHaveBeenCalled();
       expect(stopAllDecks).toHaveBeenCalled();
       expect(document.getElementById("page-heading").textContent).toBe("AutoDJ: Night Owl Radio");
@@ -4384,9 +4384,9 @@ describe("several stations (#70)", () => {
     try {
       await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
       const confirm = document.getElementById("confirm-dialog");
-      confirm.showModal = vi.fn(() => { confirm.open = true; });
+      confirm.show = vi.fn(() => { confirm.open = true; });
       chooseOwl();
-      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
+      await vi.waitFor(() => expect(confirm.show).toHaveBeenCalled());
       expect(document.getElementById("confirm-message").textContent)
         .toBe("Switching discards the clockwheel changes not saved yet.");
     } finally {
@@ -4412,9 +4412,9 @@ describe("several stations (#70)", () => {
     try {
       await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
       const confirm = document.getElementById("confirm-dialog");
-      confirm.showModal = vi.fn(() => { confirm.open = true; });
+      confirm.show = vi.fn(() => { confirm.open = true; });
       chooseOwl();
-      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(confirm.show).toHaveBeenCalledOnce());
       expect(document.getElementById("confirm-message").textContent).toBe(
         "Switching discards the clockwheel changes not saved yet and the voice track not booked yet.");
       expect(voice.clear).not.toHaveBeenCalled();
@@ -4439,7 +4439,7 @@ describe("several stations (#70)", () => {
       // As a browser does: a modal dialog gives focus back to what had it.
       const confirm = document.getElementById("confirm-dialog");
       let opener = null;
-      confirm.showModal = vi.fn(() => {
+      confirm.show = vi.fn(() => {
         opener = document.activeElement;
         confirm.open = true;
       });
@@ -4455,7 +4455,7 @@ describe("several stations (#70)", () => {
       // The list stays open while the question is asked, so No puts focus
       // back on the station chosen, with the list still open.
       chooseOwl();
-      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(confirm.show).toHaveBeenCalledOnce());
       expect(opener).toBe(owl);
       expect(document.activeElement).toBe(document.getElementById("confirm-cancel"));
       document.getElementById("confirm-cancel").click();
@@ -4465,7 +4465,7 @@ describe("several stations (#70)", () => {
 
       // Yes switches; the list closes and focus goes to the renamed button.
       chooseOwl();
-      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(confirm.show).toHaveBeenCalledTimes(2));
       document.getElementById("confirm-accept").click();
       await vi.waitFor(() => expect(sockets).toHaveLength(1));
       await vi.waitFor(() => expect(document.getElementById("page-heading").textContent)
