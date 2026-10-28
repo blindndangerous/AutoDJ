@@ -18,7 +18,9 @@ The CSV has one row per play, in this column order:
   shows up in `--missing`. Label comes from `LABEL`, `ORGANIZATION` or `PUBLISHER` (FLAC and Ogg), `TPUB` or
   `TXXX:LABEL` (MP3), or the iTunes `LABEL` atom (M4A).
 - `kind`: `song`, `liner`, `ad` for an aired ad spot, or `live` for a live DJ's set (see "Live DJs and talkover"),
-  which has no path and is never in a SoundExchange report.
+  which has no path and is never in a SoundExchange report. With **Include liners** checked, the
+  export also has `matched_intro`, `time_check`, `cart`, `voice_track`, and the announcer breaks
+  `dj`, `news`, `weather`, `music_news` and `speech`. Their `duration_played` is their own length.
 - `path`: the file's path inside its music or liner folder, with `/` between folders.
 - `performances`: how many listeners heard the play; see "Listener counts" below. Empty for plays
   logged before AutoDJ counted listeners.
@@ -29,10 +31,15 @@ choose UTF-8 (65001); LibreOffice asks for the character set when it opens the f
 starts with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'`, so a spreadsheet
 shows it as text instead of running it as a formula.
 
-What the play log does not hold yet:
+What the play log holds and leaves out:
 
-- Liners mixed over a transition, and clock liner slots, are not logged: the log holds the songs
-  the mixer starts. A file played from a liner folder is marked `liner`.
+- By default the log holds the songs, liner files and live sets the mixer starts. A file played
+  from a liner folder is marked `liner`. In stream and server audio modes, AutoDJ also logs the
+  liners mixed over a handoff, matched intros, time checks, carts, voice tracks and breaks as they
+  air. They are in the export only with **Include liners** checked, and never in a SoundExchange
+  report, the repeat rules or a song's `duration_played`. History lists them when **Show
+  liners** is checked; this browser remembers the choice. Liners that the browser plays in
+  browser playback mode are not logged.
 - Ad spots that aired are merged from the station's ad play log and exported with `kind` `ad`,
   the advertiser as artist and campaign as album. There is no separate `id` kind for station
   IDs; keep IDs in a liner folder so they are not reported as songs.

@@ -24,8 +24,9 @@ play log: `--station NAME` exports another station's plays, and without it you g
 station's, which are all the plays logged before AutoDJ ran more than one station.
 
 In the web page, open History, go to "Export play log", choose the dates and the format, and press
-Export. AutoDJ says "Exporting play log" and the Export button is unavailable until the file is
-ready. Then the browser saves the file and AutoDJ says how many plays it holds, with the same
+Export. Check **Include liners** to add the liners, matched intros, time checks and other non-music
+items that aired; the SoundExchange format ignores it. AutoDJ says "Exporting play log" and the
+Export button is unavailable until the file is ready. Then the browser saves the file and AutoDJ says how many plays it holds, with the same
 warnings as the summary, or why it failed.
 
 ## Reporting for webcasting licenses
