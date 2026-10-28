@@ -1,0 +1,25 @@
+# The Podman form of compose.gpu.yaml: run the CUDA image and give it this
+# computer's NVIDIA GPUs, for song analysis. Podman ignores the deploy section
+# compose.gpu.yaml uses, so this file names the GPUs as a CDI device instead.
+# The host needs an NVIDIA driver that supports CUDA 13.0 (580 or newer), the
+# NVIDIA Container Toolkit, and its CDI specification:
+#
+#   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+#
+# Use this file in place of compose.gpu.yaml, never with it. Name both files
+# on every Compose command, or export them once in the shell (podman-compose
+# 1.0 does not read COMPOSE_FILE from .env):
+#
+#   export COMPOSE_FILE=compose.yaml:compose.gpu.podman.yaml
+#
+# The image and its tags are the same as in compose.gpu.yaml. Details:
+# docs/guides/operations/containers-and-windows.md#use-an-nvidia-gpu
+
+services:
+  autodj:
+    image: &image ${AUTODJ_IMAGE:-ghcr.io/blindndangerous/autodj:stable-cuda}
+    environment:
+      # The image above, so Settings, Updates gives the commands that update it.
+      AUTODJ_IMAGE: *image
+    devices:
+      - nvidia.com/gpu=all
