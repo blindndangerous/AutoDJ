@@ -1,0 +1,101 @@
+name: Python readiness
+
+# Once a week, check whether every package AutoDJ installs has wheels for the
+# next Python minor (scripts/python_readiness.py). When everything is ready,
+# approve Renovate's gated "python minor release" update on the Dependency
+# Dashboard so Renovate opens the PR, which runs CI like any Renovate PR.
+# Nothing here merges: a person merges the PR after the steps in its notes
+# and a smoke test.
+
+on:
+  schedule:
+    - cron: "23 6 * * 1"     # 06:23 UTC every Monday
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-readiness
+  cancel-in-progress: false
+
+jobs:
+  readiness:
+    name: Check wheels for the next Python minor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - name: Check readiness
+        id: check
+        run: |
+          set +e
+          uv run --no-project python scripts/python_readiness.py > "$RUNNER_TEMP/readiness.txt"
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/readiness.txt"
+          { echo '```text'; cat "$RUNNER_TEMP/readiness.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # 0 means ready or no newer minor, 1 means something is missing.
+          # Anything else is a failure of the check itself.
+          if [ "$status" -gt 1 ]; then exit "$status"; fi
+      - name: Approve Renovate's Python update
+        if: steps.check.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ steps.check.outputs.target }}
+        run: |
+          set -euo pipefail
+          branch=renovate/python-minor-release
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            echo "Renovate's Python PR #$pr is already open."
+            exit 0
+          fi
+          dashboard=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --author app/renovate --search 'in:title "Dependency Dashboard"' \
+            --json number --jq '.[0].number // empty')
+          outcome=not-offered
+          if [ -n "$dashboard" ]; then
+            body="$RUNNER_TEMP/dashboard.md"
+            gh issue view "$dashboard" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$body"
+            outcome=$(uv run --no-project python scripts/python_readiness.py --approve "$body" "$TARGET")
+          fi
+          case "$outcome" in
+            approved)
+              gh issue edit "$dashboard" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+              echo "Approved the Python $TARGET update on the Dependency Dashboard (#$dashboard)."
+              ;;
+            already-approved)
+              echo "The Python update is already approved; waiting for Renovate to open the PR."
+              ;;
+            *)
+              # Renovate has not offered the update: open one issue per minor.
+              export TITLE="Python $TARGET: every package has wheels"
+              existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all \
+                --search "in:title \"$TITLE\"" --json number,title \
+                --jq '[.[] | select(.title == env.TITLE)] | .[0].number // empty')
+              if [ -n "$existing" ]; then
+                echo "Issue #$existing already tracks this."
+                exit 0
+              fi
+              {
+                echo "The weekly readiness check found wheels for Python $TARGET for every"
+                echo "locked package and every setup profile, but the Dependency Dashboard"
+                echo "does not offer Renovate's \"python minor release\" update for it yet."
+                echo
+                echo "Tick its approval box when it appears, or check the rule in renovate.json."
+                echo "The move's manual steps are in that rule's prBodyNotes."
+                echo
+                echo '```text'
+                cat "$RUNNER_TEMP/readiness.txt"
+                echo '```'
+              } > "$RUNNER_TEMP/issue.md"
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file "$RUNNER_TEMP/issue.md"
+              ;;
+          esac

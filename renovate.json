@@ -41,16 +41,27 @@
       "groupName": "container base images"
     },
     {
-      "description": "A Python minor release (3.14 to 3.15) also moves requires-python and needs torch wheels for the new Python, so it gets its own PR and waits for approval on the Dependency Dashboard.",
+      "description": "A Python minor release (3.14 to 3.15) moves every setup to the new Python and needs torch wheels for it, so it gets its own PR and waits for approval on the Dependency Dashboard. The python-readiness workflow approves it once every package has wheels. Package names: .python-version (pyenv) and the Containerfile base (docker) are python, .tool-versions (asdf) is python/cpython.",
       "matchPackageNames": [
-        "python"
+        "python",
+        "python/cpython"
       ],
       "matchUpdateTypes": [
         "minor"
       ],
       "groupName": "python minor release",
       "automerge": false,
-      "dependencyDashboardApproval": true
+      "dependencyDashboardApproval": true,
+      "prBodyNotes": [
+        "This moves `.python-version`, which setup, the launchers and CI read, plus `.tool-versions` and the Containerfile base image. Before merging, on this branch: (1) run `uv run --no-project python scripts/update_torch_pins.py` and commit the result; (2) update the AMD recipes in `scripts/setup-profiles.json` by hand from AMD's index; (3) move the Python check in `src/autodj/doctor.py` and its tests; (4) smoke-test the native setups and the container. See CONTRIBUTING.md, Upgrading dependencies."
+      ]
+    },
+    {
+      "description": ".python-version holds a plain Python version for uv and actions/setup-python, never a digest.",
+      "matchManagers": [
+        "pyenv"
+      ],
+      "pinDigests": false
     },
     {
       "description": "The torch family is also pinned in container/torch-cpu.txt and scripts/setup-profiles.json.",
