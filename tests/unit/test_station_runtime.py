@@ -1310,7 +1310,7 @@ def test_a_master_says_whether_its_processes_have_ended() -> None:
     while not procs:
         assert time.monotonic() < deadline
         time.sleep(0.01)
-    assert master.close() is True  # killed after terminate was ignored
+    assert master.close() is True  # a stopped pipeline is killed, never only terminated
     assert all(not proc.running for proc in procs)
     assert master.close() is True  # again: nothing left
 
@@ -1331,7 +1331,7 @@ def test_pipeline_cleanup_releases_finished_children_and_keeps_live_ones(
         def __init__(self) -> None:
             self.running = True
 
-        def terminate(self) -> None:
+        def kill(self) -> None:
             self.running = False
 
         def wait(self, timeout: float) -> int:

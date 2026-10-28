@@ -997,9 +997,12 @@ class ContinuousMaster:
         if stop is not None:
             stop.set()
         processes = [stage for stage in (proc, post_proc) if stage is not None]
+        # Killed, not terminated: nothing reads a stopped pipeline's output,
+        # and on Linux an FFmpeg stage blocked writing to a full pipe ignores
+        # SIGTERM, so terminating only added the wait below before the kill.
         for stage in processes:
             with contextlib.suppress(OSError, ProcessLookupError):
-                stage.terminate()
+                stage.kill()
         for stage in processes:
             try:
                 stage.wait(timeout=0.5)

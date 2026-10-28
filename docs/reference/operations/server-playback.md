@@ -109,3 +109,41 @@ The listening address stays the same across restarts. There is no key to copy or
 ## Mastering startup diagnostics
 
 The log reports the first non-silent input to the master and when processing is ready, measured from processor startup, restart, or a processing-mode change. Readiness includes counts of discarded silent and non-silent input blocks. Silence discarded before any non-silent input arrives is informational; overflow after audio begins, during recovery, or after readiness remains a warning even when the discarded block is silent. Non-silent discarded blocks may contain program audio. Processor output can be nonzero on silent input, so it is not used to identify the song opening. The initial mix bus feeds silence until processing is ready, while track preparation continues in parallel; tracks and liners retain their opening samples. A failed processor releases playback immediately to bounded bypass. If warmup exceeds five seconds, playback uses bounded bypass while the processor continues warming. Recovery during playback does not hold the song. Timings exclude encoder and listener buffering. Compare the timings and counts across restarts before changing buffering.
+
+## Held silence warnings
+
+The mix bus never plays past audio it does not have. When the audio due next is not ready, it
+plays exact silence and holds the programme where it is, so nothing is skipped. Once a set has
+played its first song, each such hold is counted and logged as a warning like this one:
+
+```text
+Mix bus held 1.300 s of silence: the next song's file deck was still seeking (/music/song.mp3)
+```
+
+The warning gives the length of the hold, its cause and, when known, the file involved. It is
+logged when the hold ends. Each station logs at most one such warning a minute; the next one says
+how many holds it left out. A hold that reaches 10 seconds is also logged once while it lasts,
+even within that minute. Silence before a set's first song is not counted. `/api/status` reports the station's
+count of held 20 ms blocks since its mix bus started as `playout.held_blocks`.
+
+The causes:
+
+- **the next song was still being prepared**: the song change was reached before the next song
+  had been selected and prepared. Look for slow song picking, analysis or decoding on the same
+  computer at that time.
+- **the next song had no audio yet**: the next song had no audio left to play on its own, because
+  its overlap with the previous song used all of it or its preparation came back empty. The
+  station waits for the song after it to be prepared.
+- **a queue change was being applied to the next song**: a queue or settings edit replaced the
+  coming song change, and the replacement was not ready when the change was due.
+- **the next song's file deck was still seeking**: the next song's decoder was still starting at
+  the position its audio continues from.
+- **a file deck was still seeking or refilling**: the playing song's decoder fell behind. This is
+  usually a slow disk or network share, or an overloaded processor.
+- **a live edit holds the song change**: an edit to the current song change is waiting to be
+  applied, and the old outgoing song must not play into music it has replaced.
+- **the master processor was starting**: the mastering processor (smooth processing or Stereo
+  Tool) restarted after a set had started, and the bus waited for it to warm up.
+
+"Mix bus fell behind" is a different warning: the bus thread itself ran late, so whole 20 ms
+periods were skipped. A held-silence warning means the bus ran on time but had no audio to play.

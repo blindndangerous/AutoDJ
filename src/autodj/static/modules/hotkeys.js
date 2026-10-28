@@ -292,10 +292,11 @@ export function installHotkeys({
     // The page has no shadow DOM, so the target is where the key went.
     const el = e.target instanceof Element ? e.target : null;
     if (isTypingTarget(el)) return;
-    // Every dialog here opens with showModal(), so the page behind it is
-    // inert: while one shows (the shortcut list, a confirmation such as
-    // Clear queue or Delete liner, sign in) no shortcut acts on the page.
-    // Only ? works, to close the shortcut list.
+    // While a dialog shows (the shortcut list, a confirmation such as
+    // Clear queue or Delete liner, sign in) no shortcut acts on the page:
+    // the page is inert behind a modal one, and the confirmation, opened
+    // with show(), keeps it out of reach itself.  Only ? works, to close
+    // the shortcut list.
     const modal = document.getElementById("hotkey-help-modal");
     if (document.querySelector("dialog[open]")) {
       if (modal && modal.open && el && modal.contains(el)
