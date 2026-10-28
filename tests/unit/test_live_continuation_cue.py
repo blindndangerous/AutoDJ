@@ -101,9 +101,13 @@ def test_continuation_deck_is_cued_before_promotion(tmp_path: Path, mode: str) -
         with deck._condition:
             target = deck._requested if deck._requested is not None else deck._position
         if mode == "saved_points":
-            # A's overlap reads this deck itself and leaves it at the body.
+            # A's overlap reads this deck itself and leaves it at the body,
+            # so the cue must not move it from where that overlap starts.
             playing = player.bus.current_render()
-            assert any(item.source is deck for item in playing.audio.layers)
+            incoming = next(item for item in playing.audio.layers if item.source is deck)
+            assert not player.bus.incoming_started(playing)
+            assert deck._requested is None
+            assert deck._position == incoming.offset
         else:
             assert target == layer.offset
     finally:
