@@ -1127,6 +1127,15 @@ def _categories_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> D
         return DoctorCheck("categories", CheckStatus.PASS, "no categories saved")
     try:
         songs = _catalog_songs(cfg)
+        catalog_path = cfg.index.library_dir / "library.db"
+        if catalog_path.is_file():
+            with closing(_connect(readonly_uri(catalog_path), uri=True)) as db:
+                sources_by_id = {
+                    row[0]: dict(zip(("id", "path", "kind", "recursive"), row, strict=True))
+                    for row in db.execute("SELECT id, path, kind, recursive FROM catalog_sources")
+                }
+        else:
+            sources_by_id = {}
     except sqlite3.Error as exc:
         return DoctorCheck(
             "categories", CheckStatus.WARN, "the library could not be read", str(exc)
@@ -1137,6 +1146,7 @@ def _categories_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> D
         beets=beets_source(cfg),
         music_dir=cfg.library.music_dir,
         folder=playlists_folder(cfg),
+        sources_by_id=sources_by_id,
         remember_check=False,
     )
     cause = check.cause if check is not None else None

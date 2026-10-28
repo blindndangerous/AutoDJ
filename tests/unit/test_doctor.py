@@ -1207,6 +1207,69 @@ def test_doctor_names_empty_categories_and_missing_playlist_tracks(tmp_path: Pat
     ).exists()  # doctor never sets the file aside
 
 
+def test_doctor_resolves_filter_category_folder_sources_read_only(tmp_path: Path) -> None:
+    from autodj.categories import Category, CategoryStore
+
+    cfg = _config(tmp_path)
+    music = cfg.library.music_dir
+    liners = cfg.index.stations_dir / "default" / "liners"
+    liners.mkdir(parents=True)
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
+        music_source = catalog.add_source(music, kind="music", recursive=True)
+        liner_source = catalog.add_source(liners, kind="liner", recursive=True)
+        for name in ("one", "two"):
+            entry = IndexEntry(
+                str(music / f"{name}.flac"),
+                name,
+                "A",
+                "B",
+                "Rock",
+                120,
+                2004,
+                180.0,
+                0.2,
+                -1,
+                -1,
+                0.0,
+            )
+            catalog.put_entry(entry, points={"start": 0, "end": 180})
+
+    store = CategoryStore(cfg.index.stations_dir / "default" / "categories.json")
+
+    def check_for(source_id: str, operator: str = "is"):
+        store.save(
+            [
+                Category(
+                    id="c",
+                    name="Folder",
+                    source="filters",
+                    conditions=[
+                        {
+                            "field": "folder",
+                            "source": source_id,
+                            "folder": "",
+                            "recursive": True,
+                            "operator": operator,
+                        }
+                    ],
+                )
+            ]
+        )
+        return doctor._categories_check(cfg)
+
+    included = check_for(music_source["id"])
+    assert (included.status, included.summary) == (CheckStatus.PASS, "1 saved, 2 songs in all")
+
+    excluded = check_for(music_source["id"], "is_not")
+    assert excluded.summary == "1 saved, 0 songs in all; Folder: no songs match"
+
+    missing = check_for("missing")
+    assert "Folder: A filter folder is unavailable" in missing.summary
+
+    wrong_kind = check_for(liner_source["id"])
+    assert "Folder: A filter folder is unavailable" in wrong_kind.summary
+
+
 def test_new_library_needs_no_music_root(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     cfg.library.music_dir = None

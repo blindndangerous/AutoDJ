@@ -13,6 +13,7 @@ import autodj.beets_paths as beets_paths
 from autodj import doctor
 from autodj._bridge import _library_problem
 from autodj.beets_paths import check_library, latest, match, page_view, remember
+from autodj.catalog import normalize_path
 from autodj.categories import Category, CategoryIndex
 from autodj.doctor import CheckStatus
 from tests._layout import layout_index
@@ -304,18 +305,13 @@ def test_categories_use_the_found_folder_when_music_dir_is_missing(tmp_path):
 
 
 def make_catalog(cfg, paths: list[str]) -> None:
+    from autodj.catalog import LibraryCatalog
+    from autodj.indexer import IndexEntry
+
     cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(cfg.index.library_dir / "library.db")
-    conn.execute(
-        "CREATE TABLE catalog_entries (path TEXT, title TEXT, artist TEXT, album TEXT, "
-        "genre TEXT, year INTEGER, bpm REAL, length REAL, kind TEXT)"
-    )
-    conn.executemany(
-        "INSERT INTO catalog_entries VALUES (?, 't', 'a', 'b', 'Rock', 0, 0, 0, 'music')",
-        [(path,) for path in paths],
-    )
-    conn.commit()
-    conn.close()
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
+        for path in paths:
+            catalog.put_entry(IndexEntry(path, "t", "a", "b", "Rock", 0, 0, 0, 0, -1, -1, 0))
 
 
 def test_doctor_reports_a_mismatch_with_its_fix(tmp_path, caplog):
@@ -329,7 +325,8 @@ def test_doctor_reports_a_mismatch_with_its_fix(tmp_path, caplog):
 
     assert check.name == "beets-paths" and check.status is CheckStatus.WARN
     assert "No song in the beets database matches" in check.summary
-    assert check.repair is not None and f'music_dir = "{music.as_posix()}"' in check.repair
+    catalog_music = Path(normalize_path(music)).as_posix()
+    assert check.repair is not None and f'music_dir = "{catalog_music}"' in check.repair
     assert isinstance(check.detail, dict) and check.detail["matched"] == 0
 
     categories = tmp_path / "index" / "stations" / "default"
@@ -355,7 +352,7 @@ def test_doctor_passes_a_found_folder_when_music_dir_is_unset(tmp_path):
     [check] = doctor._beets_paths_check(cfg)
 
     assert check.status is CheckStatus.PASS
-    assert f"read relative paths from {music.as_posix()}" in check.summary
+    assert f"read relative paths from {Path(normalize_path(music)).as_posix()}" in check.summary
 
 
 def test_doctor_has_no_beets_paths_check_without_a_beets_database(tmp_path):
