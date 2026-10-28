@@ -24,6 +24,7 @@ from autodj import hour_preview
 from autodj.breaks import SlotPlan, TransitionItem
 from autodj.hour_preview import (
     KEEP_SECONDS,
+    NOTHING_PLAYING,
     HourPreviews,
     Item,
     Point,
@@ -1157,6 +1158,24 @@ def test_a_preview_is_kept_while_nothing_new_is_fixed(tmp_path: Path, monkeypatc
     refresh_ms = re.search(r"const REFRESH_MS = (\d+);", script)
     assert refresh_ms is not None
     assert int(refresh_ms[1]) / 1000 < KEEP_SECONDS
+
+
+def test_a_station_that_never_had_a_clockwheel_gets_a_preview(tmp_path: Path) -> None:
+    # A player sets its clockwheel steps only when it loads a clockwheel.
+    source, _power, gold = _station(
+        tmp_path, clockwheels=[], active_clock=None, playback={"pick_mode": "similarity"}
+    )
+    assert not hasattr(source.player, "_clock_steps")
+    previews = HourPreviews()
+    try:
+        idle = previews.submit(source, 60).result(timeout=30)
+        assert idle["reason"] == NOTHING_PLAYING
+        _playing(source, gold[0], time.time() - 30)
+        playing = previews.submit(source, 60, force=True).result(timeout=30)
+        assert playing["reason"] is None
+        assert playing["items"][0]["status"] == "on_air"
+    finally:
+        assert previews.shutdown(5.0)
 
 
 def test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh(

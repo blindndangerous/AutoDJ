@@ -13,6 +13,7 @@ import re
 import secrets
 import threading
 import time
+import traceback
 import uuid
 from collections.abc import Callable, Mapping
 from collections.abc import Set as AbstractSet
@@ -513,6 +514,30 @@ def emit_audit(
     )
 
 
+def traceback_without_messages(exc: BaseException) -> str:
+    """Format *exc*'s traceback and causes with each exception's type but not its message.
+
+    A message can quote request data, such as a token or a query value, so
+    only the code's place and the exception types are written.
+    """
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and all(current is not seen for seen in chain):
+        chain.append(current)
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
+    parts: list[str] = []
+    for index, item in enumerate(reversed(chain)):
+        if index:
+            parts.append("\nWhich led to:\n")
+        parts.append("Traceback (most recent call last):\n")
+        parts.extend(traceback.format_tb(item.__traceback__))
+        kind = type(item)
+        parts.append(f"{kind.__module__}.{kind.__qualname__} (message not logged)\n")
+    return "".join(parts)
+
+
 def audit_as_routine(connection: HTTPConnection) -> None:
     """Audit this request's success at DEBUG: routine polling, such as a worker's heartbeat."""
     connection.scope.setdefault("state", {})["audit_routine"] = True
@@ -969,7 +994,7 @@ class SecurityMiddleware:
 
         try:
             await self.app(scope, downstream_receive, send_with_request_id)
-        except Exception:
+        except Exception as exc:
             emit_audit(
                 request_id,
                 route,
@@ -980,7 +1005,14 @@ class SecurityMiddleware:
                 level=logging.ERROR,
             )
             if response_status is not None:
+                # The response has started: the ASGI server logs the error.
                 raise
+            logger.error(
+                "Request %s to %s failed with an unhandled error:\n%s",
+                request_id,
+                route,
+                traceback_without_messages(exc),
+            )
             response = JSONResponse(
                 {"detail": "Internal server error"},
                 status_code=500,

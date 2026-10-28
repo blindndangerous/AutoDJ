@@ -602,11 +602,15 @@ def test_unhandled_route_error_gets_generic_request_id_and_redacted_audit(
 ) -> None:
     app = _security_app()
     exception_secret = "private-exception-secret"
+    cause_secret = "private-cause-secret"
     query_secret = "private-query-secret"
 
     @app.get("/api/explode")
     async def explode() -> None:
-        raise RuntimeError(exception_secret)
+        try:
+            raise KeyError(cause_secret)
+        except KeyError as exc:
+            raise RuntimeError(exception_secret) from exc
 
     client = TestClient(
         app,
@@ -615,7 +619,7 @@ def test_unhandled_route_error_gets_generic_request_id_and_redacted_audit(
     assert _pair(client).status_code == 200
     caplog.clear()
 
-    with caplog.at_level(logging.ERROR, logger="autodj.audit"):
+    with caplog.at_level(logging.ERROR):
         response = client.get(f"/api/explode?detail={query_secret}")
 
     assert response.status_code == 500
@@ -632,7 +636,19 @@ def test_unhandled_route_error_gets_generic_request_id_and_redacted_audit(
             "status": 500,
         }
     ]
+    # The traceback is logged once, with the request ID and route, without messages.
+    failures = [item for item in caplog.records if item.name == "autodj.security"]
+    assert len(failures) == 1
+    assert failures[0].levelno == logging.ERROR
+    logged = failures[0].getMessage()
+    assert response.headers["X-Request-ID"] in logged
+    assert "/api/explode" in logged
+    assert "in explode" in logged
+    assert "builtins.KeyError (message not logged)" in logged
+    assert logged.rstrip().endswith("builtins.RuntimeError (message not logged)")
+    assert failures[0].exc_info is None
     assert exception_secret not in caplog.text
+    assert cause_secret not in caplog.text
     assert query_secret not in caplog.text
 
 
