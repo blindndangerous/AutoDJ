@@ -293,22 +293,31 @@ def test_an_underrun_plays_silence_and_keeps_automation_held(tmp_path, caplog) -
 
 
 def test_a_liner_due_under_a_dj_plays_once_after_and_a_time_check_never(tmp_path) -> None:
+    """ADR-0006-08."""
     bus, desk, _tracks, _started, _queue = _bus(tmp_path, 0.0)
     source = _Source(0.3, seconds=1.5)
     desk.source = source
     _blocks(bus, 10)
     first_id = np.full((4410, 2), 0.25, np.float32)
     station_id = np.full((4410, 2), 0.5, np.float32)
-    bus.play_liner(first_id, -6.0, after_live=True)
-    bus.play_liner(station_id, -6.0, after_live=True)  # the latest replaces it: once
-    bus.play_liner(np.full((4410, 2), 0.9, np.float32), -6.0)  # a time check: stale later
+    started: list[str] = []
+    bus.play_liner(first_id, -6.0, after_live=True, on_start=lambda: started.append("first"))
+    # the latest replaces it: once
+    bus.play_liner(station_id, -6.0, after_live=True, on_start=lambda: started.append("id"))
+    # a time check: stale later
+    bus.play_liner(
+        np.full((4410, 2), 0.9, np.float32), -6.0, on_start=lambda: started.append("check")
+    )
     assert bus._liner is None
     assert np.allclose(bus.render_block(), 0.3, atol=1e-4)
     bus.drop_held_track()
     desk.source, desk.return_source = None, source
+    assert started == []
     _blocks(bus, 6)  # the DJ fades out
     assert bus._liner is station_id
     assert bus._deferred_liner is None
+    # History hears of the liner that aired, as it aired, and of no other (#601).
+    assert started == ["id"]
 
 
 def test_automation_comes_back_with_the_next_song_not_the_interrupted_one(tmp_path) -> None:

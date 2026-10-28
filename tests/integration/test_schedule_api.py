@@ -543,11 +543,18 @@ def test_scheduled_liner_prepares_before_interrupting(rig, timing) -> None:
         calls.append("decode")
         return audio
 
-    def play(prepared):
+    def play(prepared, **history):
         assert prepared is audio
+        # History lists it as a liner named after its file (#601).
+        assert history == {
+            "kind": "liner",
+            "title": "station-id",
+            "path": str(Path("liners") / "station-id.wav"),
+        }
         calls.append("play")
 
     worker.decode.side_effect = decode
+    worker.liner_path.return_value = Path("liners") / "station-id.wav"
     worker.play_audio.side_effect = play
     created = client.post(
         "/api/schedule",

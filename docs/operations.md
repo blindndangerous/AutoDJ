@@ -429,7 +429,7 @@ See [Matched intro, ad and show APIs and storage — Where they are kept](refere
 
 ## Play log export
 
-See [Export play logs and webcasting reports — Play log export](guides/operations/play-log-export.md#play-log-export).
+See [Read History and export play logs and webcasting reports — Play log export](guides/operations/play-log-export.md#play-log-export).
 
 ### Listener counts
 
@@ -437,7 +437,7 @@ See [Play-log fields, exclusions and listener counts — Listener counts](refere
 
 ### Reporting for webcasting licenses
 
-See [Export play logs and webcasting reports — Reporting for webcasting licenses](guides/operations/play-log-export.md#reporting-for-webcasting-licenses).
+See [Read History and export play logs and webcasting reports — Reporting for webcasting licenses](guides/operations/play-log-export.md#reporting-for-webcasting-licenses).
 
 ## Repeat settings
 

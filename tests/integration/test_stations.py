@@ -35,10 +35,12 @@ from ._helpers import _make_player_mock, _make_sim_mock
 
 
 def test_live_dj_title_reaches_extra_mounts() -> None:
+    history: list[dict] = []
     bridge = SimpleNamespace(
         _history_lock=threading.Lock(),
         _open_play=None,
-        _play_history=[],
+        _play_history=history,
+        _keep_history_row=history.append,
         stream=MagicMock(),
         relays=MagicMock(),
         mounts=MagicMock(),
@@ -54,6 +56,7 @@ def test_live_dj_title_reaches_extra_mounts() -> None:
     )
     StationRuntime._live_started(runtime)
     bridge.mounts.set_title.assert_called_once_with("DJ Kay", "Friday Mix")
+    assert [row["kind"] for row in history] == ["live"]
 
 
 def _config(tmp_path: Path, *, clips: str | None = None) -> AutoDJConfig:

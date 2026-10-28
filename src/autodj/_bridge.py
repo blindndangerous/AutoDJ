@@ -13,6 +13,7 @@ server stack.
 from __future__ import annotations
 
 import copy
+import itertools
 import logging
 import os
 import secrets
@@ -26,6 +27,8 @@ from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Any
 
 from autodj.audience import StreamAudience
+from autodj.history_kinds import INSERT_KINDS
+from autodj.history_pages import AIRED_ROWS, VIEW_ROWS, history_page
 from autodj.identity_map import attached
 from autodj.settings_bodies import PAGE_SAVED_BREAKS, PAGE_SAVED_REQUESTS
 
@@ -44,6 +47,11 @@ class StreamSeekUnavailable(Exception):
 
 
 SEEK_TRACK_CHANGED = "The song on air has changed, so it was not moved."
+
+#: Song and live rows History keeps in memory, and the most either view shows.
+HISTORY_VIEW_ROWS = VIEW_ROWS
+#: Liners and other inserted rows kept beside them (#601).
+HISTORY_AIRED_ROWS = AIRED_ROWS
 
 
 class SeekTrackChanged(Exception):
@@ -402,11 +410,19 @@ class PlayerBridge(LibraryAccess):
     # (PAGE_SAVED_REQUESTS, PAGE_SAVED_BREAKS), or that web_state.json held
     # at start.  Only those are written to web_state.json; the others stay
     # config.toml's.
-    # The viewer keeps 500 rows; the catalog retains the full play log.
+    # The viewer keeps HISTORY_VIEW_ROWS songs and live sets, and beside
+    # them the liners and other audio aired between them (#601), each with
+    # its own room; the station database retains the full play log.
     _play_history: deque = field(
-        default_factory=lambda: deque(maxlen=500),
+        default_factory=lambda: deque(maxlen=HISTORY_VIEW_ROWS),
         init=False,
     )
+    _aired_history: deque = field(
+        default_factory=lambda: deque(maxlen=HISTORY_AIRED_ROWS),
+        init=False,
+    )
+    # Each kept row's place in airing order (``_seq``), merging the two.
+    _history_seq: Iterator[int] = field(default_factory=itertools.count, init=False)
     _history_started: bool = field(default=False, init=False)
     # Set by the server in server-mixed modes (``--server-audio`` and
     # ``--stream``); ``None`` in browser-driven mode, where the browser
@@ -556,6 +572,8 @@ class PlayerBridge(LibraryAccess):
         """
         self.liner_scheduler = scheduler
         self.player.liner_scheduler = scheduler
+        # The liners, time checks and carts it airs are listed in History.
+        scheduler.on_aired = self.record_aired
         from autodj.station_log import CURRENT_STATION, enter_station, station_scope, thread_name
 
         # Its thread works for this station, so its log lines name it.
@@ -719,15 +737,29 @@ class PlayerBridge(LibraryAccess):
             play, self._open_play = self._open_play, None
             if play is None or play[0] is not entry:
                 return
-            for index in range(len(self._play_history) - 1, -1, -1):
-                if self._play_history[index] is play[1]:
-                    del self._play_history[index]
-                    if (ledger := self._ledger()) is not None:
-                        ledger.interrupt_history(play[1]["event_id"])
-                    return
+            for rows in (self._play_history, self._aired_history):
+                for index in range(len(rows) - 1, -1, -1):
+                    if rows[index] is play[1]:
+                        del rows[index]
+                        if (ledger := self._ledger()) is not None:
+                            ledger.interrupt_history(play[1]["event_id"])
+                        return
+
+    def _keep_history_row(self, row: dict) -> None:
+        """Keep *row* in memory for History, in airing order (hold ``_history_lock``)."""
+        row["_seq"] = next(self._history_seq)
+        if row.get("kind") in INSERT_KINDS:
+            self._aired_history.append(row)
+        else:
+            self._play_history.append(row)
 
     def _append_history(self, entry: Any) -> dict:
-        """Record one play while holding ``_history_lock``; never trim the archive."""
+        """Record one play while holding ``_history_lock``; never trim the archive.
+
+        A show's standalone speech segment airs as a track but is not music:
+        its row is ``speech`` (#601), with no listener count, and it leaves
+        last-played times alone.
+        """
         # Stream mode counts its connected listeners; otherwise the one
         # listener is the person at this computer or browser.
         performances: int | None = self._audience.start_play() if self.stream_mode else 1
@@ -735,13 +767,27 @@ class PlayerBridge(LibraryAccess):
             # A relay's own listeners are invisible here: no count beats a
             # count that leaves them out.
             performances = None
-        row = _history_entry(entry, performances)
-        self._play_history.append(row)
+        speech = getattr(entry, "_prepared_clip", False) is True
+        row = _history_entry(entry, None if speech else performances)
+        if speech:
+            row["kind"] = "speech"
+        elif self._is_liner(entry):
+            row["track_kind"] = "liner"  # a liner file played as a track
+        self._keep_history_row(row)
         self._history_started = True
         if (ledger := self._ledger()) is not None:
             ledger.remember_history(row)
-            ledger.remember_play(entry.path)
+            if not speech:
+                ledger.remember_play(entry.path)
         return row
+
+    def _is_liner(self, entry: Any) -> bool:
+        """Whether *entry* is from a liner folder, from the player's cached liner paths."""
+        check = getattr(self.player, "_is_liner", None)
+        try:
+            return callable(check) and check(entry) is True
+        except Exception:
+            return False
 
     def listener_connected(self, client: tuple[str, str]) -> None:
         """Count a new stream connection from *client* (address, User-Agent).
@@ -769,6 +815,7 @@ class PlayerBridge(LibraryAccess):
 
         A live DJ's set (#48) also has ``kind`` ``"live"`` and ``ended_at``
         (``None`` while it is on the air); songs keep their usual fields.
+        The liners and other audio aired between them (#601) are left out.
         """
         keys = ("event_id", "path", "title", "artist", "duration", "played_at")
         with self._history_lock:
@@ -781,6 +828,59 @@ class PlayerBridge(LibraryAccess):
                 )
                 for row in self._play_history
             ]
+
+    def history_page(
+        self, page: int, per_page: int, *, liners: bool = False, anchor: str | None = None
+    ) -> dict:
+        """One page of History (see :func:`autodj.history_pages.history_page`)."""
+        with self._history_lock:
+            return history_page(
+                self._play_history,
+                self._aired_history,
+                page=page,
+                per_page=per_page,
+                liners=liners,
+                anchor=anchor,
+            )
+
+    def record_aired(
+        self,
+        kind: str,
+        *,
+        title: str,
+        artist: str = "",
+        path: str | None = None,
+        duration: float = 0.0,
+    ) -> None:
+        """Add audio that aired over or between the songs to History (#601).
+
+        A liner, ad, matched intro, time check and so on, as *kind* (one of
+        :data:`~autodj.history_kinds.INSERT_KINDS`).  It is not a song
+        play: last-played times and the repeat rules do not count it, and
+        it has no listener count.  Quick and touches no disk, so it is safe
+        on the mix-bus thread.
+
+        Raises:
+            ValueError: *kind* is not an inserted kind.
+        """
+        if kind not in INSERT_KINDS:
+            raise ValueError(f"not a kind of inserted audio: {kind!r}")
+        row = {
+            "event_id": secrets.token_hex(16),
+            "path": str(path) if path else None,
+            "title": title or "",
+            "artist": artist or "",
+            "duration": max(0.0, float(duration or 0.0)),
+            "played_at": datetime.now(UTC).isoformat(),
+            "performances": None,
+            "kind": kind,
+        }
+        with self._history_lock:
+            self._keep_history_row(row)
+            # As for a song: the history loaded at start never replaces it.
+            self._history_started = True
+            if (ledger := self._ledger()) is not None:
+                ledger.remember_history(row)
 
     # ------------------------------------------------------------------
     # Controls
@@ -2511,7 +2611,9 @@ class PlayerBridge(LibraryAccess):
             if self._history_started:
                 return
             self._play_history.clear()
-            self._play_history.extend(ledger.recent_history())
+            self._aired_history.clear()
+            for row in ledger.recent_history(HISTORY_VIEW_ROWS, inserts=HISTORY_AIRED_ROWS):
+                self._keep_history_row(row)
         try:
             self.player.restore_repeat_history(ledger)
         except Exception:

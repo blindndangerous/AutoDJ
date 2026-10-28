@@ -140,4 +140,4 @@ and the campaign as the album; the SoundExchange report leaves them out.
 ## Related tasks and contracts
 
 - [Matched intro, ad and show APIs and storage](../../reference/operations/station-content-api.md)
-- [Export play logs and webcasting reports](play-log-export.md)
+- [Read History and export play logs and webcasting reports](play-log-export.md)

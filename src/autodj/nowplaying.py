@@ -116,12 +116,15 @@ class NowPlaying:
         )
         if current is not None and live is None:
             current["started_at"] = started_at
+            # The playing track's own row, which is last unless it is not
+            # music (a show's speech segment, #601) and so not listed.
+            playing_id = open_play[1].get("event_id") if started_at and open_play else None
             if started_at:
                 elapsed = (datetime.now(UTC) - datetime.fromisoformat(started_at)).total_seconds()
                 current["elapsed"] = max(0.0, min(current["duration"], elapsed))
             else:
                 current["elapsed"] = 0.0
-            if started_at:
+            if started_at and history and playing_id in (None, history[-1].get("event_id")):
                 history = history[:-1]
         limit = cfg.nowplaying.history_limit
         # The station's own stream address (a test double may not have one).
