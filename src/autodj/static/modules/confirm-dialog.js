@@ -47,10 +47,11 @@ import { sayIfStillPending } from "./live-region.js";
 // browser itself puts focus back on the control that opened it, which is
 // right for Cancel and Escape.  When focus belongs somewhere else, the
 // opener is made inert while the dialog closes, so the browser has nothing
-// to put back, and focus moves on in the same task.  The close event comes
-// a task later; it puts focus back only when it is not already on the
-// opener (#385), as when the opener was gone and the browser had nowhere
-// to put it.
+// to put back, and focus moves on in the same task.  The answer comes at
+// the user's action, before the dialog closes; the close event, a task
+// later, only checks focus, putting it back when it is still on the page
+// body or in a closed dialog, as when the opener was gone and the browser
+// had nowhere to put it (#385).
 //
 // onConfirm, when given, does the action while the dialog is still open
 // and returns the element that should have focus afterwards: the list is
@@ -79,24 +80,35 @@ function backdropFor(doc) {
 // confirmation is open.
 const PAGE_EVENTS = ["click", "auxclick", "pointerdown", "mousedown", "keydown", "submit", "input"];
 
-// Openings of each confirmation dialog, and the close events it has fired.
-// The browser fires close a task after the dialog closes, so another
-// confirmation can open before the last one's close event comes, as Queue
-// anyway does when the song then needs a voice track choice.  Every
-// opening closes once and fires one close event, in order, so the close
-// event that makes the count equal an opening's number is that opening's
-// own.  The counting listener is added before any opening's, so it runs
-// first.
-const closings = new WeakMap();
+// Each confirmation dialog's current opening, and the focus checks waiting
+// for its close events.  An opening is answered at the moment of its own
+// action (confirm, Cancel, Escape, the third choice, or the dialog taken out
+// of the page): it removes every listener it added and resolves before the
+// dialog closes, so nothing it left can act on a later opening.  The
+// browser fires close a task after the dialog closes, and another
+// confirmation can open before then, as Queue anyway does when the song
+// then needs a voice track choice.  Each close an opening makes queues one
+// focus check, run by its own close event: close events come one per close,
+// in order.  A close event with no check waiting is a close the page or the
+// browser made itself, and answers No for the opening still unanswered.
+const dialogStates = new WeakMap();
 
-function closeCount(dialog) {
-  let count = closings.get(dialog);
-  if (!count) {
-    count = { opened: 0, closed: 0 };
-    closings.set(dialog, count);
-    dialog.addEventListener("close", () => { count.closed += 1; });
+function dialogState(dialog) {
+  let state = dialogStates.get(dialog);
+  if (!state) {
+    state = { current: null, checks: [] };
+    dialogStates.set(dialog, state);
+    dialog.addEventListener("close", () => {
+      const check = state.checks.shift();
+      if (check) {
+        check();
+        return;
+      }
+      const opening = state.current;
+      if (opening && !opening.settled && !opening.pending && !dialog.open) opening.closedElsewhere();
+    });
   }
-  return count;
+  return state;
 }
 
 // Whether a modal dialog other than *dialog* is open.  The page behind it
@@ -116,16 +128,30 @@ function otherModalOpen(doc, dialog) {
 
 // station: the action changes one station (#70).  While the server has
 // several, the message then ends by naming the station the page controls.
-export function confirmAction(doc, {
+export function confirmAction(doc, options) {
+  return ask(doc, options, null, (answer) => answer === "confirm");
+}
+
+// One opening of the confirmation.  Its answer is "confirm", "cancel" or,
+// with *alternate* (a third button chooseAction adds), "alternate"; the
+// promise resolves with *as*(answer), with no promise step in between.
+function ask(doc, {
   title, message, confirmLabel, onConfirm = null, pendingText = "Working…",
-}) {
+}, alternate, as) {
   const dialog = doc.getElementById("confirm-dialog");
   const heading = doc.getElementById("confirm-title");
   const text = doc.getElementById("confirm-message");
   const confirmButton = doc.getElementById("confirm-accept");
   const cancelButton = doc.getElementById("confirm-cancel");
   if (!dialog || !heading || !text || !confirmButton || dialog.open) {
-    return Promise.resolve(false);
+    return Promise.resolve(as("cancel"));
+  }
+  const state = dialogState(dialog);
+  // An opening the page or browser closed, whose close event has not come
+  // yet: answered No now, and its close event is passed over when it comes.
+  if (state.current && !state.current.settled) {
+    state.current.settle("cancel");
+    state.checks.push(() => {});
   }
   heading.textContent = title;
   text.textContent = message;
@@ -136,16 +162,14 @@ export function confirmAction(doc, {
   const place = dialogReturnPlace(opener);
   const modal = otherModalOpen(doc, dialog);
   const backdrop = modal ? null : backdropFor(doc);
-  const count = closeCount(dialog);
-  const opening = ++count.opened;
   return new Promise((resolve) => {
-    let pending = false;
-    let settled = false;
+    const opening = { settled: false, pending: false, settle, closedElsewhere };
+    state.current = opening;
     const listeners = [
       [confirmButton, "click", accept],
       [cancelButton, "click", cancel],
-      [dialog, "cancel", holdWhilePending],
-      [dialog, "close", closed],
+      [alternate, "click", chooseAlternate],
+      [dialog, "cancel", escape],
     ];
     if (!modal) {
       listeners.push(
@@ -161,15 +185,10 @@ export function confirmAction(doc, {
     // the page fires no close event, so it is answered No and let go of.
     function guarding() {
       if (!dialog.isConnected) {
-        abandon();
+        settle("cancel");
         return false;
       }
       return dialog.open && !otherModalOpen(doc, dialog);
-    }
-    function abandon() {
-      if (settled) return;
-      count.closed = Math.max(count.closed, opening);
-      settle(false);
     }
     // A press, key or submission aimed at the page while the dialog is
     // open never reaches it; focus goes back to Cancel.
@@ -192,7 +211,7 @@ export function confirmAction(doc, {
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        if (!pending) closeOnto("cancel", null);
+        if (!opening.pending) finish("cancel", null);
         return;
       }
       if (event.key !== "Tab") return;
@@ -219,28 +238,57 @@ export function confirmAction(doc, {
       event.preventDefault();
       event.stopPropagation();
     }
-    function hideBackdrop() {
-      if (backdrop) backdrop.hidden = true;
-    }
     // Back on the opener, or somewhere steady near it; never the page body.
     // Focus already there, put back by the browser, stays: letting go of it
-    // to take it again would rest it on the page body (#602).
-    // Over another modal dialog, focus the browser put back is taken again,
-    // so the change is reported once the dialog has closed (#385).
+    // to take it again would rest it on the page body (#602).  Over another
+    // modal dialog it is taken again, so the change is reported once the
+    // dialog has closed (#385).
     function returnFocus() {
       if (!modal && opener && doc.activeElement === opener) return;
       if (!focusAfterDialog(opener)) focusSteadyPlace(doc, place);
     }
-    // Close the dialog with focus going straight to *target*, or back to the
-    // opener when there is none.
-    function closeOnto(value, target) {
+    // Run by this opening's close event, a task after it closed.  Nothing
+    // is done while the dialog is open again for a later opening.  Focus
+    // still in a closed dialog, or on the page body, goes back; after
+    // Cancel or Escape over another modal dialog, so does focus the browser
+    // put back on the opener, taken again so the change is reported (#385).
+    // Focus the page has moved elsewhere stays.
+    function checkFocus(retake) {
+      if (dialog.open) return;
+      const active = doc.activeElement;
+      const loose = !active || active === doc.body || dialog.contains(active)
+        || Boolean(active?.closest?.("dialog:not([open])"));
+      if (loose || (retake && active === opener)) returnFocus();
+    }
+    // Answered: every listener this opening added goes, then the promise
+    // resolves.  Once only.
+    function settle(answer) {
+      if (opening.settled) return;
+      opening.settled = true;
+      for (const [target, type, listener, capture] of listeners) {
+        target?.removeEventListener(type, listener, capture);
+      }
+      if (backdrop) backdrop.hidden = true;
+      resolve(as(answer));
+    }
+    // Closed by the page or the browser, not by this opening's own action.
+    function closedElsewhere() {
+      settle("cancel");
+      checkFocus(modal);
+    }
+    // Answer, then close the dialog with focus going straight to *target*,
+    // or back to the opener when there is none.
+    function finish(answer, target) {
+      settle(answer);
+      const closing = dialog.open;
       if (modal) {
         // As other modal dialogs close (#385): the dialog lets go of focus,
         // and focus is taken once the dialog has closed, by the action's
         // target now or by the close event a task later.
         releaseDialogFocus(dialog);
-        dialog.close(value);
-        if (value === "confirm" && !(target?.isConnected && focusAfterDialog(target))) returnFocus();
+        dialog.close(answer);
+        if (closing) state.checks.push(() => checkFocus(answer !== "confirm"));
+        if (answer === "confirm" && !(target?.isConnected && focusAfterDialog(target))) returnFocus();
         return;
       }
       const elsewhere = target?.isConnected && target !== opener;
@@ -249,27 +297,19 @@ export function confirmAction(doc, {
       const hold = elsewhere && opener?.isConnected && !opener.hasAttribute("inert");
       if (hold) opener.setAttribute("inert", "");
       try {
-        dialog.close(value);
+        dialog.close(answer);
       } finally {
         if (hold) opener.removeAttribute("inert");
       }
-      hideBackdrop();
+      if (closing) state.checks.push(() => checkFocus(false));
       if (!(elsewhere && focusAfterDialog(target))) returnFocus();
-    }
-    function settle(value) {
-      settled = true;
-      for (const [target, type, listener, capture] of listeners) {
-        target?.removeEventListener(type, listener, capture);
-      }
-      hideBackdrop();
-      resolve(value);
     }
     async function accept(event) {
       event.preventDefault();
-      if (pending) return;
-      pending = true;
+      if (opening.pending || opening.settled) return;
       let target = null;
       if (onConfirm) {
+        opening.pending = true;
         const status = dialogStatusLine(dialog, "confirm-status");
         confirmButton.setAttribute("aria-busy", "true");
         const stopPending = sayIfStillPending((text) => { status.textContent = text; }, pendingText);
@@ -281,37 +321,30 @@ export function confirmAction(doc, {
           stopPending();
           status.textContent = "";
           confirmButton.removeAttribute("aria-busy");
+          opening.pending = false;
         }
+        // Taken out of the page, or closed and replaced, meanwhile.
+        if (opening.settled) return;
       }
-      closeOnto("confirm", target);
-      settle(true);
+      finish("confirm", target);
     }
     function cancel(event) {
       event.preventDefault();
-      if (pending) return;
-      closeOnto("cancel", null);
+      if (opening.pending) return;
+      finish("cancel", null);
+    }
+    function chooseAlternate(event) {
+      event.preventDefault();
+      if (opening.pending) return;
+      finish("alternate", null);
     }
     // Escape over another modal dialog: held while the action runs;
-    // otherwise the browser closes the dialog and puts focus back on the
-    // opener.
-    function holdWhilePending(event) {
-      if (pending) event.preventDefault();
-      else releaseDialogFocus(dialog);
-    }
-    // Cancel, Escape, or a browser or page that closed the dialog anyway.
-    // A close event for an earlier opening, or one that comes while the
-    // dialog is open again, is not this opening's.  Focus still in the
-    // closed dialog, or on the page body, goes back; over another modal
-    // dialog, so does focus the browser put back on the opener, taken again
-    // so the change is reported (#385), and focus left in a dialog that
-    // has closed meanwhile.  Focus the page has moved elsewhere stays.
-    function closed() {
-      if (dialog.open || count.closed !== opening || pending) return;
-      settle(false);
-      const active = doc.activeElement;
-      const loose = !active || active === doc.body || dialog.contains(active);
-      const leftInClosedDialog = modal && Boolean(active?.closest?.("dialog:not([open])"));
-      if (loose || leftInClosedDialog || (modal && active === opener)) returnFocus();
+    // otherwise this opening answers Cancel and closes the dialog itself,
+    // letting go of focus first (#385).
+    function escape(event) {
+      event.preventDefault();
+      if (opening.pending) return;
+      finish("cancel", null);
     }
     for (const [target, type, listener, capture] of listeners) {
       target?.addEventListener(type, listener, capture);
@@ -349,27 +382,10 @@ export async function chooseAction(doc, {
   const actions = acceptButton.parentElement;
   actions.append(acceptButton, alternate, cancelButton);
   cancelButton.textContent = cancelLabel;
-  // Focus goes back as for Cancel, put back by the browser as it closes;
-  // over another modal dialog, the dialog lets go of it first (#385).
-  const discard = (event) => {
-    event.preventDefault();
-    let modal = false;
-    try {
-      modal = dialog.matches(":modal");
-    } catch (_) {
-      modal = false;
-    }
-    if (modal) releaseDialogFocus(dialog);
-    dialog.close("alternate");
-  };
-  alternate.addEventListener("click", discard);
   try {
-    const accepted = await confirmAction(doc, {
-      title, message, confirmLabel: acceptLabel,
-    });
-    return accepted ? "accept" : dialog.returnValue === "alternate" ? "alternate" : null;
+    return await ask(doc, { title, message, confirmLabel: acceptLabel }, alternate,
+      (answer) => (answer === "confirm" ? "accept" : answer === "alternate" ? "alternate" : null));
   } finally {
-    alternate.removeEventListener("click", discard);
     alternate.remove();
     actions.append(acceptButton, cancelButton);
     cancelButton.textContent = originalCancel;

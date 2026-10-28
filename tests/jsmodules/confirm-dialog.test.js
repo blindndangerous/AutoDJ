@@ -318,11 +318,12 @@ describe("confirmAction without showModal (#602, #627)", () => {
     const answer = ask();
     expect(opened).toEqual(["showModal"]);
     expect(document.getElementById("confirm-backdrop")).toBeNull();
-    // Escape is the browser's cancel event here, held while the action runs.
+    // Escape is the browser's cancel event here; the confirmation answers
+    // Cancel and closes the dialog itself.
     const escape = new Event("cancel", { cancelable: true });
     dialog.dispatchEvent(escape);
-    expect(escape.defaultPrevented).toBe(false);
-    dialog.close("");
+    expect(escape.defaultPrevented).toBe(true);
+    expect(dialog.hasAttribute("open")).toBe(false);
     expect(await answer).toBe(false);
   });
 
@@ -413,16 +414,17 @@ describe("confirmAction without showModal (#602, #627)", () => {
       expect(opened).toEqual(["showModal"]);
       const trail = focusTrail();
       if (how === "Escape") {
+        // The confirmation answers Escape itself: it lets go of focus, then
+        // closes the dialog.
         const escape = new Event("cancel", { cancelable: true });
         dialog.dispatchEvent(escape);
-        expect(escape.defaultPrevented).toBe(false);
-        // The dialog let go of focus before the browser closes it.
-        expect(document.activeElement).toBe(document.body);
-        dialog.close("");
+        expect(escape.defaultPrevented).toBe(true);
       } else {
         document.getElementById("confirm-cancel").click();
       }
+      // Answered at once; the close event comes a task later.
       expect(await answer).toBe(false);
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
       expect(document.activeElement).toBe(editorCancel);
       expect(trail[0]).toBe("out:confirm-cancel>body");
       // Focus was never put back while the confirmation was open, and was
@@ -462,6 +464,87 @@ describe("confirmAction without showModal (#602, #627)", () => {
       expect(await next).toBe(second === "confirmAction" ? false : null);
       expect(document.activeElement).toBe(opener);
     }
+  });
+
+  // ADR-0011-03
+  it("answers each opening at its own action, so a late close event leaves no listener behind", async () => {
+    const { dialog, opener } = mount();
+    opener.focus();
+    const ran = [];
+    const action = (name) => async () => { ran.push(name); return opener; };
+    const a = confirmAction(document, { title: "A?", message: "A.", confirmLabel: "A", onConfirm: action("A") });
+    document.getElementById("confirm-cancel").click();
+    // B opens in the same task, before A's close event.
+    const b = confirmAction(document, { title: "B?", message: "B.", confirmLabel: "B", onConfirm: action("B") });
+    expect(await a).toBe(false);
+    // A's close event comes while B is open, and does nothing to B.
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(dialog.hasAttribute("open")).toBe(true);
+    expect(document.activeElement.id).toBe("confirm-cancel");
+    document.getElementById("confirm-cancel").click();
+    expect(await b).toBe(false);
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    const c = confirmAction(document, { title: "C?", message: "C.", confirmLabel: "C", onConfirm: action("C") });
+    document.getElementById("confirm-accept").click();
+    expect(await c).toBe(true);
+    // Only C's action ran.
+    expect(ran).toEqual(["C"]);
+  });
+
+  it("keeps four quick confirmations apart, with mixed answers", async () => {
+    const { dialog, opener } = mount();
+    const page = document.createElement("button");
+    let pagePresses = 0;
+    page.addEventListener("click", () => { pagePresses += 1; });
+    document.body.append(page);
+    opener.focus();
+    const ran = [];
+    const answers = [];
+    // Each opens as soon as the one before is answered, before its close
+    // event comes.
+    const first = confirmAction(document, { title: "1?", message: "1.", confirmLabel: "1" });
+    document.getElementById("confirm-accept").click();
+    answers.push(await first);
+    const second = confirmAction(document, {
+      title: "2?", message: "2.", confirmLabel: "2", onConfirm: async () => { ran.push(2); return opener; },
+    });
+    document.getElementById("confirm-cancel").click();
+    answers.push(await second);
+    const third = chooseAction(document, { title: "3?", message: "3.", choices: ["Keep", "Discard", "Cancel"] });
+    await Promise.resolve();
+    [...dialog.querySelectorAll("button")].find((button) => button.textContent === "Discard").click();
+    answers.push(await third);
+    const fourth = confirmAction(document, {
+      title: "4?", message: "4.", confirmLabel: "4", onConfirm: async () => { ran.push(4); return opener; },
+    });
+    document.getElementById("confirm-accept").click();
+    answers.push(await fourth);
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
+    expect(answers).toEqual([true, false, "alternate", true]);
+    expect(ran).toEqual([4]);
+    expect(dialog.hasAttribute("open")).toBe(false);
+    expect(document.getElementById("confirm-backdrop").hidden).toBe(true);
+    expect(document.activeElement).toBe(opener);
+    // Nothing any of them added is left: the page works, and the hidden
+    // dialog's buttons answer no one.
+    page.click();
+    expect(pagePresses).toBe(1);
+    document.getElementById("confirm-accept").click();
+    expect(ran).toEqual([4]);
+  });
+
+  it("answers No for an opening the page closed when the next one opens before its close event", async () => {
+    const { dialog, opener } = mount();
+    opener.focus();
+    const first = ask();
+    // The page closes the dialog; before its close event, another opens.
+    dialog.close();
+    const second = confirmAction(document, { title: "Sure?", message: "Yes.", confirmLabel: "OK" });
+    expect(await first).toBe(false);
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(dialog.hasAttribute("open")).toBe(true);
+    document.getElementById("confirm-accept").click();
+    expect(await second).toBe(true);
   });
 
   it("leaves focus where the page put it when an editor closes its Discard question", async () => {
