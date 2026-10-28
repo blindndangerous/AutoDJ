@@ -75,10 +75,10 @@ or evidence limits. Narrative above retains rationale and scope.
 | --- | --- | --- | --- |
 | `ADR-0011-01` | The visual status mirror does not add a second automatic announcement path. | automated | `tests/jsmodules/live-region.test.js::keeps the visible mirror out of the accessibility tree` |
 | `ADR-0011-02` | An unchanged status does not rewrite its live region during passive updates. | automated | `tests/jsmodules/live-region.test.js::does not rewrite a region that already carries the message` |
-| `ADR-0011-03` | Cancel and Escape return focus to the opener after the dialog closes, straight from the dialog's button and never through the page body. | automated | `tests/jsmodules/confirm-dialog.test.js::puts focus back on the opener only once the dialog has closed, after Cancel`, `tests/jsmodules/confirm-dialog.test.js::does the same for Escape, and holds Escape while the action runs` |
+| `ADR-0011-03` | Cancel and Escape return focus to the opener after the dialog closes, straight from the dialog's button and never through the page body. Over another modal dialog, the confirmation lets go of focus before it closes and takes it again once closed (#385). | automated | `tests/jsmodules/confirm-dialog.test.js::puts focus back on the opener only once the dialog has closed, after Cancel`, `tests/jsmodules/confirm-dialog.test.js::does the same for Escape, and holds Escape while the action runs`, `tests/jsmodules/confirm-dialog.test.js::lets go of focus and takes it back once closed, over an editor dialog (#385)` |
 | `ADR-0011-04` | A release records the required real-browser and screen-reader sample with scope and limitations. | manual | Follow docs/accessibility-testing.md; record exact engine, screen reader, flows, defects, and whether a person listened. |
 | `ADR-0011-05` | A confirmed action that names another control moves focus straight to it from the dialog's button, never through the opener or the page body. | automated | `tests/jsmodules/confirm-dialog.test.js::moves focus to the action's target, not the opener, after a confirm` |
-| `ADR-0011-06` | The shared confirmation opens with `show()`, not `showModal()`, unless another modal dialog is open; it is marked `aria-modal`, its form has `role="none"`, Cancel is its last button, and while it is open a backdrop takes clicks, Tab and Shift+Tab stay in it, and focus sent to the page returns to Cancel. | automated | `tests/jsmodules/confirm-dialog.test.js::opens with show(), aria-modal, the form out of the tree, Cancel last and the backdrop shown`, `tests/jsmodules/confirm-dialog.test.js::keeps Tab, Shift+Tab and focus in the dialog, and the backdrop does nothing` |
+| `ADR-0011-06` | The shared confirmation opens with `show()`, not `showModal()`, unless another modal dialog is open; it is marked `aria-modal`, its form has `role="none"`, Cancel is its last button, and while it is open a backdrop takes clicks, Tab and Shift+Tab stay in it, focus sent to the page returns to Cancel, and a click, press, Enter, Space, submission or typed input aimed at the page does not reach it. | automated | `tests/jsmodules/confirm-dialog.test.js::opens with show(), aria-modal, the form out of the tree, Cancel last and the backdrop shown`, `tests/jsmodules/confirm-dialog.test.js::keeps Tab, Shift+Tab and focus in the dialog, and the backdrop does nothing`, `tests/jsmodules/confirm-dialog.test.js::stops a page control activated while it is open, as a screen reader may` |
 | `ADR-0011-07` | With NVDA in browse mode, Enter on a newly opened confirmation cancels it, and closing it reads the control focus returns to, not the top of the page. | manual | Open and close a confirmation such as Restart AutoDJ in Settings, Updates with NVDA in Chrome and Firefox; record the revision, versions, flows, speech, and whether a person listened. |
 
 ## Amendment 2026-10-27: dialog focus never rests on the page body
@@ -108,8 +108,12 @@ pressed Restart in Chrome
 
 The shared confirmation therefore opens with `show()` and `aria-modal`,
 which leaves the page in the accessibility tree, with Cancel as the last
-button (`ADR-0011-06`). Opened over another modal dialog, it still uses
-`showModal()`. NVDA evidence for `ADR-0011-07`: on 2026-10-28, with
+button (`ADR-0011-06`). The page is not made inert or `aria-hidden`, which
+would hide it from NVDA again, so a screen reader that ignores `aria-modal`
+can still read it; a click, press, Enter, Space, submission or typed input
+aimed at the page while the dialog is open is stopped before the page sees
+it. Opened over another modal dialog, it still uses `showModal()` and lets
+go of focus before closing, as other modal dialogs do (#385). NVDA evidence for `ADR-0011-07`: on 2026-10-28, with
 NVDA 2026.2 in Chrome and Firefox (browser versions not recorded), on
 revision f075dfd7 with this behaviour selected for the trial. Flows: the
 Restart AutoDJ confirmation in Settings, Updates opened, Tab and Shift+Tab

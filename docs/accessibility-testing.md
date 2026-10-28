@@ -37,16 +37,22 @@ the page and read "Skip to main content" as the dialog closed
 resolves D14 from the 0.18.0 sample for these dialogs. NVDA reads a new dialog
 through and leaves its cursor on the last button, so Enter pressed the confirm
 button when it came last
-([#627](https://github.com/blindndangerous/AutoDJ/issues/627)). Opened over
-another modal dialog, such as an editor's discard question, the confirmation is
-modal and this section does not apply.
+([#627](https://github.com/blindndangerous/AutoDJ/issues/627)). The page is not
+made inert or `aria-hidden`, which would hide it from NVDA again, so a screen reader
+can still read it behind the dialog. A click, press, Enter, Space, submission or typed
+input aimed at the page while the dialog is open is stopped before the page sees it,
+so a screen reader that ignores `aria-modal` (TalkBack, Narrator) cannot activate a
+page control under the confirmation. Opened over another modal dialog, such as an
+editor's discard question, the confirmation is modal and lets go of focus before it
+closes, as other modal dialogs do (#385); the expectations below do not apply.
 
 Expected with NVDA in browse mode, in Chrome and Firefox:
 
 - Opening reads the title, the message and both buttons, with focus on Cancel.
 - Enter straight after opening cancels.
-- Tab and Shift+Tab move only between the two buttons; a click outside the
-  dialog does nothing.
+- Tab and Shift+Tab move only between the two buttons. A click outside the
+  dialog, or a page control activated from the screen reader's own cursor,
+  does nothing and leaves focus on Cancel.
 - Escape or Cancel returns focus to the control that opened the dialog. NVDA
   reads that control twice, first as the line at its browse-mode cursor (for
   example "button Restart AutoDJ"), then as the focus ("Restart AutoDJ button").
@@ -330,7 +336,8 @@ and Restart AutoDJ. Enter on Update, Go back and Restart must each open the conf
 on Cancel and a message that says the stream goes off the air or, for Go back, what is lost since
 the backup's date. Each open confirmation must be marked `aria-modal` without being modal, with its
 form out of the accessibility tree and Cancel as its last button; its backdrop must cover the page
-and ignore a click, and Tab and Shift+Tab must stay on its two buttons. Escape must close it, and
+and ignore a click, Tab and Shift+Tab must stay on its two buttons, and a click sent straight to
+the Now Playing tab must leave it unselected and focus on Cancel. Escape must close it, and
 for Restart Cancel and a refused Restart must too, each moving focus straight from the dialog's
 button back to the button that opened it, never through the page body. The audit never restarts
 or updates the server.

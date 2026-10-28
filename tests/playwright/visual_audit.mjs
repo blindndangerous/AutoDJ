@@ -776,7 +776,8 @@ async function closeUpdatesConfirm(page, id, keys, how) {
 // The open confirmation keeps the page out of reach without showModal()
 // (#602, #627): marked aria-modal, not :modal, the form out of the tree,
 // Cancel last; the backdrop covers the page and a click on it changes
-// nothing; Tab and Shift+Tab go round the dialog's two buttons.
+// nothing; Tab and Shift+Tab go round the dialog's two buttons; a page
+// control clicked directly does nothing.
 async function updatesConfirmShape(page, name) {
   const shape = await page.evaluate(() => {
     const dialog = document.getElementById("confirm-dialog");
@@ -803,9 +804,20 @@ async function updatesConfirmShape(page, name) {
     await page.keyboard.press(key);
     stops.push(await page.evaluate(() => document.activeElement?.id));
   }
+  // A page control activated directly, as a screen reader that ignores
+  // aria-modal does, must not act: the Now Playing tab stays unselected.
+  const pageClick = await page.evaluate(() => {
+    document.getElementById("tab-now").click();
+    return {
+      selected: document.getElementById("tab-now").getAttribute("aria-selected"),
+      active: document.activeElement?.id,
+    };
+  });
   const open = await page.locator("#confirm-dialog").evaluate((dialog) => dialog.open);
-  if (!open || stops.join(",") !== "confirm-accept,confirm-cancel,confirm-accept") {
-    throw new Error(`${name}'s confirmation let go: open ${open}, Tab stops ${stops.join(",")}`);
+  if (!open || stops.join(",") !== "confirm-accept,confirm-cancel,confirm-accept"
+      || pageClick.selected !== "false" || pageClick.active !== "confirm-cancel") {
+    throw new Error(`${name}'s confirmation let go: open ${open}, Tab stops ${stops.join(",")}, `
+      + `Now Playing tab clicked: ${JSON.stringify(pageClick)}`);
   }
 }
 

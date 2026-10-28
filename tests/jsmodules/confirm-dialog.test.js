@@ -346,6 +346,93 @@ describe("confirmAction without showModal (#602, #627)", () => {
     expect(await answer).toBe(false);
   });
 
+  // ADR-0011-06
+  it("stops a page control activated while it is open, as a screen reader may", async () => {
+    mount();
+    document.body.insertAdjacentHTML("afterbegin", `
+      <button id="page-action">Skip</button>
+      <a id="page-link" href="#elsewhere">Elsewhere</a>
+      <form id="page-form"><input id="page-field"></form>`);
+    const pressed = [];
+    for (const id of ["page-action", "page-link"]) {
+      const control = document.getElementById(id);
+      for (const type of ["click", "keydown", "pointerdown"]) {
+        control.addEventListener(type, () => pressed.push(`${id} ${type}`));
+      }
+    }
+    const typed = [];
+    document.getElementById("page-field").addEventListener("input", () => typed.push("input"));
+    const answer = ask();
+    // TalkBack or Narrator activating a page control: a click sent to it
+    // directly, which the backdrop does not take.
+    document.getElementById("page-action").click();
+    const link = document.getElementById("page-link");
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    link.dispatchEvent(enter);
+    const space = new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
+    link.dispatchEvent(space);
+    const down = new Event("pointerdown", { bubbles: true, cancelable: true });
+    link.dispatchEvent(down);
+    const submit = new Event("submit", { bubbles: true, cancelable: true });
+    document.getElementById("page-form").dispatchEvent(submit);
+    expect(pressed).toEqual([]);
+    expect([enter.defaultPrevented, space.defaultPrevented, down.defaultPrevented, submit.defaultPrevented])
+      .toEqual([true, true, true, true]);
+    expect(document.activeElement.id).toBe("confirm-cancel");
+    // An input event the page's own script sends still reaches it.
+    document.getElementById("page-field").dispatchEvent(new Event("input", { bubbles: true }));
+    expect(typed).toEqual(["input"]);
+    document.getElementById("confirm-cancel").click();
+    expect(await answer).toBe(false);
+    // Closed, the page works again.
+    document.getElementById("page-action").click();
+    expect(pressed).toEqual(["page-action click"]);
+  });
+
+  // ADR-0011-03
+  it("lets go of focus and takes it back once closed, over an editor dialog (#385)", async () => {
+    for (const how of ["Escape", "Cancel"]) {
+      const { dialog, opened } = mount();
+      const editor = document.createElement("dialog");
+      editor.innerHTML = '<button id="editor-cancel">Cancel</button>';
+      editor.setAttribute("open", "");
+      const matches = editor.matches.bind(editor);
+      editor.matches = (selector) => selector === ":modal" || matches(selector);
+      document.body.append(editor);
+      const editorCancel = document.getElementById("editor-cancel");
+      editorCancel.focus();
+      // Each time the editor's Cancel takes focus: whether the confirmation
+      // was still open, and whether its close event had come.
+      let closeCame = false;
+      dialog.addEventListener("close", () => { closeCame = true; });
+      const taken = [];
+      editorCancel.addEventListener("focus", () => taken.push({ open: dialog.hasAttribute("open"), closeCame }));
+      const answer = confirmAction(document, {
+        title: "Discard changes?", message: "Your changes to this event are lost.", confirmLabel: "Discard",
+      });
+      expect(opened).toEqual(["showModal"]);
+      const trail = focusTrail();
+      if (how === "Escape") {
+        const escape = new Event("cancel", { cancelable: true });
+        dialog.dispatchEvent(escape);
+        expect(escape.defaultPrevented).toBe(false);
+        // The dialog let go of focus before the browser closes it.
+        expect(document.activeElement).toBe(document.body);
+        dialog.close("");
+      } else {
+        document.getElementById("confirm-cancel").click();
+      }
+      expect(await answer).toBe(false);
+      expect(document.activeElement).toBe(editorCancel);
+      expect(trail[0]).toBe("out:confirm-cancel>body");
+      // Focus was never put back while the confirmation was open, and was
+      // taken again after its close event, a change NVDA reports.
+      expect(taken.every((step) => !step.open)).toBe(true);
+      expect(taken.at(-1)).toEqual({ open: false, closeCame: true });
+      for (const stop of stopTrails.splice(0)) stop();
+    }
+  });
+
   it("keeps Cancel last in a three-way choice, and after it", async () => {
     const { dialog } = mount();
     const answer = chooseAction(document, {
