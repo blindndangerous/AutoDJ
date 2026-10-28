@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from autodj.catalog import DEFAULT_STATION, LibraryCatalog, _path
+from autodj.history_kinds import INSERT_KINDS
 from autodj.sqlite_utils import readonly_uri
 
 _SCHEMA = """
@@ -30,6 +31,9 @@ CREATE TABLE IF NOT EXISTS play_history (
 CREATE TABLE IF NOT EXISTS catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS station_migrations (name TEXT PRIMARY KEY, complete INTEGER NOT NULL);
 """
+
+# The rows that are songs or live sets, in SQL.
+_PLAY_ROWS = "kind IN ('song','live')"
 
 
 class StationStore:
@@ -141,11 +145,13 @@ class StationStore:
             )
 
     def recent_history(self, limit: int) -> list[dict]:
+        """The latest *limit* rows of every kind, oldest first (see :func:`history_kind`)."""
         _check_limit(limit)
         with self._lock:
             rows = self._db.execute(
-                "SELECT event_id,entry_id,path,title,artist,duration,played_at,kind,ended_at FROM ("
-                "SELECT rowid,event_id,entry_id,path,title,artist,duration,played_at,kind,ended_at "
+                "SELECT event_id,entry_id,path,title,artist,duration,played_at,kind,ended_at,"
+                "track_kind FROM (SELECT rowid,event_id,entry_id,path,title,artist,duration,"
+                "played_at,kind,ended_at,track_kind "
                 "FROM play_history WHERE interrupted=0 ORDER BY rowid DESC LIMIT ?) ORDER BY rowid ASC",
                 (limit,),
             ).fetchall()
@@ -157,18 +163,32 @@ class StationStore:
             rows = self._db.execute(
                 "SELECT path,title,artist,album,played_at FROM (SELECT rowid AS row,path,title,artist,"
                 "album,played_at FROM play_history WHERE interrupted=0 AND path IS NOT NULL "
-                "AND kind!='live' AND (track_kind='' OR track_kind='music') "
+                "AND kind='song' AND (track_kind='' OR track_kind='music') "
                 "ORDER BY rowid DESC LIMIT ?) ORDER BY row ASC",
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def play_log(self, start: datetime | None = None, end: datetime | None = None) -> list[dict]:
+    def play_log(
+        self,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        *,
+        include_inserts: bool = False,
+    ) -> list[dict]:
+        """Completed plays in insertion order, optionally within a report range.
+
+        Songs and live sets only, unless *include_inserts* adds the liners,
+        ads and other audio of :data:`INSERT_KINDS`.  A ranged row has the
+        time the next song or live set started (``following_at``), which
+        ends it in a report; an inserted item has none and keeps its length.
+        """
         if (start is None) != (end is None):
             raise ValueError("Both start and end are required")
         if start is not None and end is not None and end <= start:
             raise ValueError("The end of the range must be after its start.")
-        following, where = "", ""
+        following = ""
+        where = "" if include_inserts else " AND h." + _PLAY_ROWS
         if start is not None and end is not None:
             from autodj.catalog import history_start
 
@@ -176,10 +196,11 @@ class StationStore:
                 moment = history_start(value)
                 return moment is not None and start <= moment < end
 
-            where = " AND in_report_range(played_at)"
+            where += " AND in_report_range(played_at)"
             following = (
-                ", (SELECT n.played_at FROM play_history n "
-                "WHERE n.interrupted=0 AND n.rowid>h.rowid ORDER BY n.rowid LIMIT 1) AS following_at"
+                ", CASE WHEN h." + _PLAY_ROWS + " THEN (SELECT n.played_at FROM play_history n "
+                "WHERE n.interrupted=0 AND n." + _PLAY_ROWS + " AND n.rowid>h.rowid "
+                "ORDER BY n.rowid LIMIT 1) END AS following_at"
             )
         # Keep report parsing and its following-play lookup on one reader snapshot.
         with closing(sqlite3.connect(readonly_uri(self.path), uri=True, timeout=30)) as db:
@@ -189,7 +210,7 @@ class StationStore:
                 db.create_function("in_report_range", 1, in_range)
             rows = db.execute(
                 "SELECT h.played_at,h.duration,h.title,h.artist,h.path,h.album,"  # nosec B608 - fixed SQL fragments only
-                "CASE WHEN h.kind='live' THEN 'live' ELSE COALESCE(NULLIF(h.track_kind,''),h.kind) END AS kind,"
+                "CASE WHEN h.kind!='song' THEN h.kind ELSE COALESCE(NULLIF(h.track_kind,''),h.kind) END AS kind,"
                 "h.performances,h.ended_at" + following + " FROM play_history h "
                 "WHERE h.interrupted=0" + where + " ORDER BY h.rowid"
             ).fetchall()
@@ -294,7 +315,10 @@ def discover_station_folders(directory: Path | str) -> set[str]:
 
 def _history_values(row: dict, station: str) -> tuple | None:
     event_id, path = row.get("event_id"), row.get("path")
-    live = row.get("kind") == "live"
+    kind = row.get("kind")
+    live = kind == "live"
+    # Live sets and inserted audio, such as a time check, may have no file.
+    pathless = live or kind in INSERT_KINDS
     duration = row.get("duration")
     if duration is None:
         return None
@@ -306,7 +330,8 @@ def _history_values(row: dict, station: str) -> tuple | None:
     if (
         not isinstance(event_id, str)
         or not event_id
-        or (not live and (not isinstance(path, str) or not path))
+        or (not pathless and (not isinstance(path, str) or not path))
+        or (path is not None and not isinstance(path, str))
         or not isinstance(row.get("title"), str)
         or not isinstance(row.get("artist"), str)
         or isinstance(row.get("duration"), bool)
@@ -339,7 +364,7 @@ def _history_values(row: dict, station: str) -> tuple | None:
         played_at,
         performances,
         station,
-        "live" if live else "song",
+        kind if live or kind in INSERT_KINDS else "song",
         ended_at,
         row.get("album") or "",
         row.get("track_kind") or "",

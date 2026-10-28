@@ -26,6 +26,7 @@ from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Any
 
 from autodj.audience import StreamAudience
+from autodj.history_kinds import INSERT_KINDS, history_kind
 from autodj.identity_map import attached
 from autodj.settings_bodies import PAGE_SAVED_BREAKS, PAGE_SAVED_REQUESTS
 
@@ -44,6 +45,12 @@ class StreamSeekUnavailable(Exception):
 
 
 SEEK_TRACK_CHANGED = "The song on air has changed, so it was not moved."
+
+#: History rows the bridge keeps in memory and reloads at start: songs,
+#: live sets and the liners and other audio aired between them (#601).
+HISTORY_ROWS = 2000
+#: The most rows History shows in either view, with or without liners.
+HISTORY_VIEW_ROWS = 500
 
 
 class SeekTrackChanged(Exception):
@@ -402,9 +409,10 @@ class PlayerBridge(LibraryAccess):
     # (PAGE_SAVED_REQUESTS, PAGE_SAVED_BREAKS), or that web_state.json held
     # at start.  Only those are written to web_state.json; the others stay
     # config.toml's.
-    # The viewer keeps 500 rows; the catalog retains the full play log.
+    # The viewer keeps HISTORY_VIEW_ROWS rows of each view; the station
+    # database retains the full play log.
     _play_history: deque = field(
-        default_factory=lambda: deque(maxlen=500),
+        default_factory=lambda: deque(maxlen=HISTORY_ROWS),
         init=False,
     )
     _history_started: bool = field(default=False, init=False)
@@ -556,6 +564,8 @@ class PlayerBridge(LibraryAccess):
         """
         self.liner_scheduler = scheduler
         self.player.liner_scheduler = scheduler
+        # The liners, time checks and carts it airs are listed in History.
+        scheduler.on_aired = self.record_aired
         from autodj.station_log import CURRENT_STATION, enter_station, station_scope, thread_name
 
         # Its thread works for this station, so its log lines name it.
@@ -764,23 +774,80 @@ class PlayerBridge(LibraryAccess):
         with self._history_lock:
             self._audience.disconnected(client)
 
-    def history_snapshot(self) -> list[dict]:
+    def history_snapshot(self, *, include_inserts: bool = False) -> list[dict]:
         """Return the latest plays across sessions, oldest first.
 
         A live DJ's set (#48) also has ``kind`` ``"live"`` and ``ended_at``
         (``None`` while it is on the air); songs keep their usual fields.
+        That is the latest HISTORY_VIEW_ROWS of them.  *include_inserts*
+        gives every row kept instead, with the liners and other audio aired
+        over or between the songs (#601), and gives each row its ``kind``
+        (:func:`~autodj.history_kinds.history_kind`).
         """
         keys = ("event_id", "path", "title", "artist", "duration", "played_at")
         with self._history_lock:
-            return [
-                {key: row.get(key) for key in keys}
-                | (
-                    {"kind": "live", "ended_at": row.get("ended_at")}
-                    if row.get("kind") == "live"
-                    else {}
-                )
+            rows = [
+                row
                 for row in self._play_history
+                if include_inserts or row.get("kind") not in INSERT_KINDS
             ]
+        if not include_inserts:
+            rows = rows[-HISTORY_VIEW_ROWS:]
+        snapshot = []
+        for row in rows:
+            item = {key: row.get(key) for key in keys}
+            if row.get("kind") == "live":
+                item |= {"kind": "live", "ended_at": row.get("ended_at")}
+            elif include_inserts:
+                item["kind"] = history_kind({**row, "track_kind": self._track_kind(row)})
+            snapshot.append(item)
+        return snapshot
+
+    def _track_kind(self, row: dict) -> str:
+        """The library kind (``music`` or ``liner``) of a song row's file, if known."""
+        if row.get("kind") not in (None, "song") or not row.get("path"):
+            return ""
+        if "track_kind" in row:  # restored from the station database
+            return row["track_kind"] or ""
+        kind_for_path = getattr(self.library, "kind_for_path", None)
+        return (kind_for_path(row["path"]) or "") if kind_for_path is not None else ""
+
+    def record_aired(
+        self,
+        kind: str,
+        *,
+        title: str,
+        artist: str = "",
+        path: str | None = None,
+        duration: float = 0.0,
+    ) -> None:
+        """Add audio that aired over or between the songs to History (#601).
+
+        A liner, ad, matched intro, time check and so on, as *kind* (one of
+        :data:`~autodj.history_kinds.INSERT_KINDS`).  It is not a song
+        play: last-played times and the repeat rules do not count it, and
+        it has no listener count.  Quick and touches no disk, so it is safe
+        on the mix-bus thread.
+
+        Raises:
+            ValueError: *kind* is not an inserted kind.
+        """
+        if kind not in INSERT_KINDS:
+            raise ValueError(f"not a kind of inserted audio: {kind!r}")
+        row = {
+            "event_id": secrets.token_hex(16),
+            "path": str(path) if path else None,
+            "title": title or "",
+            "artist": artist or "",
+            "duration": max(0.0, float(duration or 0.0)),
+            "played_at": datetime.now(UTC).isoformat(),
+            "performances": None,
+            "kind": kind,
+        }
+        with self._history_lock:
+            self._play_history.append(row)
+            if (ledger := self._ledger()) is not None:
+                ledger.remember_history(row)
 
     # ------------------------------------------------------------------
     # Controls
@@ -2511,7 +2578,7 @@ class PlayerBridge(LibraryAccess):
             if self._history_started:
                 return
             self._play_history.clear()
-            self._play_history.extend(ledger.recent_history())
+            self._play_history.extend(ledger.recent_history(HISTORY_ROWS))
         try:
             self.player.restore_repeat_history(ledger)
         except Exception:

@@ -409,7 +409,9 @@ class StationCarts:
             logger.warning("Cart %s on page %s could not be decoded", slot, page, exc_info=True)
             raise CartError(404, f"The clip for cart {slot} is missing or unreadable") from exc
         if scheduler is not None:
-            await asyncio.to_thread(scheduler.play_cart, audio, self.duck_db(assigned.mode))
+            await asyncio.to_thread(
+                scheduler.play_cart, audio, self.duck_db(assigned.mode), title=assigned.name
+            )
         await self.finish("end")
         label = f"Cart {slot}, {assigned.name}"
         seconds = len(audio) / SAMPLE_RATE

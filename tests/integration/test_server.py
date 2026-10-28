@@ -4943,15 +4943,21 @@ class TestHistoryEndpoint:
         assert data["page"] == 1
 
     def test_play_history_default_is_bounded_deque(self) -> None:
-        """New PlayerBridge instances start with a bounded deque (cap 500)."""
+        """New PlayerBridge instances start with a bounded deque.
+
+        It holds HISTORY_ROWS rows: room for the liners and other audio
+        between the songs (#601) as well as a full view of songs.
+        """
         from collections import deque
 
+        from autodj._bridge import HISTORY_ROWS, HISTORY_VIEW_ROWS
         from autodj.server import PlayerBridge
         from tests.integration._helpers import _make_player_mock, _make_sim_mock
 
         bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
         assert isinstance(bridge._play_history, deque)
-        assert bridge._play_history.maxlen == 500
+        assert bridge._play_history.maxlen == HISTORY_ROWS
+        assert HISTORY_ROWS > HISTORY_VIEW_ROWS == 500
 
     def test_pagination_with_deque_backing(self) -> None:
         """Ensure /api/history slicing works when history is a real deque

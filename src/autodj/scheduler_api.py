@@ -116,7 +116,10 @@ def _builtin_actions(
             audio = await asyncio.to_thread(worker.decode, params["name"])
         except LinerDecodeError as exc:
             raise ValueError(f"Liner {params['name']} could not be played") from exc
-        return lambda: worker.play_audio(audio)
+        found = await asyncio.to_thread(worker.liner_path, params["name"])
+        path = str(found) if found is not None else None
+        title = found.stem if found is not None else params["name"]
+        return lambda: worker.play_audio(audio, kind="liner", title=title, path=path)
 
     async def stream(params: dict[str, str]) -> None:
         station = bridge.station

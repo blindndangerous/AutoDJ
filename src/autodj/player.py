@@ -62,6 +62,8 @@ from autodj.beatmatch import (
     tempo_ratio,
 )
 from autodj.breaks import (
+    AD_SCHEDULE,
+    VOICE_TRACK,
     Break,
     BreakError,
     SlotPlan,
@@ -71,6 +73,7 @@ from autodj.breaks import (
     speech_cues,
 )
 from autodj.dmca import WINDOW_SECONDS, Complement, complement, relaxed
+from autodj.history_kinds import INSERT_KINDS
 from autodj.identity_map import attached
 from autodj.indexer import IndexEntry
 from autodj.live_audio import (
@@ -1160,6 +1163,9 @@ class Player:
         # hook the bridge sets to hear about each track the bus starts.
         self.bus: MixBus | None = None
         self.on_track_started: Callable[[IndexEntry], None] | None = None
+        # The bridge's PlayerBridge.record_aired: hears each liner, break and
+        # matched intro of a handoff as it airs, for History (#601).
+        self.on_item_aired: Callable[..., None] | None = None
         # Render cursor for the bus: the next track to render, how many of
         # its samples the previous track's overlap already played, and how
         # it was picked (for "why this track" once it starts).
@@ -5209,6 +5215,13 @@ class Player:
             for index, (at, entry, queued) in enumerate(playing.liner_events):
                 if frames > at and index not in self._heard_liner_events:
                     self._heard_liner_events.add(index)
+                    self._item_aired(
+                        "liner",
+                        title=entry.title,
+                        artist=entry.artist,
+                        path=entry.path,
+                        duration=entry.length,
+                    )
                     if queued:
                         with self._state.queue_lock:
                             self._commit_queue_pick(entry)
@@ -5222,19 +5235,48 @@ class Player:
                     if frames > at and break_id not in self._heard_break_starts:
                         self._heard_break_starts.add(break_id)
                         desk.on_air(break_id)
+                        self._break_aired(desk, break_id, (end - at) / SAMPLE_RATE)
                     if frames >= end and break_id not in self._heard_break_ends:
                         self._heard_break_ends.add(break_id)
                         desk.aired(break_id)
             if playing.intro_events and (intros := self.matched_intros) is not None:
                 rng_traces = dict(playing.intro_rng_traces)
-                for at, intro_id, _end, _label in playing.intro_events:
+                for at, intro_id, end, label in playing.intro_events:
                     if frames > at and intro_id not in self._heard_intros:
                         self._heard_intros.add(intro_id)
+                        self._item_aired(
+                            "matched_intro", title=label, duration=(end - at) / SAMPLE_RATE
+                        )
                         rng_draws = rng_traces.get(intro_id, ())
                         if rng_draws:
                             intros.heard(intro_id, rng_draws)  # never waits
                         else:
                             intros.heard(intro_id)  # never waits
+
+    def _item_aired(self, kind: str, **fields: Any) -> None:
+        """Tell History about a handoff item that started airing (mix-bus thread)."""
+        listener = self.on_item_aired
+        if listener is None:
+            return
+        try:
+            listener(kind, **fields)
+        except Exception:
+            logger.exception("Could not add the %s that aired to History", kind)
+
+    def _break_aired(self, desk: Any, break_id: str, seconds: float) -> None:
+        """Tell History about a break that started: an ad, a voice track or speech."""
+        if self.on_item_aired is None:
+            return
+        item = desk.get(break_id)
+        if item is None:
+            return
+        if item.source == VOICE_TRACK:
+            kind = "voice_track"
+        elif item.source == AD_SCHEDULE:
+            kind = "ad"
+        else:
+            kind = item.kind if item.kind in INSERT_KINDS else "speech"
+        self._item_aired(kind, title=item.label or kind, duration=seconds)
 
     def _run_headless(self, current: IndexEntry) -> None:
         """Track-picking loop with no server audio output.

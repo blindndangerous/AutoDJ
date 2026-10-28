@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from autodj.catalog import DEFAULT_STATION, _path
+from autodj.history_kinds import INSERT_KINDS
 from autodj.station_store import StationStore
 
 # StationLedger._selected_clock before any clockwheel is selected.
@@ -168,14 +169,15 @@ class StationLedger:
         """Plays not yet written to SQLite, oldest first, with each track's album.
 
         The rows :meth:`recent_plays` gives once they are written: a play a
-        set stop cut short is left out, and a track no longer in the library
-        has an empty album.
+        set stop cut short is left out, and so is audio aired over or between
+        the songs (:data:`~autodj.history_kinds.INSERT_KINDS`); a track no
+        longer in the library has an empty album.
         """
         with self._lock:
             rows = [
                 dict(row)
                 for event_id, row in self._pending_history.items()
-                if event_id not in self._interrupted_plays
+                if event_id not in self._interrupted_plays and row.get("kind") not in INSERT_KINDS
             ]
         for row in rows:
             entry = self._entry_for_path(row.get("path") or "") if self._entry_for_path else None
@@ -194,7 +196,7 @@ class StationLedger:
         return self.store.get_setting(name, default)
 
     def recent_history(self, limit: int = 500) -> list[dict]:
-        """The station's latest *limit* completed plays, oldest first."""
+        """The station's latest *limit* completed plays and inserted audio, oldest first."""
         return self.store.recent_history(limit)
 
     def recent_plays(self, limit: int) -> list[dict]:

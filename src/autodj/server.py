@@ -3034,6 +3034,7 @@ def _extra_station(
             stream_path="/stream.mp3" if slug == DEFAULT_SLUG else f"/{slug}.mp3",
         )
         player.on_track_started = bridge.on_track_started
+        player.on_item_aired = bridge.record_aired
         bridge.load_persistent_state()
         player.configure_clock()
         # The mastering process and the player thread start from here; a

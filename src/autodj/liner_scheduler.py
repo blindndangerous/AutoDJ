@@ -74,6 +74,11 @@ class _Prepared:
     # A sequential pick's list, its size, and how far the cursor moved for it
     # (more than one when it passed over liners outside their play dates).
     rotation: tuple[str, int, int] | None = None
+    # Its file, and its kind and title in History once it airs (#601); an
+    # empty title is the file's name.
+    path: str | None = None
+    kind: str = "liner"
+    title: str = ""
 
 
 class LinerDecodeError(Exception):
@@ -311,6 +316,12 @@ class LinerScheduler:
         self._planned_moves = 1
         self._forecast_only = False
         self._forecast_clock_aligned = False
+        # Hears each liner, time check and cart that airs, for History
+        # (#601): ``on_aired(kind, title=..., path=..., duration=...)``.  The
+        # station sets it; a snapshot has none.
+        self.on_aired: Callable[..., None] | None = None
+        # Liners cued for later, reported once the bus starts them.
+        self._cued: list[_Prepared] = []
 
     def _trigger(self) -> LinerTrigger:
         """Build a :class:`LinerTrigger` from the current config values."""
@@ -361,6 +372,8 @@ class LinerScheduler:
             snapshot._bus = None
             snapshot._can_fire = lambda: False
             snapshot.announcement = None
+            snapshot.on_aired = None
+            snapshot._cued = []
             snapshot._forecast_only = True
             return snapshot
 
@@ -568,7 +581,7 @@ class LinerScheduler:
         key, path, rotation = choice
         if path is not None:
             try:
-                return _Prepared(key, self._path_decoder(path), rotation=rotation)
+                return _Prepared(key, self._path_decoder(path), rotation=rotation, path=str(path))
             except Exception:
                 logger.warning(
                     "Skipping registered liner %s: it could not be decoded", key, exc_info=True
@@ -579,7 +592,7 @@ class LinerScheduler:
         except Exception:
             logger.warning("Skipping liner %s: it could not be decoded", key, exc_info=True)
             return None
-        return _Prepared(key, audio, rotation=rotation)
+        return _Prepared(key, audio, rotation=rotation, path=str(self._folder / key))
 
     def _undo_pick_locked(self, liner: _Prepared) -> None:
         """Undo a sequential pick that was discarded before playback."""
@@ -646,10 +659,52 @@ class LinerScheduler:
         after_live = liner.name != "announcement"
         if cue is None:
             self._bus.play_liner(liner.audio, duck_db=duck_db, after_live=after_live)
+            self._report_locked(liner)
         else:
             self._bus.play_liner(liner.audio, duck_db=duck_db, at=cue, after_live=after_live)
+            liner.cue = cue
+            self._cued.append(liner)
         self._fired_locked()
         return liner.name
+
+    def _report_locked(self, liner: _Prepared) -> None:
+        """Tell History that *liner* started airing now. Caller holds ``_lock``.
+
+        Nothing is said for a clip held back while a live DJ is on the air:
+        it plays once they leave, or not at all.
+        """
+        listener = self.on_aired
+        if listener is None or getattr(self._bus, "live_on_air", False) is True:
+            return
+        kind, title = liner.kind, liner.title
+        if liner.name == "announcement" and kind == "liner" and not title:
+            kind = "time_check"  # an announcement due at a song change
+        if not title:
+            title = "Time check" if kind == "time_check" else Path(liner.path or liner.name).stem
+        try:
+            listener(
+                kind,
+                title=title,
+                path=liner.path,
+                duration=round(len(liner.audio) / SAMPLE_RATE, 3),
+            )
+        except Exception:
+            logger.exception("Could not add the %s that aired to History", kind)
+
+    def _report_cued_locked(self, keep: RenderedTrack | None = None) -> None:
+        """Report the cued liners the bus has started. Caller holds ``_lock``.
+
+        A cue that has not started is kept only while it waits in *keep*,
+        the render now playing: the bus drops a cue whose track ended.
+        """
+        waiting = []
+        for liner in self._cued:
+            cue = liner.cue
+            if cue is not None and cue.started:
+                self._report_locked(liner)
+            elif cue is not None and keep is not None and cue.track is keep:
+                waiting.append(liner)
+        self._cued = waiting
 
     def _talk_up(self) -> bool:
         """Whether talk-ups are on and can be timed."""
@@ -728,6 +783,7 @@ class LinerScheduler:
                 liner.cue = LinerCue(track, frame)
                 duck_db = float(self._cfg.liners_duck_db)
                 self._bus.play_liner(liner.audio, duck_db=duck_db, at=liner.cue)
+                self._cued.append(liner)
             self._prepared = liner
 
     def _auto_due_locked(self) -> bool:
@@ -790,6 +846,9 @@ class LinerScheduler:
                 logger.exception("Could not render the announcement due at this song")
         with self._work_lock:
             with self._state():
+                # A liner cued in the last track has started by now, or the
+                # bus dropped it with that track.
+                self._report_cued_locked(track)
                 self._tracks_since += 1
                 prepared, self._prepared = self._prepared, None
                 aired = (
@@ -813,7 +872,18 @@ class LinerScheduler:
     def tick(self) -> None:
         """Check timed triggers; call about once a second."""
         with self._work_lock:
+            if self._cued:
+                with self._state():
+                    self._report_cued_locked(self._cued_track())
             self._maybe_fire()
+
+    def _cued_track(self) -> RenderedTrack | None:
+        """The render the bus plays now, which a waiting cue may still be in."""
+        current = getattr(self._bus, "current_render", None)
+        try:
+            return current() if callable(current) else None
+        except Exception:
+            return None
 
     def fire(self, name: str | None = None) -> str | None:
         """Play liner *name*, or the next library pick, into the mix bus.
@@ -846,23 +916,48 @@ class LinerScheduler:
             raise LinerDecodeError(f"cannot decode liner {name!r}")
         return prepared.audio
 
-    def play_cart(self, audio: np.ndarray, duck_db: float) -> None:
+    def play_cart(self, audio: np.ndarray, duck_db: float, *, title: str = "Cart") -> None:
         """Play a cart clip now through the liner path; it does not reset the liner triggers.
 
-        Never waits for a liner decode in progress.
+        Never waits for a liner decode in progress.  History lists it as
+        *title*, kind ``cart``.
         """
         with self._state():
             self._bus.play_liner(audio, duck_db=duck_db)
+            self._report_locked(_Prepared("cart", audio, kind="cart", title=title))
 
     def stop_cart(self) -> None:
         """Fade out the clip on the liner path and bring the music back up."""
         with self._state():
             self._bus.stop_liner()
 
-    def play_audio(self, audio: np.ndarray) -> None:
-        """Play rendered *audio* now, as :meth:`fire` plays a named liner."""
+    def play_audio(
+        self,
+        audio: np.ndarray,
+        *,
+        kind: str = "time_check",
+        title: str = "",
+        path: str | None = None,
+    ) -> None:
+        """Play rendered *audio* now, as :meth:`fire` plays a named liner.
+
+        History lists it as *kind*, a time check unless told otherwise,
+        with *title* and *path*.
+        """
         with self._state():
-            self._play_locked(_Prepared("announcement", audio), None)
+            self._play_locked(
+                _Prepared("announcement", audio, path=path, kind=kind, title=title), None
+            )
+
+    def liner_path(self, name: str) -> Path | None:
+        """The file of liner *name*, a catalog ID or liner-folder file name, if found."""
+        for key, path in self._registered_entries():
+            if key == name:
+                return path
+        if Path(name).name != name:
+            return None  # only a plain file name inside the liner folder
+        candidate = self._folder / name
+        return candidate if candidate.is_file() else None
 
     def _planner_mode(self) -> bool:
         """Whether saved-point liners are owned by the cue-based renderer."""
