@@ -3145,6 +3145,44 @@ class Player:
             clock_revision=self._pending_clock_cursor_revision,
         )
 
+    def _prepare_live_candidate(
+        self,
+        entry: IndexEntry | None,
+        mode: str,
+        *,
+        failed_entries: set[str],
+        context: _PickContext,
+        current: IndexEntry,
+        current_from_queue: bool,
+        liner_key: str,
+    ) -> tuple[bool, _PickContext, str, BufferedFile | None]:
+        """Open a successor before reserving its transition speech."""
+        if not self.live_mixing or entry is None:
+            return True, context, liner_key, None
+        if entry.path in failed_entries:
+            if mode == "queue":
+                self._discard_failed_queue_pick(entry, current if current_from_queue else None)
+            return False, context, liner_key, None
+        try:
+            return True, context, liner_key, self._live_file(entry, fresh=True)
+        except Exception as exc:
+            logger.warning(
+                "Cannot prepare upcoming track %s; reselecting after it failed (%s).",
+                entry.path,
+                exc,
+            )
+            failed_entries.add(entry.path)
+            if mode == "queue":
+                self._discard_failed_queue_pick(entry, current if current_from_queue else None)
+            if liner_key and self.liner_scheduler is not None:
+                self.liner_scheduler.release_plan(liner_key)
+            return (
+                False,
+                replace(context, protected=context.protected | {entry.path}),
+                "",
+                None,
+            )
+
     def _next_rendered_serial(self) -> RenderedTrack | None:
         """Pick and render the next track for the mix bus.
 
@@ -3247,10 +3285,24 @@ class Player:
             breaks: tuple[Break, ...] = ()
             unbooked_ad_steps: tuple[dict, ...] = ()
             unbooked_slot_id = ""
+            failed_live_entries: set[str] = set()
+            render_live_source = getattr(self, "_pending_live_source", None)
+            render_next_live_source = None
+            current_source_error: Exception | None = None
+            if self.live_mixing:
+                try:
+                    if render_live_source is None or not self._live_source_is_current(
+                        current, render_live_source
+                    ):
+                        render_live_source = self._live_file(current, fresh=True)
+                except Exception as exc:
+                    # Still select a successor so the usual current-item skip can advance.
+                    current_source_error = exc
             # An intro matched to the next song (#127) takes the automatic
             # liner's place at this change; the liner trigger stays due.
             intro = None
             prepared = self._prepared_plan()
+
             try:
                 if plan is not None:
                     unbooked_ad_steps, unbooked_slot_id = plan.ad_steps, plan.slot_id
@@ -3325,25 +3377,48 @@ class Player:
                         )
                 elif deferred:
                     next_entry, next_mode = None, "clock"
-                elif station_mode:
-                    next_entry, next_mode, liners, next_cursor, liner_key = (
-                        self._choose_station_next(current, context, auto_liner=False)
-                    )
-                    next_clock_step = self._chosen_clock_step
-                    unbooked_ad_steps = getattr(self, "_chosen_clock_ad_steps", ())
-                    if next_mode == "clock":
-                        next_clock_name = self._pending_clock_name
-                        next_clock_revision = self._chosen_clock_revision
-                        next_clock_boundary = self._pending_clock_boundary
-                    breaks = self._prepared_breaks(current, next_entry, plan=prepared)
-                    liners, liner_key, intro = self._transition_voice(
-                        current, next_entry, liners, breaks, context.at
-                    )
                 else:
-                    next_entry, next_mode = self._choose_next(current, context)
-                    unbooked_ad_steps = getattr(self, "_chosen_clock_ad_steps", ())
+                    for _ in range(5):
+                        if station_mode:
+                            next_entry, next_mode, liners, next_cursor, liner_key = (
+                                self._choose_station_next(current, context, auto_liner=False)
+                            )
+                        else:
+                            next_entry, next_mode = self._choose_next(current, context)
+                        if (
+                            self.live_mixing
+                            and edit is not None
+                            and edit.candidate is not None
+                            and edit.candidate.path not in failed_live_entries
+                        ):
+                            next_entry, next_mode = edit.candidate, edit.candidate_mode or "queue"
+                        if station_mode:
+                            next_clock_step = self._chosen_clock_step
+                        unbooked_ad_steps = getattr(self, "_chosen_clock_ad_steps", ())
+                        if station_mode and next_mode == "clock":
+                            next_clock_name = self._pending_clock_name
+                            next_clock_revision = self._chosen_clock_revision
+                            next_clock_boundary = self._pending_clock_boundary
+                        (
+                            prepared_live,
+                            context,
+                            liner_key,
+                            render_next_live_source,
+                        ) = self._prepare_live_candidate(
+                            next_entry,
+                            next_mode,
+                            failed_entries=failed_live_entries,
+                            context=context,
+                            current=current,
+                            current_from_queue=current_from_queue,
+                            liner_key=liner_key,
+                        )
+                        if prepared_live:
+                            break
+                    else:
+                        next_entry, next_mode, liners, liner_key = None, "similarity", (), ""
                     breaks = self._prepared_breaks(current, next_entry, plan=prepared)
-                    if breaks:
+                    if next_entry is not None and (station_mode or breaks):
                         liners, liner_key, intro = self._transition_voice(
                             current, next_entry, liners, breaks, context.at
                         )
@@ -3353,7 +3428,7 @@ class Player:
                 )
                 next_entry, next_mode = None, "similarity"
             if edit is not None:
-                if edit.candidate is not None:
+                if edit.candidate is not None and edit.candidate.path not in failed_live_entries:
                     next_entry, next_mode = edit.candidate, edit.candidate_mode or "queue"
                 if (
                     intro is not None
@@ -3368,20 +3443,21 @@ class Player:
                     *retained,
                     *(item for item in breaks if item.break_id not in replaced_ids),
                 )
-                intro = edit.intro
-            render_live_source = getattr(self, "_pending_live_source", None)
-            render_next_live_source = None
+                if edit.candidate is not None and edit.candidate.path in failed_live_entries:
+                    intro = None
+                    if edit.intro is not None and self.matched_intros is not None:
+                        self.matched_intros.release((edit.intro.intro_id,))
+                else:
+                    intro = edit.intro
             try:
                 if next_entry is not None:
                     # Plan the effect knowing how next_entry was picked;
                     # the render then finds this plan.
                     self.planned_transition(current, next_entry, next_mode)
                 if getattr(self, "live_mixing", False):
-                    if render_live_source is None or not self._live_source_is_current(
-                        current, render_live_source
-                    ):
-                        render_live_source = self._live_file(current, fresh=True)
-                    if next_entry is not None:
+                    if current_source_error is not None:
+                        raise current_source_error
+                    if next_entry is not None and render_next_live_source is None:
                         render_next_live_source = self._live_file(next_entry, fresh=True)
                     self._render_live_sources = (
                         current,
@@ -4878,6 +4954,31 @@ class Player:
                 del state.queue[index]
                 return True
         return False
+
+    def _discard_failed_queue_pick(
+        self, entry: IndexEntry, reserved: IndexEntry | None = None
+    ) -> None:
+        """Drop the failed peeked queue occurrence, respecting a reserved duplicate."""
+        state = self._state
+        with state.queue_lock:
+            queued_next = state.queued_next
+            if (
+                queued_next is not None
+                and queued_next.path == entry.path
+                and (reserved is None or queued_next.path != reserved.path)
+            ):
+                state.queued_next = None
+                return
+            skip_reserved = reserved is not None and not (
+                queued_next is not None and queued_next.path == reserved.path
+            )
+            for index, queued in enumerate(state.queue):
+                if skip_reserved and reserved is not None and queued.path == reserved.path:
+                    skip_reserved = False
+                    continue
+                if queued.path == entry.path:
+                    del state.queue[index]
+                    return
 
     def _peek_user_queue(self, reserved: IndexEntry | None) -> IndexEntry | None:
         """The queue head a render would pick, skipping *reserved*'s slot.

@@ -325,7 +325,6 @@ def test_live_decks_follow_queue_occurrences_across_duplicate_and_returning_trac
         lambda _path, frames, **kwargs: _CursorDeck(frames, kwargs.get("start", 0)),
     )
     picks = iter((a, b, a))
-    monkeypatch.setattr(player, "_pick_context", lambda **_kwargs: SimpleNamespace(at=0.0))
     monkeypatch.setattr(player, "_choose_next", lambda *_args: (next(picks), "queue"))
     monkeypatch.setattr(player, "planned_transition", lambda *_args: None)
 
@@ -371,3 +370,198 @@ def test_live_decks_follow_queue_occurrences_across_duplicate_and_returning_trac
     assert ba is not None and ba.entry is b and ba.next_entry is a
     assert ba.live_source is ab.next_live_source
     assert ba.next_live_source not in {aa.live_source, aa.next_live_source}
+
+
+def test_missing_queued_live_successor_is_skipped_and_current_track_plays(monkeypatch) -> None:
+    """ADR-0004-12: an unavailable queued successor does not discard current audio."""
+    from autodj.live_audio import AudioLayer
+    from autodj.mixbus import RenderedTrack
+
+    player, _bridge, a, b, _c, _d, _voice, _speech = _live_prepared_speech_setup(monkeypatch)
+    current_source = _CursorDeck(256)
+    monkeypatch.setattr(player, "planned_transition", lambda *_args: None)
+    monkeypatch.setattr(player, "_live_source_is_current", lambda *_args: True)
+    player._state.queue[:] = [b, _c]
+    monkeypatch.setattr(
+        player,
+        "_choose_next",
+        lambda _current, context: (
+            player._pop_user_queue(context.peek_queue, context.queue_reserved),
+            "queue",
+        ),
+    )
+
+    def live_file(entry, **_kwargs):
+        if entry is b:
+            raise FileNotFoundError(entry.path)
+        return current_source if entry is a else _CursorDeck(256)
+
+    monkeypatch.setattr(player, "_live_file", live_file)
+
+    def render(current, upcoming, offset, **_kwargs):
+        source = player._render_live_file(current, incoming=False)
+        audio = LiveAudio(256, (AudioLayer(source, 0, 256, 0),))
+        return RenderedTrack(current, audio, upcoming, 0, "", start_offset=offset)
+
+    monkeypatch.setattr(player, "_render_track", render)
+    player._set_render_cursor(a, 0, "seed")
+
+    rendered = player._next_rendered_serial()
+
+    assert rendered is not None and rendered.entry is a and rendered.next_entry is _c
+    assert rendered.live_source is current_source
+    assert rendered.next_live_source is not None
+    assert player._state.queue == [_c]
+
+
+def test_unplayable_live_current_is_skipped_in_favor_of_selected_successor(monkeypatch) -> None:
+    """ADR-0004-12: a genuinely failed current item still advances to its successor."""
+    from autodj.live_audio import AudioLayer
+    from autodj.mixbus import RenderedTrack
+
+    player, _bridge, a, b, _c, _d, _voice, _speech = _live_prepared_speech_setup(monkeypatch)
+    next_source = _CursorDeck(256)
+    monkeypatch.setattr(
+        player, "_choose_next", lambda current, _context: (b if current is a else _c, "similarity")
+    )
+    monkeypatch.setattr(player, "planned_transition", lambda *_args: None)
+    monkeypatch.setattr(player, "_live_source_is_current", lambda *_args: True)
+
+    def live_file(entry, **_kwargs):
+        if entry is a:
+            raise OSError("bad current audio")
+        return next_source
+
+    monkeypatch.setattr(player, "_live_file", live_file)
+    monkeypatch.setattr(
+        player,
+        "_render_track",
+        lambda current, upcoming, _offset, **_kwargs: RenderedTrack(
+            current,
+            LiveAudio(256, (AudioLayer(next_source, 0, 256, 0),)),
+            upcoming,
+            0,
+            "",
+            next_live_source=next_source,
+        ),
+    )
+    player._set_render_cursor(a, 0, "seed")
+
+    rendered = player._next_rendered_serial()
+
+    assert rendered is not None and rendered.entry is b
+    assert player._pending_entry is _c
+
+
+def test_clock_pick_reselects_failed_candidate_and_keeps_following_cursor(
+    tmp_path, monkeypatch
+) -> None:
+    """ADR-0004-12: recovery retains the replacement's clockwheel position."""
+    from autodj.clockwheel import ClockPick
+    from autodj.live_audio import AudioLayer
+    from autodj.mixbus import RenderedTrack
+    from tests.unit._break_station import make_station
+
+    player, (a, b, c, _d), _points, _desk = make_station(tmp_path, stream_mode=True)
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {"name": "Morning", "cursor": 0, "resync_minutes": []}
+    player._clock_definition = {"name": "Morning", "steps": [{}, {}]}
+    player._clock_steps = player._clock_definition["steps"]
+    player._clock_slots = [object(), object()]
+    player._clock_revision = 0
+    player._pending_clock_name = "Morning"
+    player._pending_clock_cursor = 0
+    player._pending_clock_cursor_revision = 0
+
+    def clock_pick(context, _cursor):
+        if b.path in context.protected:
+            return ClockPick(c, None, 2, [], step_index=1, step_snapshot={"step": 1})
+        return ClockPick(b, None, 1, [], step_index=0, step_snapshot={"step": 0})
+
+    monkeypatch.setattr(player, "_clock_pick", clock_pick)
+    monkeypatch.setattr(player, "_live_source_is_current", lambda *_args: True)
+    source = _CursorDeck(256)
+
+    def live_file(entry, **_kwargs):
+        if entry is b:
+            raise OSError("upcoming source is unavailable")
+        return source
+
+    monkeypatch.setattr(player, "_live_file", live_file)
+    monkeypatch.setattr(player, "planned_transition", lambda *_args: None)
+
+    def render(current, upcoming, offset, **_kwargs):
+        audio = LiveAudio(256, (AudioLayer(source, 0, 256, 0),))
+        return RenderedTrack(current, audio, upcoming, 0, "", start_offset=offset)
+
+    monkeypatch.setattr(player, "_render_track", render)
+    player._set_render_cursor(a, 0, "seed", clock_cursor=0, clock_name="Morning")
+
+    rendered = player._next_rendered_serial()
+
+    assert rendered is not None and rendered.next_entry is c
+    assert rendered.next_clock_cursor == 2
+    assert rendered.next_clock_step == {"step": 1}
+
+
+def test_exhausted_live_successor_retries_keep_current_and_do_not_reopen_failure(
+    monkeypatch,
+) -> None:
+    """ADR-0004-12: bounded recovery keeps current audio without reopening failed files."""
+    from autodj.live_audio import AudioLayer
+    from autodj.mixbus import RenderedTrack
+
+    player, _bridge, a, b, _c, _d, _voice, _speech = _live_prepared_speech_setup(monkeypatch)
+    current_source = _CursorDeck(256)
+    failing_opens = []
+    player._state.queue[:] = [b]
+    monkeypatch.setattr(
+        player,
+        "_pick_context",
+        lambda **_kwargs: SimpleNamespace(at=0.0, protected=frozenset()),
+    )
+    monkeypatch.setattr(player, "_live_source_is_current", lambda *_args: True)
+    monkeypatch.setattr(
+        player,
+        "_choose_next",
+        lambda *_args: (b, "queue"),
+    )
+
+    def live_file(entry, **_kwargs):
+        if entry is b:
+            failing_opens.append(entry)
+            raise OSError("unplayable upcoming")
+        return current_source
+
+    monkeypatch.setattr(player, "_live_file", live_file)
+    monkeypatch.setattr(
+        player,
+        "_render_track",
+        lambda current, upcoming, _offset, **_kwargs: RenderedTrack(
+            current,
+            LiveAudio(256, (AudioLayer(current_source, 0, 256, 0),)),
+            upcoming,
+            0,
+            "",
+        ),
+    )
+    player._set_render_cursor(a, 0, "seed")
+
+    rendered = player._next_rendered_serial()
+
+    assert rendered is not None and rendered.entry is a and rendered.next_entry is None
+    assert failing_opens == [b]
+    assert player._state.queue == []
+
+
+def test_failed_duplicate_queue_occurrence_skips_reserved_current(monkeypatch) -> None:
+    """ADR-0004-12: dropping an upcoming occurrence preserves the current queue slot."""
+    player, _bridge, current, _b, _c, _d, _voice, _speech = _live_prepared_speech_setup(monkeypatch)
+    following = make_entry(21)
+    player._state.queued_next = current
+    player._state.queue[:] = [current, following]
+
+    player._discard_failed_queue_pick(current, reserved=current)
+
+    assert player._state.queued_next is current
+    assert player._state.queue == [following]
