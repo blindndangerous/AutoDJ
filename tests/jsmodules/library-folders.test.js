@@ -23,6 +23,7 @@ function mount() {
     <section id="panel-library" hidden>
       <input id="source-folder-path"><select id="source-folder-kind"><option value="music">Music</option><option value="liner">Liner</option></select>
       <input id="source-folder-recursive" type="checkbox" checked><select id="source-folder-analysis"><option value="basic">Basic</option><option value="audio" selected>Audio</option></select>
+      <p id="source-folder-analysis-help"></p>
       <input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"><p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p><button id="source-folder-add"></button><button id="source-folder-rescan"></button>
       <p id="source-folders-status"></p><p id="source-folders-progress"></p><table id="source-folders-table"><caption>Registered music and voice liner folders</caption><tbody id="source-folders"></tbody></table>
     </section>
@@ -92,8 +93,7 @@ describe("clock folder and points controls", () => {
     const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
     const page = document.createElement("template");
     page.innerHTML = html;
-    expect(page.content.querySelector("#source-folder-analysis-group .setting-desc").textContent.trim())
-      .toBe("Uses the MuQ music model to help AutoDJ choose songs that sound alike.");
+    expect(page.content.querySelector("#source-folder-analysis-help").textContent).toContain("Basic");
     document.getElementById("panel-library").hidden = false;
     const request = vi.fn(async () => ({
       similarity_available: false,
@@ -102,6 +102,7 @@ describe("clock folder and points controls", () => {
     installLibraryFolders({ document, request });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect([...document.getElementById("source-folder-analysis").options].map(({ value }) => value)).toEqual(["basic", "audio"]);
+    expect(document.getElementById("source-folder-analysis-help").textContent).not.toContain("MuQ");
     const existing = document.querySelector('#source-folders select[data-field="analysis"]');
     expect(existing.value).toBe("similarity");
     expect(existing.getAttribute("aria-label")).toBe("Analysis for M:/old");
@@ -202,6 +203,7 @@ describe("clock folder and points controls", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const analysis = document.getElementById("source-folder-analysis");
     expect([...analysis.options].map(({ value }) => value)).toEqual(["basic", "audio", "similarity"]);
+    expect(document.getElementById("source-folder-analysis-help").textContent).toContain("MuQ");
     analysis.value = "similarity";
     document.getElementById("source-folder-path").value = "M:/new";
     document.getElementById("source-folder-add").click();

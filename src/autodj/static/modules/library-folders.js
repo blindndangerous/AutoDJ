@@ -140,6 +140,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   const recursiveInput = doc.getElementById("source-folder-recursive");
   const analysisInput = doc.getElementById("source-folder-analysis");
   const analysisGroup = doc.getElementById("source-folder-analysis-group");
+  const analysisHelp = doc.getElementById("source-folder-analysis-help");
   let similarityAvailable = false;
   const editor = doc.getElementById("points-editor");
   const pointStatus = doc.getElementById("points-status");
@@ -290,6 +291,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
   function renderFolders(data) {
     const folders = data.folders || [];
     similarityAvailable = data.similarity_available === true;
+    if (analysisHelp) analysisHelp.textContent = "Basic imports tags and cue suggestions; Audio adds beats, key and song structure."
+      + (similarityAvailable ? " Audio + similarity adds MuQ matching for songs that sound alike." : "");
     const addMode = analysisInput.value;
     syncSimilarityOption(analysisInput, similarityAvailable, false);
     analysisInput.value = !similarityAvailable && addMode === "similarity" ? "audio" : addMode;

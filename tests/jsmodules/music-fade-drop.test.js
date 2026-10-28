@@ -19,10 +19,10 @@ describe("music fade drop setting", () => {
 
   it("uses a labelled whole-number field with concise linked help", () => {
     const input = field("music-fade-drop");
-    expect(document.querySelector('label[for="music-fade-drop"]').textContent).toBe("Music fade drop (dB)");
+    expect(document.querySelector('label[for="music-fade-drop"]').textContent).toBe("Fade detection threshold (dB)");
     expect([input.type, input.min, input.max, input.step, input.value]).toEqual(["number", "1", "30", "1", "10"]);
     expect(input.getAttribute("aria-describedby")).toBe("music-fade-drop-help");
-    expect(field("music-fade-drop-help").textContent).toBe("Drop below normal level before a music fade qualifies.");
+    expect(field("music-fade-drop-help").textContent).toContain("AutoDJ suggests a Segue");
   });
 
   it("accepts only whole numbers from 1 through 30", () => {
@@ -42,7 +42,7 @@ describe("music fade drop setting", () => {
     expect(request).toHaveBeenLastCalledWith("/api/library/music-fade", expect.objectContaining({
       method: "PUT", body: JSON.stringify({ drop_db: 20 }),
     }));
-    expect(say).toHaveBeenLastCalledWith("Saved. Music fade drop is 20 dB.");
+    expect(say).toHaveBeenLastCalledWith("Saved. Fade detection threshold is 20 dB.");
     expect(field("music-fade-drop").value).toBe("20");
   });
 
@@ -104,6 +104,6 @@ describe("music fade drop setting", () => {
     field("music-fade-drop-save").click();
     await flush();
     expect(field("music-fade-drop").value).toBe("12");
-    expect(say).toHaveBeenLastCalledWith("Could not save the music fade drop: Offline", true);
+    expect(say).toHaveBeenLastCalledWith("Could not save the fade detection threshold: Offline", true);
   });
 });
