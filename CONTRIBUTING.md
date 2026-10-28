@@ -259,6 +259,31 @@ Use the PR template and check the following as applicable:
 
 See [Operations](docs/operations.md) for setup, diagnosis, backup, restore, and upgrade procedures.
 
+## Upgrading dependencies
+
+`pyproject.toml` and `package.json` give lower bounds only. `uv.lock` and
+`package-lock.json` record the tested versions that setup, CI and the container
+install. Renovate keeps them current: it refreshes both locks every day and
+merges minor, patch, digest and lock updates once the required checks pass.
+Major updates wait for review.
+
+To upgrade everything by hand, run `uv lock --upgrade` and
+`npx npm-check-updates -u`, then `npm install --ignore-scripts`.
+
+When an upgrade moves torch, torchvision or torchaudio in `uv.lock`, also run:
+
+```bash
+uv run --frozen --no-sync python scripts/update_torch_pins.py
+```
+
+It rewrites the hashes in `container/torch-cpu.txt` and the CPU and NVIDIA
+recipes in `scripts/setup-profiles.json` from PyTorch's index. Until then,
+`tests/unit/test_setup_flow.py` fails and Renovate does not merge the change.
+The AMD recipes follow AMD's own index; update them by hand.
+
+Coverage is uploaded to Codecov for information only. The 90% floor in
+`pyproject.toml` stays the gate.
+
 ## Releasing
 
 The maintainer cuts releases from `master`. For version `X.Y.Z`:

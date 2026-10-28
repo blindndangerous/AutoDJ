@@ -2,8 +2,49 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:best-practices", "docker:pinDigests", "helpers:pinGitHubActionDigestsToSemver"],
   "packageRules": [
-    {"matchDepTypes": ["devDependencies"], "automerge": true},
-    {"matchDatasources": ["docker"], "groupName": "container base images"}
+    {
+      "description": "Manifests keep lower bounds only; uv.lock and package-lock.json carry the tested versions. Overrides the preset's devDependency pinning.",
+      "matchManagers": ["npm", "pep621"],
+      "rangeStrategy": "update-lockfile"
+    },
+    {
+      "description": "Merge minor, patch, digest and lock-file updates once the required checks pass. Majors wait for review.",
+      "matchUpdateTypes": ["minor", "patch", "pin", "pinDigest", "digest", "lockFileMaintenance"],
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
+      "description": "A Python minor release (3.14 to 3.15) also moves requires-python, so it waits for review.",
+      "matchPackageNames": ["python"],
+      "matchUpdateTypes": ["minor"],
+      "automerge": false
+    },
+    {"matchDatasources": ["docker"], "groupName": "container base images"},
+    {
+      "description": "The torch family is also pinned in container/torch-cpu.txt and scripts/setup-profiles.json.",
+      "matchPackageNames": ["torch", "torchvision", "torchaudio"],
+      "groupName": "pytorch",
+      "automerge": false,
+      "prBodyNotes": [
+        "Run `uv run --frozen --no-sync python scripts/update_torch_pins.py` on this branch and commit the result. See CONTRIBUTING.md, Upgrading dependencies."
+      ]
+    }
   ],
-  "lockFileMaintenance": {"enabled": true, "schedule": ["before 5am on Monday"]}
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The Node.js release CI installs with actions/setup-node.",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": ["node-version: \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
+      "depNameTemplate": "node",
+      "datasourceTemplate": "node-version"
+    }
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 5am"],
+    "prBodyNotes": [
+      "If this moves torch, torchvision or torchaudio, the setup and container pin tests fail until `uv run --frozen --no-sync python scripts/update_torch_pins.py` is run on this branch and committed."
+    ]
+  }
 }
