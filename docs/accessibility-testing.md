@@ -25,7 +25,7 @@ AutoDJ uses automated checks and requires a screen-reader sample before release 
 Each dialog starts with an H1 title referenced by its `aria-labelledby`.
 Verify level-one heading navigation inside the dialog as well as its initial field focus.
 
-### Confirmations with NVDA
+## Confirmations with NVDA
 
 The shared confirmation (Clear queue, Delete profile, Restart AutoDJ and the
 rest, in `modules/confirm-dialog.js`) opens with `show()` and `aria-modal="true"`,
