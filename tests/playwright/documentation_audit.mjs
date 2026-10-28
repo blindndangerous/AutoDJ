@@ -49,7 +49,9 @@ for (const name of names) {
       const findings = await page.evaluate(() => {
         const headings = [...document.querySelectorAll("h1,h2,h3,h4,h5,h6")];
         const badLinks = [...document.querySelectorAll("a[href]")].filter(link => {
-          const label = (link.getAttribute("aria-label") || link.textContent || "").trim();
+          // An image-only link, such as a badge, is named by its image's alt text.
+          const label = (link.getAttribute("aria-label") || link.textContent.trim()
+            || [...link.querySelectorAll("img[alt]")].map(image => image.alt).join(" ")).trim();
           return !label || /^(here|click here|link|read more)$/i.test(label);
         }).map(link => link.textContent);
         return {
