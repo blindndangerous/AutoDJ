@@ -154,7 +154,7 @@ class FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test_
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=os.name != "nt",
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )
         thread = threading.Thread(
             target=self._read_errors, name="autodj-encoder-stderr", daemon=True
