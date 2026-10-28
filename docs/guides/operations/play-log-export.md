@@ -1,8 +1,25 @@
-# Export play logs and webcasting reports
+# Read History and export play logs and webcasting reports
 
-Export a date range from History or the CLI, review missing reporting fields, and check licensing requirements independently.
+Read what played in History, export a date range from History or the CLI, review missing reporting fields, and check licensing requirements independently.
 
 [Operations index](../../operations.md) · [Settings reference](../../settings-reference.md)
+
+## Read History
+
+Open **History** to see the station's latest plays, newest first, 50 to a page: songs, liner files
+played as tracks and live DJ sets, with the time each started, its title, artist and length.
+**Previous page**, **Next page** and **Go to page** move through up to 500 of them, and
+**Refresh history** loads the page again.
+
+Check **Show liners** to also list what aired over or between the songs: liners mixed into a
+handoff, ads, matched intros, time checks, carts, voice tracks, announcer breaks and a show's
+speech segments. A **Type** column then says what each row is, such as Song, Liner, Ad or Matched
+intro. History stays near the same place: it shows the page that holds the first row you had on
+screen, or the song before it when that row is now hidden. Focus stays on the checkbox, and
+AutoDJ says once how many items the list now holds and which page you are on. The choice is
+remembered in this browser only and is off until you check it. These items are logged only in
+stream and server audio modes, as they air; see
+[what the play log holds](../../reference/operations/play-log.md).
 
 ## Play log export
 
@@ -24,9 +41,11 @@ play log: `--station NAME` exports another station's plays, and without it you g
 station's, which are all the plays logged before AutoDJ ran more than one station.
 
 In the web page, open History, go to "Export play log", choose the dates and the format, and press
-Export. Check **Include liners** to add the liners, matched intros, time checks and other non-music
-items that aired; the SoundExchange format ignores it. AutoDJ says "Exporting play log" and the
-Export button is unavailable until the file is ready. Then the browser saves the file and AutoDJ says how many plays it holds, with the same
+Export. With the Play log (CSV) format, check **Include liners** to add the liners, matched intros,
+time checks and other non-music items that aired; ads are in the CSV either way. The checkbox is
+hidden while "SoundExchange Report of Use" is chosen, because that report lists sound recordings
+only, so liners never belong in it. AutoDJ says "Exporting play log" and the Export button is
+unavailable until the file is ready. Then the browser saves the file and AutoDJ says how many plays it holds, with the same
 warnings as the summary, or why it failed.
 
 ## Reporting for webcasting licenses
