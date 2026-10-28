@@ -22,6 +22,8 @@ function Get-ManualInstallMessage([string]$tool) {
 }
 
 try {
+    # Only the launcher marks the starts an update watches.
+    Remove-Item -LiteralPath 'Env:AUTODJ_UPDATE_WATCH' -ErrorAction SilentlyContinue
     Update-ProcessPath
     $projectRoot = Split-Path -Parent $PSScriptRoot
     $statePath = Join-Path $projectRoot '.uv\setup.json'

@@ -1778,6 +1778,7 @@ class _ServeCommand(click.Command):
         except click.Abort:
             raise
         except (Exception, SystemExit) as exc:
+            from autodj.update_contract import UPDATE_WATCH_ENV
             from autodj.updates import RESTART_EXIT_CODE, UPDATE_EXIT_CODE
 
             # A restart or update asked for from the web page is not a failure either.
@@ -1792,9 +1793,13 @@ class _ServeCommand(click.Command):
                 click.echo(hint, err=True)
                 server = sys.modules.get("autodj.server")
                 started = server is not None and server.STARTUP_COMPLETE.is_set()
+                # An update waits for this start: it rolls back on the exit
+                # status, so never wait for an answer.
+                watched = os.environ.get(UPDATE_WATCH_ENV) == "1"
                 if (
                     sys.stdin.isatty()
                     and not started
+                    and not watched
                     and not os.environ.get("AUTODJ_DOCTOR_ACTIVE")
                 ):
                     import subprocess  # nosec B404 -- fixed command, argv only, no shell

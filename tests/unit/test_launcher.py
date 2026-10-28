@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -588,3 +590,40 @@ def test_a_launcher_refuses_to_serve_while_an_update_runs(
     supervised.assert_not_called()
     assert launcher.UPDATE_RUNNING in capsys.readouterr().err
     assert not contract.serving_path(folder, os.getpid()).exists()
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+def test_the_posix_launcher_never_passes_on_an_inherited_update_watch(tmp_path: Path) -> None:
+    """Only the launcher marks a start an update watches, so ./autodj clears the mark."""
+    root = Path(__file__).parents[2]
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copy2(root / "autodj", project / "autodj")
+    shutil.copy2(root / ".python-version", project / ".python-version")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    record = tmp_path / "watch.txt"
+    (tools / "uv").write_text(
+        '#!/bin/sh\nprintf "%s" "${AUTODJ_UPDATE_WATCH-unset}" > "$AUTODJ_TEST_RECORD"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (tools / "uv").chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": os.pathsep.join([str(tools), os.environ.get("PATH", "")]),
+        "AUTODJ_UPDATE_WATCH": "1",
+        "AUTODJ_TEST_RECORD": str(record),
+    }
+
+    done = subprocess.run(
+        [str(shutil.which("sh")), str(project / "autodj"), "serve"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert record.read_text(encoding="utf-8") == "unset"

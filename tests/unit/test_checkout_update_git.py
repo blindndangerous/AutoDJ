@@ -270,3 +270,87 @@ def test_a_local_master_that_diverged_from_origin_is_refused_and_keeps_its_commi
     assert _git(checkout, "rev-parse", "refs/heads/master") == mine
     assert _git(checkout, "status", "--porcelain") == ""
     assert _git(origin, "rev-parse", "master") != mine
+
+
+def test_a_rollback_from_a_release_puts_master_back(repos) -> None:
+    """The switch to development moved master; a failed start moves it back."""
+    _origin, checkout = repos
+    _git(checkout, "branch", "-f", "master", "v0.22.0")
+    master = _git(checkout, "rev-parse", "refs/heads/master")
+    release = _git(checkout, "rev-parse", "HEAD")
+
+    attempt, updater = _run(checkout, "development", healthy=False)
+
+    assert attempt.switched is True
+    assert updater.failed_start() == Attempt()
+    assert _result(checkout)["outcome"] == "rolled-back"
+    assert updater.rolled_back is True
+    assert _git(checkout, "rev-parse", "HEAD") == release
+    assert subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=checkout).returncode != 0
+    assert _git(checkout, "rev-parse", "refs/heads/master") == master
+
+
+def test_a_rollback_deletes_a_master_the_switch_created(repos) -> None:
+    """Without a local master before the update, there is none after the rollback."""
+    _origin, checkout = repos
+    _git(checkout, "branch", "-D", "master")
+
+    attempt, updater = _run(checkout, "development", healthy=False)
+
+    assert attempt.switched is True
+    assert updater.failed_start() == Attempt()
+    missing = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "refs/heads/master"], cwd=checkout
+    )
+    assert missing.returncode != 0
+
+
+def test_a_rollback_keeps_a_commit_made_on_master_meanwhile(repos) -> None:
+    """Master is only put back from where the update left it."""
+    _origin, checkout = repos
+    _git(checkout, "branch", "-f", "master", "v0.22.0")
+    updater = _updater(checkout, "development", healthy=False)
+    assert updater.update().switched is True
+    (checkout / "mine.txt").write_text("mine", encoding="utf-8")
+    _git(checkout, "add", "mine.txt")
+    _git(checkout, "commit", "-q", "-m", "work from another shell")
+    mine = _git(checkout, "rev-parse", "HEAD")
+    updater.watch(_Server(1), lambda: False)  # type: ignore[arg-type]
+
+    assert updater.failed_start() == Attempt()
+    assert _git(checkout, "rev-parse", "refs/heads/master") == mine
+
+
+@pytest.mark.parametrize(
+    "channel,healthy,outcome",
+    [
+        ("development", True, "updated"),
+        ("development", False, "rolled-back"),
+        ("stable", True, "updated"),
+    ],
+)
+def test_the_request_is_deleted_when_the_update_ends(repos, channel, healthy, outcome) -> None:
+    """Whatever the outcome, request.json does not outlive its update."""
+    _origin, checkout = repos
+    request = checkout / ".uv" / "update" / contract.REQUEST
+
+    attempt, updater = _run(checkout, channel, healthy=healthy)
+    if attempt.switched and not healthy:
+        updater.failed_start()
+
+    assert _result(checkout)["outcome"] == outcome
+    assert _result(checkout)["id"] == "abcdef1234567890"
+    assert not request.exists()
+
+
+def test_a_refused_request_is_deleted_too(repos) -> None:
+    """A refusal before anything changed answers the request as well."""
+    _origin, checkout = repos
+    (checkout / "untracked.txt").write_text("not ours", encoding="utf-8")
+
+    attempt, updater = _run(checkout, "stable")
+
+    assert attempt == Attempt()
+    assert _result(checkout)["outcome"] == "refused"
+    assert updater.rolled_back is False
+    assert not (checkout / ".uv" / "update" / contract.REQUEST).exists()

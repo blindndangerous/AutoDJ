@@ -7,4 +7,6 @@ if [ -z "$python" ]; then
     echo "AutoDJ: $root/.python-version is empty; it must name a Python version such as 3.14." >&2
     exit 1
 fi
+# Only the launcher marks the starts an update watches.
+unset AUTODJ_UPDATE_WATCH
 exec uv run --no-project --python "$python" "$root/scripts/run.py" "$@"

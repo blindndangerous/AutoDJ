@@ -10,11 +10,14 @@ from click.testing import CliRunner
 
 from autodj import server
 from autodj.cli import _ServeCommand
+from autodj.update_contract import UPDATE_DIR_ENV, UPDATE_WATCH_ENV
+from autodj.updates import SUPERVISOR_ENV, UPDATER_ENV
 
 
 @pytest.fixture(autouse=True)
-def _not_started():
+def _not_started(monkeypatch):
     """Other tests run the app's lifespan, which marks startup complete."""
+    monkeypatch.delenv(UPDATE_WATCH_ENV, raising=False)
     server.STARTUP_COMPLETE.clear()
     yield
     server.STARTUP_COMPLETE.clear()
@@ -116,3 +119,49 @@ def test_a_requested_restart_exits_quietly_without_offering_doctor():
     assert result.exit_code == RESTART_EXIT_CODE
     assert "troubleshoot" not in result.output
     subprocess_run.assert_not_called()
+
+
+def test_a_supervised_launch_still_offers_doctor():
+    """The launcher supervises every checkout's serve; a normal failed start still offers."""
+    failure = RuntimeError("the configuration is wrong")
+
+    @click.command(cls=_ServeCommand)
+    def command():
+        raise failure
+
+    supervised = {
+        "AUTODJ_DOCTOR_ACTIVE": "",
+        SUPERVISOR_ENV: "1",
+        UPDATER_ENV: "launcher",
+        UPDATE_DIR_ENV: "/srv/autodj/.uv/update",
+    }
+    with (
+        patch("click.testing._NamedTextIOWrapper.isatty", return_value=True),
+        patch.dict(os.environ, supervised),
+        patch("subprocess.run") as subprocess_run,
+    ):
+        result = CliRunner().invoke(command, input="y\n")
+    assert result.exception is failure
+    assert subprocess_run.called
+    assert "Run AutoDJ Doctor now?" in result.output
+
+
+def test_a_start_an_update_watches_never_asks():
+    """A watched start fails at once, so the update rolls back on its exit status."""
+    failure = RuntimeError("the new version cannot start")
+
+    @click.command(cls=_ServeCommand)
+    def command():
+        raise failure
+
+    watched = {"AUTODJ_DOCTOR_ACTIVE": "", SUPERVISOR_ENV: "1", UPDATE_WATCH_ENV: "1"}
+    with (
+        patch("click.testing._NamedTextIOWrapper.isatty", return_value=True),
+        patch.dict(os.environ, watched),
+        patch("subprocess.run") as subprocess_run,
+    ):
+        result = CliRunner().invoke(command, input="y\n")
+    assert result.exception is failure
+    assert not subprocess_run.called
+    assert "Run AutoDJ Doctor now?" not in result.output
+    assert "autodj doctor" in result.output
