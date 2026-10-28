@@ -1035,10 +1035,15 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         """FastAPI lifespan: start and stop the station and the shared library."""
+        started = time.perf_counter()
         library = SharedLibrary(shared.library, stations)
         await stations.start_all()
         await library.start()
         STARTUP_COMPLETE.set()
+        logger.info(
+            "Startup: stations and background services started in %.2f s (audio readiness logged separately)",
+            time.perf_counter() - started,
+        )
         try:
             yield
         finally:
@@ -3195,6 +3200,7 @@ def serve(
     a :class:`~autodj.tls.CertificateReloader` then loads renewed files into
     the running server.
     """
+    started = time.perf_counter()
     from dataclasses import replace
 
     import faiss
@@ -3250,6 +3256,7 @@ def serve(
         extra_stations=extra_stations,
     )
 
+    logger.info("Startup: server app construction took %.2f s", time.perf_counter() - started)
     startup_policy: SecurityPolicy = app.state.security_policy
     startup_registry: DeviceRegistry | None = app.state.device_registry
     # Starting with no paired browser counts as asking for a code; once one

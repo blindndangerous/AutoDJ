@@ -19,6 +19,7 @@ import logging
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -436,6 +437,8 @@ def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
     # Face hub) logs every model-download request.  -v shows them again.
     for name in ("faiss.loader", "httpx", "httpx2"):
         logging.getLogger(name).setLevel(logging.NOTSET if verbose else logging.WARNING)
+    # Compiler dumps overwhelm app diagnostics and distort startup timings.
+    logging.getLogger("numba").setLevel(logging.WARNING)
     # Without a terminal, the hub's download progress bars only add control
     # characters to the journal or log.  A value the user set is kept.
     if not verbose and not sys.stderr.isatty():
@@ -1952,9 +1955,18 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
       uv run autodj serve --lan
       uv run autodj serve --server-audio
     """
+    started = time.perf_counter()
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"], log_file=True)
+    configured = time.perf_counter()
     from autodj.server import serve
 
-    cfg = _load_cfg_or_exit(ctx.obj["config_path"], log_file=True)
+    imported = time.perf_counter()
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "Startup: server imports took %.2f s; configuration and logging took %.2f s",
+        imported - configured,
+        configured - started,
+    )
     from autodj.config import is_loopback_bind
 
     original_server = cfg.server
@@ -2009,6 +2021,10 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     ctx.call_on_close(library.close)
     _print_serve_banner(console, library)
     seed_entry = _resolve_seed(library, cfg, seed, console)
+    logger.info(
+        "Startup: network configuration, library and seed preparation took %.2f s",
+        time.perf_counter() - imported,
+    )
     url = _print_serve_url_banner(console, staged_server)
     cfg.server = staged_server
     if stream is not None:

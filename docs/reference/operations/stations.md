@@ -181,6 +181,19 @@ station settings, uploads and saved dates still have their own station paths.
 
 ## Logs
 
+Normal runs show INFO, WARNING and ERROR messages. Use `autodj -v serve` to
+include DEBUG messages. The server writes logs to `<index_dir>/logs/autodj.log`.
+Four INFO entries per startup time server imports/configuration, library preparation,
+app construction, and station/background-service startup. These measure work inside
+the server, not launcher time or time until a listener hears audio. Master processing
+logs its readiness separately. Shutdown steps over two seconds appear at INFO;
+faster steps appear at DEBUG.
+DEBUG also records preparation time for each compiled audio kernel, including
+loading its cached machine code or compiling it. Numba compiler internals stay at
+WARNING even with `-v`. For a complete import breakdown,
+run `python -X importtime -c "import autodj.cli; import autodj.server"` using the
+installation's Python environment; this imports modules without starting the server.
+
 A log line from a station starts with its slug, such as `[nightowl] Stream station tick failed`
 or `[default] Stream station tick failed`. A station with a log label (`station.log_label`, or
 **Log label** in Settings, Stations) shows the label instead, such as `[nor] Stream station tick

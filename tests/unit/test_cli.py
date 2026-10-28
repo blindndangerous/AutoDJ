@@ -1214,6 +1214,8 @@ def test_third_party_info_logs_are_quiet_unless_verbose() -> None:
     CliRunner().invoke(cli, ["-v", "doctor", "--help"])
     for name in ("faiss.loader", "httpx", "httpx2"):
         assert logging.getLogger(name).getEffectiveLevel() == logging.DEBUG
+    assert logging.getLogger("numba.core.ssa").getEffectiveLevel() == logging.WARNING
+    assert logging.getLogger("autodj.kernels").getEffectiveLevel() == logging.DEBUG
 
 
 @pytest.mark.parametrize(
