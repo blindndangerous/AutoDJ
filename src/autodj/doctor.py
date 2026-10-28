@@ -805,9 +805,9 @@ def run_doctor(
     from autodj.stations import DEFAULT_SLUG
 
     default = station in (None, DEFAULT_SLUG)
-    checks: list[DoctorCheck] = [_configuration_check(cfg), _speech_check(cfg)]
+    checks: list[DoctorCheck] = [_configuration_check(cfg)]
     if default:
-        checks.append(_dmca_check(cfg))
+        checks += [_speech_check(cfg), _dmca_check(cfg)]
     checks += [
         _python_check(python_version),
         _music_paths_check(cfg),
@@ -830,8 +830,8 @@ def run_doctor(
         checks += [_stream_check(cfg), *_relay_checks(cfg)]
     checks += [_related_artists_check(cfg), _related_tracks_check(cfg)]
     if default:
-        checks += [_time_checks_check(cfg), *_voice_pack_checks(cfg)]
-    checks += [_categories_check(cfg), _config_keys_check(cfg), *_restore_check(cfg)]
+        checks += [_time_checks_check(cfg), *_voice_pack_checks(cfg), _categories_check(cfg)]
+    checks += [_config_keys_check(cfg), *_restore_check(cfg)]
     if default:
         checks += [_recording_check(cfg), _liners_check(cfg)]
     for spec in cfg.stations:
@@ -896,6 +896,7 @@ def _station_checks(cfg: AutoDJConfig, spec: StationSpec) -> list[DoctorCheck]:
     paths = StationPaths.for_station(own, spec.slug)
     checks = [
         _station_folder_check(paths),
+        _speech_check(own, paths),
         _saved_settings_check(own, paths),
         _dmca_check(own, paths),
         _stream_check(own),
@@ -1294,7 +1295,7 @@ def _speech_check(
             f"{len(providers)} speech connections; no generated time-check set active",
             "Configured connections are not proof of live service readiness.",
         )
-    except (ValueError, OSError, KeyError, TypeError):
+    except (ValueError, OSError, KeyError, TypeError, AttributeError):
         return DoctorCheck(
             name, CheckStatus.FAIL, "Speech configuration or saved state could not be read"
         )

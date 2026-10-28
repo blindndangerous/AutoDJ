@@ -563,6 +563,31 @@ def test_malformed_speech_state_is_reported_by_time_checks(tmp_path: Path) -> No
     assert doctor._time_checks_check(cfg).status is doctor.CheckStatus.FAIL
 
 
+def test_speech_check_reports_nested_malformed_state(tmp_path: Path) -> None:
+    from autodj.stations import StationPaths
+
+    cfg = _config(tmp_path)
+    root = StationPaths.default(cfg).speech
+    root.mkdir(parents=True)
+    (root / "speech.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "batches": {},
+                "saved": {},
+                "presets": {},
+                "sets": {"bad": []},
+                "active_set": None,
+            }
+        )
+    )
+
+    check = doctor._speech_check(cfg)
+
+    assert check.status is doctor.CheckStatus.FAIL
+    assert check.summary == "Speech configuration or saved state could not be read"
+
+
 @pytest.mark.parametrize(
     "content,status",
     [
