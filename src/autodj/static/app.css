@@ -2126,6 +2126,23 @@
   max-width: 32rem;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
+/* Screen reader trial (#602, #627, modules/confirm-dialog.js): the
+   confirmation opened with show() rather than showModal(), placed over
+   the page and shaded behind as the modal one is. */
+#confirm-dialog.confirm-nonmodal {
+  position: fixed;
+  inset: 0;
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  z-index: 10001;
+}
+#confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.55);
+}
+#confirm-backdrop[hidden] { display: none; }
 #hotkey-help-modal::backdrop,
 #confirm-dialog::backdrop,
 #device-rename-dialog::backdrop,

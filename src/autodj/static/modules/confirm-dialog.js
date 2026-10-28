@@ -36,6 +36,44 @@ import { sayIfStillPending } from "./live-region.js";
 // moment says *pendingText* ("Removing…") in the dialog's own status line:
 // the page's status regions are inert behind the dialog (#384).
 
+// Screen reader trial (#602, #627), chosen by ?confirm=<name> in the page
+// address so each way of opening the confirmation can be heard in NVDA
+// before one is kept.  Without it the confirmation opens as before.
+//   cancel-last     showModal(); Cancel after the confirm button.
+//   nonmodal        show() with aria-modal="true", Cancel last; the page
+//                   keeps its accessibility tree, a backdrop takes clicks,
+//                   and Tab and Escape are handled here.
+//   nonmodal-plain  nonmodal without aria-modal.
+//   group           nonmodal-plain, exposed as a group, not a dialog.
+// Every trial also takes the form out of the tree (role="none"), so it is
+// not read as a form landmark.
+const TRIALS = {
+  "cancel-last": { cancelLast: true },
+  nonmodal: { cancelLast: true, nonModal: true, ariaModal: true },
+  "nonmodal-plain": { cancelLast: true, nonModal: true },
+  group: { cancelLast: true, nonModal: true, role: "group" },
+};
+
+function confirmTrial(doc) {
+  try {
+    const name = new URLSearchParams(doc.defaultView?.location?.search || "").get("confirm");
+    return Object.hasOwn(TRIALS, name) ? TRIALS[name] : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function trialBackdrop(doc) {
+  let backdrop = doc.getElementById("confirm-backdrop");
+  if (!backdrop) {
+    backdrop = doc.createElement("div");
+    backdrop.id = "confirm-backdrop";
+    backdrop.hidden = true;
+    doc.body.append(backdrop);
+  }
+  return backdrop;
+}
+
 // station: the action changes one station (#70).  While the server has
 // several, the message then ends by naming the station the page controls.
 export function confirmAction(doc, {
@@ -56,6 +94,7 @@ export function confirmAction(doc, {
   const opener = doc.activeElement === doc.body ? null : doc.activeElement;
   // Where focus goes if the opener is gone when the dialog closes.
   const place = dialogReturnPlace(opener);
+  const trial = confirmTrial(doc);
   return new Promise((resolve) => {
     let pending = false;
     const listeners = [
@@ -64,6 +103,41 @@ export function confirmAction(doc, {
       [dialog, "cancel", holdWhilePending],
       [dialog, "close", closed],
     ];
+    if (trial?.nonModal) {
+      listeners.push([dialog, "keydown", trialKeys], [doc, "focusin", trialKeepFocus]);
+    }
+    // Trial: Tab and Shift+Tab go round the dialog's buttons, and Escape
+    // cancels, as they do in a modal dialog.
+    function trialKeys(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (!pending) closeOnto("cancel", null);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const stops = [...dialog.querySelectorAll("button:not([disabled])")];
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      if (event.shiftKey && doc.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && doc.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    // Trial: focus that leaves the open dialog comes back to Cancel.
+    function trialKeepFocus(event) {
+      if (dialog.open && !dialog.contains(event.target)) cancelButton?.focus();
+    }
+    function endTrial() {
+      if (!trial) return;
+      const backdrop = doc.getElementById("confirm-backdrop");
+      if (backdrop) backdrop.hidden = true;
+      dialog.classList.remove("confirm-nonmodal");
+      dialog.removeAttribute("aria-modal");
+      dialog.removeAttribute("role");
+    }
     // Back on the opener, or somewhere steady near it; never the page body.
     // Focus already there, put back by the browser, stays: letting go of it
     // to take it again would rest it on the page body (#602).
@@ -84,12 +158,14 @@ export function confirmAction(doc, {
       } finally {
         if (hold) opener.removeAttribute("inert");
       }
+      endTrial();
       if (!(elsewhere && focusAfterDialog(target))) returnFocus();
     }
     function settle(value) {
       for (const [target, type, listener] of listeners) {
         target?.removeEventListener(type, listener);
       }
+      endTrial();
       resolve(value);
     }
     async function accept(event) {
@@ -135,7 +211,19 @@ export function confirmAction(doc, {
     for (const [target, type, listener] of listeners) {
       target?.addEventListener(type, listener);
     }
-    dialog.showModal();
+    if (trial) dialog.querySelector("form")?.setAttribute("role", "none");
+    // Last among the buttons, so a screen reader that reads the dialog
+    // through leaves its cursor on Cancel.
+    if (trial?.cancelLast) cancelButton?.parentElement?.append(cancelButton);
+    if (trial?.nonModal) {
+      dialog.classList.add("confirm-nonmodal");
+      if (trial.ariaModal) dialog.setAttribute("aria-modal", "true");
+      if (trial.role) dialog.setAttribute("role", trial.role);
+      trialBackdrop(doc).hidden = false;
+      dialog.show();
+    } else {
+      dialog.showModal();
+    }
     cancelButton?.focus();
   });
 }
