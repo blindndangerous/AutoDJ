@@ -207,6 +207,11 @@ AUTODJ_TORCH_VARIANT=cuda
 COMPOSE_FILE=compose.yaml:compose.gpu.yaml:compose.build.yaml
 ```
 
+On a computer without an NVIDIA GPU, for example to build the CUDA image for another computer,
+leave `compose.gpu.yaml` out of `COMPOSE_FILE`, and out of the update commands that
+`autodj check-update` prints for a CUDA build: Docker cannot start a container that asks for a GPU
+the computer does not have.
+
 ## Update the container
 
 AutoDJ in a container checks for updates like any installation and says in **Settings**,

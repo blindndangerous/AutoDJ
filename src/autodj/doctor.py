@@ -561,21 +561,22 @@ TORCH_PROBE_SECONDS = 20.0
 _TORCH_PROBE = "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 3)"
 
 
-def _torch_sees_cuda() -> bool:
+def _torch_sees_cuda() -> bool | None:
     """Whether PyTorch can use a CUDA GPU, asked in a child process with a time limit.
 
-    Only the CUDA image asks.  A wedged driver cannot stall Doctor, torch's
-    own warnings stay in the child's discarded output, and anything that goes
-    wrong counts as "cannot use it".
+    ``None`` when it did not answer in time.  Only the CUDA image asks.  The
+    child runs isolated (``-I``), so the working directory is not on its
+    path, with warnings off; its output is discarded.  A wedged driver
+    cannot stall Doctor, and any other failure counts as "cannot use it".
     """
     from autodj.updates import run_bounded
 
-    environment = dict(os.environ, PYTHONWARNINGS="ignore")
+    argv = [sys.executable, "-I", "-W", "ignore", "-c", _TORCH_PROBE]
     try:
-        done = run_bounded(
-            [sys.executable, "-c", _TORCH_PROBE], timeout=TORCH_PROBE_SECONDS, env=environment
-        )
-    except Exception:  # any failure means PyTorch cannot use the GPU
+        done = run_bounded(argv, timeout=TORCH_PROBE_SECONDS)
+    except subprocess.TimeoutExpired:
+        return None
+    except Exception:  # any other failure means PyTorch cannot use the GPU
         return False
     return done.returncode == 0
 
@@ -585,7 +586,7 @@ def _gpu_image_check(
     environ: Mapping[str, str] | None = None,
     markers: Iterable[Path] | None = None,
     gpu_visible: Callable[[], bool] | None = None,
-    torch_sees_cuda: Callable[[], bool] | None = None,
+    torch_sees_cuda: Callable[[], bool | None] | None = None,
 ) -> tuple[DoctorCheck, ...]:
     """In a container, whether its image fits the NVIDIA GPU it sees; nothing elsewhere.
 
@@ -624,7 +625,19 @@ def _gpu_image_check(
                 ".env, then run `docker compose up -d`.",
             ),
         )
-    if (torch_sees_cuda or _torch_sees_cuda)():
+    usable = (torch_sees_cuda or _torch_sees_cuda)()
+    if usable is None:
+        return (
+            DoctorCheck(
+                "gpu-image",
+                CheckStatus.WARN,
+                "this CUDA image sees an NVIDIA GPU, but the GPU check timed out, so song "
+                "analysis may fall back to the CPU",
+                f"PyTorch did not answer within {TORCH_PROBE_SECONDS:.0f} seconds. Action: run "
+                "`nvidia-smi` on the host to check that the GPU and its driver respond.",
+            ),
+        )
+    if usable:
         return (
             DoctorCheck(
                 "gpu-image", CheckStatus.PASS, "CUDA image; song analysis uses the NVIDIA GPU"
