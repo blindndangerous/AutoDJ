@@ -130,6 +130,8 @@ def install_commands(
         "--no-default-groups",
         "--no-hashes",
         "--no-emit-project",
+        # Without it uv also prints the whole requirements file; errors still show.
+        "--quiet",
     ]
     if backend != "no-model":
         export.extend(["--extra", "all"])
