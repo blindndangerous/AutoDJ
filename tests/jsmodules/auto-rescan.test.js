@@ -29,7 +29,7 @@ describe("automatic rescan", () => {
       expect(document.querySelector(`label[for="${id}"]`).textContent).toBe(label);
       expect(field(id).hasAttribute("aria-describedby")).toBe(false);
     }
-    expect(group.querySelector(".setting-desc").textContent).toMatch(/turns it off; the shortest is 5 minutes/);
+    expect(group.querySelector(".setting-desc").textContent).toMatch(/Minimum 5 minutes; 0 turns it off/);
     expect(field("auto-rescan-error").hidden).toBe(true);
     expect(field("auto-rescan-error").hasAttribute("aria-live")).toBe(false);
     expect(field("auto-rescan-save").textContent).toBe("Save");

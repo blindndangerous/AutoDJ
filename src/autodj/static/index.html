@@ -3474,12 +3474,7 @@
     <details class="card" id="library-tools-card">
       <summary><h2>Library tools</h2></summary>
 
-      <p>Browse your library and voice liners in Queue &amp; Search.</p>
-
-      <p>
-        Add folders below to update the current library. Songs become available before
-        similarity analysis finishes. One similarity analysis job runs at a time.
-      </p>
+      <p>Songs are available to play before similarity analysis finishes.</p>
 
       <section class="flow-form">
         <h3 id="source-folders-heading">Music folders and Voice liner folders</h3>
@@ -3492,25 +3487,25 @@
         <div id="source-folder-analysis-group">
           <label for="source-folder-analysis">Music folder analysis</label>
           <select id="source-folder-analysis"><option value="basic">Basic</option><option value="audio" selected>Audio</option></select>
-          <p class="setting-desc">Uses the MuQ music model to help AutoDJ choose songs that sound alike.</p>
+          <p class="setting-desc" id="source-folder-analysis-help">Basic imports tags and cue suggestions; Audio adds beats, key and song structure.</p>
         </div>
         <button type="button" id="source-folder-add">Add folder</button>
         <label><input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"> Override with ID3 tags</label>
         <p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>
         <button type="button" id="source-folder-rescan">Rescan</button>
         <fieldset id="music-fade-drop-group">
-          <legend>Music fades</legend>
+          <legend>Automatic Segue detection</legend>
           <div class="settings-row">
-            <label for="music-fade-drop">Music fade drop (dB)</label>
+            <label for="music-fade-drop">Fade detection threshold (dB)</label>
             <input type="number" id="music-fade-drop" min="1" max="30" step="1" value="10" inputmode="numeric" aria-describedby="music-fade-drop-help">
           </div>
-          <p class="setting-desc" id="music-fade-drop-help">Drop below normal level before a music fade qualifies.</p>
+          <p class="setting-desc" id="music-fade-drop-help">How far a song's ending must drop before AutoDJ suggests a Segue. Applies to new cue suggestions.</p>
           <p class="field-error" id="music-fade-drop-error" hidden></p>
           <button type="button" id="music-fade-drop-save">Save</button>
         </fieldset>
         <fieldset id="auto-rescan">
           <legend>Automatic rescan every</legend>
-          <p class="setting-desc">Runs Rescan, without the ID3 tag override, this long after the last scan ends. 0 hours and 0 minutes turns it off; the shortest is 5 minutes.</p>
+          <p class="setting-desc">Time between scans, measured from the last scan's end. Minimum 5 minutes; 0 turns it off. File-tag override stays off.</p>
           <div class="settings-row">
             <label for="auto-rescan-hours">Hours</label>
             <input type="number" id="auto-rescan-hours" min="0" max="168" step="1" value="0" inputmode="numeric">
@@ -3550,15 +3545,14 @@
           <button type="button" id="lib-run-index">Import and analyze</button>
         </div>
         <p class="setting-desc" id="lib-index-desc">
-          Add songs from your registered folders, then run similarity analysis for eligible
-          songs. The optional limit caps similarity analysis; all songs are added first.
-          Existing cues, play history and settings are kept.
+          Import registered folders and analyze eligible songs. The limit applies only to
+          similarity analysis; 0 or blank means all.
         </p>
 
         <div class="settings-row"><button type="button" id="lib-run-enrich" aria-describedby="lib-enrich-desc">Enrich</button></div>
         <p class="setting-desc" id="lib-enrich-desc">Refreshes title, artist, genre, BPM and key from beets.</p>
         <div class="settings-row"><button type="button" id="lib-run-prune" aria-describedby="lib-prune-desc">Remove missing tracks</button></div>
-        <p class="setting-desc" id="lib-prune-desc">Lists songs whose files are gone and removes them after you confirm. Play history is kept.</p>
+        <p class="setting-desc" id="lib-prune-desc">Review missing files before removing their library entries. Play history is kept.</p>
         <div class="settings-row"><button type="button" id="lib-run-stats" aria-describedby="lib-stats-desc">Detailed stats</button></div>
         <p class="setting-desc" id="lib-stats-desc">Shows the library report.</p>
         <div class="settings-row"><button type="button" id="lib-run-stop">Stop running job</button></div>
@@ -3595,7 +3589,7 @@
            count are plain text, not live regions: each result of a button
            (Check, Save and Delete included) is said once through
            #categories-status. -->
-      <p>A category is a set of songs that a clockwheel step picks from, such as rotation A, B, C and D, or Remembering the 2000s. Its songs come from shared filters, a beets query or an M3U playlist file.</p>
+      <p>Group songs for clockwheel steps using filters, a beets query or an M3U playlist.</p>
       <div id="categories-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
       <p id="categories-beets-paths" hidden></p>
       <h3 id="categories-list-heading">Saved categories</h3>

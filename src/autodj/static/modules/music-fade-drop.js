@@ -58,7 +58,7 @@ export function installMusicFadeDrop({ document: doc, request, say, isCurrent = 
     saving = true;
     save.classList.add("is-pending");
     save.setAttribute("aria-busy", "true");
-    const stopPending = sayIfStillPending(say, "Saving the music fade drop…");
+    const stopPending = sayIfStillPending(say, "Saving the fade detection threshold…");
     try {
       const value = await request("/api/library/music-fade", {
         method: "PUT",
@@ -67,11 +67,11 @@ export function installMusicFadeDrop({ document: doc, request, say, isCurrent = 
       });
       if (requestGeneration !== generation || !isCurrent()) return;
       show(value);
-      say(`Saved. Music fade drop is ${input.value} dB.`);
+      say(`Saved. Fade detection threshold is ${input.value} dB.`);
     } catch (err) {
       if (requestGeneration !== generation || !isCurrent()) return;
       if (err?.status === 422 || err?.status === 400) showError(musicFadeDropProblem("x"));
-      else say(`Could not save the music fade drop: ${err?.message || "error"}`, true);
+      else say(`Could not save the fade detection threshold: ${err?.message || "error"}`, true);
     } finally {
       stopPending();
       if (requestGeneration === generation) {
