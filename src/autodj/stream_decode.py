@@ -8,6 +8,7 @@ import math
 import shutil
 import subprocess  # nosec B404 -- fixed FFmpeg argv, no shell
 import threading
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,9 @@ _FRAME_BYTES = CHANNELS * 4
 _BUFFER_FRAMES = 2 * SAMPLE_RATE
 _READ_FRAMES = 4096
 _DIAGNOSTIC_BYTES = 4096
+# How long close() lets the pipe readers reach end-of-file before it closes
+# the pipes under them; a stopped FFmpeg's pipes end within milliseconds.
+_READER_GRACE_SECONDS = 0.1
 
 
 class StreamDecoder:
@@ -42,9 +46,19 @@ class StreamDecoder:
         filters: str | None = None,
         end_seconds: float | None = None,
         playback_rate: float = 1,
+        lead_in_seconds: float = 0,
     ) -> None:
+        """Start FFmpeg at *start_seconds* of the file.
+
+        *lead_in_seconds* (at most *start_seconds*) are decoded before it and
+        dropped: FFmpeg's input seek starts some formats (MP3: about 550
+        frames) with the decoder's delay as silence, which the lead-in
+        absorbs, so the first frame read is real audio at *start_seconds*.
+        """
         if not math.isfinite(start_seconds) or start_seconds < 0:
             raise ValueError("start_seconds must be finite and non-negative")
+        if not math.isfinite(lead_in_seconds) or lead_in_seconds < 0:
+            raise ValueError("lead_in_seconds must be finite and non-negative")
         if end_seconds is not None and (
             not math.isfinite(end_seconds) or end_seconds <= start_seconds
         ):
@@ -69,11 +83,15 @@ class StreamDecoder:
         if ffmpeg is None:
             self._fail(f"FFmpeg is required to decode {self.path}")
             return
+        lead_in = min(lead_in_seconds, start_seconds)
+        seek = start_seconds - lead_in
+        # Output frames of the lead-in, which run at the playback rate.
+        self._skip_frames = round(lead_in * SAMPLE_RATE / playback_rate)
         command = [ffmpeg, "-v", "warning", "-nostdin", *SAFE_FFMPEG_INPUT]
-        if start_seconds:
-            command += ["-ss", f"{start_seconds:.9f}"]
+        if seek:
+            command += ["-ss", f"{seek:.9f}"]
         if end_seconds is not None:
-            command += ["-t", f"{end_seconds - start_seconds:.9f}"]
+            command += ["-t", f"{end_seconds - seek:.9f}"]
         command += ["-i", str(self.path), "-map", "0:a:0"]
         filters_list = [filters] if filters else []
         if playback_rate != 1:
@@ -172,15 +190,27 @@ class StreamDecoder:
             self._condition.notify_all()
         process = self._process
         self._reap_process()
+        readers = [
+            thread
+            for thread in (self._producer, self._stderr_reader)
+            if thread is not None and thread is not threading.current_thread()
+        ]
+        # The ended process closed its ends of both pipes, so the readers
+        # normally reach end-of-file at once; join them before closing ours.
+        # A launcher shim (Chocolatey's ffmpeg.exe, say) can leave the real
+        # FFmpeg holding the pipes after its own exit: closing them then ends
+        # that process, and a reader that was still in read() stops quietly.
+        deadline = time.monotonic() + _READER_GRACE_SECONDS
+        for thread in readers:
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
         for pipe in (getattr(process, "stdout", None), getattr(process, "stderr", None)):
             if pipe is not None:
                 with contextlib.suppress(OSError):
                     pipe.close()
-        for thread in (self._producer, self._stderr_reader):
-            if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=5)
-                if thread.is_alive():
-                    raise RuntimeError(f"FFmpeg decoder worker did not stop: {self.path}")
+        for thread in readers:
+            thread.join(timeout=5)
+            if thread.is_alive():
+                raise RuntimeError(f"FFmpeg decoder worker did not stop: {self.path}")
 
     def _reap_process(self) -> None:
         process = self._process
@@ -210,7 +240,13 @@ class StreamDecoder:
     def _drain_stderr(self) -> None:
         pipe = self._process.stderr
         while True:
-            block = pipe.read(1024)
+            try:
+                block = pipe.read(1024)
+            except (OSError, ValueError):
+                with self._condition:
+                    if self._closed:
+                        return  # close() closed the pipe under this read
+                raise
             if not block:
                 return
             with self._condition:
@@ -242,6 +278,12 @@ class StreamDecoder:
                     raise ValueError("FFmpeg produced non-finite PCM samples")
                 samples = np.array(samples, dtype=np.float32, copy=True)
                 del pending[:usable]
+                if self._skip_frames:
+                    dropped = min(self._skip_frames, len(samples))
+                    self._skip_frames -= dropped
+                    samples = samples[dropped:]
+                    if not len(samples):
+                        continue
                 with self._condition:
                     if self._closed:
                         return
