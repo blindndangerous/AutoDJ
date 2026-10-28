@@ -49,7 +49,7 @@ Otherwise the page says to restart AutoDJ the way you started it. AutoDJ exits w
 
 1. Make a backup and stop AutoDJ.
 2. Check `git status --short`. Save local changes before switching versions.
-3. Fetch the release and switch to its tag, then let launcher setup verify or adopt its runtime. Do not sync a GPU runtime against the CPU development lock:
+3. Fetch the release and switch to its tag, then run setup to synchronize the setup-managed runtime from the release lock and selected backend profile. Do not sync a GPU runtime against the CPU development lock:
 
 ```bash
 git fetch --tags origin
@@ -57,6 +57,9 @@ git switch --detach vX.Y.Z
 ./autodj setup
 ./autodj doctor --no-fix
 ```
+
+An externally adopted environment remains package-owned by its operator; use
+`setup --manage-environment` to opt it into synchronization.
 
 On Windows, use `.\autodj.cmd setup` and `.\autodj.cmd doctor --no-fix`. The [core operations guide](core-operations.md#update-and-keep-a-rollback-path) gives both shell paths and rollback precautions. Read the changes since your version in [CHANGELOG.md](../../CHANGELOG.md), especially removed settings. Start AutoDJ and confirm the version in the page footer. For a wheel installation, replace `X.Y.Z` with the new release and use either command in the same environment:
 
