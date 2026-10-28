@@ -239,6 +239,10 @@ class CheckoutUpdater:
         #: Where the update left the previous branch; rollback resets it only from there.
         self._branch_left: str | None = None
         self._branch_moved = False
+        #: The branch the switch moves (master, from a release or a detached
+        #: commit), and where it was before: ``None`` when it did not exist.
+        self._moved_branch: str | None = None
+        self._moved_branch_tip: str | None = None
         self._lock_handle: Any = None
         self._start_failure = ""
 
@@ -400,7 +404,10 @@ class CheckoutUpdater:
         )
 
     def _finish(self, outcome: str, message: str, commands: list[str], reason: str) -> None:
-        """Write ``result.json`` once, with every step that did not run as skipped."""
+        """Write ``result.json`` once, with every step that did not run as skipped.
+
+        ``request.json`` is deleted then, whatever the outcome.
+        """
         self._prune_backups()
         running = self._running()
         if running is not None:
@@ -428,6 +435,8 @@ class CheckoutUpdater:
                 "finished_at": now,
             },
         )
+        # The request is answered: only this update read it, and result.json keeps its id.
+        contract.remove(self.folder / contract.REQUEST)
         self._unlock()
 
     def _try_lock(self) -> bool:
@@ -843,6 +852,7 @@ class CheckoutUpdater:
                 f"git could not put the checkout back on {previous.commit[:7]} "
                 f"(exit status {done.returncode})."
             )
+        self._restore_moved_branch(previous)
         state = self.root / SETUP_STATE
         try:
             if previous.setup_state is None:
@@ -852,6 +862,39 @@ class CheckoutUpdater:
         except OSError as exc:
             return f"AutoDJ could not restore {state}: {exc}."
         return moved
+
+    def _restore_moved_branch(self, previous: _Previous) -> None:
+        """Put back the branch the switch moved when the checkout was not on it.
+
+        Only from where the update left it: a commit made on it from another
+        shell meanwhile is kept.  A branch the switch created is deleted.
+        """
+        branch = self._moved_branch
+        if branch is None or branch == previous.branch:
+            return  # not moved, or the checkout's own branch, put back above
+        ref = f"refs/heads/{branch}"
+        tip = self._git_value("rev-parse", "--verify", "--quiet", ref)
+        if tip is None or tip == self._moved_branch_tip:
+            return
+        if tip != self._branch_left:
+            print(
+                f"AutoDJ: the branch {branch} moved while AutoDJ was updating (it is at "
+                f"{tip[:7]} now), so AutoDJ left it as it is.",
+                file=sys.stderr,
+            )
+            return
+        if self._moved_branch_tip is None:
+            done = self._git("branch", "--delete", "--force", branch, interruptible=False)
+        else:
+            done = self._git(
+                "branch", "--force", branch, self._moved_branch_tip, interruptible=False
+            )
+        if done.returncode != 0:
+            print(
+                f"AutoDJ: git could not put the branch {branch} back "
+                f"(exit status {done.returncode}).",
+                file=sys.stderr,
+            )
 
     def _failed(self, reason: str, problem: str) -> Attempt:
         head = self._head()
@@ -1083,6 +1126,11 @@ class CheckoutUpdater:
         self._switched = True
         # A release leaves the branch alone; master is fast-forwarded to commit.
         self._branch_left = commit if target == DEVELOPMENT_BRANCH else installation.commit
+        if target == DEVELOPMENT_BRANCH:
+            self._moved_branch = DEVELOPMENT_BRANCH
+            self._moved_branch_tip = self._git_value(
+                "rev-parse", "--verify", "--quiet", f"refs/heads/{DEVELOPMENT_BRANCH}"
+            )
         self._switch(target, commit)
         self._check_stop()
         self._switched_to(target, commit, None if TAG_PATTERN.fullmatch(target) else "master")
