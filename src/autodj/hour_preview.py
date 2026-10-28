@@ -2814,7 +2814,7 @@ class _ClockChoices:
         memory.definition = repr(
             (
                 player._cfg.playback.pick_mode,
-                player._clock_steps,
+                getattr(player, "_clock_steps", ()),
                 getattr(player, "_clock_revision", None),
                 (player._clock or {}).get("name"),
                 (player._clock or {}).get("resync_minutes"),
@@ -2895,7 +2895,7 @@ class _ClockChoices:
             self.restarting = False
         return _ClockPosition(
             (player._clock or {}).get("name", ""),
-            repr(player._clock_steps),
+            repr(getattr(player, "_clock_steps", ())),
             self.boundary,
             self.lap + int(step < self.cursor),
             step,
