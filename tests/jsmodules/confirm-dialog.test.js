@@ -433,6 +433,75 @@ describe("confirmAction without showModal (#602, #627)", () => {
     }
   });
 
+  // ADR-0011-03
+  it("ignores the last confirmation's close event when another opens before it comes", async () => {
+    for (const second of ["confirmAction", "chooseAction"]) {
+      const { dialog, opener } = mount();
+      opener.focus();
+      const first = confirmAction(document, {
+        title: "Over the DMCA limit", message: "Queue it anyway?", confirmLabel: "Queue anyway",
+        onConfirm: async () => opener,
+      });
+      document.getElementById("confirm-accept").click();
+      expect(await first).toBe(true);
+      // The next question opens at once, before the first dialog's close
+      // event, which comes a task later.
+      let answered = false;
+      const next = second === "confirmAction"
+        ? confirmAction(document, { title: "Sure?", message: "Yes.", confirmLabel: "OK" })
+        : chooseAction(document, {
+          title: "Voice track", message: "Keep it?", choices: ["Keep voice track", "Discard voice track", "Cancel change"],
+        });
+      next.then(() => { answered = true; });
+      await new Promise((resolve) => { setTimeout(resolve, 10); });
+      expect(answered).toBe(false);
+      expect(dialog.hasAttribute("open")).toBe(true);
+      expect(document.getElementById("confirm-backdrop").hidden).toBe(false);
+      expect(document.activeElement.id).toBe("confirm-cancel");
+      document.getElementById("confirm-cancel").click();
+      expect(await next).toBe(second === "confirmAction" ? false : null);
+      expect(document.activeElement).toBe(opener);
+    }
+  });
+
+  it("leaves focus where the page put it when an editor closes its Discard question", async () => {
+    const { dialog } = mount();
+    const editor = document.createElement("dialog");
+    editor.innerHTML = '<button id="editor-cancel">Cancel</button>';
+    editor.setAttribute("open", "");
+    const matches = editor.matches.bind(editor);
+    editor.matches = (selector) => (selector === ":modal" ? editor.hasAttribute("open") : matches(selector));
+    document.body.append(editor);
+    const add = document.createElement("button");
+    add.id = "add-category";
+    document.body.append(add);
+    document.getElementById("editor-cancel").focus();
+    const answer = confirmAction(document, {
+      title: "Discard changes?", message: "Your changes have not been saved.", confirmLabel: "Discard changes",
+    });
+    // The panel closes its form: the editor closes the question with it,
+    // then the panel moves focus to its own target.
+    dialog.close();
+    editor.removeAttribute("open");
+    add.focus();
+    expect(await answer).toBe(false);
+    expect(document.activeElement).toBe(add);
+  });
+
+  it("answers No and takes down its backdrop when the dialog is taken out of the page", async () => {
+    const { dialog } = mount();
+    const page = document.createElement("button");
+    let pressed = 0;
+    page.addEventListener("click", () => { pressed += 1; });
+    document.body.append(page);
+    const answer = ask();
+    dialog.remove();
+    page.click();
+    expect(await answer).toBe(false);
+    expect(document.getElementById("confirm-backdrop").hidden).toBe(true);
+    expect(pressed).toBe(1);
+  });
+
   it("keeps Cancel last in a three-way choice, and after it", async () => {
     const { dialog } = mount();
     const answer = chooseAction(document, {

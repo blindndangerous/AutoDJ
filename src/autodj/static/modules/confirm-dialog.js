@@ -79,6 +79,26 @@ function backdropFor(doc) {
 // confirmation is open.
 const PAGE_EVENTS = ["click", "auxclick", "pointerdown", "mousedown", "keydown", "submit", "input"];
 
+// Openings of each confirmation dialog, and the close events it has fired.
+// The browser fires close a task after the dialog closes, so another
+// confirmation can open before the last one's close event comes, as Queue
+// anyway does when the song then needs a voice track choice.  Every
+// opening closes once and fires one close event, in order, so the close
+// event that makes the count equal an opening's number is that opening's
+// own.  The counting listener is added before any opening's, so it runs
+// first.
+const closings = new WeakMap();
+
+function closeCount(dialog) {
+  let count = closings.get(dialog);
+  if (!count) {
+    count = { opened: 0, closed: 0 };
+    closings.set(dialog, count);
+    dialog.addEventListener("close", () => { count.closed += 1; });
+  }
+  return count;
+}
+
 // Whether a modal dialog other than *dialog* is open.  The page behind it
 // is inert, so the confirmation must open in the top layer above it.
 function otherModalOpen(doc, dialog) {
@@ -116,8 +136,11 @@ export function confirmAction(doc, {
   const place = dialogReturnPlace(opener);
   const modal = otherModalOpen(doc, dialog);
   const backdrop = modal ? null : backdropFor(doc);
+  const count = closeCount(dialog);
+  const opening = ++count.opened;
   return new Promise((resolve) => {
     let pending = false;
+    let settled = false;
     const listeners = [
       [confirmButton, "click", accept],
       [cancelButton, "click", cancel],
@@ -134,9 +157,19 @@ export function confirmAction(doc, {
       );
     }
     // Whether the dialog keeps the page out of reach: it is open and in the
-    // page, and no modal dialog has opened over it.
+    // page, and no modal dialog has opened over it.  A dialog taken out of
+    // the page fires no close event, so it is answered No and let go of.
     function guarding() {
-      return dialog.isConnected && dialog.open && !otherModalOpen(doc, dialog);
+      if (!dialog.isConnected) {
+        abandon();
+        return false;
+      }
+      return dialog.open && !otherModalOpen(doc, dialog);
+    }
+    function abandon() {
+      if (settled) return;
+      count.closed = Math.max(count.closed, opening);
+      settle(false);
     }
     // A press, key or submission aimed at the page while the dialog is
     // open never reaches it; focus goes back to Cancel.
@@ -224,6 +257,7 @@ export function confirmAction(doc, {
       if (!(elsewhere && focusAfterDialog(target))) returnFocus();
     }
     function settle(value) {
+      settled = true;
       for (const [target, type, listener, capture] of listeners) {
         target?.removeEventListener(type, listener, capture);
       }
@@ -264,13 +298,20 @@ export function confirmAction(doc, {
       if (pending) event.preventDefault();
       else releaseDialogFocus(dialog);
     }
-    // Cancel, Escape, or a browser that closed the dialog anyway.  Focus
-    // still in the closed dialog, or on the page body, goes back.
+    // Cancel, Escape, or a browser or page that closed the dialog anyway.
+    // A close event for an earlier opening, or one that comes while the
+    // dialog is open again, is not this opening's.  Focus still in the
+    // closed dialog, or on the page body, goes back; over another modal
+    // dialog, so does focus the browser put back on the opener, taken again
+    // so the change is reported (#385), and focus left in a dialog that
+    // has closed meanwhile.  Focus the page has moved elsewhere stays.
     function closed() {
-      if (pending) return;
+      if (dialog.open || count.closed !== opening || pending) return;
       settle(false);
       const active = doc.activeElement;
-      if (modal || !active || active === doc.body || dialog.contains(active)) returnFocus();
+      const loose = !active || active === doc.body || dialog.contains(active);
+      const leftInClosedDialog = modal && Boolean(active?.closest?.("dialog:not([open])"));
+      if (loose || leftInClosedDialog || (modal && active === opener)) returnFocus();
     }
     for (const [target, type, listener, capture] of listeners) {
       target?.addEventListener(type, listener, capture);

@@ -29,12 +29,14 @@ function mount({ playNow } = {}) {
     .forEach((element) => element.remove());
   document.body.replaceChildren(template.content.cloneNode(true));
   const dialog = byId("confirm-dialog");
-  // Open and close as a browser would; the confirmation opens with show().
+  // Open and close as a browser would; the confirmation opens with show(),
+  // and close fires a task after the dialog closes.
   dialog.show = vi.fn(() => { dialog.open = true; });
   dialog.close = vi.fn((value = "") => {
+    if (!dialog.open) return;
     dialog.returnValue = value;
     dialog.open = false;
-    dialog.dispatchEvent(new Event("close"));
+    setTimeout(() => dialog.dispatchEvent(new Event("close")), 0);
   });
   installSearch({
     searchInput: byId("search-input"),
