@@ -4165,7 +4165,8 @@
      Delete profile, Delete liner, Sign out, Revoke device, Make new
      link), and for queueing a song over a DMCA limit (Queue anyway).
      modules/confirm-dialog.js fills in the words and opens it with show()
-     over #confirm-backdrop; Cancel is last and gets focus.  The form has
+     over #confirm-backdrop; Cancel is last and gets focus (autofocus, so
+     the browser does not focus the confirm button first).  The form has
      role="none", so it is not read as a form landmark. -->
 <dialog id="confirm-dialog" aria-labelledby="confirm-title"
         aria-describedby="confirm-message" aria-modal="true">
@@ -4174,7 +4175,7 @@
     <p id="confirm-message"></p>
     <div class="dialog-actions">
       <button type="submit" id="confirm-accept" value="confirm"></button>
-      <button type="submit" id="confirm-cancel" value="cancel">Cancel</button>
+      <button type="submit" id="confirm-cancel" value="cancel" autofocus>Cancel</button>
     </div>
   </form>
 </dialog>

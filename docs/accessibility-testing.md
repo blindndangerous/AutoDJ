@@ -333,7 +333,7 @@ creates a station; the stand-in answers every create request.
 Settings > Updates is shown with a stood-in update: its release notes link, Update AutoDJ, Go
 back, a failed last update with its recovery commands (a long unbroken path included, for reflow)
 and Restart AutoDJ. Enter on Update, Go back and Restart must each open the confirmation with focus
-on Cancel and a message that says the stream goes off the air or, for Go back, what is lost since
+moving straight to Cancel, not through the confirm button, and a message that says the stream goes off the air or, for Go back, what is lost since
 the backup's date. Each open confirmation must be marked `aria-modal` without being modal, with its
 form out of the accessibility tree and Cancel as its last button; its backdrop must cover the page
 and ignore a click, Tab and Shift+Tab must stay on its two buttons, and a click sent straight to

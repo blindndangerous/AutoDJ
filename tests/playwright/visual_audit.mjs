@@ -834,12 +834,17 @@ async function openUpdatesConfirm(page, visit, id, name, words) {
   const button = page.locator(`#${id}`);
   await button.waitFor({ state: "visible" });
   await button.focus();
+  await watchFocus(page);
   await page.keyboard.press("Enter");
   const dialog = page.locator("#confirm-dialog");
   await dialog.waitFor({ state: "visible" });
-  const focused = await page.evaluate(() => document.activeElement?.id);
-  if (focused !== "confirm-cancel") {
-    throw new Error(`${name}'s confirmation opened with focus on ${focused}, not Cancel`);
+  // Focus goes straight from the button to Cancel: the browser does not
+  // focus the confirm button, the first one, on the way.
+  const opened = await page.evaluate(() => ({ trail: window.__autodjFocusTrail, active: document.activeElement?.id }));
+  if (opened.active !== "confirm-cancel"
+      || opened.trail.join(",") !== `out:${id}>confirm-cancel,in:confirm-cancel`) {
+    throw new Error(`${name}'s confirmation opened with focus on ${opened.active}, not straight on Cancel: `
+      + opened.trail.join(", "));
   }
   const message = await page.locator("#confirm-message").textContent();
   if (!words.test(message || "")) throw new Error(`${name}'s confirmation says: ${message}`);

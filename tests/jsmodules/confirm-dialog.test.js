@@ -547,6 +547,80 @@ describe("confirmAction without showModal (#602, #627)", () => {
     expect(await second).toBe(true);
   });
 
+  // ADR-0011-03
+  it("answers a running action with its own result when the browser closes the dialog under it", async () => {
+    // A second Escape over another modal dialog: the browser closes the
+    // confirmation itself while its action runs.  Whether the next
+    // confirmation opens after that close event, before it, or not at all,
+    // the running one answers with its action's result and later ones
+    // still open, close and answer.
+    for (const when of ["after its close event", "before its close event", "no other opens"]) {
+      const { dialog } = mount();
+      const editor = document.createElement("dialog");
+      editor.innerHTML = '<button id="editor-a">Revoke</button><button id="editor-b">B</button>';
+      editor.setAttribute("open", "");
+      const matches = editor.matches.bind(editor);
+      editor.matches = (selector) => selector === ":modal" || matches(selector);
+      document.body.append(editor);
+      document.getElementById("editor-a").focus();
+      const ran = [];
+      let release;
+      const slow = confirmAction(document, {
+        title: "Slow", message: "s", confirmLabel: "Go",
+        onConfirm: () => new Promise((resolve) => { release = () => { ran.push("slow"); resolve(null); }; }),
+      });
+      let slowAnswer = "unanswered";
+      slow.then((value) => { slowAnswer = value; });
+      document.getElementById("confirm-accept").click();
+      const held = new Event("cancel", { cancelable: true });
+      dialog.dispatchEvent(held);
+      expect(held.defaultPrevented).toBe(true);
+      expect(dialog.hasAttribute("open")).toBe(true);
+      // The browser closes it anyway.
+      dialog.close();
+      let second = null;
+      if (when === "after its close event") await new Promise((resolve) => { setTimeout(resolve, 0); });
+      if (when !== "no other opens") {
+        second = confirmAction(document, { title: "Two", message: "2", confirmLabel: "Go2" });
+        expect(dialog.hasAttribute("open")).toBe(true);
+      }
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+      expect(slowAnswer).toBe("unanswered");
+      release();
+      expect(await slow).toBe(true);
+      expect(ran).toEqual(["slow"]);
+      if (second) {
+        // The second still has the dialog, and answers for itself.
+        expect(dialog.hasAttribute("open")).toBe(true);
+        document.getElementById("confirm-cancel").click();
+        expect(await second).toBe(false);
+      }
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+      // A confirmation the page closes is still answered, and the next one
+      // opens and answers.
+      document.getElementById("editor-b").focus();
+      const third = confirmAction(document, { title: "Three", message: "3", confirmLabel: "Go3" });
+      dialog.close();
+      expect(await third).toBe(false);
+      const fourth = confirmAction(document, { title: "Four", message: "4", confirmLabel: "Go4" });
+      expect(dialog.hasAttribute("open")).toBe(true);
+      document.getElementById("confirm-accept").click();
+      expect(await fourth).toBe(true);
+      expect(ran).toEqual(["slow"]);
+      editor.remove();
+    }
+  });
+
+  it("marks Cancel for the browser's own focus as the dialog opens", async () => {
+    const { dialog } = mount();
+    const answer = ask();
+    const cancelButton = document.getElementById("confirm-cancel");
+    expect(cancelButton.hasAttribute("autofocus")).toBe(true);
+    expect(dialog.querySelector("[autofocus]")).toBe(cancelButton);
+    cancelButton.click();
+    await answer;
+  });
+
   it("leaves focus where the page put it when an editor closes its Discard question", async () => {
     const { dialog } = mount();
     const editor = document.createElement("dialog");

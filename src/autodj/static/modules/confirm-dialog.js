@@ -91,6 +91,9 @@ const PAGE_EVENTS = ["click", "auxclick", "pointerdown", "mousedown", "keydown",
 // focus check, run by its own close event: close events come one per close,
 // in order.  A close event with no check waiting is a close the page or the
 // browser made itself, and answers No for the opening still unanswered.
+// While its action runs, an opening is not answered by such a close (the
+// browser closes a dialog on a second Escape however it is held); its close
+// event is noted, and it answers with the action's result.
 const dialogStates = new WeakMap();
 
 function dialogState(dialog) {
@@ -105,7 +108,9 @@ function dialogState(dialog) {
         return;
       }
       const opening = state.current;
-      if (opening && !opening.settled && !opening.pending && !dialog.open) opening.closedElsewhere();
+      if (!opening || opening.settled || dialog.open) return;
+      if (opening.pending) opening.closeCame = true;
+      else opening.closedElsewhere();
     });
   }
   return state;
@@ -147,11 +152,15 @@ function ask(doc, {
     return Promise.resolve(as("cancel"));
   }
   const state = dialogState(dialog);
-  // An opening the page or browser closed, whose close event has not come
-  // yet: answered No now, and its close event is passed over when it comes.
-  if (state.current && !state.current.settled) {
-    state.current.settle("cancel");
-    state.checks.push(() => {});
+  // An opening the page or browser closed: one waiting for its action lets
+  // go of the dialog and answers with the action's result when it ends; any
+  // other is answered No now.  A close event not come yet is passed over
+  // when it comes.
+  const previous = state.current;
+  if (previous && !previous.settled) {
+    if (previous.pending) previous.detach();
+    else previous.settle("cancel");
+    if (!previous.closeCame) state.checks.push(() => {});
   }
   heading.textContent = title;
   text.textContent = message;
@@ -163,7 +172,7 @@ function ask(doc, {
   const modal = otherModalOpen(doc, dialog);
   const backdrop = modal ? null : backdropFor(doc);
   return new Promise((resolve) => {
-    const opening = { settled: false, pending: false, settle, closedElsewhere };
+    const opening = { settled: false, pending: false, closeCame: false, settle, detach, closedElsewhere };
     state.current = opening;
     const listeners = [
       [confirmButton, "click", accept],
@@ -260,15 +269,20 @@ function ask(doc, {
         || Boolean(active?.closest?.("dialog:not([open])"));
       if (loose || (retake && active === opener)) returnFocus();
     }
-    // Answered: every listener this opening added goes, then the promise
-    // resolves.  Once only.
-    function settle(answer) {
-      if (opening.settled) return;
-      opening.settled = true;
+    // Whether this opening still has the dialog; a later one may have it.
+    const showing = () => state.current === opening;
+    // Every listener this opening added goes.
+    function detach() {
       for (const [target, type, listener, capture] of listeners) {
         target?.removeEventListener(type, listener, capture);
       }
-      if (backdrop) backdrop.hidden = true;
+    }
+    // Answered: its listeners go, then the promise resolves.  Once only.
+    function settle(answer) {
+      if (opening.settled) return;
+      opening.settled = true;
+      detach();
+      if (backdrop && showing()) backdrop.hidden = true;
       resolve(as(answer));
     }
     // Closed by the page or the browser, not by this opening's own action.
@@ -280,6 +294,8 @@ function ask(doc, {
     // or back to the opener when there is none.
     function finish(answer, target) {
       settle(answer);
+      // A later opening has the dialog now: this one only answers.
+      if (!showing()) return;
       const closing = dialog.open;
       if (modal) {
         // As other modal dialogs close (#385): the dialog lets go of focus,
@@ -312,18 +328,22 @@ function ask(doc, {
         opening.pending = true;
         const status = dialogStatusLine(dialog, "confirm-status");
         confirmButton.setAttribute("aria-busy", "true");
-        const stopPending = sayIfStillPending((text) => { status.textContent = text; }, pendingText);
+        const stopPending = sayIfStillPending((text) => {
+          if (showing()) status.textContent = text;
+        }, pendingText);
         try {
           target = await onConfirm();
         } catch (_) {
           target = null;
         } finally {
           stopPending();
-          status.textContent = "";
-          confirmButton.removeAttribute("aria-busy");
+          if (showing()) {
+            status.textContent = "";
+            confirmButton.removeAttribute("aria-busy");
+          }
           opening.pending = false;
         }
-        // Taken out of the page, or closed and replaced, meanwhile.
+        // Taken out of the page meanwhile.
         if (opening.settled) return;
       }
       finish("confirm", target);
@@ -352,6 +372,9 @@ function ask(doc, {
     dialog.setAttribute("aria-modal", "true");
     dialog.querySelector("form")?.setAttribute("role", "none");
     cancelButton?.parentElement?.append(cancelButton);
+    // The browser focuses Cancel itself as the dialog opens, not the first
+    // button, the confirm one, which a screen reader would read first.
+    cancelButton?.setAttribute("autofocus", "");
     if (modal) {
       dialog.showModal();
     } else {
