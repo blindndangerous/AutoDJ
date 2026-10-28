@@ -1,7 +1,8 @@
 // History tab: save the play log between two dates for royalty reports,
 // as a CSV with one row per play or as a SoundExchange Report of Use.
 // "Include liners" adds the liners and other non-music items to the CSV
-// (#601); a Report of Use lists songs only, so it never asks for them.
+// (#601).  A Report of Use lists songs only, so the choice is hidden while
+// SoundExchange is chosen and never sent with it.
 // The server builds the file (GET /api/history/export); the page fetches
 // it rather than following a link, so a failure can be said out loud,
 // then hands the browser the file to save.
@@ -79,6 +80,7 @@ export function installHistoryExport({
   const service = doc.getElementById("hist-export-service");
   const category = doc.getElementById("hist-export-category");
   const liners = doc.getElementById("hist-export-liners");
+  const csvOptions = doc.getElementById("hist-export-csv");
   const button = doc.getElementById("hist-export-button");
   // Default to this month so far.
   const today = now();
@@ -86,11 +88,13 @@ export function installHistoryExport({
   if (!to.value) to.value = localDate(today);
   if (service && !service.value) service.value = rememberedService(storage);
   const isSoundExchange = () => format?.value === "soundexchange";
-  // The fields come straight after Format in reading order, so they are not
-  // announced: a select's change can fire while its options are still being
-  // read, and the announcement then spoke over the option (#601).
+  // Each format's own fields come next after Format in reading order: the
+  // CSV's Include liners, or the SoundExchange fields, the other hidden.
+  // Neither is announced: a select's change can fire while its options are
+  // still being read, and an announcement then spoke over the option (#601).
   const showFormatFields = () => {
     if (soundexchange) soundexchange.hidden = !isSoundExchange();
+    if (csvOptions) csvOptions.hidden = isSoundExchange();
   };
   format?.addEventListener("change", showFormatFields);
   showFormatFields();

@@ -16,8 +16,10 @@ function mount() {
       <select id="hist-export-format">
         <option value="csv">Play log</option><option value="soundexchange">SoundExchange</option>
       </select>
-      <input type="checkbox" id="hist-export-liners">
-      <label for="hist-export-liners">Include liners</label>
+      <div id="hist-export-csv">
+        <input type="checkbox" id="hist-export-liners">
+        <label for="hist-export-liners">Include liners</label>
+      </div>
       <fieldset id="hist-export-soundexchange" hidden>
         <label for="hist-export-service">Name of service</label><input id="hist-export-service">
         <label for="hist-export-category">Category</label>
@@ -294,10 +296,14 @@ describe("export wording", () => {
     installHistoryExport({ document, request: vi.fn(), save: vi.fn(), announce, storage: null });
     const format = document.getElementById("hist-export-format");
     const fields = document.getElementById("hist-export-soundexchange");
+    const csvOptions = document.getElementById("hist-export-csv");
+    expect(csvOptions.hidden).toBe(false);
     for (const value of ["soundexchange", "csv", "soundexchange"]) {
       format.value = value;
       format.dispatchEvent(new Event("change"));
       expect(fields.hidden).toBe(value !== "soundexchange");
+      // Include liners is for the CSV only.
+      expect(csvOptions.hidden).toBe(value === "soundexchange");
     }
     expect(announce).not.toHaveBeenCalled();
   });

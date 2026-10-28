@@ -2119,6 +2119,8 @@ describe("app request behavior", () => {
       const label = document.querySelector('label[for="hist-show-liners"]');
       expect(box.type).toBe("checkbox");
       expect(label.textContent).toBe("Show liners");
+      expect(document.getElementById(box.getAttribute("aria-describedby")).textContent)
+        .toMatch(/^Also lists ads, matched intros/);
       expect(box.checked).toBe(false);
       await vi.waitFor(() => expect(historyCalls()).toHaveLength(1));
       expect(params(historyCalls()[0]).get("liners")).toBeNull();
