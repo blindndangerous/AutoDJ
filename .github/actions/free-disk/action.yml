@@ -1,0 +1,30 @@
+name: Free disk space
+description: >-
+  Deletes toolchains a GitHub-hosted Ubuntu runner ships with and AutoDJ's
+  image jobs do not use, and Docker's unused images, then fails with an error
+  unless enough space is free. The CUDA image is several GB, so its jobs run
+  this first and stop before building or pushing anything when space is short.
+inputs:
+  need-gib:
+    description: The free space, in GiB, the job needs on the root file system.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Free disk space
+      shell: bash
+      env:
+        NEED_GIB: ${{ inputs.need-gib }}
+      run: |
+        set -euo pipefail
+        df -h /
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+          /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost
+        docker system prune --all --force >/dev/null
+        df -h /
+        free_gib=$(( $(df --output=avail --block-size=1 / | tail -n 1) / 1024 / 1024 / 1024 ))
+        if (( free_gib < NEED_GIB )); then
+          echo "::error::Only ${free_gib} GiB is free on /, and this job needs ${NEED_GIB} GiB. Nothing was built or pushed."
+          exit 1
+        fi
+        echo "${free_gib} GiB free on /"

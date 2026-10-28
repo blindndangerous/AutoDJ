@@ -20,6 +20,9 @@ services:
         # The commit shown in the web page's footer; see
         # docs/guides/operations/containers-and-windows.md#build-stamp.
         AUTODJ_COMMIT: ${AUTODJ_COMMIT:-}
+        # The PyTorch build: cpu, or cuda for an NVIDIA GPU; see
+        # docs/guides/operations/containers-and-windows.md#use-an-nvidia-gpu.
+        TORCH_VARIANT: ${AUTODJ_TORCH_VARIANT:-cpu}
     image: autodj:local
     pull_policy: never
     environment:

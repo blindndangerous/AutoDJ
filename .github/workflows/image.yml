@@ -4,6 +4,12 @@ name: Container image
 # and :sha-<short commit>; release.yml calls this for a vX.Y.Z tag on master,
 # after its checks, to publish :X.Y.Z, :stable and :latest.
 #
+# With the variant cuda, it publishes the opt-in CUDA image under the same
+# tags with -cuda added, except :latest, which exists only for a pull without
+# a tag. image-cuda.yml calls it for master and release.yml for a release, as
+# separate runs or jobs, so a CUDA failure never stops or withdraws the CPU
+# image or the GitHub release.
+#
 # Two jobs. "build" has read-only permissions: it builds the image, smoke-tests
 # it, writes the SBOM, scans it with Trivy and saves that exact image as an
 # artifact. "push" holds the registry and attestation permissions, runs no
@@ -18,25 +24,30 @@ on:
         description: Publish a release tag's image instead of master's.
         type: boolean
         required: true
+      variant:
+        description: The PyTorch build, cpu or cuda.
+        type: string
+        default: cpu
 
 permissions:
   contents: read
 
 concurrency:
-  # One publish per ref at a time, in push order, so :dev ends on the
-  # newest commit.
-  group: image-${{ github.ref }}
+  # One publish per variant and ref at a time, in push order, so :dev and
+  # :dev-cuda end on the newest commit.
+  group: image-${{ inputs.variant || 'cpu' }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Build and check the image
+    name: Build and check the ${{ inputs.variant || 'cpu' }} image
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: ${{ inputs.variant == 'cuda' && 120 || 60 }}
     permissions:
       contents: read
     outputs:
       image: ${{ steps.name.outputs.image }}
+      artifact: ${{ steps.name.outputs.artifact }}
       tags: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -64,29 +75,51 @@ jobs:
             echo "::error::A development image is published only from master, not $GITHUB_REF"
             exit 1
           fi
+      # The CUDA image's tags end in -cuda; the CPU image's have no suffix.
       - name: Name the image
         id: name
         env:
           OWNER: ${{ github.repository_owner }}
-        run: printf 'image=ghcr.io/%s/autodj\n' "${OWNER,,}" >>"$GITHUB_OUTPUT"
+          VARIANT: ${{ inputs.variant || 'cpu' }}
+        run: |
+          set -euo pipefail
+          case "$VARIANT" in
+            cpu) suffix="" ;;
+            cuda) suffix="-cuda" ;;
+            *)
+              echo "::error::The variant must be cpu or cuda, not '$VARIANT'"
+              exit 1
+              ;;
+          esac
+          {
+            printf 'image=ghcr.io/%s/autodj\n' "${OWNER,,}"
+            printf 'variant=%s\n' "$VARIANT"
+            printf 'artifact=autodj-image%s\n' "$suffix"
+            printf 'flavor<<FLAVOR\nlatest=false\n'
+            if [[ -n "$suffix" ]]; then
+              printf 'suffix=%s\n' "$suffix"
+            fi
+            printf 'FLAVOR\n'
+          } >>"$GITHUB_OUTPUT"
       - name: Choose tags and labels
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.name.outputs.image }}
-          flavor: latest=false
+          flavor: ${{ steps.name.outputs.flavor }}
           tags: |
             type=raw,value=dev,enable=${{ !inputs.release }}
             type=sha,prefix=sha-,format=short,enable=${{ !inputs.release }}
             type=semver,pattern={{version}},enable=${{ inputs.release == true }}
             type=raw,value=stable,enable=${{ inputs.release == true }}
-            type=raw,value=latest,enable=${{ inputs.release == true }}
+            type=raw,value=latest,enable=${{ inputs.release == true && steps.name.outputs.variant == 'cpu' }}
       - name: Build and check the image
         uses: ./.github/actions/build-image
         with:
           channel: ${{ inputs.release && 'stable' || 'development' }}
           labels: ${{ steps.meta.outputs.labels }}
-          sbom-artifact: image-sbom
+          sbom-artifact: ${{ steps.name.outputs.variant == 'cuda' && 'image-sbom-cuda' || 'image-sbom' }}
+          variant: ${{ steps.name.outputs.variant }}
       # The image is several GB; zstd keeps the artifact and its transfer small.
       - name: Save the checked image
         run: |
@@ -95,26 +128,37 @@ jobs:
           ls -l "$RUNNER_TEMP/autodj-image.tar.zst"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: autodj-image
+          name: ${{ steps.name.outputs.artifact }}
           path: ${{ runner.temp }}/autodj-image.tar.zst
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
   push:
-    name: Publish the image
+    name: Publish the ${{ inputs.variant || 'cpu' }} image
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.variant == 'cuda' && 60 || 30 }}
     permissions:
       contents: read
       packages: write
       id-token: write
       attestations: write
     steps:
+      # The CUDA image's artifact and its loaded copy need about 20 GB. The
+      # local action needs the checkout; nothing from it runs with the token.
+      - if: inputs.variant == 'cuda'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions
+      - if: inputs.variant == 'cuda'
+        uses: ./.github/actions/free-disk
+        with:
+          need-gib: "20"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: autodj-image
+          name: ${{ needs.build.outputs.artifact }}
           path: ${{ runner.temp }}/image
       - name: Load the checked image
         run: zstd -dc "$RUNNER_TEMP/image/autodj-image.tar.zst" | docker load

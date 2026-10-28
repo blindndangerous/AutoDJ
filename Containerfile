@@ -5,6 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:${PATH}" \
     UV_LINK_MODE=copy \
+    UV_NO_CACHE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.26@sha256:3d868e555f8f1dbc324afa005066cd11e1053fc4743b9808ca8025283e65efa5 /uv /usr/local/bin/uv
@@ -15,13 +16,32 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY container/torch-cpu.txt ./container/
-# uv.lock resolves Linux torch from PyPI, which is the CUDA build and pulls in several GB of
-# nvidia-*, cuda-* and triton wheels. The image has no GPU, so the locked sync skips the torch
+# TORCH_VARIANT chooses the PyTorch build: cpu (the default) or cuda. Either way every version
+# comes from uv.lock, and UV_NO_CACHE keeps uv's download cache out of the image.
+#
+# cpu: uv.lock resolves Linux torch from PyPI, which is the CUDA build and pulls in several GB of
+# nvidia-*, cuda-* and triton wheels. The CPU image has no GPU, so the locked sync skips the torch
 # family and those wheels, then the CPU builds of the same locked torch, torchaudio and
 # torchvision versions come from PyTorch's CPU index, hash-checked against container/torch-cpu.txt.
-# The build stops if that file's versions drift from uv.lock. Bare-metal installs are unaffected
-# and keep the locked PyPI builds.
+# The build stops if that file's versions drift from uv.lock.
+#
+# cuda: the locked sync installs everything uv.lock names: PyPI's CUDA build of torch and the
+# nvidia-*, cuda-* and triton wheels it needs, each checked against the lock's hashes. Those wheels
+# carry the CUDA runtime libraries, so no nvidia/cuda base image is needed; the host's driver comes
+# in through the NVIDIA Container Toolkit. uv.lock is its only pin, so when torch moves, updating
+# uv.lock and container/torch-cpu.txt together covers both images.
+#
+# Bare-metal installs are unaffected and keep the locked PyPI builds.
+ARG TORCH_VARIANT=cpu
 RUN set -eu; \
+    case "$TORCH_VARIANT" in \
+        cpu|cuda) ;; \
+        *) echo "TORCH_VARIANT must be cpu or cuda, not '$TORCH_VARIANT'" >&2; exit 1 ;; \
+    esac; \
+    if [ "$TORCH_VARIANT" = cuda ]; then \
+        uv sync --frozen --no-dev --extra index --no-install-project; \
+        exit 0; \
+    fi; \
     python -c 'import re, tomllib; lock = {p["name"]: p["version"] for p in tomllib.load(open("uv.lock", "rb"))["package"]}; pins = dict(re.findall(r"^(torch|torchaudio|torchvision)==(\S+)\+cpu ", open("container/torch-cpu.txt").read(), re.M)); want = {n: lock[n] for n in ("torch", "torchaudio", "torchvision")}; assert pins == want, f"container/torch-cpu.txt {pins} != uv.lock {want}"'; \
     skipped="$(python -c 'import re, tomllib; names = sorted(p["name"] for p in tomllib.load(open("uv.lock", "rb"))["package"]); print(" ".join(f"--no-install-package {n}" for n in names if re.fullmatch(r"(nvidia|cuda)-.+|triton|torch|torchaudio|torchvision", n)))')"; \
     uv sync --frozen --no-dev --extra index --no-install-project $skipped; \
@@ -56,11 +76,15 @@ ENV HOME=/home/autodj \
 # server shows and links it only when it is 7 to 40 hex digits.  The update
 # channel of a published image, stable or development, is set by the workflow
 # that publishes it; a locally built image leaves it empty and follows the
-# checkout it is built from.  Declared last so a new commit rebuilds only
+# checkout it is built from.  The variant, cpu or cuda, keeps an update on
+# the same variant's tags.  Declared last so a new commit rebuilds only
 # these layers.
 ARG AUTODJ_COMMIT=""
 ARG AUTODJ_IMAGE_CHANNEL=""
-ENV AUTODJ_COMMIT=${AUTODJ_COMMIT}     AUTODJ_IMAGE_CHANNEL=${AUTODJ_IMAGE_CHANNEL}
+ARG TORCH_VARIANT=cpu
+ENV AUTODJ_COMMIT=${AUTODJ_COMMIT} \
+    AUTODJ_IMAGE_CHANNEL=${AUTODJ_IMAGE_CHANNEL} \
+    AUTODJ_IMAGE_VARIANT=${TORCH_VARIANT}
 
 USER 10001:10001
 EXPOSE 8080
