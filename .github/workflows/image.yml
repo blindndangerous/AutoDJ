@@ -19,7 +19,10 @@ name: Container image
 # A version or sha- tag never changes. When a rerun finds its tag already in
 # the registry, from an earlier attempt that stopped part way, it pushes no new
 # build: it points the moving tags (:stable, :latest, :dev and their -cuda
-# forms) at the digest already there, byte for byte, and attests nothing new.
+# forms) at the digest already there, byte for byte, and attests that digest
+# again, in case the earlier attempt stopped before attesting it. A moving tag
+# moves only for the newest release tag, or for master's current head, so a
+# rerun of an older run never moves it back.
 on:
   push:
     branches: [master]
@@ -166,6 +169,54 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # :stable, :latest and :dev (and their -cuda forms) follow only the newest
+      # release tag and master's current head. A rerun of an older release, or
+      # of a master run a newer commit has passed, publishes only its own version
+      # or sha- tag and leaves the moving tags where they are.
+      - name: Choose the tags this run may move
+        id: tags
+        env:
+          TAGS: ${{ needs.build.outputs.tags }}
+          RELEASE: ${{ inputs.release == true }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ask() {
+            local attempt
+            for attempt in 1 2 3; do
+              if gh api "$@"; then
+                return 0
+              fi
+              sleep $((attempt * 5))
+            done
+            echo "::error::GitHub's API did not answer gh api $*; nothing was pushed." >&2
+            return 1
+          }
+          if [[ "$RELEASE" == true ]]; then
+            refs="$(ask --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --jq '.[].ref')"
+            newest="$(grep -E '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$refs" | sed 's#^refs/tags/##' |
+              sort -V | tail -n 1)"
+            current=false
+            [[ "$newest" != "$GITHUB_REF_NAME" ]] || current=true
+            why="the newest release is $newest"
+          else
+            head="$(ask "repos/$GITHUB_REPOSITORY/commits/master" --jq .sha)"
+            current=false
+            [[ "$head" != "$GITHUB_SHA" ]] || current=true
+            why="master is now at $head"
+          fi
+          {
+            echo 'tags<<TAGS'
+            while IFS= read -r tag; do
+              [[ -n "$tag" ]] || continue
+              if [[ "$current" == true || "${tag##*:}" =~ ^(sha-[0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)(-cuda)?$ ]]; then
+                printf '%s\n' "$tag"
+              else
+                echo "::notice::Leaving $tag where it is: $why." >&2
+              fi
+            done <<<"$TAGS"
+            echo 'TAGS'
+          } >>"$GITHUB_OUTPUT"
       # The version tag (or, for master, the sha- tag) names one build forever.
       # The registry API keeps the manifest's exact bytes, so retagging it keeps
       # its digest and the attestation made for it.
@@ -173,7 +224,7 @@ jobs:
         id: earlier
         env:
           IMAGE: ${{ needs.build.outputs.image }}
-          TAGS: ${{ needs.build.outputs.tags }}
+          TAGS: ${{ steps.tags.outputs.tags }}
           ACTOR: ${{ github.actor }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -190,14 +241,15 @@ jobs:
           fi
           repository="${IMAGE#ghcr.io/}"
           token="$(printf 'user = "%s:%s"\n' "$ACTOR" "$TOKEN" |
-            curl --fail --silent --show-error --config - \
+            curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 30 --config - \
               "https://ghcr.io/token?scope=repository:${repository}:pull,push" | jq -r .token)"
           echo "::add-mask::$token"
           accept="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json"
           accept+=",application/vnd.docker.distribution.manifest.list.v2+json"
           accept+=",application/vnd.docker.distribution.manifest.v2+json"
           manifest="$RUNNER_TEMP/earlier-manifest"
-          status="$(curl --silent --show-error --output "$manifest" --dump-header "$manifest.headers" \
+          status="$(curl --silent --show-error --retry 3 --retry-connrefused --max-time 60 \
+            --output "$manifest" --dump-header "$manifest.headers" \
             --write-out '%{http_code}' --header "Authorization: Bearer $token" --header "Accept: $accept" \
             "https://ghcr.io/v2/${repository}/manifests/${pinned}")"
           case "$status" in
@@ -208,7 +260,7 @@ jobs:
             200)
               digest="sha256:$(sha256sum "$manifest" | cut -d' ' -f1)"
               type="$(sed -n 's/^[Cc]ontent-[Tt]ype: *\([^;[:space:]]*\).*/\1/p' "$manifest.headers" | tail -n 1)"
-              echo "::warning::$IMAGE:$pinned already exists at $digest from an earlier attempt. This rerun pushes no new build: it points the moving tags at that digest and attests nothing new."
+              echo "::warning::$IMAGE:$pinned already exists at $digest from an earlier attempt. This rerun pushes no new build: it points the moving tags at that digest and attests it again."
               {
                 printf 'digest=%s\n' "$digest"
                 printf 'type=%s\n' "$type"
@@ -223,7 +275,7 @@ jobs:
         if: steps.earlier.outputs.digest != ''
         env:
           IMAGE: ${{ needs.build.outputs.image }}
-          TAGS: ${{ needs.build.outputs.tags }}
+          TAGS: ${{ steps.tags.outputs.tags }}
           ACTOR: ${{ github.actor }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TYPE: ${{ steps.earlier.outputs.type }}
@@ -232,14 +284,15 @@ jobs:
           set -euo pipefail
           repository="${IMAGE#ghcr.io/}"
           token="$(printf 'user = "%s:%s"\n' "$ACTOR" "$TOKEN" |
-            curl --fail --silent --show-error --config - \
+            curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 30 --config - \
               "https://ghcr.io/token?scope=repository:${repository}:pull,push" | jq -r .token)"
           echo "::add-mask::$token"
           while IFS= read -r tag; do
             [[ -n "$tag" ]] || continue
             name="${tag##*:}"
             [[ ! "$name" =~ ^(sha-[0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)(-cuda)?$ ]] || continue
-            pushed="$(curl --fail --silent --show-error --request PUT --dump-header - --output /dev/null \
+            pushed="$(curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 60 \
+              --request PUT --dump-header - --output /dev/null \
               --header "Authorization: Bearer $token" --header "Content-Type: $TYPE" \
               --data-binary "@$RUNNER_TEMP/earlier-manifest" \
               "https://ghcr.io/v2/${repository}/manifests/${name}" |
@@ -263,7 +316,7 @@ jobs:
         id: push
         if: steps.earlier.outputs.digest == ''
         env:
-          TAGS: ${{ needs.build.outputs.tags }}
+          TAGS: ${{ steps.tags.outputs.tags }}
         run: |
           set -euo pipefail
           digest=""
@@ -281,12 +334,14 @@ jobs:
           done <<<"$TAGS"
           test -n "$digest"
           printf 'digest=%s\n' "$digest" >>"$GITHUB_OUTPUT"
+      # Also on a rerun that reused an earlier push: the likeliest partial
+      # failure is the attestation itself, and attesting a digest twice is
+      # harmless.
       - name: Attest build provenance
-        if: steps.earlier.outputs.digest == ''
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ needs.build.outputs.image }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ steps.push.outputs.digest || steps.earlier.outputs.digest }}
           push-to-registry: true
           # Storage records exist only for organization-owned repositories.
           create-storage-record: false
