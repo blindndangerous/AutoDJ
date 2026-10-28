@@ -9,9 +9,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 /uv /usr/local/bin/uv
+# uv installs everything into /opt/venv, which does not see the base image's
+# site-packages, so the base image's pip and the pip wheel that ensurepip
+# bundles are never used. Their vendored msgpack, urllib3 and setuptools lag
+# behind security releases, so remove both.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates ffmpeg libsndfile1 libpcre2-8-0 perl-base libssl3 openssl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall --yes --no-input --root-user-action ignore pip \
+    && rm -rf /usr/local/lib/python3.*/ensurepip
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md LICENSE ./
@@ -32,6 +38,9 @@ COPY container/torch-cpu.txt ./container/
 # uv.lock and container/torch-cpu.txt together covers both images.
 #
 # Bare-metal installs are unaffected and keep the locked PyPI builds.
+#
+# PyTorch's CPU builds also ship its C++ unit-test programs in torch/test, about 85 MB that nothing
+# imports or runs, so the CPU image removes them. PyPI's CUDA build does not ship them.
 ARG TORCH_VARIANT=cpu
 RUN set -eu; \
     case "$TORCH_VARIANT" in \
@@ -46,7 +55,8 @@ RUN set -eu; \
     skipped="$(python -c 'import re, tomllib; names = sorted(p["name"] for p in tomllib.load(open("uv.lock", "rb"))["package"]); print(" ".join(f"--no-install-package {n}" for n in names if re.fullmatch(r"(nvidia|cuda)-.+|triton|torch|torchaudio|torchvision", n)))')"; \
     uv sync --frozen --no-dev --extra index --no-install-project $skipped; \
     uv pip install --python /opt/venv/bin/python --no-deps --require-hashes \
-        --index-url https://download.pytorch.org/whl/cpu -r container/torch-cpu.txt
+        --index-url https://download.pytorch.org/whl/cpu -r container/torch-cpu.txt; \
+    rm -rf /opt/venv/lib/python3.*/site-packages/torch/test
 
 FROM python-base AS package
 COPY src ./src
