@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
@@ -38,6 +39,11 @@ _TAIL_BLEND_FRAMES = int(0.01 * SAMPLE_RATE)
 # (see :mod:`autodj.mastering`), so a catch-up burst never drains it.
 CATCH_UP_BLOCKS = 8
 _LAG_WARNING_SECONDS = 10.0
+# At most one warning a minute about silence the bus held because the audio
+# it needed was not ready; a hold this long is reported while it lasts.
+_HOLD_WARNING_SECONDS = 60.0
+_LONG_HOLD_SECONDS = 10.0
+_DECODER_PENDING = "a file deck was still seeking or refilling"
 # The interpreter's thread switch interval while any bus runs.  The bus
 # thread gives up the GIL several times per block (pipe writes, locks the
 # encoder and master threads share, sleeping), and each time it waits for
@@ -355,11 +361,15 @@ class BusEvents:
             needs the next track to play. Must return immediately — a
             pre-rendered track or ``None`` — never block or call back
             into the bus.
+        wait_reason: Called, with the lock held, right after
+            ``on_need_track`` returned ``None``: why nothing was ready and
+            the track waited for (a path, or ``""``), for the hold warning.
     """
 
     on_track_start: Callable[[RenderedTrack], None]
     on_position: Callable[[int], None]
     on_need_track: Callable[[], RenderedTrack | None]
+    wait_reason: Callable[[], tuple[str, str]] | None = None
 
 
 class MixBus:
@@ -412,6 +422,14 @@ class MixBus:
         self._handoff_hold: tuple[RenderedTrack, int] | None = None
         self._unannounced: RenderedTrack | None = None
         self.underruns = 0
+        # Blocks of silence held because the audio due was not ready, once a
+        # set has started a track (see _note_hold).
+        self.held_blocks = 0
+        self._block_hold: tuple[str, str] | None = None
+        self._hold: list = []  # [cause, track, blocks, reported while running]
+        self._last_hold_warning = -math.inf
+        self._unreported_holds = 0
+        self._track_started = False
         self._outputs: list[Output] = []
         self._master: MasterProcessor | None = None
         self._master_enabled: Callable[[], bool] = lambda: False
@@ -913,6 +931,8 @@ class MixBus:
         with self._lock:
             self._playing = True
             self._paused = False
+            self._track_started = False
+            self._hold = []
             self._drop_liner()
 
     def stop_set(self) -> None:
@@ -925,6 +945,8 @@ class MixBus:
             self._unannounced = None
             self._skip_fade = 0
             self._tail = None
+            self._track_started = False
+            self._hold = []
             self._drop_liner()
             reset_eq_state(self._eq_state)
             self._eq_previous_gains = (1.0, 1.0, 1.0)
@@ -953,7 +975,12 @@ class MixBus:
             self._liner_cue = None  # its track ended before the cue
             self._cued_liner = None
             self._cued_on_start = None
-        if self._current is not None:
+        if self._current is None:
+            if self._track_started and not self._advance_held:
+                reason = self._events.wait_reason
+                self._block_hold = reason() if reason is not None else ("no track was ready", "")
+        else:
+            self._track_started = True
             track = self._current
             if isinstance(track.audio, LiveAudio):
                 self._unannounced = track
@@ -975,6 +1002,7 @@ class MixBus:
         copies this size), which costs a whole switch interval while
         another thread is busy.  Callers must not write to the result.
         """
+        self._block_hold = None
         current = self._current
         if (
             self._playing
@@ -988,6 +1016,7 @@ class MixBus:
                 chunk = read_audio(current.audio, self._pos, self._pos + frames)
             except AudioPending:
                 self.underruns += 1
+                self._block_hold = (_DECODER_PENDING, current.entry.path)
                 return np.zeros((frames, 2), np.float32)
             except (OSError, RuntimeError, ValueError):
                 logger.exception("Streaming decode failed; skipping %s", current.entry.path)
@@ -1018,6 +1047,10 @@ class MixBus:
                 take = min(take, self._handoff_hold[1] - self._pos)
                 if take <= 0:
                     self.underruns += 1
+                    self._block_hold = (
+                        "a live edit holds the song change",
+                        self._current.entry.path,
+                    )
                     break
             if self._tail is not None:
                 take = min(take, self._tail.start - self._pos)
@@ -1028,6 +1061,7 @@ class MixBus:
                 chunk = read_audio(audio, self._pos, self._pos + take)
             except AudioPending:
                 self.underruns += 1
+                self._block_hold = (_DECODER_PENDING, self._current.entry.path)
                 break
             except (OSError, RuntimeError, ValueError):
                 logger.exception("Streaming decode failed; skipping %s", self._current.entry.path)
@@ -1136,6 +1170,54 @@ class MixBus:
                 self._liner = None
                 self._start_duck_ramp(1.0)
 
+    def _note_hold(self, cause: str, track: str) -> str | None:
+        """Count one block of held silence; return a warning to log, if one is due.
+
+        Lock held.  A hold is reported when it ends, with its length, at
+        most once a minute (``_HOLD_WARNING_SECONDS``), so the log names the
+        cause without flooding.  A hold that reaches ``_LONG_HOLD_SECONDS`` is
+        also reported while it lasts, once, whatever the limit: dead air that
+        long must not go unreported because a short hold was reported first.
+        """
+        self.held_blocks += 1
+        message = None
+        if self._hold and self._hold[:2] != [cause, track]:
+            message = self._end_hold()
+        if not self._hold:
+            self._hold = [cause, track, 0, False]
+        self._hold[2] += 1
+        seconds = self._hold[2] * self.BLOCK / SAMPLE_RATE
+        if not self._hold[3] and seconds >= _LONG_HOLD_SECONDS:
+            self._hold[3] = True
+            message = message or self._hold_warning(
+                f"has held {seconds:.1f} s of silence so far", always=True
+            )
+        return message
+
+    def _end_hold(self) -> str | None:
+        """Close the running hold, if any; return its warning when one is due (lock held)."""
+        if not self._hold:
+            return None
+        seconds = self._hold[2] * self.BLOCK / SAMPLE_RATE
+        message = self._hold_warning(f"held {seconds:.3f} s of silence")
+        self._hold = []
+        return message
+
+    def _hold_warning(self, what: str, *, always: bool = False) -> str | None:
+        now = self._clock.now()
+        if not always and now - self._last_hold_warning < _HOLD_WARNING_SECONDS:
+            self._unreported_holds += 1
+            return None
+        cause, track = self._hold[:2]
+        message = f"Mix bus {what}: {cause}"
+        if track:
+            message += f" ({track})"
+        if self._unreported_holds:
+            message += f"; {self._unreported_holds} more holds since the last warning"
+        self._last_hold_warning = now
+        self._unreported_holds = 0
+        return message
+
     def render_block(self, master_enabled: bool | None = None) -> np.ndarray:
         """Return the next ``(882, 2)`` block without pacing.
 
@@ -1156,6 +1238,7 @@ class MixBus:
             # it is: no track advances, so the clockwheel, the repeat
             # history and the planned song change stay as they were.
             self._advance_held = self._live_taking_over()
+            self._block_hold = None
             if self._live_gain >= 1.0 or self._paused or not self._playing:
                 # No music under live input: the EQ is skipped rather than
                 # fed silence (its filters' decaying tails would go
@@ -1175,6 +1258,10 @@ class MixBus:
                 else:
                     block = apply_eq(block, self._eq_filters, *gains, state=self._eq_state)
                 self._eq_previous_gains = gains
+            hold = self._block_hold
+            message = self._note_hold(*hold) if hold is not None else self._end_hold()
+            if message is not None:
+                pending.append(partial(logger.warning, "%s", message))
             self._duck_and_mix(block)
             block = self._mix_live(block)
             if not master_enabled:
@@ -1213,6 +1300,18 @@ class MixBus:
         with realtime_switching():
             self._run_paced(stop)
 
+    def _note_master_hold(self) -> None:
+        """Count a block held while the master processor warms, once a track has played."""
+        with self._lock:
+            if not self._track_started or self._paused or not self._playing:
+                return
+            current = self._current
+            message = self._note_hold(
+                "the master processor was starting", current.entry.path if current else ""
+            )
+        if message is not None:
+            logger.warning("%s", message)
+
     def _run_paced(self, stop: threading.Event) -> None:
         """The paced loop of :meth:`run`."""
         period = self.BLOCK / SAMPLE_RATE
@@ -1238,11 +1337,11 @@ class MixBus:
                 master, master_enabled = self._master_state()
                 try:
                     # Warm the processor without advancing tracks, liners, or their callbacks.
-                    block = (
-                        np.zeros((self.BLOCK, 2), np.float32)
-                        if master is not None and master_enabled and master.startup_pending
-                        else self.render_block(master_enabled=master_enabled)
-                    )
+                    if master is not None and master_enabled and master.startup_pending:
+                        block = np.zeros((self.BLOCK, 2), np.float32)
+                        self._note_master_hold()
+                    else:
+                        block = self.render_block(master_enabled=master_enabled)
                 except Exception:
                     logger.exception("Mix bus render_block failed; emitting silence")
                     block = np.zeros((self.BLOCK, 2), np.float32)

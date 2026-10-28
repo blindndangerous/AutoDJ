@@ -1080,3 +1080,174 @@ def test_master_warms_without_consuming_the_first_song_or_liner(enabled):
     assert started == [first]
     # Both the song and the liner start at their original first sample.
     np.testing.assert_allclose(received[3 if enabled else 0], 0.3)
+
+
+def _waiting_bus(reason=("the next song was still being prepared", "b.mp3")):
+    queue: list[RenderedTrack] = []
+    events = BusEvents(
+        on_track_start=lambda _track: None,
+        on_position=lambda _pos: None,
+        on_need_track=lambda: queue.pop(0) if queue else None,
+        wait_reason=lambda: reason,
+    )
+    clock = FakeClock()
+    return MixBus(events, eq_gains=lambda: (1.0, 1.0, 1.0), clock=clock), queue, clock
+
+
+def test_held_silence_between_tracks_is_counted_and_named(caplog) -> None:
+    """ADR-0004-21: The bus names why it held silence, for how long, and for which track."""
+    bus, queue, _clock = _waiting_bus()
+    queue.append(_track(0.5, 882 * 2, "a.mp3"))
+    bus.start_set()
+    with caplog.at_level("WARNING", logger="autodj.mixbus"):
+        for _ in range(2):
+            assert np.any(bus.render_block())
+        for _ in range(10):
+            np.testing.assert_array_equal(bus.render_block(), np.zeros((882, 2), np.float32))
+        assert not caplog.records  # reported once the hold ends, with its length
+        queue.append(_track(0.25, 882 * 2, "b.mp3"))
+        assert np.any(bus.render_block())
+    assert bus.held_blocks == 10
+    [record] = caplog.records
+    assert record.getMessage() == (
+        "Mix bus held 0.200 s of silence: the next song was still being prepared (b.mp3)"
+    )
+
+
+def test_silence_before_the_first_track_is_not_a_hold(caplog) -> None:
+    """ADR-0004-21: Silence before a set plays its first track is startup, not a hold."""
+    bus, queue, _clock = _waiting_bus()
+    bus.start_set()
+    with caplog.at_level("WARNING", logger="autodj.mixbus"):
+        for _ in range(5):
+            bus.render_block()
+        queue.append(_track(0.5, 882, "a.mp3"))
+        bus.render_block()
+    assert bus.held_blocks == 0
+    assert not caplog.records
+
+
+def test_hold_warnings_are_limited_to_one_a_minute(caplog) -> None:
+    """ADR-0004-21: Hold warnings are limited to one a minute and count the ones left out."""
+    bus, queue, clock = _waiting_bus()
+    bus.start_set()
+
+    def hold_then_play(blocks: int) -> None:
+        queue.append(_track(0.5, 882, "a.mp3"))
+        bus.render_block()
+        for _ in range(blocks):
+            bus.render_block()
+
+    with caplog.at_level("WARNING", logger="autodj.mixbus"):
+        hold_then_play(3)
+        hold_then_play(3)  # ends the first hold: warned
+        hold_then_play(3)  # ends the second: within the minute, counted only
+        clock.t += 61
+        hold_then_play(0)  # ends the third: warned, with the one held back
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 2
+    assert messages[1].endswith("; 1 more holds since the last warning")
+    assert bus.held_blocks == 9
+
+
+def test_a_long_hold_is_reported_while_it_lasts(caplog) -> None:
+    """ADR-0004-21: A hold reaching 10 s is reported before it ends."""
+    bus, queue, _clock = _waiting_bus()
+    queue.append(_track(0.5, 882, "a.mp3"))
+    bus.start_set()
+    with caplog.at_level("WARNING", logger="autodj.mixbus"):
+        for _ in range(1 + 500):  # 10 s of 20 ms blocks
+            bus.render_block()
+    [record] = caplog.records
+    assert record.getMessage().startswith("Mix bus has held 10.0 s of silence so far")
+
+
+def test_a_long_hold_is_reported_even_just_after_another_warning(caplog) -> None:
+    """ADR-0004-21: The 10 s report bypasses the one-a-minute limit, once per hold."""
+    bus, queue, _clock = _waiting_bus()
+    queue.append(_track(0.5, 882, "a.mp3"))
+    bus.start_set()
+    with caplog.at_level("WARNING", logger="autodj.mixbus"):
+        bus.render_block()
+        bus.render_block()  # a short hold
+        queue.append(_track(0.5, 882, "a.mp3"))
+        bus.render_block()  # ends it: warned, starting the minute
+        for _ in range(1 + 600):  # 12 s of dead air within that minute
+            bus.render_block()
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 2
+    assert messages[0].startswith("Mix bus held 0.020 s of silence")
+    assert messages[1].startswith("Mix bus has held 10.0 s of silence so far")
+
+
+def test_a_deck_still_seeking_is_counted_as_held(caplog) -> None:
+    """ADR-0004-21: A playing deck that is still seeking holds silence and is named."""
+    from autodj.live_audio import AudioLayer, BufferedFile, LiveAudio
+
+    class _Seeking(BufferedFile):
+        def __init__(self) -> None:
+            self.frames, self.rate, self.waiting = 882 * 10, 1.0, 3
+
+        def ready(self, _position: int, _frames: int) -> bool:
+            self.waiting -= 1
+            return self.waiting < 0
+
+        def read(self, _position: int, frames: int) -> np.ndarray:
+            return np.full((frames, 2), 0.5, np.float32)
+
+    entry = MagicMock()
+    entry.path = "b.mp3"
+    deck = _Seeking()
+    track = RenderedTrack(
+        entry, LiveAudio(882 * 4, (AudioLayer(deck, 0, 882 * 4, 0),)), None, 0, ""
+    )
+    bus, queue, _clock = _waiting_bus()
+    queue.extend([_track(0.25, 882, "a.mp3"), track])
+    bus.start_set()
+    with caplog.at_level("WARNING", logger="autodj.mixbus"):
+        for _ in range(6):
+            bus.render_block()
+    assert bus.underruns == 3
+    assert bus.held_blocks == 3
+    [record] = caplog.records
+    assert record.getMessage() == (
+        "Mix bus held 0.060 s of silence: a file deck was still seeking or refilling (b.mp3)"
+    )
+
+
+def test_master_warmup_after_a_track_started_is_counted_as_held(caplog) -> None:
+    """ADR-0004-21: A master warmup after the first track is counted as held silence."""
+    bus, queue, clock = _waiting_bus()
+    queue.append(_track(0.5, 882 * 100, "a.mp3"))
+    calls = {"n": 0}
+
+    class _Master:
+        @property
+        def startup_pending(self) -> bool:
+            return 3 <= calls["n"] < 8
+
+        def process(self, block: np.ndarray, enabled: bool = True) -> np.ndarray:
+            return block
+
+    stop = threading.Event()
+
+    class _Output:
+        def write(self, _block: np.ndarray) -> None:
+            calls["n"] += 1
+            if calls["n"] >= 12:
+                stop.set()
+
+        def close(self) -> None:
+            pass
+
+    bus.set_master(_Master(), enabled=True)
+    bus.add_output(_Output())
+    bus.start_set()
+    with caplog.at_level("WARNING", logger="autodj.mixbus"):
+        bus.run(stop)
+    assert bus.held_blocks == 5
+    [record] = caplog.records
+    assert record.getMessage() == (
+        "Mix bus held 0.100 s of silence: the master processor was starting (a.mp3)"
+    )
+    assert clock.t > 0

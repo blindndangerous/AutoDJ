@@ -131,6 +131,7 @@ def test_overlap_underrun_preflight_consumes_no_source(monkeypatch) -> None:
 
 
 def test_buffered_file_seeks_asynchronously_and_closes_decoders(monkeypatch) -> None:
+    """ADR-0004-19: A deck seeks off the bus and decodes a short lead-in before its target."""
     made = threading.Condition()
     created: list[_FakeDecoder] = []
 
@@ -151,6 +152,8 @@ def test_buffered_file_seeks_asynchronously_and_closes_decoders(monkeypatch) -> 
             "start_seconds": 4 * 1.5 / SAMPLE_RATE,
             "filters": "volume=0.8",
             "playback_rate": 1.5,
+            # A seek decodes up to 100 ms before its target and drops it.
+            "lead_in_seconds": 4 * 1.5 / SAMPLE_RATE,
         }
 
         assert deck.ready(100, 5) is False
@@ -159,6 +162,7 @@ def test_buffered_file_seeks_asynchronously_and_closes_decoders(monkeypatch) -> 
         assert _wait_until(lambda: deck.ready(100, 5))
         assert np.array_equal(deck.read(100, 5), _ramp(100, 5))
         assert created[1].kwargs["start_seconds"] == 100 * 1.5 / SAMPLE_RATE
+        assert created[1].kwargs["lead_in_seconds"] == 100 * 1.5 / SAMPLE_RATE
     finally:
         deck.close()
     assert not deck._worker.is_alive()

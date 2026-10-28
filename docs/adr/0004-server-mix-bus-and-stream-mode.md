@@ -253,6 +253,10 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0004-15` | While any mix bus runs, the process uses the 0.5 ms thread switch interval, restoring the earlier interval after the last bus stops unless it was changed meanwhile; a shorter interval is kept. Continuity under load on target hardware remains manual soak evidence (ADR-0004-06). | automated | `tests/unit/test_mixbus.py::test_run_shortens_the_switch_interval_until_the_last_bus_stops`; `tests/unit/test_mixbus.py::test_run_leaves_an_interval_someone_else_chose` |
 | `ADR-0004-16` | A streaming station keeps, in its buffered ledger settings, the clockwheel song picked to follow the playing one. After a restart that song starts the set without a successor only when it was picked within 30 minutes, is still a playable library song, has not played since, the wheel and its restart time are unchanged, no show holds the air, no dayparted category or step has opened or closed since, and the repeat rules and DMCA limits allow it; queued songs keep their precedence, and every refusal is logged. Its successor is picked while it plays and spliced in like a queue edit; when the song ends first, the usual start pick follows. | automated | `tests/unit/test_restored_pick.py::test_a_fresh_clock_pick_starts_the_set_once`; `tests/unit/test_restored_pick.py::test_a_saved_song_that_no_longer_fits_falls_back_to_the_usual_pick`; `tests/unit/test_restored_pick.py::test_only_a_clockwheel_pick_is_kept_for_a_restart`; `tests/unit/test_restored_pick.py::test_a_restored_song_starts_alone_and_its_successor_is_spliced_in`; `tests/unit/test_restored_pick.py::test_a_successor_too_late_for_the_restored_song_hands_over_to_a_fresh_pick`; `tests/unit/test_restored_pick.py::test_the_station_ticks_before_its_first_wait`; `tests/unit/test_restored_pick.py::test_the_restore_check_waits_for_neither_hours_nor_song_versions` |
 | `ADR-0004-17` | Stream encoders do not inherit terminal interrupt signals, and a station does not recover an encoder after shutdown begins; newly created outputs retain normal recovery. | automated | `tests/unit/test_stream_output_formats.py::test_ffmpeg_encoder_isolated_from_terminal_interrupt`; `tests/unit/test_stream_output_formats.py::test_shutdown_stops_recovery_on_station_outputs_but_not_new_instances`; `tests/unit/test_stream_output_formats.py::test_shutdown_closes_encoder_created_by_an_inflight_retry`; `tests/unit/test_stream_mounts.py::test_shutdown_does_not_wait_for_an_inflight_mount_factory`; `tests/unit/test_station_runtime.py::test_a_start_cut_off_at_shutdown_still_ends_stopped`; `tests/integration/test_stations.py::test_registry_shutdown_stops_and_closes_every_stream_output` |
+| `ADR-0004-18` | A playable continuation's first file deck is sought to the continuation's first read while the outgoing song plays, unless the playing render still reads that deck. | automated | `tests/unit/test_live_continuation_cue.py::test_continuation_deck_is_cued_before_promotion` |
+| `ADR-0004-19` | A file deck seek decodes up to 100 ms before its target and drops it, so a sought deck starts on decoded audio rather than decoder-delay silence. | automated | `tests/unit/test_stream_decode.py::test_lead_in_is_decoded_before_the_start_and_dropped`; `tests/unit/test_stream_decode.py::test_real_mp3_seek_with_lead_in_starts_on_audio`; `tests/unit/test_live_audio.py::test_buffered_file_seeks_asynchronously_and_closes_decoders` |
+| `ADR-0004-20` | Closing a decoder stops a producer waiting for buffer room, then closes its stdout before stopping FFmpeg, so a writer blocked on a full pipe exits on EPIPE without the SIGTERM wait; pipes close only after their readers leave or a short grace. A stopped mastering pipeline is killed. | automated | `tests/unit/test_stream_decode.py::test_close_ends_a_decoder_blocked_on_a_full_pipe_without_a_kill`; `tests/unit/test_stream_decode.py::test_closing_a_decoder_blocked_on_a_full_pipe_is_quick`; `tests/unit/test_stream_decode.py::test_closing_a_running_decoder_raises_in_no_reader_thread`; `tests/unit/test_mastering.py::test_output_limiter_start_failure_cleans_up_stereotool` |
+| `ADR-0004-21` | After a set's first track, every block the bus fills with held silence because the audio due is not ready is counted, and a rate-limited warning (one a minute per bus) names its cause, length and track, and `/api/status` reports the count as `playout.held_blocks`; a hold reaching 10 s is reported once while it lasts, outside that limit. | automated | `tests/unit/test_mixbus.py::test_held_silence_between_tracks_is_counted_and_named`; `tests/unit/test_mixbus.py::test_silence_before_the_first_track_is_not_a_hold`; `tests/unit/test_mixbus.py::test_hold_warnings_are_limited_to_one_a_minute`; `tests/unit/test_mixbus.py::test_a_long_hold_is_reported_while_it_lasts`; `tests/unit/test_mixbus.py::test_a_long_hold_is_reported_even_just_after_another_warning`; `tests/unit/test_mixbus.py::test_a_deck_still_seeking_is_counted_as_held`; `tests/unit/test_mixbus.py::test_master_warmup_after_a_track_started_is_counted_as_held`; `tests/integration/test_bridge.py::test_state_reports_the_mix_bus_held_silence_count` |
 
 ## Related proposal — 2026-10-17
 
@@ -395,3 +399,28 @@ through server-owned cleanup instead of independently killing encoders while the
 owners still consider them active. Cleanup still closes their pipes and processes.
 ADR-0004-17 maps the automated evidence; native terminal shutdown remains a
 platform verification obligation.
+
+## Amendment, 2026-10-28: no silence at the continuation's start
+
+Streaming stations played exact silence at every song change in modes other than
+saved points: about 0.2 s on a desktop, and seconds on a slow host. The incoming
+deck opens at the song's saved start. Those modes mix the overlap from decoded
+windows, so nothing moves the deck. The continuation then reads it from the end
+of the overlap. At promotion the deck restarted its decoder there, and the bus
+held the programme in silence until samples arrived. The worker now seeks that
+deck while the outgoing song plays (ADR-0004-18). Saved-point overlaps read the
+incoming deck themselves and already leave it at the continuation.
+
+An FFmpeg input seek starts some formats with the decoder's delay as exact zeros
+(about 550 frames for MP3). Every deck seek now decodes a short lead-in before its
+target and drops it (ADR-0004-19).
+
+On Linux, FFmpeg blocked writing to a full pipe ignores SIGTERM. Closing a
+decoder or a mastering pipeline therefore waited out the stop grace before a
+kill. Each deck seek, transition window and pruned deck paid that wait. A
+decoder now closes its stdout first, so the blocked write fails and FFmpeg exits.
+A mastering pipeline is killed (ADR-0004-20).
+
+Held silence is now counted and logged with its cause (ADR-0004-21). This makes
+the remaining causes of dead air visible in the station log. It does not change
+ADR-0004-13: zero-gap behaviour still needs listening and soak evidence.

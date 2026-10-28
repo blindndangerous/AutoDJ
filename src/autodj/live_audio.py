@@ -26,6 +26,11 @@ def _shift_gain(
     return gain(at + offset)
 
 
+# Decoded before a deck's seek target and dropped (see StreamDecoder), so a
+# deck that seeks starts on real audio rather than the decoder's delay.
+_SEEK_LEAD_IN_FRAMES = SAMPLE_RATE // 10
+
+
 class AudioPending(Exception):
     """A decoder is refilling; hold the programme clock for this bus block."""
 
@@ -183,6 +188,7 @@ class BufferedFile:
                     start_seconds=position * self.rate / SAMPLE_RATE,
                     filters=self.filters or None,
                     playback_rate=self.rate,
+                    lead_in_seconds=min(position, _SEEK_LEAD_IN_FRAMES) * self.rate / SAMPLE_RATE,
                 )
                 with self._condition:
                     if self._stopped:

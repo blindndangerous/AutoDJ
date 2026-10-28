@@ -776,6 +776,7 @@ def test_stereotool_output_true_peak_stays_below_ceiling_after_resample(signal: 
 
 
 def test_output_limiter_start_failure_cleans_up_stereotool() -> None:
+    """ADR-0004-20: A failed start kills and closes the Stereo Tool stage it started."""
     primary = MagicMock()
     primary.poll.return_value = None
     calls = 0
@@ -793,7 +794,7 @@ def test_output_limiter_start_failure_cleans_up_stereotool() -> None:
         while master.error is None and time.monotonic() < deadline:
             time.sleep(0.01)
         assert master.error and "output limiter missing" in master.error
-        primary.terminate.assert_called_once()
+        primary.kill.assert_called_once()
         primary.stdin.close.assert_called_once()
         primary.stdout.close.assert_called_once()
         assert np.isfinite(master.process(_block(0.5))).all()

@@ -866,6 +866,9 @@ class Player:
     # current ones) and the time zone they run in (#126).
     _hour_fit_events: Sequence[Any] | Callable[[], Sequence[Any]] = ()
     _hour_fit_timezone: str | None = None
+    # Why _take_render last left the bus waiting, and for which file: the
+    # mix bus names it when it reports held silence.
+    _bus_wait: tuple[str, str] = ("no track was ready", "")
     # The clockwheel _seed_clock_cursor is a place in (#133).
     _seed_clock_name: str | None = None
     _seed_clock_revision: int | None = None
@@ -2962,6 +2965,7 @@ class Player:
                 on_track_start=self._on_track_start,
                 on_position=self._on_position,
                 on_need_track=self._take_render,
+                wait_reason=lambda: self._bus_wait,
             ),
             eq_gains=lambda: (self._eq_low, self._eq_mid, self._eq_high),
             skip_tail=self._plan_skip,
@@ -3130,6 +3134,8 @@ class Player:
             body = RenderedTrack(
                 current, LiveAudio(0, ()), None, 0, "", start_offset=self._pending_offset
             )
+        if isinstance(body.audio, LiveAudio):
+            self._cue_continuation_deck(body.audio)
         return replace(
             body,
             handoff_pending=True,
@@ -3149,6 +3155,31 @@ class Player:
             clock_step=self._pending_clock_step,
             clock_revision=self._pending_clock_cursor_revision,
         )
+
+    def _cue_continuation_deck(self, audio: LiveAudio) -> None:
+        """Seek the continuation's first deck to where it will play, off the bus.
+
+        An incoming deck opens at its song's saved start.  When the outgoing
+        render mixed the overlap from decoded windows instead of reading that
+        deck, the continuation starts further in, and its first read at
+        promotion restarts the decoder while the bus waits in silence.  A deck
+        the playing render still reads is left alone: its overlap moves it.
+        """
+        layer = next((item for item in audio.layers if isinstance(item.source, BufferedFile)), None)
+        if layer is None or not isinstance(deck := layer.source, BufferedFile):
+            return
+        playing = (self._playing_render, self.bus.current_render() if self.bus else None)
+        for track in playing:
+            if track is None:
+                continue
+            for timeline in (track.audio, track.full_audio):
+                if isinstance(timeline, LiveAudio) and any(
+                    item.source is deck for item in timeline.layers
+                ):
+                    return
+        # A failed deck reports itself when the bus reads it.
+        with contextlib.suppress(RuntimeError):
+            deck.ready(layer.offset, 1)
 
     def _prepare_live_candidate(
         self,
@@ -4879,6 +4910,7 @@ class Player:
         it.  Lock order is bus lock, then queue lock, then the worker's
         lock; nothing takes the bus lock while holding the queue lock.
         """
+        self._bus_wait = ("the next song was still being prepared", "")
         with self._state.queue_lock:
             if getattr(self, "live_mixing", False):
                 ready = self._playout.ready()
@@ -4886,9 +4918,14 @@ class Player:
                     self._playout.request_plan()
                 else:
                     if ready.handoff_pending and not len(ready.audio):
+                        self._bus_wait = ("the next song had no audio yet", ready.entry.path)
                         self._playout.request_plan()
                         return None
                     if self._live_queue_dirty:
+                        self._bus_wait = (
+                            "a queue change was being applied to the next song",
+                            ready.entry.path,
+                        )
                         return None
                     audio = (
                         ready.full_audio
@@ -4898,6 +4935,10 @@ class Player:
                     if isinstance(audio, LiveAudio):
                         try:
                             if not audio.ready(0, min(1024, len(audio))):
+                                self._bus_wait = (
+                                    "the next song's file deck was still seeking",
+                                    ready.entry.path,
+                                )
                                 return None
                         except (OSError, RuntimeError, ValueError):
                             pass  # The bus consumes and skips failed decks through its normal path.
