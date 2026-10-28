@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any
 
 import pytest
@@ -20,11 +21,15 @@ class FakeOutput:
         self.listener_count = 0
         self.last_error: str | None = None
         self.titles: list[tuple[str, str]] = []
+        self.recovery_stopped = False
         self._log = log
         log.append(f"started {fmt.name} {bitrate}")
 
     def set_title(self, artist: str, title: str) -> None:
         self.titles.append((artist, title))
+
+    def stop_recovery(self) -> None:
+        self.recovery_stopped = True
 
     def close(self) -> None:
         self._log.append(f"closed {self.format.name}")
@@ -228,7 +233,33 @@ def test_no_orphan_encoder_when_the_station_stops_during_a_start() -> None:
     rig.mounts.apply({"aac": 96})
     rig.make_hook = rig.mounts.close
     assert rig.mounts.acquire("aac") is None
-    assert rig.log == ["started aac 96", "attached aac", "detached aac", "closed aac"]
+    assert rig.log == ["started aac 96", "closed aac"]
+
+
+def test_shutdown_does_not_wait_for_an_inflight_mount_factory() -> None:
+    """ADR-0004-17. Registry shutdown marks extra formats without waiting for startup."""
+    rig = Rig()
+    rig.mounts.apply({"aac": 96})
+    starting, release = threading.Event(), threading.Event()
+
+    def slow_start() -> None:
+        starting.set()
+        release.wait(5)
+
+    rig.make_hook = slow_start
+    result: list[Any] = []
+    worker = threading.Thread(target=lambda: result.append(rig.mounts.acquire("aac")))
+    worker.start()
+    try:
+        assert starting.wait(2)
+        start = time.monotonic()
+        rig.mounts.stop_recovery()
+        assert time.monotonic() - start < 0.5
+    finally:
+        release.set()
+        worker.join(5)
+    assert result == [None]
+    assert rig.log == ["started aac 96", "closed aac"]
     assert rig.bus == []
     with pytest.raises(MountsClosedError):
         rig.mounts.apply({"opus": 64})

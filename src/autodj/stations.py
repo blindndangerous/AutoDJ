@@ -1428,6 +1428,17 @@ class StationRuntime:
         """Whether its player or mastering process is still running after the close."""
         return self.player_running() or self.master_left
 
+    def stop_stream_recovery(self) -> None:
+        """Stop this station's stream encoders recovering during server shutdown."""
+        outputs = [self.bridge.stream]
+        if self.bridge.relays is not None:
+            outputs.extend(self.bridge.relays.outputs)
+        for output in outputs:
+            if output is not None:
+                output.stop_recovery()
+        if self.bridge.mounts is not None:
+            self.bridge.mounts.stop_recovery()
+
     async def close(self) -> None:
         """Close the mastering process and stop the WebSocket push, once; after :meth:`stop`.
 
@@ -1791,6 +1802,12 @@ class StationRegistry:
             if (station := self._running.get(slug)) is not None
         )
 
+    def begin_shutdown(self) -> None:
+        """Refuse new stations and stop encoder recovery on every running station."""
+        self._closing = True
+        for station in self.all():
+            station.stop_stream_recovery()
+
     def relay_configs(self) -> dict[str, dict[str, Any]]:
         """Current relay definitions for every configured station, including stopped ones."""
         from autodj.relay_settings import load_relays
@@ -2039,6 +2056,8 @@ class StationRegistry:
                 return running
             try:
                 running = await _run_as(slug, self._start_extra(extra))
+                if self._closing:
+                    running.stop_stream_recovery()
                 self._running[slug] = running
             finally:
                 with self.configuration_lock:
@@ -2236,7 +2255,7 @@ class StationRegistry:
         # stopped too and one stopping now has finished; none starts later.
         # A stop asked for after this finds the station already stopped
         # (a runtime stops and closes once).
-        self._closing = True
+        self.begin_shutdown()
         async with contextlib.AsyncExitStack() as held:
             for lock in self._locks.values():
                 await held.enter_async_context(lock)

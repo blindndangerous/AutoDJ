@@ -239,6 +239,7 @@ class _Runtime:
         self._log = log
         self._stereo = stereo
         self._fail = fail
+        self.recovery_stopped = False
         self.paths = SimpleNamespace(liners=Path("liners") / slug)
         self.cfg = SimpleNamespace(playback=SimpleNamespace(stereotool_preset=f"{slug}.sts"))
 
@@ -263,6 +264,9 @@ class _Runtime:
 
     async def close(self) -> None:
         self._log.append(f"{self.slug} closed")
+
+    def stop_stream_recovery(self) -> None:
+        self.recovery_stopped = True
 
 
 def _extra(slug: str, build: Any, tmp_path: Path, autostart: bool = True) -> ExtraStation:
@@ -632,12 +636,16 @@ class _Library:
 
 
 def test_a_start_cut_off_at_shutdown_still_ends_stopped(tmp_path: Path) -> None:
+    """ADR-0004-17. A station finishing startup during shutdown stops encoder recovery."""
     log: list[str] = []
     release = threading.Event()
+    built: list[_Runtime] = []
 
     def build(_registry: StationRegistry) -> _Runtime:
         release.wait(5)
-        return _Runtime("nightowl", log)
+        runtime = _Runtime("nightowl", log)
+        built.append(runtime)
+        return runtime
 
     registry = StationRegistry(
         _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
@@ -661,6 +669,7 @@ def test_a_start_cut_off_at_shutdown_still_ends_stopped(tmp_path: Path) -> None:
             await registry.start("daybreak")  # nothing starts once shutdown began
 
     asyncio.run(scenario())
+    assert built[0].recovery_stopped
     # The station the cut-off request built was started, then stopped
     # before the library closed, and closed with the others.
     assert log == [

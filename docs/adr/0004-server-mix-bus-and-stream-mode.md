@@ -252,6 +252,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0004-14` | Server sound-card and stream playback share live playout; local-only output creates no streaming lifecycle, and whole-show preview/export stays offline. | automated | `tests/unit/test_player_stream_mode.py::test_local_soundcard_uses_live_playout_without_stream_lifecycle` |
 | `ADR-0004-15` | While any mix bus runs, the process uses the 0.5 ms thread switch interval, restoring the earlier interval after the last bus stops unless it was changed meanwhile; a shorter interval is kept. Continuity under load on target hardware remains manual soak evidence (ADR-0004-06). | automated | `tests/unit/test_mixbus.py::test_run_shortens_the_switch_interval_until_the_last_bus_stops`; `tests/unit/test_mixbus.py::test_run_leaves_an_interval_someone_else_chose` |
 | `ADR-0004-16` | A streaming station keeps, in its buffered ledger settings, the clockwheel song picked to follow the playing one. After a restart that song starts the set without a successor only when it was picked within 30 minutes, is still a playable library song, has not played since, the wheel and its restart time are unchanged, no show holds the air, no dayparted category or step has opened or closed since, and the repeat rules and DMCA limits allow it; queued songs keep their precedence, and every refusal is logged. Its successor is picked while it plays and spliced in like a queue edit; when the song ends first, the usual start pick follows. | automated | `tests/unit/test_restored_pick.py::test_a_fresh_clock_pick_starts_the_set_once`; `tests/unit/test_restored_pick.py::test_a_saved_song_that_no_longer_fits_falls_back_to_the_usual_pick`; `tests/unit/test_restored_pick.py::test_only_a_clockwheel_pick_is_kept_for_a_restart`; `tests/unit/test_restored_pick.py::test_a_restored_song_starts_alone_and_its_successor_is_spliced_in`; `tests/unit/test_restored_pick.py::test_a_successor_too_late_for_the_restored_song_hands_over_to_a_fresh_pick`; `tests/unit/test_restored_pick.py::test_the_station_ticks_before_its_first_wait`; `tests/unit/test_restored_pick.py::test_the_restore_check_waits_for_neither_hours_nor_song_versions` |
+| `ADR-0004-17` | Stream encoders do not inherit terminal interrupt signals, and a station does not recover an encoder after shutdown begins; newly created outputs retain normal recovery. | automated | `tests/unit/test_stream_output_formats.py::test_ffmpeg_encoder_isolated_from_terminal_interrupt`; `tests/unit/test_stream_output_formats.py::test_shutdown_stops_recovery_on_station_outputs_but_not_new_instances`; `tests/unit/test_stream_output_formats.py::test_shutdown_closes_encoder_created_by_an_inflight_retry`; `tests/unit/test_stream_mounts.py::test_shutdown_does_not_wait_for_an_inflight_mount_factory`; `tests/unit/test_station_runtime.py::test_a_start_cut_off_at_shutdown_still_ends_stopped`; `tests/integration/test_stations.py::test_registry_shutdown_stops_and_closes_every_stream_output` |
 
 ## Related proposal — 2026-10-17
 
@@ -379,3 +380,18 @@ continuations and unavailable decoders can still cause silence. This is not a
 hardware timing guarantee, and the reported incident's logs do not measure its
 actual pause. ADR-0004-12 maps the automated evidence; ADR-0004-06 and
 ADR-0004-13 retain deployment listening and soak requirements.
+
+## Amendment 2026-10-27: encoder recovery ends with server shutdown
+
+[Issue #608](https://github.com/blindndangerous/AutoDJ/issues/608) makes shutdown
+intent explicit for each station's primary, alternate-format and relay encoders
+before station teardown proceeds. An output marked for shutdown starts no recovery
+attempt and closes a replacement whose construction was already in flight. A
+station finishing startup during shutdown receives the same signal. Later station
+instances retain normal recovery; there is no permanent process-wide stop flag.
+
+FFmpeg stream encoders run outside the terminal's interrupt group, so Ctrl+C goes
+through server-owned cleanup instead of independently killing encoders while their
+owners still consider them active. Cleanup still closes their pipes and processes.
+ADR-0004-17 maps the automated evidence; native terminal shutdown remains a
+platform verification obligation.
