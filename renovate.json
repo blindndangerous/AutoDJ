@@ -88,5 +88,8 @@
     "prBodyNotes": [
       "If this moves torch, torchvision or torchaudio, the setup and container pin tests fail until `uv run --frozen --no-sync python scripts/update_torch_pins.py` is run on this branch and committed."
     ]
+  },
+  "pre-commit": {
+    "enabled": true
   }
 }
