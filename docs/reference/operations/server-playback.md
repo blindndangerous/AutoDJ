@@ -121,17 +121,18 @@ Mix bus held 1.300 s of silence: the next song's file deck was still seeking (/m
 ```
 
 The warning gives the length of the hold, its cause and, when known, the file involved. It is
-logged when the hold ends. A hold that reaches 10 seconds is also logged while it lasts. Each
-station logs at most one such warning a minute; the next one says how many holds it left out.
-Silence before a set's first song is not counted.
+logged when the hold ends. Each station logs at most one such warning a minute; the next one says
+how many holds it left out. A hold that reaches 10 seconds is also logged once while it lasts,
+even within that minute. Silence before a set's first song is not counted.
 
 The causes:
 
 - **the next song was still being prepared**: the song change was reached before the next song
   had been selected and prepared. Look for slow song picking, analysis or decoding on the same
   computer at that time.
-- **the next song had no audio yet**: the next song was promoted, but its first audio was not
-  prepared yet.
+- **the next song had no audio yet**: the next song had no audio left to play on its own, because
+  its overlap with the previous song used all of it or its preparation came back empty. The
+  station waits for the song after it to be prepared.
 - **a queue change was being applied to the next song**: a queue or settings edit replaced the
   coming song change, and the replacement was not ready when the change was due.
 - **the next song's file deck was still seeking**: the next song's decoder was still starting at

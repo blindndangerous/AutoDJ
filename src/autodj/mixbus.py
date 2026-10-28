@@ -1146,10 +1146,11 @@ class MixBus:
     def _note_hold(self, cause: str, track: str) -> str | None:
         """Count one block of held silence; return a warning to log, if one is due.
 
-        Lock held.  A hold is reported when it ends, with its length, and
-        once while it lasts if it passes ``_LONG_HOLD_SECONDS``; at most one
-        report a minute (``_HOLD_WARNING_SECONDS``), so the log names the
-        cause without flooding.
+        Lock held.  A hold is reported when it ends, with its length, at
+        most once a minute (``_HOLD_WARNING_SECONDS``), so the log names the
+        cause without flooding.  A hold that reaches ``_LONG_HOLD_SECONDS`` is
+        also reported while it lasts, once, whatever the limit: dead air that
+        long must not go unreported because a short hold was reported first.
         """
         self.held_blocks += 1
         message = None
@@ -1161,7 +1162,9 @@ class MixBus:
         seconds = self._hold[2] * self.BLOCK / SAMPLE_RATE
         if not self._hold[3] and seconds >= _LONG_HOLD_SECONDS:
             self._hold[3] = True
-            message = message or self._hold_warning(f"has held {seconds:.1f} s of silence so far")
+            message = message or self._hold_warning(
+                f"has held {seconds:.1f} s of silence so far", always=True
+            )
         return message
 
     def _end_hold(self) -> str | None:
@@ -1173,9 +1176,9 @@ class MixBus:
         self._hold = []
         return message
 
-    def _hold_warning(self, what: str) -> str | None:
+    def _hold_warning(self, what: str, *, always: bool = False) -> str | None:
         now = self._clock.now()
-        if now - self._last_hold_warning < _HOLD_WARNING_SECONDS:
+        if not always and now - self._last_hold_warning < _HOLD_WARNING_SECONDS:
             self._unreported_holds += 1
             return None
         cause, track = self._hold[:2]

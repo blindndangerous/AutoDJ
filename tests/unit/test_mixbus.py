@@ -1162,6 +1162,24 @@ def test_a_long_hold_is_reported_while_it_lasts(caplog) -> None:
     assert record.getMessage().startswith("Mix bus has held 10.0 s of silence so far")
 
 
+def test_a_long_hold_is_reported_even_just_after_another_warning(caplog) -> None:
+    """ADR-0004-21: The 10 s report bypasses the one-a-minute limit, once per hold."""
+    bus, queue, _clock = _waiting_bus()
+    queue.append(_track(0.5, 882, "a.mp3"))
+    bus.start_set()
+    with caplog.at_level("WARNING", logger="autodj.mixbus"):
+        bus.render_block()
+        bus.render_block()  # a short hold
+        queue.append(_track(0.5, 882, "a.mp3"))
+        bus.render_block()  # ends it: warned, starting the minute
+        for _ in range(1 + 600):  # 12 s of dead air within that minute
+            bus.render_block()
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 2
+    assert messages[0].startswith("Mix bus held 0.020 s of silence")
+    assert messages[1].startswith("Mix bus has held 10.0 s of silence so far")
+
+
 def test_a_deck_still_seeking_is_counted_as_held(caplog) -> None:
     """ADR-0004-21: A playing deck that is still seeking holds silence and is named."""
     from autodj.live_audio import AudioLayer, BufferedFile, LiveAudio
