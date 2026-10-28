@@ -122,7 +122,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--environment",
         type=Path,
-        help="Use an existing environment without changing its Python packages.",
+        help="Adopt an existing environment without changing its Python packages.",
+    )
+    result.add_argument(
+        "--manage-environment",
+        action="store_true",
+        help="Let setup synchronize the selected existing environment's packages.",
     )
     result.add_argument(
         "--yes",
@@ -194,22 +199,23 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     reuse = args.environment is not None or (
         previous.get("backend") == backend and isinstance(previous.get("environment"), str)
     )
-    external = args.environment is not None or (
-        previous.get("external") is True and previous.get("backend") == backend
+    external = not args.manage_environment and (
+        args.environment is not None
+        or (previous.get("external") is True and previous.get("backend") == backend)
     )
     if backend not in {"cpu", "no-model"} and os.environ.get("AUTODJ_GPU") == "0":
         raise ValueError(
             "AUTODJ_GPU=0 disables GPU processing. Remove that environment override or choose --backend cpu."
         )
     if (
-        not reuse
+        not external
         and backend not in {"cpu", "no-model"}
         and hardware.machine.lower() not in {"amd64", "x86_64"}
     ):
         raise ValueError(
             "Automatic GPU installation currently supports x86-64 systems only. Use an existing compatible --environment or choose CPU."
         )
-    if backend == "amd" and not reuse and getattr(hardware, "amd_arch", None) is None:
+    if backend == "amd" and not external and getattr(hardware, "amd_arch", None) is None:
         raise ValueError(
             f"Automatic AMD installation is not available for this detected hardware. {hardware.reason} Use a compatible --environment or choose CPU."
         )
@@ -227,9 +233,9 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     notice = profiles(root)[backend].get("notice")
     if notice:
         print(notice)
-    if reuse:
+    if external:
         print(
-            "Setup will use your existing Python packages and verify the selected CPU or GPU runtime."
+            "Setup will verify this externally managed environment without changing its packages."
         )
     else:
         for command in install_commands(
@@ -264,7 +270,7 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
         ensure_ffmpeg(auto_install=args.yes)
     except (OSError, RuntimeError) as exc:
         print(f"FFmpeg installation failed: {exc}", file=sys.stderr)
-    if not reuse:
+    if not external:
         install_python(
             root,
             environment,

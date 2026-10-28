@@ -90,6 +90,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0012-06` | Base serving dependencies exclude the model stack; no-model setup saves a reusable runtime without a Torch probe. | automated | `tests/unit/test_setup_flow.py::test_no_model_core_metadata_keeps_analysis_optional`; `tests/unit/test_setup_flow.py::test_no_model_setup_saves_runtime_without_torch_probe` |
 | `ADR-0012-07` | No-model servers accept compatible remote results with an existing model cache; missing cache requests are refused with recovery advice that does not promise no-model downloads. | automated | `tests/unit/test_worker_api.py::test_a_valid_result_goes_into_the_live_catalog`; `tests/unit/test_worker_api.py::test_a_server_without_the_model_cannot_check_results` |
 | `ADR-0012-08` | Similarity is offered only when local MuQ execution is available or a compatible worker can use installed model weights; a saved selection remains intact when unavailable. | automated | `tests/unit/test_audio_analysis_pipeline.py::test_similarity_choice_reflects_installed_capability`; `tests/jsmodules/library-folders.test.js::offers similarity only when available and preserves unavailable existing folders` |
+| `ADR-0012-09` | Setup synchronizes managed runtimes from the lock and selected backend on rerun; adopted external runtimes stay unchanged unless explicitly managed. | automated | `tests/unit/test_setup_flow.py::test_install_python_always_synchronizes_and_checks_runtime`; `tests/unit/test_setup_flow.py::test_explicit_existing_environment_is_adopted_without_package_install`; `tests/unit/test_setup_flow.py::test_manage_environment_updates_adopted_runtime_and_saves_managed_ownership` |
 
 ## Amendment 2026-10-18: optional no-model serving runtime
 
@@ -145,6 +146,20 @@ when a compatible worker can use a feature cache already present on the server. 
 Similarity selection remains saved if those resources become unavailable. Worker results continue
 to require the exact configured model/weight and analysis identities. This amendment does not
 change the ADR's Proposed status or its hardware and listening evidence limits.
+
+## Amendment 2026-10-27: synchronize setup-managed runtimes
+
+[Issue #609](https://github.com/blindndangerous/AutoDJ/issues/609) changes setup-managed
+runtime reuse: every setup run synchronizes application dependencies from `uv.lock` together
+with the selected backend's pinned wheel profile, then checks dependency compatibility, imports
+and the selected processing device before saving the selection. The environment is reused when
+the backend is unchanged. Exported lock requirements exclude the model stack for no-model mode;
+existing optional packages are not removed. Explicit `--environment` adoption remains
+externally managed, and a saved external selection remains unchanged on reruns unless the
+operator supplies `--manage-environment`. That opt-in makes setup responsible for synchronization
+and records managed ownership only after successful verification. Dry-run displays the target and
+commands without running them or writing setup files. This amendment preserves the existing
+hardware compatibility evidence limits and the ADR's Proposed status.
 
 ## Verification
 
