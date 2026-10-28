@@ -498,12 +498,12 @@ describe("queue Top and Clear queue", () => {
       <p id="announce"></p><ul id="queue"></ul><button id="clear">Clear queue</button>
       <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
         <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>`;
-    // The modal dialog as a browser runs it: closing puts focus back on
+    // The confirmation as a browser runs it: closing puts focus back on
     // the element that had it when the dialog opened, when focus is still
     // in the dialog.
     const dialog = document.querySelector("#confirm-dialog");
     let opener = null;
-    dialog.showModal = vi.fn(() => {
+    dialog.show = vi.fn(() => {
       opener = document.activeElement;
       dialog.setAttribute("open", "");
     });
@@ -644,14 +644,14 @@ describe("queue Top and Clear queue", () => {
     const { els, dialog, answer } = setup();
 
     els.queueClear.click();
-    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledOnce());
     answer("cancel");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(els.queueClear);
 
     els.queueClear.click();
-    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledTimes(2));
     // Focus leaves the dialog once, for the button, with the list already
     // empty: never to the page or to rows about to go.
     const focused = [];

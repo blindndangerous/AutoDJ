@@ -716,8 +716,8 @@ async function standInForUpdates(page) {
   await page.route("**/api/updates", (route) => (route.request().method() === "GET"
     ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(UPDATES) })
     : route.continue()));
-  // Restart, Update and Go back are only ever cancelled here; a press that
-  // got through is refused.
+  // Restart, Update and Go back are refused here, so a confirmed press
+  // restarts or updates nothing.
   for (const action of ["restart", "update", "go-back"]) {
     await page.route(`**/api/server/${action}`, (route) => route.fulfill({
       status: 409, contentType: "application/json", body: JSON.stringify({ detail: "Audit" }),
@@ -725,41 +725,136 @@ async function standInForUpdates(page) {
   }
 }
 
-// Update, Go back and Restart open the shared confirmation on Cancel;
-// Escape closes it and puts focus back on the button, with nothing sent.
-async function openUpdatesConfirm(page, visit, id, name, words) {
-  const button = page.locator(`#${id}`);
-  await button.waitFor({ state: "visible" });
-  await button.focus();
-  await page.keyboard.press("Enter");
+// Every focus change on the page from now on, as "out:<from>><to>" and
+// "in:<to>"; "body" is focus going nowhere.
+function watchFocus(page) {
+  return page.evaluate(() => {
+    const name = (element) => (!element || element === document.body ? "body" : element.id || element.tagName);
+    window.__autodjFocusTrail = [];
+    if (window.__autodjFocusWatched) return;
+    window.__autodjFocusWatched = true;
+    document.addEventListener("focusout", (event) => window.__autodjFocusTrail
+      .push(`out:${name(event.target)}>${name(event.relatedTarget)}`), true);
+    document.addEventListener("focusin", (event) => window.__autodjFocusTrail
+      .push(`in:${name(event.target)}`), true);
+  });
+}
+
+// Close the open confirmation with *keys* and check focus went straight
+// from the dialog's button back to the button *id* that opened it: never
+// through the page body, where NVDA read "Skip to main content" first
+// (#602).  The browser fires close a task after the dialog closes, and the
+// page may return focus in that close handler, so the trail is read after
+// it; the next button's focus is then not taken back by a late close.
+async function closeUpdatesConfirm(page, id, keys, how) {
   const dialog = page.locator("#confirm-dialog");
-  await dialog.waitFor({ state: "visible" });
-  const focused = await page.evaluate(() => document.activeElement?.id);
-  if (focused !== "confirm-cancel") {
-    throw new Error(`${name}'s confirmation opened with focus on ${focused}, not Cancel`);
-  }
-  const message = await page.locator("#confirm-message").textContent();
-  if (!words.test(message || "")) throw new Error(`${name}'s confirmation says: ${message}`);
-  await visit(`settings/updates/${name.toLowerCase().replace(" ", "-")}`);
-  // The browser fires close a task after the dialog closes, and the page
-  // returns focus in that close handler.  Wait for it before moving on, so
-  // the next button's focus is not taken back by this dialog's late close.
+  // Measuring the open dialog may have moved focus; start from Cancel.
+  await page.locator("#confirm-cancel").focus();
+  await watchFocus(page);
+  const start = await page.evaluate(() => `open ${document.getElementById("confirm-dialog").open}, active ${document.activeElement?.id || document.activeElement?.tagName}`);
   await page.evaluate(() => {
     const confirm = document.getElementById("confirm-dialog");
     window.__autodjConfirmClosed = new Promise((resolve) => {
       confirm.addEventListener("close", () => setTimeout(resolve, 0), { once: true });
     });
   });
-  await page.keyboard.press("Escape");
+  for (const key of keys) await page.keyboard.press(key);
   await dialog.waitFor({ state: "hidden" });
   await page.evaluate(() => Promise.race([
     window.__autodjConfirmClosed,
     new Promise((resolve) => { setTimeout(resolve, 5000); }),
   ]));
-  const back = await page.evaluate(() => document.activeElement?.id);
-  if (back !== id) throw new Error(`Escape left focus on ${back}, not ${name}`);
+  const trail = await page.evaluate(() => ({ trail: window.__autodjFocusTrail, active: document.activeElement?.id }));
+  const closing = trail.trail.slice(trail.trail.findLastIndex((step) => step.startsWith("out:confirm-")));
+  const straight = [`out:confirm-cancel>${id}`, `out:confirm-accept>${id}`]
+    .includes(closing[0]) && closing.length === 2 && closing[1] === `in:${id}`;
+  if (trail.active !== id || !straight) {
+    throw new Error(`${how} did not put focus straight back on ${id}: ${trail.trail.join(", ")} (${start})`);
+  }
 }
 
+// The open confirmation keeps the page out of reach without showModal()
+// (#602, #627): marked aria-modal, not :modal, the form out of the tree,
+// Cancel last; the backdrop covers the page and a click on it changes
+// nothing; Tab and Shift+Tab go round the dialog's two buttons; a page
+// control clicked directly does nothing.
+async function updatesConfirmShape(page, name) {
+  const shape = await page.evaluate(() => {
+    const dialog = document.getElementById("confirm-dialog");
+    // Two corners of the window, away from the dialog.
+    const hits = [[5, 5], [window.innerWidth - 5, window.innerHeight - 5]]
+      .map(([x, y]) => document.elementFromPoint(x, y)?.id || "page");
+    return {
+      ariaModal: dialog.getAttribute("aria-modal"),
+      modal: dialog.matches(":modal"),
+      formRole: dialog.querySelector("form").getAttribute("role"),
+      buttons: [...dialog.querySelectorAll("button")].map((button) => button.id).join(","),
+      coveredBy: [...new Set(hits)].join(","),
+    };
+  });
+  const expected = { ariaModal: "true", modal: false, formRole: "none",
+    buttons: "confirm-accept,confirm-cancel", coveredBy: "confirm-backdrop" };
+  if (JSON.stringify(shape) !== JSON.stringify(expected)) {
+    throw new Error(`${name}'s confirmation is not as expected: ${JSON.stringify(shape)}`);
+  }
+  await page.locator("#confirm-backdrop").click({ position: { x: 5, y: 5 } });
+  await page.locator("#confirm-cancel").focus();
+  const stops = [];
+  for (const key of ["Tab", "Tab", "Shift+Tab"]) {
+    await page.keyboard.press(key);
+    stops.push(await page.evaluate(() => document.activeElement?.id));
+  }
+  // A page control activated directly, as a screen reader that ignores
+  // aria-modal does, must not act: the Now Playing tab stays unselected.
+  const pageClick = await page.evaluate(() => {
+    document.getElementById("tab-now").click();
+    return {
+      selected: document.getElementById("tab-now").getAttribute("aria-selected"),
+      active: document.activeElement?.id,
+    };
+  });
+  const open = await page.locator("#confirm-dialog").evaluate((dialog) => dialog.open);
+  if (!open || stops.join(",") !== "confirm-accept,confirm-cancel,confirm-accept"
+      || pageClick.selected !== "false" || pageClick.active !== "confirm-cancel") {
+    throw new Error(`${name}'s confirmation let go: open ${open}, Tab stops ${stops.join(",")}, `
+      + `Now Playing tab clicked: ${JSON.stringify(pageClick)}`);
+  }
+}
+
+async function reopenUpdatesConfirm(page, id) {
+  await page.locator(`#${id}`).focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#confirm-dialog").waitFor({ state: "visible" });
+}
+
+// Update, Go back and Restart open the shared confirmation on Cancel;
+// Escape closes it and puts focus straight back on the button, with
+// nothing sent.
+async function openUpdatesConfirm(page, visit, id, name, words) {
+  const button = page.locator(`#${id}`);
+  await button.waitFor({ state: "visible" });
+  await button.focus();
+  await watchFocus(page);
+  await page.keyboard.press("Enter");
+  const dialog = page.locator("#confirm-dialog");
+  await dialog.waitFor({ state: "visible" });
+  // Focus goes straight from the button to Cancel: the browser does not
+  // focus the confirm button, the first one, on the way.
+  const opened = await page.evaluate(() => ({ trail: window.__autodjFocusTrail, active: document.activeElement?.id }));
+  if (opened.active !== "confirm-cancel"
+      || opened.trail.join(",") !== `out:${id}>confirm-cancel,in:confirm-cancel`) {
+    throw new Error(`${name}'s confirmation opened with focus on ${opened.active}, not straight on Cancel: `
+      + opened.trail.join(", "));
+  }
+  const message = await page.locator("#confirm-message").textContent();
+  if (!words.test(message || "")) throw new Error(`${name}'s confirmation says: ${message}`);
+  await visit(`settings/updates/${name.toLowerCase().replace(" ", "-")}`);
+  await updatesConfirmShape(page, name);
+  await closeUpdatesConfirm(page, id, ["Escape"], `${name}: Escape`);
+}
+
+// Restart is also closed with Cancel, and confirmed and refused; Restart is
+// before Cancel, so Shift+Tab reaches it.
 async function openRestartConfirm(page, visit) {
   await page.locator("#updates-how").waitFor({ state: "visible" });
   await openUpdatesConfirm(page, visit, "updates-update", "Update", /off the air/);
@@ -767,6 +862,12 @@ async function openRestartConfirm(page, visit) {
     page, visit, "updates-go-back-button", "Go back", /made since 2026-10-01 are lost/,
   );
   await openUpdatesConfirm(page, visit, "updates-restart", "Restart", /off the air/);
+  await reopenUpdatesConfirm(page, "updates-restart");
+  await closeUpdatesConfirm(page, "updates-restart", ["Enter"], "Restart: Cancel");
+  await reopenUpdatesConfirm(page, "updates-restart");
+  await closeUpdatesConfirm(page, "updates-restart", ["Shift+Tab", "Enter"], "Restart: refused");
+  // The refusal's status message would cover what is measured next.
+  await showToast(page, "");
 }
 
 const hourFitPages = new WeakSet();

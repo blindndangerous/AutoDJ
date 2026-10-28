@@ -20,13 +20,13 @@ const CONFIRM = `
     <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>
   <div id="status-toast" hidden></div>`;
 
-// The modal dialog as a browser runs it: closing puts focus back on the
+// The confirmation as a browser runs it: closing puts focus back on the
 // element that had it when the dialog opened, if that is still in the page.
 // answer() presses the dialog's own button.
 function confirmDialog() {
   const dialog = document.querySelector("#confirm-dialog");
   let opener = null;
-  dialog.showModal = vi.fn(() => {
+  dialog.show = vi.fn(() => {
     opener = document.activeElement;
     dialog.setAttribute("open", "");
   });
@@ -38,7 +38,7 @@ function confirmDialog() {
     dialog.dispatchEvent(new Event("close"));
   });
   return async (value) => {
-    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalled());
+    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalled());
     document.getElementById(value === "confirm" ? "confirm-accept" : "confirm-cancel").click();
   };
 }

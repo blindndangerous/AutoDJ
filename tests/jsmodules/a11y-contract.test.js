@@ -2384,15 +2384,25 @@ describe("static accessibility contracts", () => {
     expect(dialog.contains(message)).toBe(true);
     expect(dialog.hasAttribute("role")).toBe(false);
     expect(dialog.hasAttribute("closedby")).toBe(false);
+    // Opened with show(), it tells assistive technology it is modal itself,
+    // and its backdrop keeps the page out of reach (#602).
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    const backdrop = document.getElementById("confirm-backdrop");
+    expect(backdrop.hidden).toBe(true);
+    expect(backdrop.childElementCount).toBe(0);
     const form = dialog.querySelector("form");
     expect(form.getAttribute("method")).toBe("dialog");
+    // Not read as a form landmark.
+    expect(form.getAttribute("role")).toBe("none");
+    // Cancel last: NVDA's reading of the dialog leaves its cursor on the
+    // last button, where Enter acts (#627).
     const buttons = [...form.querySelectorAll("button")];
     expect(buttons.map((button) => [button.id, button.getAttribute("type"), button.value]))
       .toEqual([
-        ["confirm-cancel", "submit", "cancel"],
         ["confirm-accept", "submit", "confirm"],
+        ["confirm-cancel", "submit", "cancel"],
       ]);
-    expect(buttons[0].textContent.trim()).toBe("Cancel");
+    expect(buttons[1].textContent.trim()).toBe("Cancel");
   });
 
   it("names every static dialog with its own level-one heading", () => {
