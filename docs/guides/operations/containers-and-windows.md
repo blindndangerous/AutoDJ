@@ -150,8 +150,8 @@ default image. Use it on the computer that runs AutoDJ, or keep the default imag
 
 The computer that runs the container needs:
 
-- An NVIDIA card that CUDA 13.0 supports (Turing, the GeForce 16 and RTX 20 series, or newer),
-  and an NVIDIA driver for CUDA 13.0, version 580 or newer. `nvidia-smi` shows the driver
+- An NVIDIA card that CUDA 13.2 supports (Turing, the GeForce 16 and RTX 20 series, or newer),
+  and an NVIDIA driver for CUDA 13.2, version 580 or newer. `nvidia-smi` shows the driver
   version.
 - The [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html),
   set up for Docker or Podman as its guide says. Docker Desktop on Windows, with the WSL 2

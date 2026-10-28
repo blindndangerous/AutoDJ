@@ -8,25 +8,25 @@
     "platforms": {
       "Windows": {
         "index": "https://download.pytorch.org/whl/cpu/",
-        "packages": ["torch==2.14.1+cpu", "torchvision==0.29.1+cpu", "torchaudio==2.11.0+cpu"]
+        "packages": ["torch==2.15.0+cpu", "torchvision==0.29.2+cpu", "torchaudio==2.11.1+cpu"]
       },
       "Linux": {
         "index": "https://download.pytorch.org/whl/cpu/",
-        "packages": ["torch==2.14.1+cpu", "torchvision==0.29.1+cpu", "torchaudio==2.11.0+cpu"]
+        "packages": ["torch==2.15.0+cpu", "torchvision==0.29.2+cpu", "torchaudio==2.11.1+cpu"]
       }
     }
   },
   "nvidia": {
-    "notice": "Requires an NVIDIA GPU and a driver compatible with CUDA 13.0. Setup verifies a GPU calculation after installation.",
-    "source": "https://download.pytorch.org/whl/cu130/",
+    "notice": "Requires an NVIDIA GPU and a driver compatible with CUDA 13.2 (driver 580 or newer). Setup verifies a GPU calculation after installation.",
+    "source": "https://download.pytorch.org/whl/cu132/",
     "platforms": {
       "Windows": {
-        "index": "https://download.pytorch.org/whl/cu130/",
-        "packages": ["torch==2.14.1+cu130", "torchvision==0.29.1+cu130", "torchaudio==2.11.0+cu130"]
+        "index": "https://download.pytorch.org/whl/cu132/",
+        "packages": ["torch==2.15.0+cu132", "torchvision==0.29.2+cu132", "torchaudio==2.11.1+cu132"]
       },
       "Linux": {
-        "index": "https://download.pytorch.org/whl/cu130/",
-        "packages": ["torch==2.14.1+cu130", "torchvision==0.29.1+cu130", "torchaudio==2.11.0+cu130"]
+        "index": "https://download.pytorch.org/whl/cu132/",
+        "packages": ["torch==2.15.0+cu132", "torchvision==0.29.2+cu132", "torchaudio==2.11.1+cu132"]
       }
     }
   },
