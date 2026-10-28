@@ -56,6 +56,10 @@ See [Run AutoDJ in Docker or Windows PowerShell — Docker](guides/operations/co
 See [Run AutoDJ in Docker or Windows PowerShell — Choose an image](guides/operations/containers-and-windows.md#choose-an-image)
 and [Build the image yourself](guides/operations/containers-and-windows.md#build-the-image-yourself).
 
+### Use an NVIDIA GPU in Docker
+
+See [Run AutoDJ in Docker or Windows PowerShell — Use an NVIDIA GPU](guides/operations/containers-and-windows.md#use-an-nvidia-gpu).
+
 ### Build stamp
 
 See [Run AutoDJ in Docker or Windows PowerShell — Build stamp](guides/operations/containers-and-windows.md#build-stamp).

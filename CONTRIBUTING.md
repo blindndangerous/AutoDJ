@@ -254,7 +254,8 @@ Use the PR template and check the following as applicable:
   `AUTODJ_BROWSERS=chromium npm run audit:ci`. CI does not run WebKit, so also run
   `AUTODJ_BROWSERS=webkit npm run audit:visual` after `npx playwright install webkit`
   (see [Accessibility testing](docs/accessibility-testing.md)).
-- For container changes on Linux or WSL2, run `bash scripts/container_smoke.sh`.
+- For container changes on Linux or WSL2, run `bash scripts/container_smoke.sh`; with
+  `AUTODJ_SMOKE_VARIANT=cuda` it builds and checks the CUDA image.
 
 See [Operations](docs/operations.md) for setup, diagnosis, backup, restore, and upgrade procedures.
 

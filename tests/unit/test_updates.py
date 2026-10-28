@@ -695,6 +695,100 @@ def test_a_container_on_another_channel_or_pinned_is_told_which_image_to_name() 
     assert switch(None, "stable", development) == updates.IMAGE_REPOSITORY + ":dev"
 
 
+def test_a_cuda_image_reads_its_variant_and_a_cpu_image_has_none_to_lose(tmp_path: Path) -> None:
+    """ADR-0016-22: the Containerfile names the variant; anything else is unknown."""
+    marker = tmp_path / ".dockerenv"
+    marker.touch()
+
+    def variant(environ: dict[str, str]) -> str | None:
+        found = updates.detect_installation(
+            root=tmp_path / "no-checkout",
+            environ=environ,
+            markers=(marker,),
+            version="0.22.0",
+            working_dir=tmp_path,
+        )
+        return found.image_variant
+
+    assert variant({"AUTODJ_IMAGE_CHANNEL": "stable", "AUTODJ_IMAGE_VARIANT": "cuda"}) == "cuda"
+    assert variant({"AUTODJ_IMAGE_CHANNEL": "development", "AUTODJ_IMAGE_VARIANT": "cpu"}) == "cpu"
+    assert variant({"AUTODJ_IMAGE_VARIANT": "cuda"}) == "cuda"
+    assert variant({"AUTODJ_IMAGE_CHANNEL": "stable", "AUTODJ_IMAGE_VARIANT": "rocm"}) is None
+    assert variant({"AUTODJ_IMAGE_CHANNEL": "stable"}) is None
+
+
+def test_a_cuda_image_is_told_its_own_cuda_tag_and_a_cpu_image_never_is() -> None:
+    """ADR-0016-22: an update never swaps the CUDA image for the CPU one, or back."""
+    release = updates.UpdateCheck(
+        status="available",
+        channel="stable",
+        channel_source="installation",
+        message="Release v0.22.0 is available.",
+        latest="v0.22.0",
+        target="v0.22.0",
+    )
+    development = replace(release, channel="development", latest="1234567", target="master")
+    repository = "registry.example:5000/radio/autodj"
+
+    def switch(
+        image: str | None, channel: str, variant: str | None, result: updates.UpdateCheck
+    ) -> str | None:
+        container = Installation(
+            kind="container",
+            version="0.21.0",
+            image=image,
+            image_channel=channel,
+            image_variant=variant,
+        )
+        commands = updates.update_commands(container, result)
+        assert commands[-2:] == [
+            "docker compose pull && docker compose up -d",
+            "podman compose pull && podman compose up -d",
+        ]
+        prefix = "# In .env beside compose.yaml, set AUTODJ_IMAGE="
+        return commands[0].removeprefix(prefix) if commands[0].startswith(prefix) else None
+
+    # Pulling a moving CUDA tag on its own channel is enough.
+    assert switch(f"{repository}:stable-cuda", "stable", "cuda", release) is None
+    assert switch(f"{repository}:dev-cuda", "development", "cuda", development) is None
+    assert switch(None, "stable", "cuda", release) is None
+    assert switch(None, "development", "cuda", development) is None
+    # Pinned or on the other channel: the new tag keeps the suffix.
+    assert switch(f"{repository}:0.21.0-cuda", "stable", "cuda", release) == (
+        f"{repository}:0.22.0-cuda"
+    )
+    assert switch(f"{repository}@sha256:{'c' * 64}", "stable", "cuda", release) == (
+        f"{repository}:0.22.0-cuda"
+    )
+    assert switch(f"{repository}:stable-cuda", "stable", "cuda", development) == (
+        f"{repository}:dev-cuda"
+    )
+    assert switch(f"{repository}:dev-cuda", "development", "cuda", release) == (
+        f"{repository}:stable-cuda"
+    )
+    assert switch(f"{repository}:sha-abcdef0-cuda", "development", "cuda", development) == (
+        f"{repository}:sha-1234567-cuda"
+    )
+    assert switch(None, "stable", "cuda", development) == updates.IMAGE_REPOSITORY + ":dev-cuda"
+    # There is no latest-cuda; the CUDA image's moving release tag is stable-cuda.
+    assert switch(f"{repository}:latest", "stable", "cuda", release) == (
+        f"{repository}:stable-cuda"
+    )
+    # The image says what it is, whatever .env names: never the other variant's tag.
+    assert switch(f"{repository}:stable", "stable", "cuda", release) == (
+        f"{repository}:stable-cuda"
+    )
+    assert switch(f"{repository}:stable-cuda", "stable", "cpu", release) == f"{repository}:stable"
+    assert switch(f"{repository}:0.21.0-cuda", "stable", "cpu", release) == f"{repository}:0.22.0"
+    assert switch(f"{repository}:latest", "stable", "cpu", release) is None
+    assert switch(f"{repository}:dev", "development", "cpu", release) == f"{repository}:stable"
+    # An image that does not say its variant keeps its tag's.
+    assert switch(f"{repository}:0.21.0-cuda", "stable", None, release) == (
+        f"{repository}:0.22.0-cuda"
+    )
+    assert switch(f"{repository}:0.21.0", "stable", None, release) == f"{repository}:0.22.0"
+
+
 # ---------------------------------------------------------------------------
 # Bounded git and one check at a time
 # ---------------------------------------------------------------------------

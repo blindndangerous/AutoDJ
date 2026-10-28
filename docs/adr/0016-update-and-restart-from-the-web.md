@@ -397,10 +397,86 @@ amendment.
 Revisit when the container helper lands, when AutoDJ gains user roles, or if setup learns to sync
 a runtime's packages safely.
 
+## Amendment, 2026-10-28: an opt-in CUDA image
+
+Amendment status: Proposed; pending maintainer acceptance.
+Decision authority: Project maintainer. The owner decided to keep the CPU image as the default and
+to publish an opt-in CUDA image with `-cuda` tags, run with the NVIDIA Container Toolkit, with a
+Doctor hint when the image and the GPU do not match. The text above is kept; where it lists the
+published tags, this amendment adds the CUDA image's.
+
+Only song analysis (MuQ) uses a GPU; playout does not. Bare-metal setup already installs CUDA
+torch on NVIDIA machines, and a container could already use a GPU only through a remote analysis
+worker (`autodj worker`). The CPU image stays the default because the CUDA image is about three
+times its size and most container hosts, NAS boxes among them, have no NVIDIA card.
+
+- One Containerfile takes `TORCH_VARIANT=cpu|cuda`. `cuda` runs the locked sync without skipping
+  anything, so torch, the `nvidia-*` and `cuda-*` wheels and `triton` are the PyPI builds
+  `uv.lock` pins and hash-checks. Those wheels carry the CUDA 13.0 runtime, so no `nvidia/cuda`
+  base image is used, and `uv.lock` is the CUDA image's only pin: no second requirements file can
+  drift from it. A torch upgrade still updates `container/torch-cpu.txt` for the CPU image. Both
+  images now build with `UV_NO_CACHE`, so uv's download cache is no longer copied into the image.
+  The image records its variant in `AUTODJ_IMAGE_VARIANT`.
+- The CUDA image's tags are the CPU image's with `-cuda` added: `:dev-cuda` and
+  `:sha-<short>-cuda` from `master`, `:X.Y.Z-cuda` and `:stable-cuda` from a release tag, under
+  the same ref rules. There is no `:latest-cuda`: `:latest` exists only so that a pull without a
+  tag gets a release, and such a pull can never name the suffix.
+- [image.yml](../../.github/workflows/image.yml) takes a `variant` input and builds, smoke-tests,
+  scans, saves, pushes and attests the CUDA image with the same two jobs. The smoke test runs on
+  the CPU, since runners have no GPU: it checks that torch is the CUDA build and that AutoDJ falls
+  back to the CPU. Its build frees runner disk first and fails before building or pushing when
+  less than 35 GiB is free (20 GiB for the push job), and builds without the Actions layer cache,
+  whose repository limit its layers would fill.
+- A CUDA failure never blocks or withdraws the CPU image or the GitHub release.
+  [image-cuda.yml](../../.github/workflows/image-cuda.yml) runs the CUDA image for `master` as a
+  workflow of its own. The release workflow runs it as a job that nothing waits for: when it fails
+  the run is marked failed, the CPU image and the release are still published, and the previous
+  `:stable-cuda` stays until the maintainer reruns the failed jobs. `:stable-cuda` can therefore
+  follow the release by its build time, during which the notice can offer an update that
+  `docker compose pull` does not reach yet.
+- [compose.gpu.yaml](../../compose.gpu.yaml) is the opt-in override: it names
+  `${AUTODJ_IMAGE:-ghcr.io/<owner>/autodj:stable-cuda}` and requests every NVIDIA GPU through
+  `deploy.resources.reservations.devices`. It has no `build`, so the rule above holds; a local
+  CUDA build sets `AUTODJ_TORCH_VARIANT=cuda` and names `compose.build.yaml` last.
+- An update keeps the variant. `_image_switch` reads the variant from the installation, not the
+  tag: a CUDA image is told a `-cuda` tag and a CPU image never is, whatever `.env` names. An image
+  from before the variant was recorded keeps its tag's suffix. `AUTODJ_IMAGE_CHANNEL` still says
+  only `stable` or `development`. The update contract carries no image tag, so it is unchanged; a
+  container helper that pulls must keep the running image's variant the same way.
+- Doctor's `gpu-image` check runs only in a container and allocates nothing on a GPU. A GPU is
+  visible when a `/dev/nvidia<N>` device exists or `nvidia-smi -L` answers within 5 seconds. A
+  CPU image that sees one warns in one sentence to use the `-cuda` image or a GPU analysis
+  worker; a CUDA image that sees none warns that analysis falls back to the CPU and says how to
+  pass the GPU in; a CUDA image that sees one asks `torch.cuda.is_available()`, importing torch
+  only then, and passes or warns about the driver. Elsewhere it adds no line.
+
+Measured on 2026-10-28 with rootless Podman 4.9 on `linux/amd64`, without a GPU: the CUDA image is
+6.86 GB unpacked and 3.19 GB as the workflow's zstd artifact; the CPU image built the same way is
+2.09 GB unpacked and 0.58 GB as the artifact, against 3.52 GB for the `:dev` image published
+before `UV_NO_CACHE`.
+
+Alternatives: an `nvidia/cuda` runtime base image duplicates the libraries the wheels already
+carry and adds a second base to keep patched; PyTorch's `cu130` index would need a second pinned
+file kept in step with the lock, for the same CUDA build; a matrix job in one workflow would let a
+CUDA failure stop the CPU image's publish job.
+
+Verification limits: unit tests cover the tags and Doctor's check. The CUDA image was built and
+run on one Linux computer without a GPU: torch reported CUDA 13.0, fell back to the CPU, the server
+answered `/healthz`, and Doctor gave the fallback warning. It has not been run with a GPU, the
+NVIDIA Container Toolkit, Docker Compose's device request or Podman's CDI. The workflow runs only
+on `master` and release tags, so the CUDA build's disk use on a runner, its first push and its
+attestation are checked after merge.
+
+Revisit when an arm64 CUDA image is wanted, when PyPI's torch moves off CUDA 13 (the driver and GPU
+requirements in the container guide follow it), or if the CUDA image should be the default.
+
 ## Implementation and operational references
 
-- [Image workflow](../../.github/workflows/image.yml), [compose.yaml](../../compose.yaml) and
-  [compose.build.yaml](../../compose.build.yaml).
+- [Image workflow](../../.github/workflows/image.yml), its
+  [CUDA trigger](../../.github/workflows/image-cuda.yml), [compose.yaml](../../compose.yaml),
+  [compose.build.yaml](../../compose.build.yaml) and [compose.gpu.yaml](../../compose.gpu.yaml).
+- [Use an NVIDIA GPU](../guides/operations/containers-and-windows.md#use-an-nvidia-gpu) in the
+  container guide.
 - [Update check, notice and restart detection](../../src/autodj/updates.py),
   [web routes](../../src/autodj/updates_api.py), [launcher restart loop](../../src/autodj/launcher.py),
   [the launcher's update](../../src/autodj/checkout_update.py), the
@@ -441,6 +517,9 @@ structural validation does not execute it or accept this ADR.
 | `ADR-0016-19` | Development on a saved Stable channel is never moved back: the check says `waiting-for-release` until a release includes the installed commit (git ancestry, or GitHub's compare view without git), which is then the update; Doctor and `check-update` say the same. | automated | `tests/unit/test_checkout_update.py::test_development_moves_to_stable_only_with_a_release_that_includes_it`; `tests/unit/test_checkout_update.py::test_reaching_a_release_forgets_go_back`; `tests/unit/test_doctor.py::test_doctor_and_check_update_say_when_development_waits_for_a_release`; `tests/unit/test_updates.py::test_development_on_a_saved_stable_channel_waits_for_the_next_release`; `tests/unit/test_updates.py::test_an_installation_without_git_asks_github_whether_the_release_includes_it`; `tests/jsmodules/updates.test.js::says development waits for the next release on the Stable channel, with no Update` |
 | `ADR-0016-20` | Go back is offered only on the Stable channel, only with the backup the updater made when it moved a release to development (recorded in `go-back.json`, kept in its own backups folder, forgotten when the updater moves onto a release), and only while `HEAD` is not a release and that release's commit is an ancestor of `HEAD`, development past a newer release included; otherwise, or when the backup is missing or unreadable, one sentence says why; it backs up the current data, switches to that release, runs its setup, restores the backup, runs Doctor and is watched and rolled back like an update. | automated | `tests/integration/test_updates_api.py::test_go_back_is_offered_with_its_date_and_hands_the_launcher_a_request`; `tests/integration/test_updates_api.py::test_go_back_without_its_backup_is_explained_and_refused`; `tests/integration/test_updates_api.py::test_go_back_is_not_offered_off_the_stable_channel_or_without_a_record`; `tests/integration/test_updates_api.py::test_go_back_moved_by_hand_is_explained`; `tests/unit/test_checkout_update.py::test_moving_a_release_to_development_keeps_its_backup_for_go_back`; `tests/unit/test_checkout_update.py::test_the_go_back_backup_is_kept_beside_three_ordinary_ones`; `tests/unit/test_checkout_update.py::test_go_back_restores_the_backup_with_the_release_it_came_from`; `tests/unit/test_checkout_update.py::test_a_failed_go_back_restores_the_data_from_before_it`; `tests/unit/test_checkout_update.py::test_go_back_without_its_backup_changes_nothing`; `tests/unit/test_checkout_update.py::test_reaching_a_release_forgets_go_back`; `tests/unit/test_checkout_update.py::test_go_back_is_refused_when_the_checkout_moved_by_hand`; `tests/unit/test_checkout_update.py::test_go_back_still_fits_development_past_a_newer_release`; `tests/unit/test_checkout_update_git.py::test_go_back_fits_development_but_not_a_release`; `tests/unit/test_update_contract.py::test_go_back_only_names_a_backup_this_flow_made`; `tests/unit/test_updates.py::test_go_back_fits_only_while_the_checkout_came_from_that_release` |
 | `ADR-0016-21` | Settings, Updates offers Update only when an update is available and the installation can update; it asks first and says the stream goes off the air, polls for up to 4 hours while saying quietly how long it has worked, and says once how the update went, then offers to load the new version's page; commands appear only after a failure, under an h5 in Last update; Go back's confirmation names the version and the date and says what is lost; an installation that cannot update gets one sentence and its guide, with no link when there is no guide. | automated | `tests/jsmodules/updates.test.js::tells an installation that cannot update to update it the way it was installed`; `tests/jsmodules/updates.test.js::leaves the guide link out when there is no guide`; `tests/jsmodules/updates.test.js::says quietly that a long update is still working, and waits up to 4 hours`; `tests/jsmodules/updates.test.js::describes a refused restart on its button before the dialog closes`; `tests/jsmodules/updates.test.js::asks before Update, says the stream goes off the air, and says once how it went`; `tests/jsmodules/updates.test.js::says the update failed, why, and only then lists the commands for that failure`; `tests/jsmodules/updates.test.js::describes a refused update on its button before the dialog closes, until the next action`; `tests/jsmodules/updates.test.js::says a refusal aloud when focus did not come back to its button`; `tests/jsmodules/updates.test.js::keeps a refused Go back's note beside Go back, not Update`; `tests/jsmodules/updates.test.js::offers Go back with its version and date, and says what is lost before it starts`; `tests/jsmodules/updates.test.js::says in one sentence why Go back is not offered` |
+| `ADR-0016-22` | The CUDA image records `AUTODJ_IMAGE_VARIANT`; an update keeps the variant: a CUDA image is told its own `-cuda` tag (`stable-cuda` for `latest`, which has no CUDA tag) and a CPU image never is, whatever `.env` names; an image without a recorded variant keeps its tag's suffix. | automated | `tests/unit/test_updates.py::test_a_cuda_image_reads_its_variant_and_a_cpu_image_has_none_to_lose`; `tests/unit/test_updates.py::test_a_cuda_image_is_told_its_own_cuda_tag_and_a_cpu_image_never_is` |
+| `ADR-0016-23` | Doctor's `gpu-image` check runs only in a container, allocates nothing on a GPU and imports torch only in a CUDA image that sees one; a CPU image that sees a GPU is told in one sentence to use the `-cuda` image or a GPU analysis worker; a CUDA image without one is told it falls back to the CPU and how to pass the GPU in; a CPU image without a GPU gets no line. | automated | `tests/unit/test_doctor_gpu_image.py::test_outside_a_container_or_without_a_gpu_a_cpu_image_gets_no_line`; `tests/unit/test_doctor_gpu_image.py::test_a_cpu_image_that_sees_a_gpu_is_told_about_the_cuda_image_and_the_worker`; `tests/unit/test_doctor_gpu_image.py::test_a_cuda_image_without_a_gpu_falls_back_to_the_cpu_and_says_how_to_pass_it_in`; `tests/unit/test_doctor_gpu_image.py::test_a_cuda_image_with_a_gpu_asks_pytorch_whether_it_can_use_it`; `tests/unit/test_doctor_gpu_image.py::test_a_gpu_is_visible_by_its_device_file_or_nvidia_smi`; `tests/unit/test_doctor_gpu_image.py::test_doctor_reports_the_gpu_image_check_inside_a_container` |
+| `ADR-0016-24` | The CUDA image is published from `master` and release tags under the CPU image's ref rules with `-cuda` tags and no `latest-cuda`, after the same smoke test (on the CPU), SBOM, Trivy scan and attestation; it fails before building or pushing when the runner lacks disk, and its failure never blocks or withdraws the CPU image or the GitHub release; with the NVIDIA Container Toolkit and `compose.gpu.yaml`, analysis uses the GPU. | manual | After merge, read the first `CUDA container image` run on `master` and the first release run: the `-cuda` tags, the free-space line, the smoke, SBOM, Trivy and attestation steps, and that `publish` did not wait for `image-cuda`. On a Linux computer with an NVIDIA GPU, the toolkit and Docker Compose, follow [Use an NVIDIA GPU](../guides/operations/containers-and-windows.md#use-an-nvidia-gpu) and check that Doctor passes `gpu-image`; record the GPU, driver, Compose version and results in the pull request. Not yet performed: this change was built and run only without a GPU. |
 
 ## Verification limits
 
