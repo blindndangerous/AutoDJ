@@ -556,14 +556,28 @@ def _nvidia_gpu_visible(dev: Path = Path("/dev")) -> bool:
     return done.returncode == 0 and "GPU" in done.stdout
 
 
-def _torch_sees_cuda() -> bool:
-    """Whether PyTorch can use a CUDA GPU; imports torch, so only the CUDA image asks."""
-    try:
-        import torch
+#: How long Doctor waits for PyTorch to say whether it can use the GPU.
+TORCH_PROBE_SECONDS = 20.0
+_TORCH_PROBE = "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 3)"
 
-        return bool(torch.cuda.is_available())
-    except (ImportError, OSError, RuntimeError):
+
+def _torch_sees_cuda() -> bool:
+    """Whether PyTorch can use a CUDA GPU, asked in a child process with a time limit.
+
+    Only the CUDA image asks.  A wedged driver cannot stall Doctor, torch's
+    own warnings stay in the child's discarded output, and anything that goes
+    wrong counts as "cannot use it".
+    """
+    from autodj.updates import run_bounded
+
+    environment = dict(os.environ, PYTHONWARNINGS="ignore")
+    try:
+        done = run_bounded(
+            [sys.executable, "-c", _TORCH_PROBE], timeout=TORCH_PROBE_SECONDS, env=environment
+        )
+    except Exception:  # any failure means PyTorch cannot use the GPU
         return False
+    return done.returncode == 0
 
 
 def _gpu_image_check(
@@ -605,8 +619,9 @@ def _gpu_image_check(
                 "gpu-image",
                 CheckStatus.WARN,
                 "this CUDA image sees no NVIDIA GPU, so song analysis falls back to the CPU",
-                "Action: install the NVIDIA Container Toolkit on the host, add compose.gpu.yaml "
-                "to COMPOSE_FILE in .env, then run `docker compose up -d`.",
+                "Action: install the NVIDIA Container Toolkit on the host (Docker Desktop on "
+                "Windows has GPU support built in), add compose.gpu.yaml to COMPOSE_FILE in "
+                ".env, then run `docker compose up -d`.",
             ),
         )
     if (torch_sees_cuda or _torch_sees_cuda)():

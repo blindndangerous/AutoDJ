@@ -789,6 +789,60 @@ def test_a_cuda_image_is_told_its_own_cuda_tag_and_a_cpu_image_never_is() -> Non
     assert switch(f"{repository}:0.21.0", "stable", None, release) == f"{repository}:0.22.0"
 
 
+def test_a_pinned_cuda_tag_may_still_be_building_and_a_local_cuda_build_keeps_its_gpu() -> None:
+    """ADR-0016-22: the CUDA build is longer, and -f overrides COMPOSE_FILE."""
+    release = updates.UpdateCheck(
+        status="available",
+        channel="stable",
+        channel_source="installation",
+        message="Release v0.22.0 is available.",
+        latest="v0.22.0",
+        target="v0.22.0",
+    )
+    development = replace(release, channel="development", latest="1234567", target="master")
+    repository = "registry.example:5000/radio/autodj"
+
+    def notice(image: str, channel: str, variant: str, result: updates.UpdateCheck) -> list[str]:
+        container = Installation(
+            kind="container",
+            version="0.21.0",
+            image=image,
+            image_channel=channel,
+            image_variant=variant,
+        )
+        return updates.update_commands(container, result)[:-2]
+
+    building = "may still be building; if pull says manifest unknown, try again later"
+    pinned = notice(f"{repository}:0.21.0-cuda", "stable", "cuda", release)
+    assert pinned[0].endswith(f"={repository}:0.22.0-cuda")
+    assert pinned[1] == f"# The CUDA image 0.22.0-cuda {building}"
+    commit = notice(f"{repository}:sha-abcdef0-cuda", "development", "cuda", development)
+    assert commit[1] == f"# The CUDA image sha-1234567-cuda {building}"
+    # A moving tag pulls the previous image meanwhile, and the CPU image is not delayed.
+    assert len(notice(f"{repository}:dev-cuda", "development", "cuda", release)) == 1
+    assert len(notice(f"{repository}:stable-cuda", "stable", "cuda", development)) == 1
+    assert len(notice(f"{repository}:0.21.0", "stable", "cpu", release)) == 1
+
+    def local(variant: str | None) -> list[str]:
+        built = Installation(
+            kind="container", version="0.21.0", image="autodj:local", image_variant=variant
+        )
+        return updates.update_commands(built, release)[-2:]
+
+    build = "AUTODJ_COMMIT=$(git rev-parse --short HEAD)"
+    assert local("cuda") == [
+        f"{build} docker compose -f compose.yaml -f compose.gpu.yaml -f compose.build.yaml "
+        "up -d --build",
+        f"{build} podman compose -f compose.yaml -f compose.gpu.yaml -f compose.build.yaml "
+        "up -d --build",
+    ]
+    for variant in ("cpu", None):
+        assert local(variant) == [
+            f"{build} docker compose -f compose.yaml -f compose.build.yaml up -d --build",
+            f"{build} podman compose -f compose.yaml -f compose.build.yaml up -d --build",
+        ]
+
+
 # ---------------------------------------------------------------------------
 # Bounded git and one check at a time
 # ---------------------------------------------------------------------------

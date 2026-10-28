@@ -621,8 +621,11 @@ def update_commands(installation: Installation, result: UpdateCheck) -> list[str
     if installation.kind == "container":
         if installation.image_channel is None:
             # Built on this computer from the checkout, with compose.build.yaml.
+            # Naming files with -f overrides COMPOSE_FILE, so a CUDA build names
+            # compose.gpu.yaml too, or the rebuilt container would lose the GPU.
             build = "AUTODJ_COMMIT=$(git rev-parse --short HEAD)"
-            files = "-f compose.yaml -f compose.build.yaml"
+            gpu = " -f compose.gpu.yaml" if installation.image_variant == "cuda" else ""
+            files = f"-f compose.yaml{gpu} -f compose.build.yaml"
             return [
                 *checkout,
                 f"{build} docker compose {files} up -d --build",
@@ -684,10 +687,19 @@ def _image_switch(installation: Installation, result: UpdateCheck) -> list[str]:
         # Anything else, and ``latest`` for the CUDA image, which has no
         # ``latest-cuda``, moves to the stable tag.
         wanted = "stable"
+    pinned = wanted not in ("stable", "latest", CHANNEL_IMAGE_TAGS["development"])
     wanted += suffix
     if tag == wanted:
         return []
-    return [f"# In .env beside compose.yaml, set {IMAGE_ENV}={repository}:{wanted}"]
+    lines = [f"# In .env beside compose.yaml, set {IMAGE_ENV}={repository}:{wanted}"]
+    if suffix and pinned:
+        # The CUDA image is published by a longer build that nothing waits
+        # for, so its pinned tag can appear well after the release or commit.
+        lines.append(
+            f"# The CUDA image {wanted} may still be building; "
+            "if pull says manifest unknown, try again later"
+        )
+    return lines
 
 
 def channel_for(installation: Installation, settings: UpdateSettings) -> tuple[str, str]:

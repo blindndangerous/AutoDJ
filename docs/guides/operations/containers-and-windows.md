@@ -154,7 +154,8 @@ The computer that runs the container needs:
   and an NVIDIA driver for CUDA 13.0, version 580 or newer. `nvidia-smi` shows the driver
   version.
 - The [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html),
-  set up for Docker as its guide says.
+  set up for Docker as its guide says. Docker Desktop on Windows, with the WSL 2 backend, has GPU
+  support built in and needs only the Windows NVIDIA driver.
 
 `compose.gpu.yaml` runs the CUDA image's `stable-cuda` tag and asks Docker for every NVIDIA card.
 To use it:
@@ -185,13 +186,18 @@ To go back to the default image, remove `compose.gpu.yaml` from `COMPOSE_FILE`, 
 `AUTODJ_IMAGE` back to a tag without `-cuda` if you set one, then pull and start it again.
 
 The CUDA image's tags follow the same rules as the default image's, and an update keeps the
-`-cuda` suffix. When a release is published, `stable-cuda` can follow `stable` by the length of
-its longer build, so an update the page reports may not reach `docker compose pull` at once.
+`-cuda` suffix. When a release or a commit on `master` is published, its CUDA image can follow
+by the length of its longer build, about two hours at most, or later if that build has to run
+again. Until then `stable-cuda` and `dev-cuda` still pull the previous image, and a version or
+`sha-` tag with `-cuda`, which `autodj check-update` may already name, makes `docker compose pull`
+say `manifest unknown`. Try again later.
 
 Podman reaches NVIDIA cards through the toolkit's CDI specification (`nvidia-ctk cdi generate`)
-instead. This setup has not been tested with Podman; if your podman-compose does not pass the
-card in, write your own override file that gives the service
-`devices: ["nvidia.com/gpu=all"]` in place of the `deploy` section.
+instead. This setup has not been tested with Podman. If your podman-compose does not pass the
+card in, copy `compose.gpu.yaml` to a file of your own, replace its `deploy` section with
+`devices: ["nvidia.com/gpu=all"]`, and name that file in `COMPOSE_FILE` in place of
+`compose.gpu.yaml`. Another override added after `compose.gpu.yaml` cannot remove its `deploy`
+section.
 
 To build the CUDA image yourself, add `AUTODJ_TORCH_VARIANT=cuda` to `.env` and name
 `compose.build.yaml` last, so the local image replaces the published one:

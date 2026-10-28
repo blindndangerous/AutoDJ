@@ -74,6 +74,7 @@ def test_a_cuda_image_without_a_gpu_falls_back_to_the_cpu_and_says_how_to_pass_i
     assert "falls back to the CPU" in check.summary
     assert "NVIDIA Container Toolkit" in str(check.detail)
     assert "compose.gpu.yaml" in str(check.detail)
+    assert "Docker Desktop on Windows has GPU support built in" in str(check.detail)
 
 
 def test_a_cuda_image_with_a_gpu_asks_pytorch_whether_it_can_use_it(tmp_path: Path) -> None:
@@ -128,6 +129,42 @@ def test_a_gpu_is_visible_by_its_device_file_or_nvidia_smi(
 
     monkeypatch.setattr(updates, "run_bounded", hung)
     assert doctor._nvidia_gpu_visible(dev) is False
+
+
+def test_pytorch_is_asked_in_a_child_with_a_time_limit_and_quietly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0016-23: a wedged driver cannot stall Doctor, and any failure means no GPU."""
+    seen: list[tuple[list[str], float, str | None]] = []
+
+    def answer(code: int) -> object:
+        def run(argv: list[str], *, timeout: float, env: dict[str, str]) -> SimpleNamespace:
+            seen.append((argv, timeout, env.get("PYTHONWARNINGS")))
+            return SimpleNamespace(returncode=code, stdout="", stderr="UserWarning: noise\n")
+
+        return run
+
+    monkeypatch.setattr(updates, "run_bounded", answer(0))
+    assert doctor._torch_sees_cuda() is True
+    argv, timeout, warnings = seen[0]
+    assert argv[1] == "-c" and "torch.cuda.is_available()" in argv[2]
+    assert (timeout, warnings) == (doctor.TORCH_PROBE_SECONDS, "ignore")
+    assert timeout <= 20.0
+
+    monkeypatch.setattr(updates, "run_bounded", answer(3))
+    assert doctor._torch_sees_cuda() is False
+
+    def wedged(argv: list[str], *, timeout: float, env: dict[str, str]) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    monkeypatch.setattr(updates, "run_bounded", wedged)
+    assert doctor._torch_sees_cuda() is False
+
+    def broken(argv: list[str], *, timeout: float, env: dict[str, str]) -> SimpleNamespace:
+        raise ValueError("anything")
+
+    monkeypatch.setattr(updates, "run_bounded", broken)
+    assert doctor._torch_sees_cuda() is False
 
 
 def test_doctor_reports_the_gpu_image_check_inside_a_container(
