@@ -92,7 +92,7 @@ def test_the_kinds_are_the_documented_vocabulary() -> None:
 
 def test_inserted_items_are_stored_with_their_kind_and_no_path(store, tmp_path) -> None:
     _mixed(store, str(tmp_path / "song.flac"))
-    rows = store.recent_history(10)
+    rows = store.recent_history(10, inserts=10)
     assert [(row["event_id"], row["kind"]) for row in rows] == [
         ("a", "song"),
         ("liner", "liner"),
@@ -114,7 +114,7 @@ def test_an_inserted_item_without_a_title_or_time_is_refused(store) -> None:
     bad = _insert("bad", "liner", 0)
     del bad["played_at"]
     store.write_history([bad, {**_insert("untitled", "ad", 0), "title": None}], [])
-    assert store.recent_history(10) == []
+    assert store.recent_history(10, inserts=10) == []
 
 
 def test_repeat_rules_count_songs_only(store, tmp_path) -> None:
@@ -172,12 +172,12 @@ def test_a_database_written_before_inserted_items_keeps_working(tmp_path: Path) 
     opened = StationStore(path, "default")
     try:
         opened.write_history([_insert("new", "matched_intro", 0)], [])
-        assert [row["kind"] for row in opened.recent_history(10)] == [
+        assert [row["kind"] for row in opened.recent_history(10, inserts=10)] == [
             "song",
             "song",
             "matched_intro",
         ]
-        assert [history_kind(row) for row in opened.recent_history(10)] == [
+        assert [history_kind(row) for row in opened.recent_history(10, inserts=10)] == [
             "song",
             "liner",
             "matched_intro",
@@ -199,7 +199,7 @@ def test_pending_rows_for_the_repeat_rules_leave_inserted_items_out(store, tmp_p
     ledger.remember_history(_insert("liner", "liner", 5, path=str(tmp_path / "id.wav")))
     assert [row["event_id"] for row in ledger.pending_history()] == ["a"]
     ledger.flush()
-    assert [row["kind"] for row in ledger.recent_history(10)] == ["song", "liner"]
+    assert [row["kind"] for row in ledger.recent_history(10, inserts=10)] == ["song", "liner"]
 
 
 @pytest.fixture
@@ -283,17 +283,69 @@ def test_the_bridge_records_an_inserted_item_without_disturbing_song_history() -
     assert [call.args[0] for call in ledger.remember_play.call_args_list] == ["/music/song.flac"]
 
 
-def test_the_bridge_marks_a_liner_file_played_as_a_track() -> None:
+def test_a_liner_file_played_as_a_track_stays_in_the_songs_view() -> None:
     bridge = _bridge(ledger=MagicMock(), library=MagicMock())
-    bridge.library.kind_for_path.side_effect = lambda path: (
-        "liner" if path.startswith("/liners") else "music"
-    )
+    # The player's cached liner paths, not a library lookup per song.
+    bridge.player._is_liner = lambda entry: entry.path.startswith("/liners")
     bridge.on_track_started(SimpleNamespace(path="/liners/id.wav", title="ID", artist="", length=5))
     bridge.on_track_started(SimpleNamespace(path="/music/a.flac", title="A", artist="", length=5))
+    bridge.library.kind_for_path.assert_not_called()
+    # As before #601, History and now playing list it with the songs.
+    assert [row["title"] for row in bridge.history_snapshot()] == ["ID", "A"]
+    page = bridge.history_page(1, 50)
+    assert [(row["title"], row["kind"]) for row in page["items"]] == [
+        ("A", "song"),
+        ("ID", "liner"),
+    ]
     assert [row["kind"] for row in bridge.history_snapshot(include_inserts=True)] == [
         "liner",
         "song",
     ]
+
+
+def test_a_show_speech_segment_is_speech_not_a_song(store, tmp_path) -> None:
+    """ADR-0006-07."""
+    library = SimpleNamespace(catalog=MagicMock())
+    library.catalog.sources.return_value = []
+    ledger = StationLedger(store)
+    bridge = _bridge(ledger=ledger, library=library)
+    segment = SimpleNamespace(
+        path=str(tmp_path / "segment.wav"), title="Weather", artist="", length=30.0
+    )
+    segment._prepared_clip = True
+    song = SimpleNamespace(path=str(tmp_path / "song.flac"), title="Song", artist="A", length=60.0)
+    bridge.on_track_started(song)
+    bridge.on_track_started(segment)
+
+    assert [row["title"] for row in bridge.history_snapshot()] == ["Song"]
+    assert [row["kind"] for row in bridge.history_snapshot(include_inserts=True)] == [
+        "song",
+        "speech",
+    ]
+    assert segment.path not in ledger.last_played()
+    assert [row["title"] for row in ledger.pending_history()] == ["Song"]
+    ledger.flush()
+    assert [row["title"] for row in store.recent_plays(10)] == ["Song"]
+    assert [row["kind"] for row in store.recent_history(10, inserts=10)] == ["song", "speech"]
+    start, end = T0 - timedelta(days=1), datetime.now(UTC) + timedelta(days=1)
+
+    def read(_path: str) -> tuple[str, str]:
+        return "", ""
+
+    plays = plays_between(library.catalog, start, end, read_tags=read, station_store=store)
+    assert [play.title for play in plays] == ["Song"]
+    assert "Weather" not in soundexchange_report(
+        plays_between(
+            library.catalog,
+            start,
+            end,
+            read_tags=read,
+            station_store=store,
+            include_inserts=True,
+        ),
+        "Example",
+        "A",
+    )
 
 
 def test_the_bridge_refuses_a_kind_it_does_not_know() -> None:
@@ -303,9 +355,39 @@ def test_the_bridge_refuses_a_kind_it_does_not_know() -> None:
     assert bridge.history_snapshot(include_inserts=True) == []
 
 
-def test_the_history_keeps_room_for_inserted_items() -> None:
-    bridge = _bridge()
-    assert bridge._play_history.maxlen >= 2000
+def test_inserted_items_never_push_songs_out_of_history(store, tmp_path) -> None:
+    """ADR-0006-07."""
+    from autodj._bridge import HISTORY_AIRED_ROWS, HISTORY_VIEW_ROWS
+
+    ledger = StationLedger(store)
+    bridge = _bridge(ledger=ledger, library=SimpleNamespace())
+    for index in range(HISTORY_VIEW_ROWS + 20):
+        bridge.on_track_started(
+            SimpleNamespace(
+                path=str(tmp_path / f"{index}.flac"), title=f"S{index}", artist="", length=1
+            )
+        )
+        for _ in range(4):
+            bridge.record_aired("liner", title="ID", duration=1)
+    music = bridge.history_page(1, 500)
+    assert music["total"] == HISTORY_VIEW_ROWS
+    assert music["items"][-1]["title"] == "S20"
+    assert len(bridge._aired_history) == HISTORY_AIRED_ROWS
+    everything = bridge.history_page(1, 500, liners=True)
+    assert everything["total"] == HISTORY_VIEW_ROWS
+    assert [row["kind"] for row in everything["items"][:5]] == ["liner"] * 4 + ["song"]
+
+    # After a restart the songs view is as full, whatever aired between.
+    ledger.flush()
+    restored = _bridge(ledger=StationLedger(store), library=SimpleNamespace())
+    restored.player.restore_repeat_history = MagicMock()
+    restored.load_persistent_state()
+    assert restored.history_page(1, 500)["total"] == HISTORY_VIEW_ROWS
+    assert len(restored._aired_history) == HISTORY_AIRED_ROWS
+    assert (
+        restored.history_page(1, 500, liners=True)["items"][4]["title"]
+        == f"S{HISTORY_VIEW_ROWS + 19}"
+    )
 
 
 def _player():
@@ -384,6 +466,27 @@ def test_the_player_reports_nothing_without_a_listener() -> None:
     player._on_position(1000)  # no on_item_aired: nothing breaks
 
 
+class _Bus:
+    """A mix bus that starts liners at once, or holds them while a live DJ is on."""
+
+    def __init__(self, live: bool = False) -> None:
+        self.live = live
+        self.deferred = None
+
+    def play_liner(self, audio, duck_db, at=None, *, after_live=False, on_start=None):
+        if not self.live:
+            if on_start is not None:
+                on_start()
+        elif after_live:
+            self.deferred = on_start
+
+    def hand_back(self) -> None:
+        self.live = False
+        if self.deferred is not None:
+            self.deferred()
+            self.deferred = None
+
+
 def _scheduler(tmp_path: Path, bus=None):
     from autodj.liner_scheduler import LinerScheduler
 
@@ -404,7 +507,7 @@ def _scheduler(tmp_path: Path, bus=None):
     return LinerScheduler(
         cfg,
         folder,
-        bus or MagicMock(live_on_air=False),
+        bus or _Bus(),
         decoder=lambda _root, _name: np.zeros((44100 * 2, 2), np.float32),
     )
 
@@ -434,14 +537,18 @@ def test_the_scheduler_reports_liners_time_checks_and_carts_that_play(tmp_path) 
     ]
 
 
-def test_the_scheduler_does_not_report_what_a_live_dj_held_back(tmp_path) -> None:
+def test_a_liner_held_for_a_live_dj_is_recorded_when_it_airs(tmp_path) -> None:
     """ADR-0006-08."""
-    scheduler = _scheduler(tmp_path, bus=MagicMock(live_on_air=True))
+    bus = _Bus(live=True)
+    scheduler = _scheduler(tmp_path, bus=bus)
     aired: list[str] = []
     scheduler.on_aired = lambda kind, **_fields: aired.append(kind)
-    scheduler.fire("Station ID.wav")
-    scheduler.play_audio(np.zeros((44100, 2), np.float32))
+    scheduler.fire("Station ID.wav")  # waits for the DJ to hand back
+    scheduler.play_audio(np.zeros((44100, 2), np.float32))  # a time check: dropped
+    scheduler.play_cart(np.zeros((4410, 2), np.float32), -6.0)  # dropped too
     assert aired == []
+    bus.hand_back()
+    assert aired == ["liner"]
 
 
 def test_a_scheduler_snapshot_never_reports(tmp_path) -> None:
@@ -449,3 +556,58 @@ def test_a_scheduler_snapshot_never_reports(tmp_path) -> None:
     scheduler = _scheduler(tmp_path)
     scheduler.on_aired = MagicMock()
     assert scheduler.snapshot().on_aired is None
+
+
+def _mix_bus(frames: int = 44100):
+    from autodj.indexer import IndexEntry
+    from autodj.mixbus import BusEvents, MixBus, RenderedTrack
+
+    entry = IndexEntry("/m/a.flac", "A", "", "", "", 120, 2000, 1.0, 0.1, -1, -1, 0.0)
+    track = RenderedTrack(entry, np.full((frames, 2), 0.1, np.float32), None, 0, "")
+    tracks = [track]
+    bus = MixBus(
+        BusEvents(
+            on_track_start=lambda _track: None,
+            on_position=lambda _pos: None,
+            on_need_track=lambda: tracks.pop(0) if tracks else None,
+        ),
+        eq_gains=lambda: (1.0, 1.0, 1.0),
+    )
+    bus.start_set()
+    return bus, track
+
+
+def test_the_bus_says_when_a_cued_liner_really_starts() -> None:
+    """ADR-0006-08."""
+    from autodj.mixbus import LinerCue
+
+    bus, track = _mix_bus()
+    bus.render_block()
+    started: list[int] = []
+    cue = LinerCue(track, MixBusBlock * 5)
+    bus.play_liner(
+        np.zeros((882, 2), np.float32), -6.0, at=cue, on_start=lambda: started.append(bus._pos)
+    )
+    for _ in range(3):
+        bus.render_block()
+    assert started == []  # cued, not yet on the air
+    for _ in range(3):
+        bus.render_block()
+    assert started == [MixBusBlock * 5]  # once, as its block played
+    now: list[bool] = []
+    bus.play_liner(np.zeros((882, 2), np.float32), -6.0, on_start=lambda: now.append(True))
+    assert now == [True]
+    # A cue whose track ends first never starts, so it is never listed.
+    dropped: list[bool] = []
+    bus.play_liner(
+        np.zeros((882, 2), np.float32),
+        -6.0,
+        at=LinerCue(track, 10**9),
+        on_start=lambda: dropped.append(True),
+    )
+    for _ in range(60):
+        bus.render_block()
+    assert dropped == []
+
+
+MixBusBlock = 882

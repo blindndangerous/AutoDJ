@@ -43,7 +43,7 @@ from pydantic import Field as PydanticField
 from starlette.requests import HTTPConnection
 
 from autodj._bridge import (
-    HISTORY_ROWS,
+    HISTORY_AIRED_ROWS,
     HISTORY_VIEW_ROWS,
     SEEK_TRACK_CHANGED,
     STREAM_SEEK_UNAVAILABLE,
@@ -69,7 +69,8 @@ from autodj.config import (
     RelayConfig,
     _relay_target,
 )
-from autodj.history_kinds import history_kind
+from autodj.history_kinds import INSERT_KINDS
+from autodj.history_pages import history_page
 from autodj.live_queue import VoiceQueueConflict
 from autodj.playlog import (
     missing_fields,
@@ -432,29 +433,6 @@ class NewClockNameBody(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers that act on one station
 # ---------------------------------------------------------------------------
-
-
-def _anchor_position(rows: list[dict], newest: list[dict], anchor: str) -> int | None:
-    """Where History's page should start looking for *anchor*, newest first.
-
-    *rows* is every kept row, oldest first, and *newest* the rows the view
-    shows, newest first.  The anchor's own place in the view, or that of the
-    next older row the view shows: a hidden liner leads to the song before
-    it.  ``None`` when no kept row has that ``event_id``; past the view's
-    oldest row, its last place.
-    """
-    found = next(
-        (index for index in range(len(rows) - 1, -1, -1) if rows[index].get("event_id") == anchor),
-        None,
-    )
-    if found is None:
-        return None
-    places = {id(row): place for place, row in enumerate(newest)}
-    for index in range(found, -1, -1):
-        place = places.get(id(rows[index]))
-        if place is not None:
-            return place
-    return max(0, len(newest) - 1)
 
 
 def _catalog_library(station: StationRuntime) -> Any:
@@ -1999,29 +1977,20 @@ def install_station_routes(router: StationRouter) -> None:
         keeps the listener near the same place.
         """
         if station.player is not None:
-            rows = station.bridge.history_snapshot(include_inserts=True)
+            result = station.bridge.history_page(page, per_page, liners=liners, anchor=anchor)
         else:
-            rows = [
-                {**row, "kind": history_kind(row)}
-                for row in station.ledger.recent_history(HISTORY_ROWS)
-            ]
-            for row in rows:
-                row.pop("track_kind", None)
-        for row in rows:
-            row["kind"] = row.get("kind") or "song"
-        shown = [row for row in rows if liners or row["kind"] in ("song", "live")]
-        shown = shown[-HISTORY_VIEW_ROWS:]
-        newest = shown[::-1]
-        total = len(newest)
-        pages = max(1, (total + per_page - 1) // per_page)
-        if anchor is not None:
-            position = _anchor_position(rows, newest, anchor)
-            if position is not None:
-                page = position // per_page + 1
-        page = max(1, min(page, pages))
-        start = (page - 1) * per_page
-        items = newest[start : start + per_page]
-        return JSONResponse({"items": items, "total": total, "page": page, "pages": pages})
+            rows = station.ledger.recent_history(HISTORY_VIEW_ROWS, inserts=HISTORY_AIRED_ROWS)
+            for order, row in enumerate(rows):
+                row["_seq"] = order
+            result = history_page(
+                [row for row in rows if row["kind"] not in INSERT_KINDS],
+                [row for row in rows if row["kind"] in INSERT_KINDS],
+                page=page,
+                per_page=per_page,
+                liners=liners,
+                anchor=anchor,
+            )
+        return JSONResponse(result)
 
     @router.get("/history/export")
     async def api_history_export(

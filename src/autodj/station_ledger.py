@@ -195,9 +195,12 @@ class StationLedger:
                 return self._pending_settings[key]
         return self.store.get_setting(name, default)
 
-    def recent_history(self, limit: int = 500) -> list[dict]:
-        """The station's latest *limit* completed plays and inserted audio, oldest first."""
-        return self.store.recent_history(limit)
+    def recent_history(self, limit: int = 500, inserts: int = 0) -> list[dict]:
+        """The station's latest *limit* completed plays, oldest first.
+
+        *inserts* adds up to that many liners and other inserted rows.
+        """
+        return self.store.recent_history(limit, inserts)
 
     def recent_plays(self, limit: int) -> list[dict]:
         """The station's latest *limit* plays for the repeat rules, oldest first."""

@@ -144,18 +144,34 @@ class StationStore:
                 ((event_id,) for event_id in interrupted if isinstance(event_id, str) and event_id),
             )
 
-    def recent_history(self, limit: int) -> list[dict]:
-        """The latest *limit* rows of every kind, oldest first (see :func:`history_kind`)."""
+    def recent_history(self, limit: int, inserts: int = 0) -> list[dict]:
+        """The latest *limit* songs and live sets, oldest first.
+
+        With *inserts*, also up to that many of the latest liners and other
+        rows of :data:`~autodj.history_kinds.INSERT_KINDS`, in airing order
+        among them: each has its own room, so inserted rows never push
+        songs out.
+        """
         _check_limit(limit)
+        _check_limit(inserts)
+        columns = (
+            "rowid,event_id,entry_id,path,title,artist,duration,played_at,kind,ended_at,track_kind"
+        )
         with self._lock:
             rows = self._db.execute(
-                "SELECT event_id,entry_id,path,title,artist,duration,played_at,kind,ended_at,"
-                "track_kind FROM (SELECT rowid,event_id,entry_id,path,title,artist,duration,"
-                "played_at,kind,ended_at,track_kind "
-                "FROM play_history WHERE interrupted=0 ORDER BY rowid DESC LIMIT ?) ORDER BY rowid ASC",
-                (limit,),
+                "SELECT * FROM (SELECT " + columns + " FROM play_history "  # nosec B608 - fixed SQL
+                "WHERE interrupted=0 AND " + _PLAY_ROWS + " ORDER BY rowid DESC LIMIT ?) "
+                "UNION ALL SELECT * FROM (SELECT " + columns + " FROM play_history "
+                "WHERE interrupted=0 AND NOT " + _PLAY_ROWS + " ORDER BY rowid DESC LIMIT ?) "
+                "ORDER BY rowid ASC",
+                (limit, inserts),
             ).fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            del item["rowid"]
+            result.append(item)
+        return result
 
     def recent_plays(self, limit: int) -> list[dict]:
         _check_limit(limit)

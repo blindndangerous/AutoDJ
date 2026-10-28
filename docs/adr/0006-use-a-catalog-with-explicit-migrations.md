@@ -82,8 +82,8 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0006-04` | Worker results reject incompatible model/weight/version identities, invalid vectors, and files changed since claim. | automated | `tests/unit/test_worker_api.py::test_results_from_other_weights_or_versions_are_refused`; `tests/unit/test_worker_api.py::test_invalid_vectors_are_refused`; `tests/unit/test_worker_api.py::test_a_result_for_a_changed_file_is_refused_as_stale` |
 | `ADR-0006-05` | Changed file identity invalidates cached timing analysis; fresh cues cannot inherit old Intro/Outro, and disabled DJ analysis leaves work pending. | automated | `tests/unit/test_library.py::test_changed_file_recalculates_cues_without_inheriting_dj_cache`; `tests/unit/test_library.py::test_deferred_replacement_clears_old_dj_cache_before_publishing_identity`; `tests/unit/test_library.py::test_rescan_reads_external_tag_edit_with_unchanged_size` |
 | `ADR-0006-06` | Audio-feature results are versioned and tied to catalog file identity; storing estimates preserves manual key/BPM and a positive source BPM. | automated | `tests/unit/test_catalog_audio_analysis.py::test_audio_analysis_cache_is_identity_checked_and_survives_source_changes`; `tests/unit/test_catalog_audio_analysis.py::test_audio_estimates_preserve_manual_tags_and_existing_source_bpm` |
-| `ADR-0006-07` | Station history keeps audio aired over or between the songs with its kind in the existing `play_history.kind` column, with no schema change; existing station databases read as before. The repeat rules, pending repeat rows, the default play-log export and SoundExchange reports count songs and live sets only, and an inserted row never shortens a song's reported duration. | automated | `tests/unit/test_history_inserts.py::test_repeat_rules_count_songs_only`; `tests/unit/test_history_inserts.py::test_the_play_log_leaves_inserted_items_out_and_keeps_song_lengths`; `tests/unit/test_history_inserts.py::test_a_database_written_before_inserted_items_keeps_working`; `tests/unit/test_history_inserts.py::test_pending_rows_for_the_repeat_rules_leave_inserted_items_out`; `tests/unit/test_history_inserts.py::test_the_export_counts_songs_unless_asked_for_everything` |
-| `ADR-0006-08` | Inserted audio is recorded only as it airs on a station's playout, from in-memory buffers that touch no disk on the mix-bus thread; it never changes last-played times. Scheduler snapshots used for forecasts never record, and a clip held back for a live DJ is not recorded. | automated | `tests/unit/test_history_inserts.py::test_the_bridge_records_an_inserted_item_without_disturbing_song_history`; `tests/unit/test_history_inserts.py::test_the_player_reports_each_handoff_item_once_as_it_airs`; `tests/unit/test_history_inserts.py::test_a_scheduler_snapshot_never_reports`; `tests/unit/test_history_inserts.py::test_the_scheduler_does_not_report_what_a_live_dj_held_back` |
+| `ADR-0006-07` | Station history keeps audio aired over or between the songs, and a show's standalone speech segments, with its kind in the existing `play_history.kind` column, with no schema change; existing station databases read as before. The repeat rules, pending repeat rows, the default play-log export and SoundExchange reports count songs and live sets only, and an inserted row never shortens a song's reported duration. Inserted rows have their own room, so the songs-only History view keeps its 500 rows live and after a restart. | automated | `tests/unit/test_history_inserts.py::test_repeat_rules_count_songs_only`; `tests/unit/test_history_inserts.py::test_the_play_log_leaves_inserted_items_out_and_keeps_song_lengths`; `tests/unit/test_history_inserts.py::test_a_database_written_before_inserted_items_keeps_working`; `tests/unit/test_history_inserts.py::test_pending_rows_for_the_repeat_rules_leave_inserted_items_out`; `tests/unit/test_history_inserts.py::test_the_export_counts_songs_unless_asked_for_everything`; `tests/unit/test_history_inserts.py::test_a_show_speech_segment_is_speech_not_a_song`; `tests/unit/test_history_inserts.py::test_inserted_items_never_push_songs_out_of_history` |
+| `ADR-0006-08` | Inserted audio is recorded as it actually airs on a station's playout, from in-memory buffers that touch no disk on the mix-bus thread; it never changes last-played times. The mix bus says when a liner, cart or time check starts: at once, at its cue, or when a live DJ hands back; one it drops is never recorded. Scheduler snapshots used for forecasts never record. | automated | `tests/unit/test_history_inserts.py::test_the_bridge_records_an_inserted_item_without_disturbing_song_history`; `tests/unit/test_history_inserts.py::test_the_player_reports_each_handoff_item_once_as_it_airs`; `tests/unit/test_history_inserts.py::test_a_scheduler_snapshot_never_reports`; `tests/unit/test_history_inserts.py::test_a_liner_held_for_a_live_dj_is_recorded_when_it_airs`; `tests/unit/test_history_inserts.py::test_the_bus_says_when_a_cued_liner_really_starts`; `tests/unit/test_live.py::test_a_liner_due_under_a_dj_plays_once_after_and_a_time_check_never` |
 
 ## Clarification, 2026-10-22: analysis follows file identity
 
@@ -130,23 +130,31 @@ proposed record and does not change its status.
 items to History. A station's `play_history` table already had a `kind` column, `song` or `live`.
 Rows for audio aired over or between the songs now use the same column with the kinds in
 [`history_kinds.py`](../../src/autodj/history_kinds.py): `liner`, `ad`, `matched_intro`, `time_check`,
-`cart`, `voice_track`, and the announcer break kinds. No column or table is added, so an existing
-`station.db` needs no migration. A row with an unknown kind is still written as a song, as before.
+`cart`, `voice_track`, `speech` and the announcer break kinds. No column or table is added, so an
+existing `station.db` needs no migration. A row with an unknown kind is still written as a song, as
+before. A show's standalone speech segment airs as a track but is recorded as `speech`.
 
-The mix bus reports handoff liners, breaks (including ad spots and voice tracks) and matched intros as
-the bus plays past them. The liner scheduler reports the liners, time checks and carts it mixes in, and
-cued ones once the bus starts them. Both hand the row to `PlayerBridge.record_aired`, which buffers it
-in the station ledger like a song play. An inserted row has no listener count and does not change
-last-played times.
+The player reports handoff liners, breaks (including ad spots and voice tracks) and matched intros
+as the bus plays past them. The liner scheduler hands each liner, time check and cart to the mix bus
+with a callback that the bus calls when the clip really starts: at once, at its cue, or when a live
+DJ hands back. A clip the bus drops is never recorded. Both hand the row to
+`PlayerBridge.record_aired`, which buffers it in the station ledger like a song play. An inserted
+row has no listener count and does not change last-played times.
+
+In memory and on reload, songs and live sets keep their 500 rows and inserted rows have room for
+1,500 beside them, so a busy hour of liners never shortens the songs-only view. Pages are built by
+walking both lists newest first, copying only the rows on the page.
 
 Readers that count music keep counting songs: the repeat rules (`recent_plays` and pending rows), the
 now-playing history, the play-log export unless it asks for everything, and SoundExchange reports. A
 song's reported duration still ends at the next song or live set, not at a liner mixed over its end.
-History shows songs and live sets by default; asked for liners, it shows every row with its kind. The
+History shows songs, liner files played as tracks and live sets by default, as before; asked
+for liners, it shows every row with its kind. The
 CSV export's liner choice adds inserted rows except ads, which still come from the ad play log.
 
-Older AutoDJ releases opened on a database with inserted rows would list them as songs in play-log
-exports and SoundExchange reports; downgrading after recording inserted audio is not supported.
+Older AutoDJ releases opened on a database with inserted rows would list them as songs in History,
+play-log exports and SoundExchange reports, and end song durations at them; the
+[upgrade guide](../guides/operations/upgrade.md#going-back-to-an-older-release) warns operators.
 This extends the proposed record and does not change its status.
 
 ## Verification

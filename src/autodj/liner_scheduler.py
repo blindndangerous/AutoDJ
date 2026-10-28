@@ -320,8 +320,6 @@ class LinerScheduler:
         # (#601): ``on_aired(kind, title=..., path=..., duration=...)``.  The
         # station sets it; a snapshot has none.
         self.on_aired: Callable[..., None] | None = None
-        # Liners cued for later, reported once the bus starts them.
-        self._cued: list[_Prepared] = []
 
     def _trigger(self) -> LinerTrigger:
         """Build a :class:`LinerTrigger` from the current config values."""
@@ -373,7 +371,6 @@ class LinerScheduler:
             snapshot._can_fire = lambda: False
             snapshot.announcement = None
             snapshot.on_aired = None
-            snapshot._cued = []
             snapshot._forecast_only = True
             return snapshot
 
@@ -657,24 +654,30 @@ class LinerScheduler:
         # Under a live DJ (#48) a station ID or other liner waits to play once
         # when they hand back; a time check ("announcement") would be stale.
         after_live = liner.name != "announcement"
+        on_start = self._on_start(liner)
         if cue is None:
-            self._bus.play_liner(liner.audio, duck_db=duck_db, after_live=after_live)
-            self._report_locked(liner)
+            self._bus.play_liner(
+                liner.audio, duck_db=duck_db, after_live=after_live, on_start=on_start
+            )
         else:
-            self._bus.play_liner(liner.audio, duck_db=duck_db, at=cue, after_live=after_live)
-            liner.cue = cue
-            self._cued.append(liner)
+            self._bus.play_liner(
+                liner.audio, duck_db=duck_db, at=cue, after_live=after_live, on_start=on_start
+            )
         self._fired_locked()
         return liner.name
 
-    def _report_locked(self, liner: _Prepared) -> None:
-        """Tell History that *liner* started airing now. Caller holds ``_lock``.
+    def _on_start(self, liner: _Prepared) -> Callable[[], None]:
+        """What the bus calls when *liner* actually starts, to list it in History.
 
-        Nothing is said for a clip held back while a live DJ is on the air:
-        it plays once they leave, or not at all.
+        The bus calls it at the real start: now, at a cue, or when a live DJ
+        hands back.  A liner it drops is never listed.
         """
+        return lambda: self._report(liner)
+
+    def _report(self, liner: _Prepared) -> None:
+        """Tell History that *liner* started airing now (any thread; takes no lock)."""
         listener = self.on_aired
-        if listener is None or getattr(self._bus, "live_on_air", False) is True:
+        if listener is None:
             return
         kind, title = liner.kind, liner.title
         if liner.name == "announcement" and kind == "liner" and not title:
@@ -690,21 +693,6 @@ class LinerScheduler:
             )
         except Exception:
             logger.exception("Could not add the %s that aired to History", kind)
-
-    def _report_cued_locked(self, keep: RenderedTrack | None = None) -> None:
-        """Report the cued liners the bus has started. Caller holds ``_lock``.
-
-        A cue that has not started is kept only while it waits in *keep*,
-        the render now playing: the bus drops a cue whose track ended.
-        """
-        waiting = []
-        for liner in self._cued:
-            cue = liner.cue
-            if cue is not None and cue.started:
-                self._report_locked(liner)
-            elif cue is not None and keep is not None and cue.track is keep:
-                waiting.append(liner)
-        self._cued = waiting
 
     def _talk_up(self) -> bool:
         """Whether talk-ups are on and can be timed."""
@@ -782,8 +770,9 @@ class LinerScheduler:
             if overlap_start <= frame < len(track.audio):
                 liner.cue = LinerCue(track, frame)
                 duck_db = float(self._cfg.liners_duck_db)
-                self._bus.play_liner(liner.audio, duck_db=duck_db, at=liner.cue)
-                self._cued.append(liner)
+                self._bus.play_liner(
+                    liner.audio, duck_db=duck_db, at=liner.cue, on_start=self._on_start(liner)
+                )
             self._prepared = liner
 
     def _auto_due_locked(self) -> bool:
@@ -846,9 +835,6 @@ class LinerScheduler:
                 logger.exception("Could not render the announcement due at this song")
         with self._work_lock:
             with self._state():
-                # A liner cued in the last track has started by now, or the
-                # bus dropped it with that track.
-                self._report_cued_locked(track)
                 self._tracks_since += 1
                 prepared, self._prepared = self._prepared, None
                 aired = (
@@ -872,18 +858,7 @@ class LinerScheduler:
     def tick(self) -> None:
         """Check timed triggers; call about once a second."""
         with self._work_lock:
-            if self._cued:
-                with self._state():
-                    self._report_cued_locked(self._cued_track())
             self._maybe_fire()
-
-    def _cued_track(self) -> RenderedTrack | None:
-        """The render the bus plays now, which a waiting cue may still be in."""
-        current = getattr(self._bus, "current_render", None)
-        try:
-            return current() if callable(current) else None
-        except Exception:
-            return None
 
     def fire(self, name: str | None = None) -> str | None:
         """Play liner *name*, or the next library pick, into the mix bus.
@@ -922,9 +897,9 @@ class LinerScheduler:
         Never waits for a liner decode in progress.  History lists it as
         *title*, kind ``cart``.
         """
+        cart = _Prepared("cart", audio, kind="cart", title=title)
         with self._state():
-            self._bus.play_liner(audio, duck_db=duck_db)
-            self._report_locked(_Prepared("cart", audio, kind="cart", title=title))
+            self._bus.play_liner(audio, duck_db=duck_db, on_start=self._on_start(cart))
 
     def stop_cart(self) -> None:
         """Fade out the clip on the liner path and bring the music back up."""

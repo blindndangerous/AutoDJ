@@ -1187,7 +1187,7 @@ class StationRuntime:
             bridge._open_play = None
             if interrupted is not None and interrupted.get("ended_at") is None:
                 interrupted["ended_at"] = status["since"]
-            bridge._play_history.append(row)
+            bridge._keep_history_row(row)
             if (ledger := self.ledger) is not None:
                 if interrupted is not None:
                     ledger.remember_history(interrupted)

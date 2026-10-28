@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import io
-from collections import deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,8 +39,11 @@ def _row(index: int, kind: str = "song", **fields) -> dict:
 
 
 def _client(rows: list[dict]) -> TestClient:
+    """A station whose History holds *rows*, oldest first, as the bridge keeps them."""
     bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
-    bridge._play_history = deque(rows, maxlen=2000)
+    with bridge._history_lock:
+        for row in rows:
+            bridge._keep_history_row(row)
     return TestClient(create_app(bridge))
 
 
@@ -56,20 +58,26 @@ def _mixed(songs: int) -> list[dict]:
     return rows
 
 
-def test_history_shows_music_only_by_default() -> None:
+def test_history_shows_what_it_always_did_by_default() -> None:
     rows = [
         _row(0),
         _row(1, "liner", path="/liners/id.wav"),
-        # A liner file played as a track, restored from the station database.
+        # A liner file played as a track, restored from the station database:
+        # listed with the songs, as before #601.
         _row(2, track_kind="liner", kind="song"),
         _row(3, "live", path=None, ended_at=None),
         _row(4, "ad", path=None),
         _row(5, track_kind="music", kind="song"),
     ]
     data = _client(rows).get("/api/history").json()
-    assert [item["event_id"] for item in data["items"]] == ["song-5", "live-3", "song-0"]
-    assert [item["kind"] for item in data["items"]] == ["song", "live", "song"]
-    assert data["total"] == 3
+    assert [item["event_id"] for item in data["items"]] == [
+        "song-5",
+        "live-3",
+        "song-2",
+        "song-0",
+    ]
+    assert [item["kind"] for item in data["items"]] == ["song", "live", "liner", "song"]
+    assert data["total"] == 4
 
 
 def test_history_with_liners_shows_everything_that_aired_with_its_kind() -> None:

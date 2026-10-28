@@ -303,3 +303,27 @@ def test_peak_listeners_today_resets_at_station_midnight_and_uptime_counts_up() 
     assert feed.snapshot()["peak_listeners_today"] == 1
     listeners[0] = 3
     assert feed.refresh()["peak_listeners_today"] == 3
+
+
+def test_a_playing_speech_segment_leaves_the_last_song_in_the_history() -> None:
+    """A show's speech segment is not listed (#601), so the song before it stays."""
+    current = SimpleNamespace(artist="", title="Weather", album="", length=30, path="segment")
+    cfg = SimpleNamespace(
+        stream=SimpleNamespace(station_name="Station"),
+        nowplaying=NowPlayingConfig(show_next=False, history_limit=5),
+    )
+    song = {"artist": "Old", "title": "Earlier", "duration": 90, "event_id": "song-1"}
+    song["played_at"] = "2026-01-01T00:00:00+00:00"
+    bridge = SimpleNamespace(
+        _open_play=(current, {"played_at": "2026-01-01T00:01:30+00:00", "event_id": "speech-1"}),
+        player=SimpleNamespace(
+            _cfg=cfg,
+            _state=SimpleNamespace(current_track=current, next_track=None),
+            _playback_pos=[0],
+            _current_sr=44100,
+        ),
+        stream=SimpleNamespace(listener_count=0),
+        history_snapshot=Mock(return_value=[song]),
+    )
+    payload = NowPlaying(bridge, timezone="UTC").snapshot()
+    assert [row["title"] for row in payload["history"]] == ["Earlier"]
