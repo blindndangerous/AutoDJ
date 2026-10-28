@@ -146,11 +146,13 @@ def test_manual_voice_is_dropped_when_its_full_chain_hits_a_hard_boundary(statio
     assert all(desk.get(item.break_id).state == DROPPED for item in taken)
     first_clip = first.cues.end - first.cues.start
     second_clip = second.cues.end - second.cues.start
+    # pytest.approx compares flat sequences only, so compare the windows' values in order.
+    values = [value for window in windows for value in window]
     if placement == "standalone":
-        assert windows == pytest.approx([(0.0, first_clip), (first_clip, second_clip)])
+        assert values == pytest.approx([0.0, first_clip, first_clip, second_clip])
     else:
-        assert windows == pytest.approx(
-            [(-2.0, 2.0 + first_clip), (-2.0, 2.0 + first_clip + second_clip)]
+        assert values == pytest.approx(
+            [-2.0, 2.0 + first_clip, -2.0, 2.0 + first_clip + second_clip]
         )
 
 

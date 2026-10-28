@@ -479,6 +479,9 @@ def test_tls_does_not_override_explicit_allowed_origin() -> None:
 def test_tampered_cookie_is_rejected() -> None:
     client = _security_client()
     assert _pair(client).status_code == 200
+    # Replace the session cookie rather than add a second one beside it: the
+    # client's send order for two same-named cookies is not part of the test.
+    client.cookies.clear()
     client.cookies.set(COOKIE_NAME, "tampered")
 
     assert client.get("/api/status").status_code == 401
