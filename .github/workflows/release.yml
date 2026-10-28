@@ -130,8 +130,11 @@ jobs:
   # are still published, the run is marked failed, and :stable-cuda stays on
   # the previous release until the maintainer reruns the failed jobs. A rerun
   # never replaces an :X.Y.Z-cuda already pushed; it points :stable-cuda at it,
-  # and only while this is still the newest release tag, so rerunning an older
-  # release never moves :stable or :stable-cuda back.
+  # and only while this is still the highest release tag in git, so rerunning
+  # an older release never moves :stable or :stable-cuda back. The same rule
+  # means a newer tag pushed while this release runs, or a stray release-style
+  # tag, holds :stable and :stable-cuda back: rerun the image jobs once that
+  # tag is released or deleted.
   image-cuda:
     needs: build-and-verify
     uses: ./.github/workflows/image.yml

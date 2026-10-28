@@ -21,8 +21,7 @@ name: Container image
 # build: it points the moving tags (:stable, :latest, :dev and their -cuda
 # forms) at the digest already there, byte for byte, and attests that digest
 # again, in case the earlier attempt stopped before attesting it. A moving tag
-# moves only for the newest release tag, or for master's current head, so a
-# rerun of an older run never moves it back.
+# never moves backwards: see "Choose the tags this run may move".
 on:
   push:
     branches: [master]
@@ -169,18 +168,27 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # :stable, :latest and :dev (and their -cuda forms) follow only the newest
-      # release tag and master's current head. A rerun of an older release, or
-      # of a master run a newer commit has passed, publishes only its own version
-      # or sha- tag and leaves the moving tags where they are.
+      # :stable, :latest and :dev (and their -cuda forms) never move backwards.
+      # A release moves :stable and :latest only when its tag is the highest
+      # vX.Y.Z tag in git. A newer tag pushed while this release still runs, or
+      # a stray tag shaped like a release, holds :stable back; rerun this
+      # release's image job once that tag is released or deleted. A master run
+      # moves :dev only when the tag is missing or this commit is ahead of, or
+      # the same as, the commit :dev holds now (its image's revision label,
+      # compared through GitHub's API), so a slow build still moves it unless a
+      # newer one already has. Any error asking stops the job before it pushes.
       - name: Choose the tags this run may move
         id: tags
         env:
+          IMAGE: ${{ needs.build.outputs.image }}
           TAGS: ${{ needs.build.outputs.tags }}
           RELEASE: ${{ inputs.release == true }}
           GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          pinned_pattern='^(sha-[0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)(-cuda)?$'
           ask() {
             local attempt
             for attempt in 1 2 3; do
@@ -192,24 +200,90 @@ jobs:
             echo "::error::GitHub's API did not answer gh api $*; nothing was pushed." >&2
             return 1
           }
+          # The commit a moving tag's image was built from; empty when the tag
+          # does not exist yet.
+          revision_of() {
+            local repository token accept body status digest config revision
+            repository="${IMAGE#ghcr.io/}"
+            token="$(printf 'user = "%s:%s"\n' "$ACTOR" "$TOKEN" |
+              curl --fail --silent --show-error --retry 3 --retry-connrefused --max-time 30 --config - \
+                "https://ghcr.io/token?scope=repository:${repository}:pull" | jq -r .token)"
+            accept="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json"
+            accept+=",application/vnd.docker.distribution.manifest.list.v2+json"
+            accept+=",application/vnd.docker.distribution.manifest.v2+json"
+            body="$RUNNER_TEMP/moving-tag.json"
+            get() {
+              curl --silent --show-error --location --retry 3 --retry-connrefused --max-time 60 \
+                --output "$body" --write-out '%{http_code}' \
+                --header "Authorization: Bearer $token" --header "Accept: $accept" \
+                "https://ghcr.io/v2/${repository}/$1"
+            }
+            status="$(get "manifests/$1")"
+            if [[ "$status" == 404 ]]; then
+              return 0
+            elif [[ "$status" != 200 ]]; then
+              echo "::error::The registry answered $status for $IMAGE:$1; nothing was pushed." >&2
+              return 1
+            fi
+            if jq -e '.manifests' "$body" >/dev/null; then
+              digest="$(jq -r '[.manifests[] | select(.platform.os == "linux" and
+                .platform.architecture == "amd64")][0].digest // empty' "$body")"
+              [[ -n "$digest" && "$(get "manifests/$digest")" == 200 ]] || {
+                echo "::error::Could not read the linux/amd64 image of $IMAGE:$1; nothing was pushed." >&2
+                return 1
+              }
+            fi
+            config="$(jq -r '.config.digest // empty' "$body")"
+            [[ -n "$config" && "$(get "blobs/$config")" == 200 ]] || {
+              echo "::error::Could not read the configuration of $IMAGE:$1; nothing was pushed." >&2
+              return 1
+            }
+            revision="$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' "$body")"
+            if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::$IMAGE:$1 has no commit in its revision label; nothing was pushed." >&2
+              return 1
+            fi
+            printf '%s\n' "$revision"
+          }
           if [[ "$RELEASE" == true ]]; then
             refs="$(ask --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --jq '.[].ref')"
             newest="$(grep -E '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$refs" | sed 's#^refs/tags/##' |
               sort -V | tail -n 1)"
             current=false
             [[ "$newest" != "$GITHUB_REF_NAME" ]] || current=true
-            why="the newest release is $newest"
+            why="the newest release tag is $newest; rerun this job once it is released or deleted"
           else
-            head="$(ask "repos/$GITHUB_REPOSITORY/commits/master" --jq .sha)"
-            current=false
-            [[ "$head" != "$GITHUB_SHA" ]] || current=true
-            why="master is now at $head"
+            moving=""
+            while IFS= read -r tag; do
+              if [[ -n "$tag" && ! "${tag##*:}" =~ $pinned_pattern ]]; then
+                moving="${tag##*:}"
+              fi
+            done <<<"$TAGS"
+            current=true
+            why=""
+            if [[ -n "$moving" ]]; then
+              held="$(revision_of "$moving")"
+              if [[ -n "$held" ]]; then
+                compared="$(ask "repos/$GITHUB_REPOSITORY/compare/${held}...${GITHUB_SHA}" --jq .status)"
+                case "$compared" in
+                  ahead | identical) ;;
+                  behind | diverged)
+                    current=false
+                    why="it holds ${held:0:7}, which this commit is not ahead of ($compared)"
+                    ;;
+                  *)
+                    echo "::error::GitHub compared ${held:0:7} with this commit as '$compared'; nothing was pushed." >&2
+                    exit 1
+                    ;;
+                esac
+              fi
+            fi
           fi
           {
             echo 'tags<<TAGS'
             while IFS= read -r tag; do
               [[ -n "$tag" ]] || continue
-              if [[ "$current" == true || "${tag##*:}" =~ ^(sha-[0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)(-cuda)?$ ]]; then
+              if [[ "$current" == true || "${tag##*:}" =~ $pinned_pattern ]]; then
                 printf '%s\n' "$tag"
               else
                 echo "::notice::Leaving $tag where it is: $why." >&2
