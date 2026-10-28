@@ -3124,6 +3124,8 @@ class Player:
             body = RenderedTrack(
                 current, LiveAudio(0, ()), None, 0, "", start_offset=self._pending_offset
             )
+        if isinstance(body.audio, LiveAudio):
+            self._cue_continuation_deck(body.audio)
         return replace(
             body,
             handoff_pending=True,
@@ -3143,6 +3145,31 @@ class Player:
             clock_step=self._pending_clock_step,
             clock_revision=self._pending_clock_cursor_revision,
         )
+
+    def _cue_continuation_deck(self, audio: LiveAudio) -> None:
+        """Seek the continuation's first deck to where it will play, off the bus.
+
+        An incoming deck opens at its song's saved start.  When the outgoing
+        render mixed the overlap from decoded windows instead of reading that
+        deck, the continuation starts further in, and its first read at
+        promotion restarts the decoder while the bus waits in silence.  A deck
+        the playing render still reads is left alone: its overlap moves it.
+        """
+        layer = next((item for item in audio.layers if isinstance(item.source, BufferedFile)), None)
+        if layer is None or not isinstance(deck := layer.source, BufferedFile):
+            return
+        playing = (self._playing_render, self.bus.current_render() if self.bus else None)
+        for track in playing:
+            if track is None:
+                continue
+            for timeline in (track.audio, track.full_audio):
+                if isinstance(timeline, LiveAudio) and any(
+                    item.source is deck for item in timeline.layers
+                ):
+                    return
+        # A failed deck reports itself when the bus reads it.
+        with contextlib.suppress(RuntimeError):
+            deck.ready(layer.offset, 1)
 
     def _prepare_live_candidate(
         self,
