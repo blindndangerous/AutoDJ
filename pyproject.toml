@@ -27,7 +27,7 @@ dependencies = [
     "python-multipart>=0.0.32", # form uploads; 0.0.32 limits part header count and size
     "librosa>=0.11.0", # spectral / chroma feature extraction
     "fastapi>=0.136.3", # web UI
-    "starlette~=1.6.0", # imported by the security middleware; patch releases only
+    "starlette>=1.10.0", # imported by the security middleware (public routing API only)
     "pydantic>=2.0.0", # request/response models in server.py
     "uvicorn[standard]>=0.47.0", # ASGI server; 0.47 adds ssl_context_factory
     "huggingface_hub>=1.31.0", # model checkpoint download
@@ -36,7 +36,7 @@ dependencies = [
     "numba>=0.67.0", # compiled mix-bus kernels that keep the GIL (EQ, duck)
     "filelock>=3.32.5", # cross-process index manifest lock
     "tzdata>=2026.1", # IANA time zones on Windows
-    "tzlocal>=5.3.1,<6", # detect the system IANA zone, including on Windows
+    "tzlocal>=5.3.1", # detect the system IANA zone, including on Windows
 ]
 
 [project.optional-dependencies]
@@ -66,7 +66,7 @@ all = [
 autodj = "autodj.launcher:main"
 
 [build-system]
-requires = ["hatchling==1.31.0"]
+requires = ["hatchling>=1.33.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -211,7 +211,7 @@ skips = [
 
 [dependency-groups]
 build = [
-    "hatchling==1.31.0",
+    "hatchling>=1.33.0",
 ]
 test = [
     "pytest>=8.0.0",
