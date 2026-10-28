@@ -406,10 +406,24 @@ def test_state_exposes_continuous_processing_and_prepared_handoff(bridge, mode) 
         "preset_warning": "No drive" if mode == "stereotool" else None,
         "stereotool": {"version": "11.05", "licensed": True} if mode == "stereotool" else None,
         "latency_seconds": 0.28,
+        "held_blocks": 0,
     }
     bridge.player._active_processing_mode = "off"
     assert bridge.get_state()["playout"]["error"] is None
     assert bridge.get_state()["playout"]["preset_warning"] is None
+
+
+def test_state_reports_the_mix_bus_held_silence_count(bridge) -> None:
+    """ADR-0004-21: /api/status reports the bus's held-silence block count."""
+    from autodj.mixbus import BusEvents, MixBus
+
+    bus = MixBus(
+        BusEvents(lambda _track: None, lambda _pos: None, lambda: None),
+        eq_gains=lambda: (1.0, 1.0, 1.0),
+    )
+    bus.held_blocks = 7
+    bridge.player.bus = bus
+    assert bridge.get_state()["playout"]["held_blocks"] == 7
 
 
 class TestNextTransitionFx:

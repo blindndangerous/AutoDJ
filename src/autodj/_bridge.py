@@ -1527,6 +1527,9 @@ class PlayerBridge(LibraryAccess):
                 "latency_seconds": master.latency_seconds
                 if master is not None and processing in {"smooth", "stereotool"}
                 else 0.0,
+                # 20 ms blocks of silence the mix bus held for audio that was
+                # not ready, since it started (the held-silence warnings).
+                "held_blocks": getattr(getattr(self.player, "bus", None), "held_blocks", 0),
             },
         }
 

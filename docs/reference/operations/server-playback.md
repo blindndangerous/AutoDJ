@@ -123,7 +123,8 @@ Mix bus held 1.300 s of silence: the next song's file deck was still seeking (/m
 The warning gives the length of the hold, its cause and, when known, the file involved. It is
 logged when the hold ends. Each station logs at most one such warning a minute; the next one says
 how many holds it left out. A hold that reaches 10 seconds is also logged once while it lasts,
-even within that minute. Silence before a set's first song is not counted.
+even within that minute. Silence before a set's first song is not counted. `/api/status` reports the station's
+count of held 20 ms blocks since its mix bus started as `playout.held_blocks`.
 
 The causes:
 
