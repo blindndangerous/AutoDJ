@@ -740,12 +740,12 @@ def _doctor_create_directories(
 ) -> bool:
     """Offer only missing writable storage directories identified by the checks.
 
-    These are the index and model folders and each other station's own
+    These are the index folder and each other station's own
     folder.  A new, empty folder replaces nothing, so no backup is made.
     """
     from autodj.doctor import CheckStatus
 
-    paths = {"index-path": cfg.index.index_dir, "model-path": cfg.index.model_dir}
+    paths = {"index-path": cfg.index.index_dir}
     changed = False
     for check in report.checks:
         path: Path | None
