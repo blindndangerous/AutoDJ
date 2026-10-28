@@ -435,6 +435,20 @@ def test_cpu_without_platform_recipe_keeps_locked_model_dependencies(setup_modul
     assert "--prune" not in export
 
 
+@pytest.mark.parametrize(
+    ("backend", "system"), [("cpu", "Linux"), ("nvidia", "Windows"), ("no-model", "Linux")]
+)
+def test_requirements_export_is_quiet(setup_modules, tmp_path, backend, system):
+    """uv export writes the file without also printing every requirement during setup."""
+    root, _ = _project(tmp_path)
+    commands = setup_modules.support.install_commands(
+        root, root / ".uv" / f"setup-{backend}", backend, system
+    )
+    export = next(command for command in commands if command[1] == "export")
+    assert "--quiet" in export
+    assert export[-2] == "--output-file"
+
+
 def test_failed_managed_update_does_not_save_selection(
     setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

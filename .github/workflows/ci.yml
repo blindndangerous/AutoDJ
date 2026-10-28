@@ -65,6 +65,9 @@ jobs:
           docker compose -f compose.yaml -f compose.gpu.yaml config -q
           test "$(docker compose -f compose.yaml -f compose.gpu.yaml config --images)" = \
             ghcr.io/blindndangerous/autodj:stable-cuda
+          docker compose -f compose.yaml -f compose.gpu.podman.yaml config -q
+          test "$(docker compose -f compose.yaml -f compose.gpu.podman.yaml config --images)" = \
+            ghcr.io/blindndangerous/autodj:stable-cuda
       - uses: ./.github/actions/build-image
 
   frontend:

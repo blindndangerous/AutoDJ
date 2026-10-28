@@ -833,8 +833,8 @@ def test_a_pinned_cuda_tag_may_still_be_building_and_a_local_cuda_build_keeps_it
     assert local("cuda") == [
         f"{build} docker compose -f compose.yaml -f compose.gpu.yaml -f compose.build.yaml "
         "up -d --build",
-        f"{build} podman compose -f compose.yaml -f compose.gpu.yaml -f compose.build.yaml "
-        "up -d --build",
+        f"{build} podman compose -f compose.yaml -f compose.gpu.podman.yaml "
+        "-f compose.build.yaml up -d --build",
     ]
     for variant in ("cpu", None):
         assert local(variant) == [

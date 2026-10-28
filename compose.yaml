@@ -39,6 +39,9 @@ services:
     working_dir: /config
     command: ["serve", "--lan"]
     environment:
+      # LAN mode for every command in the container, not only for serve's
+      # --lan above, so `autodj doctor` and `autodj devices` see it too.
+      AUTODJ_LAN: "1"
       # Tells LAN mode the addresses it detects are the machine's own.
       AUTODJ_HOST_NETWORK: "1"
       # Tells AutoDJ the restart policy above, so Settings, Updates may offer

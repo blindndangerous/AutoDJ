@@ -622,14 +622,18 @@ def update_commands(installation: Installation, result: UpdateCheck) -> list[str
         if installation.image_channel is None:
             # Built on this computer from the checkout, with compose.build.yaml.
             # Naming files with -f overrides COMPOSE_FILE, so a CUDA build names
-            # compose.gpu.yaml too, or the rebuilt container would lose the GPU.
+            # its engine's GPU file too, or the rebuilt container would lose the GPU.
             build = "AUTODJ_COMMIT=$(git rev-parse --short HEAD)"
-            gpu = " -f compose.gpu.yaml" if installation.image_variant == "cuda" else ""
-            files = f"-f compose.yaml{gpu} -f compose.build.yaml"
+            cuda = installation.image_variant == "cuda"
+
+            def files(gpu_file: str) -> str:
+                gpu = f" -f {gpu_file}" if cuda else ""
+                return f"-f compose.yaml{gpu} -f compose.build.yaml"
+
             return [
                 *checkout,
-                f"{build} docker compose {files} up -d --build",
-                f"{build} podman compose {files} up -d --build",
+                f"{build} docker compose {files('compose.gpu.yaml')} up -d --build",
+                f"{build} podman compose {files('compose.gpu.podman.yaml')} up -d --build",
             ]
         return [
             *_image_switch(installation, result),

@@ -1431,9 +1431,9 @@ for a tag. It adds NVIDIA's CUDA runtime wheels from PyPI, the `torch`, `nvidia-
 `triton` versions `uv.lock` pins and hash-checks, so it trusts PyPI's NVIDIA and PyTorch
 publishers as a bare-metal Linux install does; no NVIDIA base image is used. The GPU reaches the
 container only through the NVIDIA Container Toolkit on the host, which the operator installs and
-opts into with `compose.gpu.yaml`; it adds the host's driver libraries and device files, not new
-capabilities. Pull requests do not build the CUDA image, so its first check is on `master`. The
-GitHub release does not wait for it.
+opts into with `compose.gpu.yaml`, or `compose.gpu.podman.yaml` on Podman; it adds the host's
+driver libraries and device files, not new capabilities. Pull requests do not build the CUDA
+image, so its first check is on `master`. The GitHub release does not wait for it.
 
 `uv.lock` and `package-lock.json` are committed. CI uses frozen installs, runs `pip-audit` and
 `npm audit`, scans source tree with Trivy and OSV-Scanner, checks secrets with Gitleaks, and produces

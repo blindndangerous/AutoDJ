@@ -611,7 +611,8 @@ def _gpu_image_check(
                 "gpu-image",
                 CheckStatus.WARN,
                 "this CPU image sees an NVIDIA GPU it cannot use; for GPU song analysis, run "
-                "the -cuda image with compose.gpu.yaml, or a GPU analysis worker",
+                "the -cuda image with compose.gpu.yaml (compose.gpu.podman.yaml on Podman), "
+                "or a GPU analysis worker",
             ),
         )
     if not visible:
@@ -622,7 +623,9 @@ def _gpu_image_check(
                 "this CUDA image sees no NVIDIA GPU, so song analysis falls back to the CPU",
                 "Action: install the NVIDIA Container Toolkit on the host (Docker Desktop on "
                 "Windows has GPU support built in), add compose.gpu.yaml to COMPOSE_FILE in "
-                ".env, then run `docker compose up -d`.",
+                ".env, then run `docker compose up -d`. With Podman, generate the toolkit's CDI "
+                "specification and use compose.gpu.podman.yaml and `podman compose up -d` "
+                "instead.",
             ),
         )
     usable = (torch_sees_cuda or _torch_sees_cuda)()
