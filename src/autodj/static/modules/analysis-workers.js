@@ -26,7 +26,8 @@
 
 import { requestJson, withDisabled } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { copyByCommand, lastSeenWords, shownCode, spokenCode } from "./devices.js";
+import { lastSeenWords, shownCode, spokenCode } from "./devices.js";
+import { copyByCommand } from "./clipboard.js";
 import { nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
