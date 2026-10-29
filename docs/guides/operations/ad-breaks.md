@@ -59,7 +59,7 @@ day** to a date range. **Spots in the break** (1 to 10) and **Longest break in s
 limit) cap what it holds. Leave the minutes empty for a break that runs only from a Schedule event
 or **Run now**.
 
-For anything the minutes cannot say, add a **Schedule** event (Settings, Schedule) with the action
+For anything the minutes cannot say, add a **Schedule** event (Settings, General settings, Schedule) with the action
 **Ad break** and the break's name: once on a date, daily, on chosen days or every few minutes, with
 a date range. Choose **Hard** timing for it: an ad break never fades a song out, so Hard only means
 it is booked at its time, where Soft first waits for the playing song to end. The hour preview

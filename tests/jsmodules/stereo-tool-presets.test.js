@@ -101,7 +101,7 @@ describe("Stereo Tool preset markup", () => {
   const group = page.getElementById("stereo-preset").closest("fieldset");
 
   it("groups the preset controls under a legend shown only for Stereo Tool", () => {
-    expect(group.querySelector(":scope > legend").textContent).toBe("Stereo Tool");
+    expect(group.querySelector(":scope > legend").textContent).toBe("Stereo Tool processing");
     expect(group.dataset.showWhen).toBe("pb-replaygain=stereotool");
     expect(css).toContain(
       'body:not(:has(#pb-replaygain option[value="stereotool"]:checked)) '

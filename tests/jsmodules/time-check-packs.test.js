@@ -379,7 +379,7 @@ describe("recorded clips, intro and outro", () => {
     const controls = installTimeChecks({ request, interval: () => {} });
     await controls.refresh();
     byId("tc-enabled").click();
-    expect(await saveSettingsPanel(byId("spanel-time-checks"))).toBe(false);
+    expect(await saveSettingsPanel(byId("spanel-announcements"))).toBe(false);
     expect(await liveText()).toBe("Time check settings are still loading; try again in a moment.");
     expect(request.mock.calls.some(([, options]) => options?.method === "PUT")).toBe(false);
   });
@@ -430,7 +430,7 @@ describe("recorded clips, intro and outro", () => {
     byId("tc-recorded-folder").value = "Clips";
     byId("tc-recorded-folder").dispatchEvent(new Event("change"));
     expect(fetchImpl).not.toHaveBeenCalled();
-    await saveSettingsPanel(byId("spanel-time-checks"));
+    await saveSettingsPanel(byId("spanel-announcements"));
     let body = JSON.parse(fetchImpl.mock.calls.at(-1)[1].body).changes.time_checks;
     expect(body).toEqual({ recorded_folder: "Clips" });
     byId("tc-outro").value = "hello.wav";
@@ -438,7 +438,7 @@ describe("recorded clips, intro and outro", () => {
     byId("tc-intro").value = "";
     byId("tc-intro").dispatchEvent(new Event("change"));
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    await saveSettingsPanel(byId("spanel-time-checks"));
+    await saveSettingsPanel(byId("spanel-announcements"));
     body = JSON.parse(fetchImpl.mock.calls.at(-1)[1].body).changes.time_checks;
     expect(body.intro).toBe("");
     // None while config.toml has an intro turns it off; the outro is a file name.

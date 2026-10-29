@@ -17,7 +17,7 @@ the network can reach it:
 uv run autodj serve --lan --stream
 ```
 
-Choose **Stream** as the station's output in Settings > Stations. Existing installations
+Choose **Stream** as the station's output in Settings > General settings > Stations. Existing installations
 migrate legacy `[stream] enabled` and `AUTODJ_STREAM_ENABLED` settings into the default station
 definition at startup; the old TOML key and environment variable are migration inputs only.
 For automation, use `AUTODJ_STATION_DEFAULT_STREAM_*` variables for supported stream settings.
@@ -29,7 +29,7 @@ on loopback, since no other device could reach it.
 
 ## Finding the stream address
 
-Open the web page and go to Settings, Stream. The "Stream address" field holds the full URL;
+Open the web page and go to Settings, General settings, Broadcasting. The "Stream address" field holds the full URL;
 "Copy address" copies it. A "Download playlist file (.m3u)" link gives the same address as a
 one-line playlist, for players that prefer to open a file rather than type a URL. The listener
 count is shown below the address. The address is built from the address the page was opened
@@ -66,12 +66,12 @@ The password protects `/stream.mp3` and `/stream.m3u`; the playlist itself never
 credentials, so a player opening it must already know them. Some players, possibly Sonos, cannot
 send HTTP Basic credentials. The page's **Listen here** button may also fail when a password is
 set. HTTP sends the password across the network in plain text; use HTTPS if the network is not
-trusted. Settings, Stream shows whether a password is set; edits to this private file require a
+trusted. Settings, General settings, Broadcasting shows whether a password is set; edits to this private file require a
 restart. For the default station, the file is `<index_dir>/stations/default/secrets.json`.
 
 `max_listeners_per_address = 0` leaves the per-address limit off by default. A positive value
 limits one IP address to that many simultaneous connections, in addition to `max_listeners`.
-Change the value in Settings, Stream. If clients reach AutoDJ through a proxy or tunnel, list the **direct proxy
+Change the value in Settings, General settings, Broadcasting. If clients reach AutoDJ through a proxy or tunnel, list the **direct proxy
 peer's** IP address or CIDR in `[server] trusted_proxies`, for example
 `trusted_proxies = ["192.168.1.10"]`. Uvicorn then reads `X-Forwarded-For` from right to left
 and uses the first untrusted address. It does not use the RFC 7239 `Forwarded` header. Without
@@ -89,7 +89,7 @@ the startup log warns that it must append or overwrite `X-Forwarded-For`, and th
 terminate TLS and send `X-Forwarded-Proto: https` before machine tokens are accepted through it.
 Restart after changing trusted proxies.
 
-Settings, Stream lists each direct listener's address, player name and connection time. Use
+Settings, General settings, Broadcasting lists each direct listener's address, player name and connection time. Use
 **Disconnect** to end one connection, or **Ban** to block an address or CIDR for one hour, one day,
 seven days or until removal. The form accepts an optional note. A ban disconnects matching
 listeners immediately; blocked stream and playlist requests return 403. The **Bans** list removes
@@ -127,7 +127,7 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   station's `stream.max_listeners` setting (or `AUTODJ_STATION_<SLUG>_STREAM_MAX_LISTENERS`) if you regularly have more
   simultaneous listeners.
 - **The AAC or Opus address answers 404** — that format is off for the station. Turn it on in
-  Settings, Stream, More formats. If the log says the Opus stream encoder keeps exiting, the
+  Settings, General settings, Broadcasting, More formats. If the log says the Opus stream encoder keeps exiting, the
   ffmpeg on the PATH was built without libopus; install a build with it (the container image
   has one).
 - **A relay says "the server rejected the user name or password"** — check the password in

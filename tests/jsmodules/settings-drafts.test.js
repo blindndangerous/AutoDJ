@@ -33,6 +33,32 @@ beforeEach(async () => {
 });
 
 describe("Settings drafts", () => {
+  it("saves combined sections through one tab bar and one grouped request", async () => {
+    document.body.innerHTML = '<div id="spanel-mixing" role="tabpanel"><section id="spanel-transitions"><input value="0"></section><section id="spanel-djmix"><input type="checkbox"></section></div>';
+    const tab = document.getElementById("spanel-mixing");
+    const speed = tab.querySelector("input");
+    const beatmatch = tab.querySelector('[type="checkbox"]');
+    drafts.registerSettingsGroup({ panel: speed.parentElement, group: "playback", controls: [speed],
+      read: () => ({ music_speed_percent: Number(speed.value) }),
+      write: (value) => { speed.value = value.music_speed_percent; } });
+    drafts.registerSettingsGroup({ panel: beatmatch.parentElement, group: "djmix", controls: [beatmatch],
+      read: () => ({ beatmatch: beatmatch.checked }),
+      write: (value) => { beatmatch.checked = value.beatmatch; } });
+    const initial = { ...snapshot(), values: { playback: { music_speed_percent: 0 }, djmix: { beatmatch: false } } };
+    drafts.applySettingsDrafts(initial);
+    speed.value = "2";
+    beatmatch.checked = true;
+    speed.dispatchEvent(new Event("input", { bubbles: true }));
+    const values = { playback: { music_speed_percent: 2 }, djmix: { beatmatch: true } };
+    mocks.request.mockResolvedValue({ revision: "two", applied: ["playback", "djmix"], settings: { ...initial, values } });
+
+    expect(tab.querySelectorAll("[data-settings-save]")).toHaveLength(1);
+    expect(await drafts.saveSettingsPanel(tab)).toBe(true);
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(mocks.request.mock.calls[0][1].body).changes).toEqual(values);
+    expect(drafts.settingsHaveChanges()).toBe(false);
+  });
+
   it("preserves edits made before the initial settings load", () => {
     register(); edit(4);
     drafts.applySettingsDrafts(snapshot("one", 1));

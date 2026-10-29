@@ -86,7 +86,7 @@ the replaced files within five minutes.
 
 ## Paired devices
 
-In native mode, the web page's Settings, Profiles and access lists every paired device with when it was paired and
+In native mode, the web page's Settings, General settings, Server lists every paired device with when it was paired and
 when it was last seen, and marks this browser. Each row has Rename and Revoke. Names are 1 to 64
 printable characters. **Show pairing code** shows a code with a Copy button and how long it stays
 valid; the code changes by itself every five minutes and cannot be edited. Each code pairs one
@@ -180,7 +180,7 @@ and WebSocket connection. Configure the SSO provider's application access there.
 4. Sign in through the public proxy URL. A browser is registered automatically;
    no code or mandatory naming prompt is shown. Its initial label uses the
    display name (or stable ID when no name is supplied). Rename it to something
-   useful such as “Studio laptop” in Settings, Profiles and access.
+   useful such as “Studio laptop” in Settings, General settings, Server.
 
 Each SSO user sees, renames and forgets only their own browser records. A separate
 SSO browser cookie identifies the record; it grants no access without the verified

@@ -1967,18 +1967,19 @@ describe("static accessibility contracts", () => {
     const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
       .split(/\s+/).filter(Boolean).map((id) => document.getElementById(id));
 
-    // The Stream subtab's panel, under its heading; the fieldset and its
-    // tab stay hidden until the server reports stream mode.
+    // The Broadcasting settings panel keeps stream controls hidden until
+    // the server reports stream mode.
     const fieldset = document.querySelector("#stream-settings");
     expect(fieldset.tagName).toBe("FIELDSET");
     expect(fieldset.hidden).toBe(true);
     expect(fieldset.querySelector("legend").textContent.trim()).toBe("Stream");
-    expect(fieldset.parentElement.matches("#panel-settings > #spanel-stream")).toBe(true);
-    const panelHeading = fieldset.parentElement.querySelector(":scope > h3");
-    expect(panelHeading.textContent).toBe("Stream");
+    const streamPanel = fieldset.closest('[role="tabpanel"]');
+    expect(streamPanel.id).toBe("spanel-stream");
+    const panelHeading = streamPanel.querySelector(":scope > h3");
+    expect(panelHeading.textContent).toBe("Broadcasting");
     expect(panelHeading.nextElementSibling.id).toBe("public-page-form");
     expect(fieldset.previousElementSibling.id).toBe("public-page-form");
-    expect(document.querySelector("#stab-stream").hidden).toBe(false);
+    expect(document.querySelector("#stab-stream").hidden).toBe(true);
     expect([...fieldset.querySelectorAll("h4")].map((heading) => heading.textContent.trim()))
       .toEqual(["Relays", "More formats", "Now-playing feed", "Listeners", "Bans",
         "Listener statistics"]);
@@ -3373,13 +3374,13 @@ describe("static accessibility contracts", () => {
     // The shortcut is listed with the others, in words.
     const keys = [...document.querySelectorAll("#hotkey-help-modal dt kbd")].map((kbd) => kbd.textContent);
     expect(keys).toContain("Alt+M");
-    // Settings > Live DJ remains available independently of station playout.
-    const tab = document.getElementById("stab-live");
-    expect(tab.hidden).toBe(false);
-    expect(tab.textContent).toBe("Live DJ");
-    const panel = document.getElementById(tab.dataset.panel);
-    expect(panel.getAttribute("aria-labelledby")).toBe("stab-live");
-    expect(panel.querySelector(":scope > h3").textContent).toBe("Live DJ");
+    // Live DJ settings are grouped in the Stations panel and remain
+    // independently hidden until the station can go live.
+    const panel = document.getElementById("spanel-live");
+    expect(panel.tagName).toBe("SECTION");
+    expect(panel.closest('[role="tabpanel"]').id).toBe("spanel-stream");
+    expect(panel.querySelector(":scope > h4").textContent).toBe("Live DJ");
+    expect(document.getElementById("live-settings").hidden).toBe(true);
     expect(panel.querySelector("[aria-live], [role=status], [role=alert]")).toBeNull();
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)?.textContent.trim();
     for (const [id, label] of [
@@ -3676,7 +3677,7 @@ describe("station switcher and station context contracts (#70)", () => {
     const shared = document.getElementById("shared-context");
     expect(shared.hidden).toBe(true);
     expect(shared.textContent).toBe("");
-    for (const id of ["tab-library", "points-save", "stab-stations"]) {
+    for (const id of ["tab-library", "points-save", "stab-server"]) {
       expect(ids(document.getElementById(id), "aria-describedby"), id).toContain("shared-context");
     }
   });
@@ -3709,7 +3710,7 @@ describe("station switcher and station context contracts (#70)", () => {
     const panel = document.getElementById("spanel-stations");
     expect(panel.getAttribute("role")).toBe("tabpanel");
     expect(panel.getAttribute("aria-labelledby")).toBe("stab-stations");
-    expect(document.getElementById("spanel-live").parentElement).toBe(panel.parentElement);
+    expect(document.getElementById("spanel-live").closest('[role="tabpanel"]').id).toBe("spanel-stream");
     const table = document.getElementById("stations-table");
     expect(document.getElementById("stations-list").parentElement).toBe(table);
     expect(table.getAttribute("role")).toBe("grid");

@@ -6,14 +6,15 @@ import { installIndexMarkup as installIndex } from "./helpers.js";
 import { initSubtabs } from "../../src/autodj/static/modules/subtabs.js";
 import { installTimeChecks } from "../../src/autodj/static/modules/time-checks.js";
 
-const { groups } = vi.hoisted(() => ({ groups: [] }));
+const { groups, draftState } = vi.hoisted(() => ({ groups: [], draftState: { profile: null } }));
 vi.mock("../../src/autodj/static/modules/settings-drafts.js", () => ({
   settingsHaveChanges: () => false,
   confirmSettingsNavigation: async () => true,
   registerSettingsGroup: (spec) => {
     groups.push(spec);
-    return { accept: (body) => spec.write(body), dirty: () => false };
+    return { accept: (body) => { if (!draftState.profile) spec.write(body); }, dirty: () => false };
   },
+  settingsDraftHolds: () => Boolean(draftState.profile),
 }));
 
 // The real Settings markup, so the ids, labels and live region the module
@@ -43,20 +44,29 @@ function server(overrides = {}) {
   });
 }
 
-beforeEach(() => { groups.length = 0; installIndex(); });
+beforeEach(() => { groups.length = 0; draftState.profile = null; installIndex(); });
 
 describe("Time checks panel markup", () => {
-  it("is a Settings subtab between Voice liners and Breaks, with no aria-controls", () => {
-    const tab = byId("stab-time-checks");
+  it("is an inner section in Announcements, with no separate tab", () => {
+    const tab = byId("stab-announcements");
     expect(tab.getAttribute("role")).toBe("tab");
     expect(tab.hasAttribute("aria-controls")).toBe(false);
-    expect(tab.previousElementSibling.id).toBe("stab-liners");
-    expect(tab.nextElementSibling.id).toBe("stab-breaks");
+    expect(tab.dataset.settingsKind).toBe("profile");
     const panel = byId(tab.dataset.panel);
-    expect(panel.id).toBe("spanel-time-checks");
+    expect(panel.id).toBe("spanel-announcements");
     expect(panel.getAttribute("role")).toBe("tabpanel");
-    expect(panel.getAttribute("aria-labelledby")).toBe("stab-time-checks");
-    expect(panel.querySelector(":scope > h3").textContent).toBe("Time checks");
+    expect(panel.getAttribute("aria-labelledby")).toBe("stab-announcements");
+    expect(panel.querySelector(":scope > h3").textContent).toBe("Announcements");
+    const section = byId("spanel-time-checks");
+    expect(section.tagName).toBe("SECTION");
+    expect(section.hasAttribute("data-settings-section")).toBe(true);
+    expect(section.getAttribute("role")).toBeNull();
+    expect(section.closest('[role="tabpanel"]')).toBe(panel);
+    expect(section.querySelector(":scope > h4").textContent).toBe("Time checks");
+    expect(panel.querySelector("#spanel-liners").compareDocumentPosition(section)
+      & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(section.compareDocumentPosition(panel.querySelector("#spanel-breaks"))
+      & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("labels native controls and keeps general help available separately", () => {
@@ -261,6 +271,59 @@ describe("voice packs", () => {
 });
 
 describe("time checks panel", () => {
+  it("keeps target pack choices loaded before live pack metadata", async () => {
+    draftState.profile = "Evening";
+    const runtime = {
+      enabled: true, hour_format: "12", rule: "after_hour_song", timezone: "UTC", duck_db: -12,
+      missing_minutes: 1439, tts_available: true, enabled_packs: [], pack_order: "rotate",
+      packs: [{ name: "Studio", enabled: false, minutes_covered: 1440, summary: "Live coverage." }],
+    };
+    const request = vi.fn(async () => runtime);
+    const controls = installTimeChecks({ request, interval: () => {} });
+    groups.find((group) => group.group === "time_checks").write({
+      enabled: false, hour_format: "24", rule: "off", enabled_packs: ["Studio"], pack_order: "random",
+    });
+
+    await controls.refresh();
+
+    expect(byId("tc-enabled").checked).toBe(false);
+    expect(byId("tc-hour-format").value).toBe("24");
+    expect(byId("tc-pack-list").querySelector("input").checked).toBe(true);
+    expect(byId("tc-pack-0-desc").textContent).toBe("Live coverage.");
+  });
+
+  it("refreshes live coverage without replacing a clean selected-profile draft", async () => {
+    let runtime = {
+      enabled: true, hour_format: "12", rule: "after_hour_song", timezone: "UTC", duck_db: -12,
+      missing_minutes: 1439, tts_available: true, enabled_packs: ["Studio"], pack_order: "rotate",
+      packs: [{ name: "Studio", enabled: true, minutes_covered: 1440, summary: "Initial coverage." }],
+    };
+    const request = vi.fn(async () => runtime);
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+
+    const pack = byId("tc-pack-list").querySelector("input");
+    byId("tc-enabled").checked = false;
+    byId("tc-hour-format").value = "24";
+    pack.checked = false;
+    draftState.profile = "Evening";
+    runtime = {
+      ...runtime,
+      enabled: true,
+      hour_format: "12",
+      missing_minutes: 1000,
+      packs: [{ ...runtime.packs[0], enabled: true, summary: "Updated coverage." }],
+    };
+
+    await controls.refresh();
+
+    expect(byId("tc-enabled").checked).toBe(false);
+    expect(byId("tc-hour-format").value).toBe("24");
+    expect(pack.checked).toBe(false);
+    expect(byId("tc-pack-0-desc").textContent).toBe("Updated coverage.");
+    expect(byId("tc-clips-status").textContent).toContain("440 of 1440 minute clips recorded.");
+  });
+
   it("shows clip coverage and reads a changed setting into the draft", async () => {
     const request = server();
     const controls = installTimeChecks({ request, interval: () => {} });
@@ -387,14 +450,14 @@ describe("time checks panel", () => {
       "0 of 1440 minute clips recorded. No text to speech is set up");
   });
 
-  it("refreshes the coverage when its subtab is shown", async () => {
+  it("refreshes coverage when the Announcements group shows its time-checks section", async () => {
     const request = server();
     byId("panel-settings").hidden = false;
     installTimeChecks({ request, interval: () => {} });
     const store = { getItem: () => null, setItem: () => {} };
     initSubtabs(byId("settings-tabs"), { storage: store });
     await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
-    byId("stab-time-checks").click();
+    byId("stab-announcements").click();
     await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
   });
 

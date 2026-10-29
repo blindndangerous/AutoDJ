@@ -117,7 +117,7 @@ async function applyAppSettings(values, revision = "one") {
 
 async function saveSettingsControl(control) {
   const { saveSettingsPanel } = await settingsDraftApi();
-  return saveSettingsPanel(control.closest('[id^="spanel-"]'));
+  return saveSettingsPanel(control.closest('[id^="spanel-"][role="tabpanel"]'));
 }
 
 function installDocument() {
@@ -744,7 +744,7 @@ describe("app request behavior", () => {
       onRequest: (url, options) => settings(url, options) || jsonResponse({ ok: true }),
     });
     const status = document.querySelector("#settings-status");
-    const saveStatus = document.querySelector("#spanel-sound .settings-save-status");
+    const saveStatus = document.querySelector("#spanel-display .settings-save-status");
     const records = [];
     await vi.waitFor(() =>
       expect(status.textContent).toContain("Could not switch audio device"));
@@ -807,9 +807,9 @@ describe("app request behavior", () => {
     expect(await saveSettingsControl(select)).toBe(false);
     expect(store.get("autodj.sinkId")).toBe("old-dac");
     expect(liveRoute).toBe("old-dac");
-    await vi.waitFor(() => expect(document.querySelector("#spanel-sound .settings-save-status").textContent)
+    await vi.waitFor(() => expect(document.querySelector("#spanel-display .settings-save-status").textContent)
       .toContain("storage full"));
-    document.querySelector("#spanel-sound [data-settings-discard]").click();
+    document.querySelector("#spanel-display [data-settings-discard]").click();
     expect(select.value).toBe("old-dac");
     expect(liveRoute).toBe("old-dac");
     expect(deck.audio.setSinkId).not.toHaveBeenCalledWith("new-dac");
@@ -2205,7 +2205,11 @@ describe("app request behavior", () => {
         })
         : jsonResponse({ ok: true }),
     });
-    await vi.waitFor(() => expect(document.querySelector("#stab-live").hidden).toBe(false));
+    document.querySelector("#tab-settings").click();
+    await vi.waitFor(() => expect(document.querySelector("#panel-settings").hidden).toBe(false));
+    document.querySelector('#settings-section input[value="general"]').click();
+    document.querySelector("#stab-stream").click();
+    await vi.waitFor(() => expect(document.querySelector("#spanel-live").open).toBe(true));
     expect(document.querySelector("#talk-desk").hidden).toBe(false);
     expect(document.querySelector("#live-on-air").textContent).toMatch(/^Live: DJ Alice since /);
     expect(document.querySelector("#live-dj-none").hidden).toBe(false);
@@ -2347,8 +2351,8 @@ describe("app request behavior", () => {
       document.querySelector("#track-info-return").click();
       await vi.waitFor(() => expect(document.activeElement).toBe(nowButton));
 
-      // Liner file maintenance is in Settings > Voice liners.
-      document.querySelector("#stab-liners").click();
+      // Liner file maintenance is under Profile settings > Announcements.
+      document.querySelector("#stab-announcements").click();
       await vi.waitFor(() => expect(document.querySelector("#spanel-liners").hidden).toBe(false));
       const { renderLinerFileList } = await vi.importActual("../../src/autodj/static/modules/liners.js");
       const list = document.querySelector("#ln-file-list");

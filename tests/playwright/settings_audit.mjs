@@ -20,6 +20,9 @@ async function audit(name, launcher) {
     await page.goto(BASE, { waitUntil: "networkidle" });
     assert.equal(await page.evaluate(() => localStorage.getItem("autodj.announceTrackChanges")), "all");
     assert.equal(await page.evaluate(() => localStorage.getItem("autodj.announceTrackChangesEverywhere")), null);
+    await page.locator("#tab-settings").click();
+    await page.locator('#settings-section input[name="settings-section"][value="general"]').click();
+    await page.locator("#stab-display").click();
     await page.reload({ waitUntil: "networkidle" });
     assert.equal(await page.locator("#announce-track-changes").inputValue(), "all");
     const slug = `audit-${name}-${Date.now().toString(36)}`;
@@ -28,6 +31,7 @@ async function audit(name, launcher) {
     });
     assert.equal(created.status(), 201, await created.text());
     await page.goto(`${BASE}/?station=${slug}#settings`, { waitUntil: "networkidle" });
+    await page.locator('#settings-section input[name="settings-section"][value="profile"]').click();
     const endpoint = `${BASE}/api/stations/${slug}`;
     const runtimeSettings = async () => (await (await page.request.get(`${endpoint}/settings`)).json());
     const editingSettings = async (profile = "") => (await (await page.request.get(
@@ -54,7 +58,7 @@ async function audit(name, launcher) {
     await page.keyboard.press("Enter");
     assert.equal((await saving).status(), 200);
     assert.equal((await editingSettings()).values.playback.music_speed_percent, wanted);
-    assert.equal((await runtimeSettings()).values.playback.music_speed_percent, before);
+    assert.equal((await runtimeSettings()).values.playback.music_speed_percent, wanted);
     await page.waitForFunction(() => document.querySelector("#spanel-sound .settings-save-status")
       .textContent.startsWith("Settings saved for"));
     const focusAfter = (selector) => page.evaluate((target) => {
@@ -79,7 +83,10 @@ async function audit(name, launcher) {
     await page.locator("#settings-profile").selectOption(profileName);
     await page.locator("#stab-sound").click();
     await speed.fill("6");
+    const saveInactive = page.waitForResponse((response) => response.url() === `${endpoint}/settings`
+      && response.request().method() === "PATCH");
     await panel.locator("[data-settings-save]").click();
+    assert.equal((await saveInactive).status(), 200);
     await page.waitForFunction(() => document.querySelector("#spanel-sound .settings-save-status")
       .textContent.startsWith("Settings saved for"));
     assert.equal((await editingSettings(profileName)).values.playback.music_speed_percent, 6);
@@ -97,6 +104,24 @@ async function audit(name, launcher) {
     await page.getByRole("button", { name: `Apply profile ${profileName}` }).click();
     assert.equal((await profileApply).status(), 200);
     assert.equal((await runtimeSettings()).values.playback.music_speed_percent, 6);
+    await page.locator("#stab-sound").click();
+    await speed.fill("7");
+    const saveActive = page.waitForResponse((response) => response.url() === `${endpoint}/settings`
+      && response.request().method() === "PATCH");
+    await panel.locator("[data-settings-save]").click();
+    assert.equal((await saveActive).status(), 200);
+    assert.equal((await runtimeSettings()).values.playback.music_speed_percent, 7);
+    // An external activation during editing changes what is on air, not the draft target.
+    assert.equal((await page.request.post(`${endpoint}/profiles/apply-defaults`, {
+      headers: { Origin: ORIGIN },
+    })).status(), 200);
+    await speed.fill("6");
+    const saveAfterSwitch = page.waitForResponse((response) => response.url() === `${endpoint}/settings`
+      && response.request().method() === "PATCH");
+    await panel.locator("[data-settings-save]").click();
+    assert.equal((await saveAfterSwitch).status(), 200);
+    assert.equal((await runtimeSettings()).values.playback.music_speed_percent, wanted);
+    await page.locator("#stab-access").click();
     const profileReapply = page.waitForResponse((response) => response.url() === `${endpoint}/profiles/${encodeURIComponent(profileName)}/apply`
       && response.request().method() === "POST");
     await page.getByRole("button", { name: `Apply profile ${profileName}` }).click();
@@ -104,7 +129,7 @@ async function audit(name, launcher) {
     await page.locator("#settings-profile").selectOption("");
     await page.locator("#stab-sound").click();
     await speed.fill("3");
-    await page.locator("#stab-stream").click();
+    await page.locator('#settings-section input[name="settings-section"][value="general"]').click();
     // The dialog's close event returns focus to its opener a task later, so
     // wait for it before focusing Discard.
     const closed = page.evaluate(() => new Promise((resolve) => {
@@ -138,6 +163,7 @@ async function audit(name, launcher) {
     await panel.locator("[data-settings-discard]").click();
     await page.waitForFunction(() => document.getElementById("pb-music-speed-number").value === "5");
 
+    await page.locator('#settings-section input[name="settings-section"][value="general"]').click();
     await page.locator("#stab-stream").click();
     await page.locator("#stream-relay-settings > summary").click();
     await page.locator("#stream-relay-add").click();
@@ -156,7 +182,7 @@ async function audit(name, launcher) {
     const relays = await (await page.request.get(`${endpoint}/stream/relays`)).json();
     assert.equal(relays.relays[0].name, "Streammadness relay");
     assert.equal(JSON.stringify(relays).includes("test123"), false);
-    assert.equal(await page.locator("#stab-live").isVisible(), true);
+    assert.equal(await page.locator("#spanel-live").isVisible(), true);
     assert.deepEqual(errors, []);
     for (const canonical of ["off", null]) {
       const migration = await browser.newContext();

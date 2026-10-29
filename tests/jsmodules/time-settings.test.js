@@ -24,8 +24,9 @@ describe("time format", () => {
 
   it("loads time settings and exposes the station time draft", async () => {
     document.body.innerHTML = `
-      <div id="spanel-stations"><div id="stations-status"></div>
-      <select id="time-zone"></select>
+      <div id="spanel-stations" role="tabpanel"><div id="stations-status"></div>
+      <select id="time-zone"></select></div>
+      <div id="spanel-server" role="tabpanel">
       <select id="time-format"><option value="24">24</option><option value="12">12</option></select></div>`;
     const view = (timezone, format) => ({
       timezone, running_timezone: "UTC", time_format: format, timezones: ["Pacific/Auckland", "UTC"],
@@ -36,10 +37,13 @@ describe("time format", () => {
     expect(document.getElementById("time-zone").options[0].textContent).toBe("Pacific/Auckland");
     document.getElementById("time-zone").value = "Pacific/Auckland";
     document.getElementById("time-format").value = "12";
-    const draft = groups.find((group) => group.group === "time");
-    expect(draft.read()).toEqual({ timezone: "Pacific/Auckland", time_format: "12" });
-    expect(request).toHaveBeenCalledTimes(1);
-    draft.write({ timezone: "Pacific/Auckland", time_format: "12" });
+    const drafts = groups.filter((group) => group.group === "time");
+    expect(drafts.find((group) => group.panel.id === "spanel-stations").read())
+      .toEqual({ timezone: "Pacific/Auckland" });
+    expect(drafts.find((group) => group.panel.id === "spanel-server").read())
+      .toEqual({ time_format: "12" });
+    expect(request).toHaveBeenCalledTimes(2);
+    drafts.find((group) => group.panel.id === "spanel-server").write({ time_format: "12" });
     expect(clockText(when, { locale: "en-US" })).toBe("3:04 PM");
   });
 });

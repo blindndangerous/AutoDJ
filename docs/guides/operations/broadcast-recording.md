@@ -13,7 +13,7 @@ neither change nor see the folder.
 The default is `recordings`. Files use the station time zone and names such as
 `AutoDJ-2026-10-11_13-00-00.mp3`. The station name is reduced to safe filename characters.
 
-In Settings, Stream, Broadcast recording, the **Record broadcast** toggle button starts and
+In Settings, General settings, Broadcasting, Broadcast recording, the **Record broadcast** toggle button starts and
 stops recording (screen readers say whether it is pressed), and **Split recording now** starts
 a new file. Under **Start a new file**, **Every clock hour** (`split = "hour"`) splits at
 each clock hour, and **For each show** (`split = "show"`) splits when the operator presses

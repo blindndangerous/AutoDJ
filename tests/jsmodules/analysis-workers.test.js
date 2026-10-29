@@ -111,15 +111,17 @@ beforeEach(installIndex);
 afterEach(() => vi.restoreAllMocks());
 
 describe("Analysis workers markup", () => {
-  it("follows Profiles and access, with no aria-controls, and a labelled panel", () => {
-    const tab = byId("stab-workers");
+  it("is grouped with updates in the Server settings tabpanel", () => {
+    const tab = byId("stab-server");
     expect(tab.getAttribute("role")).toBe("tab");
     expect(tab.hasAttribute("aria-controls")).toBe(false);
-    expect(tab.previousElementSibling.id).toBe("stab-access");
     const panel = byId(tab.dataset.panel);
     expect(panel.getAttribute("role")).toBe("tabpanel");
-    expect(panel.getAttribute("aria-labelledby")).toBe("stab-workers");
-    expect(panel.querySelector(":scope > h3").textContent).toBe("Analysis workers");
+    expect(panel.getAttribute("aria-labelledby")).toBe("stab-server");
+    expect(panel.querySelector(":scope > h3").textContent).toBe("Server");
+    const workers = byId("spanel-workers");
+    expect(workers.closest('[role="tabpanel"]')).toBe(panel);
+    expect(workers.querySelector(":scope > h4").textContent).toBe("Analysis workers");
   });
 
   it("uses native, labelled controls and one polite status region", () => {

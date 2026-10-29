@@ -1407,7 +1407,7 @@ const _profileEls = {
 const profileControls = installProfiles(_profileEls);
 
 const _accessEls = {
-  card:     document.getElementById("spanel-access"),
+  card:     document.getElementById("spanel-server"),
   note:     document.getElementById("access-note"),
   controls: document.getElementById("access-controls"),
   signOut:  document.getElementById("access-sign-out"),

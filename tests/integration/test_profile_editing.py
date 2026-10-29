@@ -46,7 +46,10 @@ def test_partial_time_check_profile_draft_can_be_saved(rig: Any, target: str) ->
         **view["values"]["time_checks"],
         "enabled": enabled,
     }
-    assert station.time_checks.settings.model_dump() == active_before
+    if target:
+        assert station.time_checks.settings.model_dump() == active_before
+    else:
+        assert station.time_checks.settings.enabled is enabled
 
 
 @pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
@@ -58,10 +61,9 @@ def test_profile_defaults_editing_apply_reset_and_station_isolation(
     registry = client.app.state.stations
     nightowl = registry.editable("nightowl")
     default = registry.default
-    original_crossfade = nightowl.cfg.playback.crossfade_seconds
 
     # An explicitly empty query target edits saved defaults and resolves to
-    # the stopped station's current values.
+    # the stopped station's current values. The default target is active now.
     defaults = settings_view(client, "")
     assert defaults["profile"] == ""
     assert defaults["active_profile"] is None
@@ -70,7 +72,7 @@ def test_profile_defaults_editing_apply_reset_and_station_isolation(
         client, defaults, "", {"playback": {"crossfade_seconds": default_crossfade}}
     )
     assert saved_defaults.status_code == 200, saved_defaults.text
-    assert nightowl.cfg.playback.crossfade_seconds == original_crossfade
+    assert nightowl.cfg.playback.crossfade_seconds == default_crossfade
 
     created = client.post(
         f"{OWL}/profiles",
@@ -106,8 +108,8 @@ def test_profile_defaults_editing_apply_reset_and_station_isolation(
     assert legacy["values"]["playback"]["beat_sync_fx"] is False
     assert legacy["values"]["playback"]["fade_in_seconds"] == 0
 
-    # Saving a value equal to defaults removes that override, without
-    # applying either the profile or its remaining explicit false value.
+    # Saving a value equal to defaults removes that override while the
+    # defaults target is active; the inactive profile is not applied.
     inherited = patch_profile(
         client,
         evening,
@@ -121,7 +123,7 @@ def test_profile_defaults_editing_apply_reset_and_station_isolation(
     assert saved_profile["settings"] == {
         "playback": {"beat_sync_fx": False, "fade_in_seconds": 0.0}
     }
-    assert nightowl.cfg.playback.crossfade_seconds == original_crossfade
+    assert nightowl.cfg.playback.crossfade_seconds == default_crossfade
     assert nightowl.cfg.playback.beat_sync_fx is True
 
     activated = client.post(f"{OWL}/profiles/Evening/apply")
@@ -142,6 +144,7 @@ def test_profile_defaults_editing_apply_reset_and_station_isolation(
         {"playback": {"crossfade_seconds": later_crossfade}},
     )
     assert changed_defaults.status_code == 200, changed_defaults.text
+    assert client.get(f"{OWL}/profiles").json()["active"] == "Evening"
     assert nightowl.cfg.playback.crossfade_seconds == default_crossfade
     reapplied = client.post(f"{OWL}/profiles/Evening/apply")
     assert reapplied.status_code == 200, reapplied.text
@@ -204,6 +207,73 @@ def test_profile_defaults_editing_apply_reset_and_station_isolation(
     assert run.status_code == 200, run.text
     assert run.json()["result"] == "ok"
     assert default.cfg.playback.crossfade_seconds == 2.75
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_saving_a_profile_after_another_profile_becomes_active_does_not_switch_back(
+    rig: Any,
+) -> None:
+    client, *_ = rig
+    station = client.app.state.stations.editable("nightowl")
+    assert (
+        client.post(f"{OWL}/profiles", json={"name": "A", "crossfade_seconds": 7.0}).status_code
+        == 200
+    )
+    assert (
+        client.post(f"{OWL}/profiles", json={"name": "B", "crossfade_seconds": 8.0}).status_code
+        == 200
+    )
+    assert client.post(f"{OWL}/profiles/A/apply").status_code == 200
+    assert client.post(f"{OWL}/profiles/B/apply").status_code == 200
+    assert station.cfg.playback.crossfade_seconds == 8.0
+
+    editing_a = settings_view(client, "A")
+    saved_a = patch_profile(client, editing_a, "A", {"playback": {"crossfade_seconds": 9.0}})
+
+    assert saved_a.status_code == 200, saved_a.text
+    assert settings_view(client, "A")["values"]["playback"]["crossfade_seconds"] == 9.0
+    assert client.get(f"{OWL}/profiles").json()["active"] == "B"
+    assert station.cfg.playback.crossfade_seconds == 8.0
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_active_profile_save_reports_partial_apply_failure_after_persisting(
+    rig: Any, monkeypatch
+) -> None:
+    client, *_ = rig
+    station = client.app.state.stations.editable("nightowl")
+    created = client.post(f"{OWL}/profiles", json={"name": "Partial", "crossfade_seconds": 8.0})
+    assert created.status_code == 200, created.text
+    applied = client.post(f"{OWL}/profiles/Partial/apply")
+    assert applied.status_code == 200, applied.text
+
+    def fail_save(_settings):
+        raise OSError("disk write failed")
+
+    monkeypatch.setattr(station.time_checks, "save", fail_save)
+    view = settings_view(client, "Partial")
+    response = patch_profile(
+        client,
+        view,
+        "Partial",
+        {
+            "playback": {"crossfade_seconds": 9.0},
+            "time_checks": {"enabled": not view["values"]["time_checks"]["enabled"]},
+        },
+    )
+
+    assert response.status_code == 207, response.text
+    assert "Settings were saved" in response.json()["failed"]["playback"]
+    assert "time checks" in response.json()["failed"]["playback"]
+    assert "disk write failed" in response.json()["failed"]["time_checks"]
+    saved = json.loads((station.paths.profiles / "Partial.json").read_text(encoding="utf-8"))
+    assert saved["settings"]["playback"]["crossfade_seconds"] == 9.0
+    assert (
+        saved["settings"]["time_checks"]["enabled"] is not view["values"]["time_checks"]["enabled"]
+    )
+    assert settings_view(client, "Partial")["values"]["playback"]["crossfade_seconds"] == 9.0
+    assert client.get(f"{OWL}/profiles").json()["active"] == "Partial"
+    assert station.cfg.playback.crossfade_seconds == 9.0
 
 
 @pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)

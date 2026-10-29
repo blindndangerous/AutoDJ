@@ -1,4 +1,4 @@
-// Settings > Sound > Stereo Tool library and licence: download Thimeo's
+// Settings > General settings > Server > Stereo Tool library and licence: download Thimeo's
 // Stereo Tool plugin library onto the server and set its licence key.
 //
 // AutoDJ cannot include Stereo Tool, so Download Stereo Tool asks the
@@ -77,7 +77,7 @@ export function licenseText(data) {
 
 export function installStereoToolSetup({ document: doc = document, request = requestJson,
   confirm = confirmAction, status, stationChanges = onStationChange, recheckMs = 4000 }) {
-  const panel = doc.getElementById("spanel-sound");
+  const soundPanel = doc.getElementById("spanel-sound");
   const installStatus = doc.getElementById("stereo-install-status");
   const accept = doc.getElementById("stereo-accept-terms");
   const download = doc.getElementById("stereo-download");
@@ -89,6 +89,7 @@ export function installStereoToolSetup({ document: doc = document, request = req
   const keyError = doc.getElementById("stereo-license-error");
   const save = doc.getElementById("stereo-license-save");
   const clear = doc.getElementById("stereo-license-clear");
+  const panel = download?.closest('[role="tabpanel"]') || soundPanel;
   if (!panel || !installStatus || !accept || !download || !licenseStatus || !keyField
     || !stationOnly || !keyError || !save || !clear) return null;
   const speak = (message, error = false) => announceStatus(status, message,

@@ -233,6 +233,18 @@ class ProfileSettings:
                 self.store.save(ProfileSnapshot(name=name, settings=overrides(defaults, values)))
             else:
                 self._write(self.defaults_path, values)
+            # Check the active identity under the same lock as scheduled Apply.
+            # A draft for a profile that has gone off air must not switch it back.
+            if (name or None) == self.active:
+                try:
+                    # Apply the edited groups without reselecting an unchanged
+                    # clockwheel or rewriting unrelated feature stores.
+                    self.apply_values({group: values[group] for group in changes})
+                except ValueError as exc:
+                    raise ValueError(
+                        "Settings were saved, but could not be fully applied. "
+                        f"Some settings may already be active: {exc}"
+                    ) from exc
             return values
 
     def create(self, snapshot: ProfileSnapshot) -> None:

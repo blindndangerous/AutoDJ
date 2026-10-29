@@ -50,7 +50,7 @@ ends.
     1:35, bar 49, in 0:12" (or "0:08 ago" for Left bracket). They do not
     move it, because listeners would hear the jump.
   - To have them move the song on air too, turn on **Bracket keys seek the song on air** under
-    Settings, Display and keys, Keyboard. It is off by default and saved in this browser only.
+    Settings, General settings, Preferences, Keyboard. It is off by default and saved in this browser only.
     Seeking is not possible in stream mode, and a seek names the song it is for: when another song
     is playing by the time it reaches the server, nothing moves and the page says "The song on air
     has changed, so it was not moved."
@@ -61,7 +61,7 @@ ends.
   starts with the station's name.
 
 Each key says its answer once, politely, and never moves focus. They are single-key shortcuts, so
-**Enable keyboard shortcuts** (Settings, Display and keys) turns them off with the rest. Neither
+**Enable keyboard shortcuts** (Settings, General settings, Preferences) turns them off with the rest. Neither
 bracket nor Shift+U is used by the browsers or by NVDA and JAWS outside browse mode; in browse
 mode, use focus mode, or press NVDA+F2 or JAWS Insert+3 first to pass the key through. On a
 keyboard layout that types brackets with AltGr, AltGr and the bracket key work; Ctrl+Alt with the

@@ -9,9 +9,10 @@ Build and activate a clockwheel, edit its working copy, choose when saved change
 A clockwheel is a repeating order of steps that song picking follows when **Pick mode** (Settings, Picking) is set
 to **Clockwheel**. Keep as many as you like in the **Library tools** tab, **Clockwheels**: create,
 duplicate, rename, delete, activate one, or turn the clockwheel off. Only the active one plays.
-A saved profile can override the station's selected clockwheel. Applying that profile selects
-its saved clockwheel; editing or saving the profile does not activate it. A schedule event can
-also switch to a saved profile by name.
+A saved profile can override the station's selected clockwheel. Saving applies that changed
+group when the edited profile is still active; saving an inactive profile does not switch the
+station back to it. **Apply** resolves all eligible groups for the selected profile. A schedule
+event can also switch to a saved profile by name.
 
 Step types:
 

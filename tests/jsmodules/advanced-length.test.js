@@ -4,20 +4,50 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { advancedLengthProblem, installAdvancedLength } from "../../src/autodj/static/modules/advanced-length.js";
 import { importSummary } from "../../src/autodj/static/modules/library-folders.js";
+import { applySettingsDrafts, resetSettingsDrafts } from "../../src/autodj/static/modules/settings-drafts.js";
+
+const api = vi.hoisted(() => ({ request: vi.fn(), station: "default", epoch: 1 }));
+vi.mock("../../src/autodj/static/modules/api-client.js", () => ({
+  requestJson: api.request,
+  captureAuthenticatedRequestEpoch: () => api.epoch,
+  isAuthenticatedRequestCurrent: (epoch) => epoch === api.epoch,
+}));
+vi.mock("../../src/autodj/static/modules/stations.js", () => ({
+  currentStation: () => api.station,
+  stationName: () => api.station,
+}));
+vi.mock("../../src/autodj/static/modules/confirm-dialog.js", () => ({ chooseAction: vi.fn() }));
 
 const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
 
 function mount() {
   const page = document.createElement("template");
   page.innerHTML = html;
-  document.body.replaceChildren(page.content.querySelector("#advanced-length-group").cloneNode(true));
+  document.body.replaceChildren(page.content.querySelector("#spanel-server").cloneNode(true));
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const field = (id) => document.getElementById(id);
+const saveButton = () => document.querySelector("#spanel-server [data-settings-save]");
+const saveStatus = () => document.querySelector("#spanel-server .settings-save-status");
+function setup(options = {}) {
+  const controls = installAdvancedLength({ document, ...options });
+  applySettingsDrafts({ revision: "one", profile: "", values: {} });
+  return controls;
+}
+function edit(value) {
+  field("advanced-length").value = String(value);
+  field("advanced-length").dispatchEvent(new Event("input", { bubbles: true }));
+}
 
 describe("similarity analysis length (#391)", () => {
-  beforeEach(mount);
+  beforeEach(() => {
+    api.request.mockReset();
+    api.station = "default";
+    api.epoch = 1;
+    resetSettingsDrafts(document);
+    mount();
+  });
   afterEach(() => vi.useRealTimers());
 
   it("is a labelled number field in a named group, its 0 hint linked", () => {
@@ -25,14 +55,17 @@ describe("similarity analysis length (#391)", () => {
     expect(group.querySelector("legend").textContent).toBe("Similarity analysis");
     const page = document.createElement("template");
     page.innerHTML = html;
-    expect(page.content.querySelector("#advanced-length-group").closest("#spanel-stations")).not.toBeNull();
+    expect(page.content.querySelector("#advanced-length-group").closest("#spanel-server")).not.toBeNull();
     const input = field("advanced-length");
     expect(document.querySelector('label[for="advanced-length"]').textContent).toBe("Similarity analysis maximum song length (minutes)");
     expect([input.type, input.min, input.max, input.step, input.value]).toEqual(["number", "0", "600", "1", "15"]);
     expect(input.getAttribute("aria-describedby")).toBe("advanced-length-help");
     expect(field("advanced-length-help").textContent).toBe("0 means no limit. Longer tracks still get audio analysis when selected.");
     expect(field("advanced-length-error").hidden).toBe(true);
-    expect(field("advanced-length-save").textContent).toBe("Save");
+    setup({ request: vi.fn() });
+    expect(document.querySelectorAll("#spanel-server [data-settings-save]")).toHaveLength(1);
+    expect(document.querySelectorAll("#spanel-server [data-settings-discard]")).toHaveLength(1);
+    expect(field("advanced-length-save")).toBeNull();
   });
 
   it("refuses values the server would refuse", () => {
@@ -42,38 +75,38 @@ describe("similarity analysis length (#391)", () => {
 
   it("loads the saved value and says what a save means", async () => {
     const request = vi.fn(async (url, options) => (options ? JSON.parse(options.body) : { minutes: 30 }));
-    const say = vi.fn();
-    const controls = installAdvancedLength({ document, request, say });
+    const controls = setup({ request });
     await controls.load();
     expect(field("advanced-length").value).toBe("30");
 
-    field("advanced-length").value = "0";
-    field("advanced-length-save").click();
-    await flush();
+    edit(0);
+    saveButton().click();
+    await vi.waitFor(() => expect(saveStatus().textContent)
+      .toContain("Similarity analysis has no length limit."));
     expect(request).toHaveBeenLastCalledWith("/api/library/advanced-length", expect.objectContaining({ method: "PUT", body: JSON.stringify({ minutes: 0 }) }));
-    expect(say).toHaveBeenLastCalledWith("Saved. Similarity analysis has no length limit.");
 
-    field("advanced-length").value = "45";
-    field("advanced-length-save").click();
-    await flush();
-    expect(say).toHaveBeenLastCalledWith("Saved. Songs longer than 45 minutes get audio analysis only.");
-    expect(say).toHaveBeenCalledTimes(2);
+    edit(45);
+    saveButton().click();
+    await vi.waitFor(() => expect(saveStatus().textContent)
+      .toContain("Songs longer than 45 minutes get audio analysis only."));
+    expect(saveStatus().textContent).toContain("Settings saved for this server.");
   });
 
   it("puts a refused value's message under the field, linked and focused", () => {
     const request = vi.fn();
-    installAdvancedLength({ document, request, say: vi.fn() });
+    setup({ request });
     const input = field("advanced-length");
-    input.value = "700";
-    field("advanced-length-save").click();
+    edit(700);
+    saveButton().click();
     const error = field("advanced-length-error");
     expect(request).not.toHaveBeenCalled();
     expect(error.hidden).toBe(false);
+    expect(error.textContent.trim()).not.toBe("");
     expect(input.getAttribute("aria-invalid")).toBe("true");
-    expect(input.getAttribute("aria-describedby")).toBe("advanced-length-error advanced-length-help");
+    expect(input.getAttribute("aria-describedby")).toContain("advanced-length-error");
+    expect(input.getAttribute("aria-describedby")).toContain("advanced-length-help");
     expect(document.activeElement).toBe(input);
-    input.value = "60";
-    input.dispatchEvent(new Event("input"));
+    edit(60);
     expect(error.hidden).toBe(true);
     expect(input.hasAttribute("aria-invalid")).toBe(false);
     expect(input.getAttribute("aria-describedby")).toBe("advanced-length-help");
@@ -83,47 +116,51 @@ describe("similarity analysis length (#391)", () => {
     vi.useFakeTimers();
     let answer;
     const request = vi.fn(() => new Promise((resolve) => { answer = resolve; }));
-    const say = vi.fn();
-    installAdvancedLength({ document, request, say });
-    const save = field("advanced-length-save");
+    setup({ request });
+    const save = saveButton();
+    edit(16);
     save.click();
     expect(save.getAttribute("aria-busy")).toBe("true");
-    expect(save.hasAttribute("aria-disabled")).toBe(false);
+    expect(save.getAttribute("aria-disabled")).toBe("false");
     expect(save.disabled).toBe(false);
     save.click();
     expect(request).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(2000);
-    expect(say).toHaveBeenCalledWith("Saving the similarity analysis limit…");
-    answer({ minutes: 15 });
+    expect(saveStatus().textContent).toContain("Saving changes");
+    answer({ minutes: 16 });
     await vi.advanceTimersByTimeAsync(0);
     expect(save.hasAttribute("aria-busy")).toBe(false);
-    expect(say).toHaveBeenLastCalledWith("Saved. Songs longer than 15 minutes get audio analysis only.");
+    expect(saveStatus().textContent).toContain("Songs longer than 16 minutes get audio analysis only.");
   });
 
   it("ignores pending and late save messages after the session is cleared", async () => {
     vi.useFakeTimers();
     let finish;
     const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
-    const say = vi.fn();
-    const controls = installAdvancedLength({ document, request, say });
-    field("advanced-length-save").click();
+    const controls = setup({ request });
+    edit(16);
+    saveButton().click();
     controls.clear();
-    await vi.advanceTimersByTimeAsync(300);
-    expect(say).not.toHaveBeenCalled();
-    expect(field("advanced-length-save").hasAttribute("aria-busy")).toBe(false);
+    api.epoch += 1;
+    resetSettingsDrafts(document);
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(saveStatus().textContent).toBe("");
     finish({ minutes: 45 });
     await vi.advanceTimersByTimeAsync(0);
-    expect(say).not.toHaveBeenCalled();
+    expect(saveStatus().textContent).toBe("");
     expect(field("advanced-length").value).toBe("15");
   });
 
   it("reports a failed save in the status line", async () => {
     const request = vi.fn(async () => { throw Object.assign(new Error("Server unavailable"), { status: 503 }); });
-    const say = vi.fn();
-    installAdvancedLength({ document, request, say });
-    field("advanced-length-save").click();
+    setup({ request });
+    edit(16);
+    saveButton().click();
     await flush();
-    expect(say).toHaveBeenLastCalledWith("Could not save the similarity analysis limit: Server unavailable", true);
+    await vi.waitFor(() => expect(saveStatus().textContent)
+      .toContain("Could not save all settings: Server unavailable"));
+    expect(document.querySelector("#spanel-server .settings-save-bar > p:nth-of-type(2)").textContent)
+      .toContain("Unsaved changes");
   });
 });
 

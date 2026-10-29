@@ -18,6 +18,7 @@ const page = template.content;
 beforeEach(() => {
   document.body.innerHTML = `
     ${page.getElementById("spanel-sound").outerHTML}
+    ${page.getElementById("spanel-server").outerHTML}
     <div id="settings-status" role="status" aria-live="polite"></div>
     <div id="status-toast" aria-hidden="true" hidden></div>`;
 });
@@ -90,10 +91,11 @@ async function install(state, { confirm = answer(true), stationChanges = () => (
 describe("Stereo Tool setup markup", () => {
   const group = page.getElementById("stereo-setup");
 
-  it("is the Stereo Tool group, shown only for Stereo Tool", () => {
+  it("keeps installation and licence controls in the Server panel", () => {
     expect(group.tagName).toBe("FIELDSET");
-    expect(group.querySelector(":scope > legend").textContent).toBe("Stereo Tool");
-    expect(group.dataset.showWhen).toBe("pb-replaygain=stereotool");
+    expect(group.querySelector(":scope > legend").textContent).toBe("Stereo Tool installation and licence");
+    expect(group.closest("#spanel-server")).not.toBeNull();
+    expect(group.hasAttribute("data-show-when")).toBe(false);
   });
 
   it("takes the key in a labelled password field that browsers do not fill", () => {
@@ -169,13 +171,13 @@ describe("Stereo Tool setup words", () => {
 });
 
 describe("Stereo Tool setup controls", () => {
-  it("loads when the Sound panel is shown", async () => {
+  it("loads when the Server panel is shown", async () => {
     const state = server(status({ installed: true, version: "11.05" }));
     installStereoToolSetup({ document, request: state.request, status: $("settings-status"),
       stationChanges: () => () => {} });
     expect(state.request).not.toHaveBeenCalled();
-    $("spanel-sound").open = true;
-    $("spanel-sound").dispatchEvent(new Event("toggle"));
+    $("spanel-server").open = true;
+    $("spanel-server").dispatchEvent(new Event("toggle"));
     await vi.waitFor(() => expect($("stereo-install-status").textContent)
       .toBe("Stereo Tool 11.05 is installed."));
     expect($("stereo-download").textContent).toBe("Update Stereo Tool");
@@ -185,7 +187,7 @@ describe("Stereo Tool setup controls", () => {
     const state = server();
     let changed = null;
     await install(state, { stationChanges: (listener) => { changed = listener; return () => {}; } });
-    $("spanel-sound").open = true;
+    $("spanel-server").open = true;
     state.data = status({ license: { in_use: "station" } });
     changed("night", "default");
     await vi.waitFor(() => expect($("stereo-license-status").textContent)

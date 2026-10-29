@@ -89,13 +89,13 @@ need playable tracks and scan measurements.
 Similarity analysis is the slow step. On an ordinary computer without a graphics card, a large
 library can take many hours. A supported NVIDIA or AMD graphics card makes MuQ analysis faster.
 Audio features for tracks longer than 15 minutes use the first and last five minutes. Set the
-Similarity maximum length under **Settings**, **Stations**; longer tracks still receive Audio
+Similarity maximum length under **Settings**, **General settings**, **Server**; longer tracks still receive Audio
 analysis. The first local MuQ run downloads weights into the `models` folder.
 
 The default model's weights are licensed for non-commercial use only. Read [Credits and licensing](../../README.md#credits-and-licensing) before commercial use.
 
 If the AutoDJ computer has no graphics card, another computer that has one can do the analysis.
-Create a token in Settings, **Analysis workers**, then run `autodj worker` on that computer. See
+Create a token in Settings, **General settings**, **Server**, **Analysis workers**, then run `autodj worker` on that computer. See
 [Using a GPU machine](../operations.md#using-a-gpu-machine) for the steps. While a worker is
 connected, the AutoDJ server pauses its own analysis.
 
@@ -163,7 +163,7 @@ plays nothing from it until it returns. Nothing is marked as deleted.
   in the file. Timed `.lrc` lyrics scroll and highlight as the song plays.
 - **Album art** comes from the picture stored in the file.
 - **ReplayGain** loudness tags in the files are used when you choose ReplayGain output
-  processing in Settings, Sound.
+  processing in Settings, Profile settings, Sound.
 
 ## Using beets (optional)
 

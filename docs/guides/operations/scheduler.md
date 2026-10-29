@@ -6,7 +6,7 @@ Create events, choose their date windows and timing, and check Recent runs and r
 
 ## Scheduler
 
-Open **Settings**, then **Schedule** to add timed station events. An event runs once, every day,
+Open **Settings**, choose **General settings**, then **Schedule** to add timed station events. An event runs once, every day,
 on weekdays (Monday to Friday), on chosen days, or every N minutes. An every-N-minutes event can
 have an active window, such as 22:00 until 02:00; a window may cross midnight, and both ends run.
 Without a window the count starts again at local midnight. An every-N-minutes event can also keep
@@ -48,7 +48,7 @@ Use **Run now** on the first event to start the season at once when you add it p
 
 Times use `station.timezone in the station definition`, an IANA name such as `America/Denver`, or the system time
 zone when that is not set (UTC when the system has no IANA name). **Time for the selected station** in
-Settings > Stations sets that station's time zone from the page; the saved choice applies
+Settings > General settings > Stations sets that station's time zone from the page; the saved choice applies
 when that station next starts. The same fieldset sets **Time format**, 24 hour
 (the default) or 12 hour, for the times every page shows; it applies at once and changes nothing
 but how times look. The Schedule panel shows the

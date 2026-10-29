@@ -60,7 +60,7 @@ fail, in the run log, until you change them.
 
 ## Airing a show
 
-Add an event under **Settings**, **Schedule** with the action **Play a show** and the show (see
+Add an event under **Settings**, **General settings**, **Schedule** with the action **Play a show** and the show (see
 [Scheduler](scheduler.md#scheduler)): once on a date, or repeating, with an optional date range. **Start
 after this song**, in the open list, airs it now, to test it.
 

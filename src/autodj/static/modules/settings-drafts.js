@@ -49,9 +49,9 @@ function refresh(panel) {
   else panel.save.removeAttribute("aria-busy");
   panel.note.textContent = panel.saving ? "Saving changes…" : changed ? "Unsaved changes" : "No unsaved changes";
   const scopes = [];
-  if (panel.parts.some((part) => part.group)) scopes.push(`Station: ${stationName()}`);
-  if (panel.parts.some((part) => !part.group)) scopes.push("this browser");
-  if (panel.parts.some((part) => part.group === "time")) scopes.push("shared server time display");
+  if (panel.parts.some((part) => part.group && part.scope !== "server")) scopes.push(`Station: ${stationName()}`);
+  if (panel.parts.some((part) => !part.group && part.scope !== "server")) scopes.push("this browser");
+  if (panel.parts.some((part) => part.scope === "server")) scopes.push("shared server settings");
   panel.scope.textContent = scopes.join(" · ");
   for (const part of panel.parts) {
     for (const control of controls(part)) control.classList.toggle("settings-dirty", dirty(part));
@@ -131,7 +131,7 @@ export async function setSettingsProfile(profile, doc = document) {
 }
 
 export function registerSettingsGroup(spec) {
-  const element = spec.panel;
+  const element = spec.panel?.closest('[id^="spanel-"][role="tabpanel"]') || spec.panel;
   if (!element) return { accept() {}, dirty: () => false };
   const editor = editorFor(element.ownerDocument);
   let panel = editor.panels.get(element);
@@ -269,7 +269,7 @@ export async function saveSettingsPanel(element) {
   const current = () => generation === editor.generation && station === currentStation() && isAuthenticatedRequestCurrent(epoch);
   panel.saving = true;
   refresh(panel);
-  const stopPending = sayIfStillPending((text) => say(panel, text), "Saving changes…");
+  const stopPending = sayIfStillPending((text) => { if (current()) say(panel, text); }, "Saving changes…");
   try {
     let result = { applied: [], failed: {} };
     if (Object.keys(changes).length) {
@@ -284,7 +284,7 @@ export async function saveSettingsPanel(element) {
     }
     for (const [part, value] of submitted) {
       if (part.group && !result.applied.includes(part.group)) continue;
-      if (!part.group && await part.commit(value) === false) throw new Error("Browser settings could not be applied.");
+      if (!part.group && await part.commit(value) === false) throw new Error("Settings could not be applied.");
       if (!current()) return false;
       const unchanged = equal(part.read(), value);
       part.latest = clone(part.group ? editor.values[part.group] : value);
@@ -305,10 +305,12 @@ export async function saveSettingsPanel(element) {
       for (const part of other.parts) if (part.group && !submitted.has(part)) accept(part, editor.values[part.group]);
       refresh(other);
     }
-    const scope = parts.some((part) => part.group) ? `for ${stationName()}` : "in this browser";
+    const scope = parts.every((part) => part.scope === "server") ? "for this server"
+      : parts.some((part) => part.scope === "server") ? ""
+        : parts.some((part) => part.group) ? `for ${stationName()}` : "in this browser";
     const done = [...described].filter(([part]) => !part.group || result.applied.includes(part.group))
       .map(([, words]) => words);
-    say(panel, [`Settings saved ${scope}.`, ...done, result.message || ""].join(" ").trim());
+    say(panel, [`Settings saved${scope ? ` ${scope}` : ""}.`, ...done, result.message || ""].join(" ").trim());
     return true;
   } catch (error) {
     if (current()) {

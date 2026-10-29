@@ -1,6 +1,6 @@
-// Settings > Stations, Time for every station (#282, #286): the station
-// time zone and the time format, with the station's output and log label.
-// Loads when the Stations tab is shown.
+// General settings: station time zone and output in Stations; shared time
+// format in Server (#282, #286).
+// Loads each setting when its owning Settings tab is shown.
 import { requestJson } from "./api-client.js";
 import { currentStation, onStationChange } from "./stations.js";
 import { setTimeFormat } from "./time-format.js";
@@ -9,10 +9,12 @@ import { registerSettingsGroup } from "./settings-drafts.js";
 const ENDPOINT = "/api/time-settings";
 
 export function installTimeSettings({ doc = document, request = requestJson } = {}) {
-  const panel = doc.getElementById("spanel-stations");
+  const stationsPanel = doc.getElementById("spanel-stations");
   const zone = doc.getElementById("time-zone");
   const format = doc.getElementById("time-format");
-  if (!panel || !zone || !format) return { load: async () => {} };
+  if (!stationsPanel || !zone || !format) return { load: async () => {} };
+  const zonePanel = zone.closest('[role="tabpanel"]') || stationsPanel;
+  const formatPanel = format.closest('[role="tabpanel"]') || stationsPanel;
   const output = doc.getElementById("station-output");
   const monitor = doc.getElementById("station-monitor");
   const cap = doc.getElementById("station-upload-cap");
@@ -53,27 +55,39 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
   }
 
   const timeDraft = registerSettingsGroup({
-    panel, group: "time", controls: [zone, format],
-    read: () => ({ timezone: zone.value, time_format: format.value }),
-    write: show,
+    panel: zonePanel, group: "time", controls: [zone],
+    read: () => ({ timezone: zone.value }),
+    write: (value) => show({ ...value, time_format: null }),
+  });
+  const formatDraft = registerSettingsGroup({
+    panel: formatPanel, group: "time", scope: "server", controls: [format],
+    read: () => ({ time_format: format.value }),
+    write: (value) => show({ ...value, timezone: null }),
   });
   const stationDraft = output && monitor && cap ? registerSettingsGroup({
-    panel, group: "station", controls: [output, monitor, cap, logLabel].filter(Boolean),
+    panel: stationsPanel, group: "station", controls: [output, monitor, cap, logLabel].filter(Boolean),
     read: () => ({ output: output.value, server_audio_too: monitor.checked,
       liner_upload_max_mib: Number(cap.value),
       ...(logLabel ? { log_label: logLabel.value.trim() } : {}) }),
     write: showOptions,
   }) : null;
 
-  async function load() {
-    try {
-      timeDraft.accept(await request(ENDPOINT));
-      if (stationDraft) stationDraft.accept(await request("/api/station-settings"));
-    } catch {
-      // The fields keep what they show; Save reports any problem.
+  async function loadPanel(panel) {
+    if (panel === zonePanel || panel === formatPanel) {
+      try {
+        const value = await request(ENDPOINT);
+        if (panel === zonePanel) timeDraft.accept(value);
+        if (panel === formatPanel) formatDraft.accept(value);
+      } catch { /* The fields keep their drafts; Save reports any problem. */ }
+    }
+    if (panel === stationsPanel && stationDraft) {
+      try { stationDraft.accept(await request("/api/station-settings")); } catch { /* Save reports errors. */ }
     }
   }
-
-  panel.addEventListener("toggle", () => { if (panel.open) void load(); });
+  const panels = [...new Set([zonePanel, formatPanel, stationsPanel])];
+  for (const panel of panels) panel.addEventListener("toggle", () => {
+    if (panel.open) void loadPanel(panel);
+  });
+  const load = () => Promise.all(panels.map(loadPanel));
   return { load };
 }

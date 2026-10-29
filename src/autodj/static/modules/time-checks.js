@@ -20,7 +20,7 @@ import {
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
-import { registerSettingsGroup } from "./settings-drafts.js";
+import { registerSettingsGroup, settingsDraftHolds } from "./settings-drafts.js";
 
 const MINUTES = 1440;
 // The intro or outro option that means "as config.toml says": never a
@@ -89,15 +89,26 @@ export function installTimeChecks({ doc = document, request = requestJson,
 
   const packBoxes = () => [...packList.querySelectorAll("input[type=checkbox]")];
   let shownPacks = "[]";
+  let targetPackChoices = null;
+  let targetPackOrder = null;
 
   // One native checkbox per pack, its coverage as its description, and a
   // Remove button for a pack kept in the station's time checks folder.  The
   // rows are rebuilt only when the packs change, so a refresh never takes
   // focus away from a checkbox.
-  function showPacks(packs) {
+  function showPacks(packs, { preserveChoices = false } = {}) {
     const names = packs.map((pack) => pack.name);
+    const existingBoxes = packBoxes();
+    const selected = preserveChoices
+      ? new Set(existingBoxes.filter((box) => box.checked).map((box) => box.value))
+      : null;
+    if (preserveChoices) {
+      const present = new Set(existingBoxes.map((box) => box.value));
+      for (const name of targetPackChoices || []) if (!present.has(name)) selected.add(name);
+    }
     const key = JSON.stringify(packs.map((pack) => [pack.name, Boolean(pack.removable)]));
-    if (key !== shownPacks) {
+    const rebuilt = key !== shownPacks;
+    if (rebuilt) {
       shownPacks = key;
       packList.replaceChildren(...packs.map((pack, index) => {
         const row = doc.createElement("div");
@@ -136,11 +147,18 @@ export function installTimeChecks({ doc = document, request = requestJson,
       testVoice.value = names.includes(chosen) ? chosen : "";
     }
     packBoxes().forEach((box, index) => {
-      if (doc.activeElement !== box) box.checked = packs[index].enabled;
+      if (preserveChoices) {
+        if (rebuilt) box.checked = selected.has(box.value);
+      } else if (doc.activeElement !== box) box.checked = packs[index].enabled;
       get(`pack-${index}-desc`).textContent = packWords(packs[index]);
     });
     packsEmpty.hidden = packs.length > 0;
     showDates(packs);
+    if (targetPackChoices?.length) {
+      const present = new Set(names);
+      targetPackChoices = targetPackChoices.filter((name) => !present.has(name));
+      if (!targetPackChoices.length) targetPackChoices = null;
+    }
   }
 
   // A pack's coverage, then its play dates and why it is skipped now, then
@@ -282,13 +300,15 @@ export function installTimeChecks({ doc = document, request = requestJson,
     }
   }
 
-  function showSettings() {
-    if (doc.activeElement !== enabled) enabled.checked = settings.enabled;
-    if (doc.activeElement !== format) format.value = settings.hour_format;
-    if (doc.activeElement !== rule) rule.value = settings.rule;
-    if (doc.activeElement !== order) order.value = settings.pack_order;
-    showPacks(settings.packs || []);
-    showClips();
+  function showSettings({ preserveControls = false } = {}) {
+    if (!preserveControls) {
+      if (doc.activeElement !== enabled) enabled.checked = settings.enabled;
+      if (doc.activeElement !== format) format.value = settings.hour_format;
+      if (doc.activeElement !== rule) rule.value = settings.rule;
+      if (doc.activeElement !== order) order.value = settings.pack_order;
+    }
+    showPacks(settings.packs || [], { preserveChoices: preserveControls });
+    if (!preserveControls) showClips();
     const recorded = MINUTES - settings.missing_minutes;
     const fallback = settings.generated_set
       ? `Generated set ${settings.generated_set} supplies local audio. Missing generated clips are skipped.`
@@ -300,8 +320,14 @@ export function installTimeChecks({ doc = document, request = requestJson,
   }
 
   const read = () => {
+    const checkedPacks = packBoxes().filter((box) => box.checked).map((box) => box.value);
+    const selectedPacks = new Set([...checkedPacks, ...(targetPackChoices || [])]);
     const body = { enabled: enabled.checked, hour_format: format.value, rule: rule.value,
-      enabled_packs: packBoxes().filter((box) => box.checked).map((box) => box.value),
+      enabled_packs: [...new Set([
+        ...(targetPackOrder || []).filter((name) => selectedPacks.has(name)),
+        ...checkedPacks,
+        ...(targetPackChoices || []),
+      ])],
       pack_order: order.value };
     if (hasFiles) {
       body.recorded_folder = files.folder.value;
@@ -317,6 +343,12 @@ export function installTimeChecks({ doc = document, request = requestJson,
     read,
     write(value) {
       settings = { ...settings, ...value };
+      if (Array.isArray(value.enabled_packs)) {
+        targetPackOrder = [...value.enabled_packs];
+        const rendered = new Set(packBoxes().map((box) => box.value));
+        targetPackChoices = value.enabled_packs.filter((name) => !rendered.has(name));
+        if (!targetPackChoices.length) targetPackChoices = null;
+      }
       if (Array.isArray(value.enabled_packs) && Array.isArray(settings.packs)) {
         const selected = new Set(value.enabled_packs);
         settings.packs = settings.packs.map((pack) => ({ ...pack, enabled: selected.has(pack.name) }));
@@ -336,7 +368,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
   function acceptSettings(value) {
     settings = value;
     draft.accept(value);
-    if (!draft.dirty()) showSettings();
+    if (!draft.dirty()) showSettings({ preserveControls: settingsDraftHolds(enabled) });
   }
 
   // Background loads write into the panel; they are not announced.

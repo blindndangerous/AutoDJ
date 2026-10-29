@@ -63,18 +63,26 @@ async function install(request) {
 beforeEach(() => { groups.length = 0; installIndex(); });
 
 describe("Breaks panel markup", () => {
-  it("is a Settings subtab between Time checks and Schedule, with no aria-controls", () => {
-    const tab = byId("stab-breaks");
+  it("is an inner section in Announcements, with no separate tab", () => {
+    const tab = byId("stab-announcements");
     expect(tab.getAttribute("role")).toBe("tab");
-    expect(tab.textContent).toBe("Breaks");
     expect(tab.hasAttribute("aria-controls")).toBe(false);
-    expect(tab.previousElementSibling.id).toBe("stab-time-checks");
-    expect(tab.nextElementSibling.id).toBe("stab-schedule");
+    expect(tab.dataset.settingsKind).toBe("profile");
     const panel = byId(tab.dataset.panel);
-    expect(panel.id).toBe("spanel-breaks");
+    expect(panel.id).toBe("spanel-announcements");
     expect(panel.getAttribute("role")).toBe("tabpanel");
-    expect(panel.getAttribute("aria-labelledby")).toBe("stab-breaks");
-    expect(panel.querySelector(":scope > h3").textContent).toBe("Breaks");
+    expect(panel.getAttribute("aria-labelledby")).toBe("stab-announcements");
+    expect(panel.querySelector(":scope > h3").textContent).toBe("Announcements");
+    const section = byId("spanel-breaks");
+    expect(section.tagName).toBe("SECTION");
+    expect(section.hasAttribute("data-settings-section")).toBe(true);
+    expect(section.getAttribute("role")).toBeNull();
+    expect(section.closest('[role="tabpanel"]')).toBe(panel);
+    expect(section.querySelector(":scope > h4").textContent).toBe("Breaks");
+    expect(panel.querySelector("#spanel-time-checks").compareDocumentPosition(section)
+      & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(section.compareDocumentPosition(panel.querySelector("#spanel-liners"))
+      & window.Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
 
   it("labels every control, groups the placement and keeps one status region", () => {
@@ -111,13 +119,13 @@ describe("Breaks panel markup", () => {
     expect(workers).toMatch(/Turn breaks on for the station in Settings, Breaks\./);
   });
 
-  it("asks the station for its settings when the tab is selected", async () => {
+  it("asks the station for its settings when Announcements shows the breaks section", async () => {
     const request = server();
     byId("panel-settings").hidden = false;
     installBreakSettings({ doc: document, request });
     initSubtabs(byId("settings-tabs"), { storage: null });
     const before = request.mock.calls.length;
-    byId("stab-breaks").click();
+    byId("stab-announcements").click();
     await flush();
     expect(request.mock.calls.length).toBeGreaterThan(before);
     expect(byId("brk-min-intro").value).toBe("2");

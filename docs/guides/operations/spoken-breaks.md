@@ -21,8 +21,8 @@ pair. Streaming queue edits that affect associated speech offer keep, discard, o
 ## Turning breaks on
 
 Breaks need saved-point playback (Transition mode: Use saved segue points, or Clockwheel) and are
-off by default. Turn them on for each station that takes them in **Settings, Breaks**: tick
-**Accept announcer uploads** and press **Save changes** in the Breaks tab. They work from then on, with
+off by default. Turn them on for each station that takes them in **Settings, Profile settings, Announcements, Breaks**: tick
+**Accept announcer uploads** and save with the Announcements tab's shared Save changes bar. They work from then on, with
 no restart. The same tab sets **Where a DJ break goes** (`dj_placement`), **Shortest intro to talk
 up** (`min_intro_seconds`) and **Music under a break** (`duck_db`; leave it blank to use the voice
 liner duck depth). It also says, in plain text, when breaks cannot be taken now, such as without
@@ -32,9 +32,9 @@ Turning breaks off drops announcer uploads still waiting for their song change; 
 mixed into the next song change still plays. Manual voice tracks and the ad schedule's spots stay
 booked. From then on the announcer's `GET context` answers
 `"accepting": false` with the reason "Breaks are off for this station: turn them on in
-Settings, Breaks", and an upload is refused with 409 and the same words.
+Settings, Profile settings, Announcements, Breaks", and an upload is refused with 409 and the same words.
 
-The station definition holds these startup values. Settings > Breaks changes them for the
+The station definition holds these startup values. Settings > Profile settings > Announcements > Breaks changes them for the
 selected station:
 
 ```json
@@ -46,9 +46,9 @@ selected station:
 }
 ```
 
-Until you press **Save changes** in Settings, Breaks for the station, `enabled`, `dj_placement`,
+Until you save the **Announcements** tab's shared Save changes bar for the station, `enabled`, `dj_placement`,
 `min_intro_seconds` and `duck_db` in its station definition are in charge; a change there takes
-effect at the next start. Once you press **Save changes** in Settings, Breaks (`PATCH /api/settings`),
+effect at the next start. Once you press **Save changes** in the Announcements tab's shared bar (`PATCH /api/settings`),
 the station's `web_state.json` keeps all four,
 and they take the place of definition values at every start from then on. When the saved
 switch differs from the station definition, the log says so once at start. With external uploads
@@ -85,7 +85,7 @@ as a voice liner.
 ## The token
 
 An announcer token can read one station's coming songs and send that station breaks, and nothing
-else. It works for one station only. In Settings, Analysis workers, Machine tokens, type a name,
+else. It works for one station only. In Settings, General settings, Server, Analysis workers, Machine tokens, type a name,
 choose Token use: Announcer, choose the Station, and choose Create
 token. Copy the token when it appears; it is never shown again. From the command line:
 
@@ -142,7 +142,7 @@ The monitor never books a take or joins the station output.
    **Record** again to stop. **Alt+R** starts and stops recording from anywhere in the tab without
    moving focus, which suits a screen reader user who wants to stay on another control.
 2. Choose **Listen back** to hear the take, on the Preview output device when one is chosen in
-   Settings, Sound (headphones, say). **Record** again replaces it; **Discard recording**
+   Settings, General settings, Preferences (headphones, say). **Record** again replaces it; **Discard recording**
    throws it away.
 3. Leave **Placement** at **Fit over outro and intro** to use the ending song's usable
    Outro and the next song's instrumental Intro. Speech uses its detected Start and Segue;

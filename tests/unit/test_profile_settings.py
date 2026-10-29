@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -65,7 +66,7 @@ def _create(manager, name):
     manager.create(ProfileSnapshot(name=name))
 
 
-def test_save_does_not_change_active_settings_and_profiles_resolve_from_defaults(tmp_path):
+def test_saving_active_profile_applies_it_and_inactive_profile_does_not(tmp_path):
     station = _station(tmp_path)
     manager = ProfileSettings(station)
     _defaults(manager)
@@ -88,21 +89,63 @@ def test_save_does_not_change_active_settings_and_profiles_resolve_from_defaults
 
     manager.apply("A")
     assert station.cfg.playback.crossfade_seconds == 6.0
+    manager.save("A", {"playback": {"crossfade_seconds": 7.0}})
+    assert manager.active == "A"
+    assert station.cfg.playback.crossfade_seconds == 7.0
+
     manager.apply("B")
     assert station.cfg.playback.crossfade_seconds == 3.0
     assert station.cfg.playback.beat_sync_fx is False
+    manager.save("A", {"playback": {"crossfade_seconds": 9.0}})
+    assert manager.active == "B"
+    assert station.cfg.playback.crossfade_seconds == 3.0
+    assert manager.resolve("A")["playback"]["crossfade_seconds"] == 9.0
 
 
-def test_offline_default_edit_is_saved_without_changing_active_config(tmp_path):
+def test_default_save_applies_only_when_default_target_is_active(tmp_path):
     station = _station(tmp_path)
     manager = ProfileSettings(station)
     _defaults(manager)
-    active_before = station.cfg.playback.crossfade_seconds
-
     manager.save("", {"playback": {"crossfade_seconds": 4.0}})
 
-    assert station.cfg.playback.crossfade_seconds == active_before
+    assert manager.active is None
+    assert station.cfg.playback.crossfade_seconds == 4.0
     assert manager.defaults()["playback"]["crossfade_seconds"] == 4.0
+
+    manager.create(ProfileSnapshot(name="Night"))
+    manager.apply("Night")
+    manager.save("", {"playback": {"crossfade_seconds": 5.0}})
+    assert manager.active == "Night"
+    assert station.cfg.playback.crossfade_seconds == 4.0
+    assert manager.defaults()["playback"]["crossfade_seconds"] == 5.0
+
+
+def test_active_playback_save_does_not_reselect_unchanged_clock(tmp_path):
+    station = _station(tmp_path)
+    clock_selection = Mock()
+    station.ledger = SimpleNamespace(
+        get_setting=lambda _key, default: default,
+        select_clock=clock_selection,
+    )
+    ClockwheelStore(station.paths.clockwheels).save(
+        {
+            "version": 1,
+            "name": "Morning",
+            "steps": [{"type": "track", "source": "folder1", "path": "song.flac"}],
+            "resync_minutes": [0],
+        }
+    )
+    manager = ProfileSettings(station)
+    _defaults(manager)
+    manager.create(ProfileSnapshot(name="Clocked", settings={"clock": {"name": "Morning"}}))
+    manager.apply("Clocked")
+    clock_selection.reset_mock()
+
+    manager.save("Clocked", {"playback": {"crossfade_seconds": 6.0}})
+
+    assert station.cfg.playback.crossfade_seconds == 6.0
+    assert manager.active == "Clocked"
+    clock_selection.assert_not_called()
 
 
 def test_override_diff_keeps_false_zero_and_explicit_clear(tmp_path):
@@ -288,11 +331,14 @@ def test_legacy_cart_page_is_preserved_as_an_override():
 
 @pytest.mark.parametrize("target", ["", "Evening"])
 def test_partial_time_check_edits_merge_with_saved_target(tmp_path, target):
-    manager = ProfileSettings(_station(tmp_path))
+    station = _station(tmp_path)
+    manager = ProfileSettings(station)
     _defaults(manager)
     checks = TimeCheckSettings(
         enabled=True, hour_format="12", rule="off", enabled_packs=[], pack_order="rotate"
     ).model_dump()
+    station.time_checks.settings = TimeCheckSettings.model_validate(checks)
+    station.time_checks.save = lambda value: setattr(station.time_checks, "settings", value)
     manager._write(manager.defaults_path, {**manager.defaults(), "time_checks": checks})
     if target:
         manager.create(
@@ -307,6 +353,10 @@ def test_partial_time_check_edits_merge_with_saved_target(tmp_path, target):
         "hour_format": "24" if target else "12",
     }
     assert manager.resolve(target) == saved
+    if not target:
+        assert station.time_checks.settings.enabled is False
+    else:
+        assert station.time_checks.settings.enabled is True
     if target:
         assert manager.store.load(target).settings == {
             "time_checks": {"enabled": False, "hour_format": "24"}

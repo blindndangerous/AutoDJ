@@ -14,7 +14,7 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 **No songs appear.** In **Library tools**, check **Music folders and Voice liner folders**. Add the path the AutoDJ computer can see, then run **Rescan**. In Docker use `/music`, not the host's path. If a network share is disconnected, mount it before rescanning.
 
-**Songs appear but are not picked.** Check **Settings**, **Song picking** and the active clockwheel. A category may be empty, restricted to another time, or blocked by repeat rules. Use **Test rotation** and check its reasons. Songs can be queued while analysis runs. [Build your sound](build-your-sound.md) explains the pick modes.
+**Songs appear but are not picked.** Check **Settings**, **Profile settings**, **Song picking** and the active clockwheel. A category may be empty, restricted to another time, or blocked by repeat rules. Use **Test rotation** and check its reasons. Songs can be queued while analysis runs. [Build your sound](build-your-sound.md) explains the pick modes.
 
 **Advanced analysis is slow.** This is normal for a large library on a processor. Check **Library jobs** and **Output** for progress. You can limit a first command-line run with `autodj index --limit 50`. A separate analysis worker can use another computer's GPU; see [Using a GPU machine](../operations.md#using-a-gpu-machine).
 
@@ -22,11 +22,11 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 ## Playback and sound
 
-**The browser is silent.** Start playback in **Now Playing**, check the browser tab's volume and the selected output device in **Settings**, **Sound**. A browser may require a click before it can play audio. If the server mixes the station, check the stream address in **Settings**, **Stream**.
+**The browser is silent.** Start playback in **Now Playing**, check the browser tab's volume and the selected output device in **Settings**, **General settings**, **Preferences**. A browser may require a click before it can play audio. If the server mixes the station, check the stream address in **Settings**, **General settings**, **Broadcasting**.
 
-**A transition sounds abrupt.** Check whether the songs have intro, outro, BPM, and beat grid data in **Track info**. The default transition can use detected points; without them, it uses a simpler handoff. Try **Transition mode** and **Crossfade seconds** in **Settings**, **Transitions**. Disable **Beatmatch** for tracks whose tempo is unreliable.
+**A transition sounds abrupt.** Check whether the songs have intro, outro, BPM, and beat grid data in **Track info**. The default transition can use detected points; without them, it uses a simpler handoff. Try **Transition mode** and **Crossfade seconds** in **Settings**, **Profile settings**, **Mixing**, **Transitions**. Disable **Beatmatch** for tracks whose tempo is unreliable.
 
-**Stereo Tool is unavailable.** Open **Settings**, **Sound** and follow its plugin library download steps after accepting Thimeo's terms. Check the panel's status message and run Doctor if the download or load fails.
+**Stereo Tool is unavailable.** Open **Settings**, **General settings**, **Server** and follow its plugin library download steps after accepting Thimeo's terms. Check the panel's status message and run Doctor if the download or load fails.
 
 **The stream has short gaps of silence.** If the log shows "Mix bus held … s of silence", its cause names what the station was waiting for: the next song, a file decoder, or the mastering processor. See [Held silence warnings](../reference/operations/server-playback.md#held-silence-warnings) for what each cause means. "Mix bus fell behind" means the computer could not keep up at all; reduce other work on it, or run fewer stations.
 
@@ -34,13 +34,13 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 ## Streaming
 
-**The stream is missing.** In **Settings**, **Stations**, set **Playback output** to **Radio stream** and press **Save changes**. In **Stations on this server**, stop the station, confirm **Stop station**, then start it again; this applies to the default station too and disconnects its listeners. **Settings**, **Stream** appears when stream output is active. For a one-time default stream, start AutoDJ with `serve --stream`. FFmpeg must be installed. The default stream is `/stream.mp3`; named stations use `/<station-id>.mp3`.
+**The stream is missing.** In **Settings**, **General settings**, **Stations**, set **Playback output** to **Radio stream** and press **Save changes**. In **Stations on this server**, stop the station, confirm **Stop station**, then start it again; this applies to the default station too and disconnects its listeners. **Settings**, **General settings**, **Broadcasting** appears when stream output is active. For a one-time default stream, start AutoDJ with `serve --stream`. FFmpeg must be installed. The default stream is `/stream.mp3`; named stations use `/<station-id>.mp3`.
 
-**A player cannot connect.** Copy **Stream address** from **Settings**, **Stream** while the page is open through a network address. An address containing `127.0.0.1` works only on the AutoDJ computer. Check the firewall, the listener limit, any password, and address bans. A stopped station has no active stream.
+**A player cannot connect.** Copy **Stream address** from **Settings**, **General settings**, **Broadcasting** while the page is open through a network address. An address containing `127.0.0.1` works only on the AutoDJ computer. Check the firewall, the listener limit, any password, and address bans. A stopped station has no active stream.
 
-**A relay is disconnected.** In **Settings**, **Stream**, open **Relays** and read the relay's last error. Check the host, listener port, mount point or stream ID, and source password supplied by the host. Relay source passwords cross the network without TLS, so use a trusted connection.
+**A relay is disconnected.** In **Settings**, **General settings**, **Broadcasting**, open **Relays** and read the relay's last error. Check the host, listener port, mount point or stream ID, and source password supplied by the host. Relay source passwords cross the network without TLS, so use a trusted connection.
 
-**The wrong station plays.** Use the **Station** button at the top of the page to choose which station you control. Then check **Settings**, **Stations** for its running state and **Start with the server** setting. Each station has its own queue, history, sound settings, and stream.
+**The wrong station plays.** Use the **Station** button at the top of the page to choose which station you control. Then check **Settings**, **General settings**, **Stations** for its running state and **Start with the server** setting. Each station has its own queue, history, sound settings, and stream.
 
 ## Get more detail
 
