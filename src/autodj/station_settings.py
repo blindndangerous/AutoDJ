@@ -7,9 +7,52 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from autodj.settings_bodies import PlaybackSettingsBody
+from autodj.settings_bodies import PAGE_SAVED_BREAKS, PAGE_SAVED_REQUESTS, PlaybackSettingsBody
 
 logger = logging.getLogger(__name__)
+
+
+def _request_settings(requests: Any) -> dict[str, Any]:
+    """The listener request settings the operator's card saves (#49), when the station has them."""
+    if requests is None:
+        return {}
+    return {
+        "requests_bridges_enabled": bool(requests.bridges_enabled),
+        "requests_max_bridges": int(requests.max_bridges),
+        "requests_bridge_cost_threshold": float(requests.bridge_cost_threshold),
+        "requests_no_smooth_spot": requests.no_smooth_spot,
+    }
+
+
+def _request_switches(requests: Any, page_saved: set[str]) -> dict[str, Any]:
+    """Whether the station takes requests and how they are approved, once the card saved them.
+
+    Until the Listener requests card has saved them for this station,
+    ``[requests]`` in config.toml stays in charge: no other save (volume,
+    EQ ...) writes them to ``web_state.json``.
+    """
+    if requests is None or PAGE_SAVED_REQUESTS not in page_saved:
+        return {}
+    return {
+        "requests_enabled": bool(requests.enabled),
+        "requests_approval": requests.approval,
+    }
+
+
+def _break_settings(breaks: Any, page_saved: set[str]) -> dict[str, Any]:
+    """The announcer break settings, once Settings, Breaks saved them for the station (#88).
+
+    Until then ``[breaks]`` in config.toml stays in charge, as for
+    :func:`_request_switches`.
+    """
+    if breaks is None or PAGE_SAVED_BREAKS not in page_saved:
+        return {}
+    return {
+        "breaks_enabled": bool(breaks.enabled),
+        "breaks_dj_placement": breaks.dj_placement,
+        "breaks_min_intro_seconds": float(breaks.min_intro_seconds),
+        "breaks_duck_db": None if breaks.duck_db is None else float(breaks.duck_db),
+    }
 
 
 class StationSettings:
@@ -78,7 +121,6 @@ class StationSettings:
     def get_settings(self) -> dict[str, Any]:
         """Return the same settings document shape served by PlayerBridge."""
         cfg, pb = self.cfg, self.cfg.playback
-        from autodj._bridge import _break_settings, _request_settings, _request_switches
         from autodj.presets import BUILTIN_PRESETS
 
         names = sorted(set(BUILTIN_PRESETS) | set(cfg.presets))
