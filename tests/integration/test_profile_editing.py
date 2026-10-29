@@ -458,3 +458,53 @@ def test_deleting_pack_removes_it_from_saved_enabled_pack_references(rig):
     assert removed.status_code == 200, removed.text
     for profile in ("", "Saved"):
         assert settings_view(client, profile)["values"]["time_checks"]["enabled_packs"] == []
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_deleting_a_shared_pack_removes_it_from_every_station_that_finds_it(rig):
+    client, *_ = rig
+    stations = client.app.state.stations
+    default = stations.editable("default")
+    owl = stations.editable("nightowl")
+    # The default station's time checks folder is the library's shared one.
+    (default.time_checks.root / "SharedPack").mkdir(parents=True)
+    # A pack in Night Owl's own folder keeps its tick.
+    (owl.time_checks.root / "OwnPack").mkdir(parents=True)
+    for station in (default, owl):
+        station.time_checks.rescan()
+    assert owl.time_checks.packs["SharedPack"].source == "shared"
+    assert client.post(f"{OWL}/profiles", json={"name": "Saved"}).status_code == 200
+    for profile in ("Saved", ""):
+        view = settings_view(client, profile)
+        result = patch_profile(
+            client, view, profile, {"time_checks": {"enabled_packs": ["SharedPack", "OwnPack"]}}
+        )
+        assert result.status_code == 200, result.text
+
+    removed = client.delete("/api/time-checks/packs/SharedPack")
+    assert removed.status_code == 200, removed.text
+    for profile in ("", "Saved"):
+        view = settings_view(client, profile)
+        assert view["values"]["time_checks"]["enabled_packs"] == ["OwnPack"]
+        saved = patch_profile(client, view, profile, {"playback": {"liners_every_n_songs": 3}})
+        assert saved.status_code == 200, saved.text
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_a_shared_pack_stays_while_a_station_finding_it_is_starting(rig):
+    import asyncio
+
+    client, *_ = rig
+    registry = client.app.state.stations
+    default = registry.editable("default")
+    (default.time_checks.root / "SharedPack").mkdir(parents=True)
+    default.time_checks.rescan()
+
+    async def during_start() -> None:
+        async with registry._locks["nightowl"]:
+            refused = await asyncio.to_thread(client.delete, "/api/time-checks/packs/SharedPack")
+            assert refused.status_code == 409, refused.text
+            assert "Night Owl Radio" in refused.json()["detail"]
+
+    asyncio.run(during_start())
+    assert (default.time_checks.root / "SharedPack").is_dir()
