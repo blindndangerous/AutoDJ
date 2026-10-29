@@ -7,6 +7,7 @@ import json
 import time
 import wave
 from collections.abc import Callable, Iterator
+from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -436,7 +437,7 @@ def test_browser_playback_fetches_from_the_carts_own_station(tmp_path: Path) -> 
     assert create_app(bridge).state.stations.default.carts.api_root == "/api"
 
 
-def test_a_cart_outside_its_play_dates_is_skipped_in_words(tmp_path: Path) -> None:
+def test_cart_dates_restrict_scheduled_but_not_manual_play(tmp_path: Path) -> None:
     rig = _server_rig(tmp_path)
     with rig.client:
         rig.upload()
@@ -447,24 +448,60 @@ def test_a_cart_outside_its_play_dates_is_skipped_in_words(tmp_path: Path) -> No
         assert listed["today"] > "2000-01-01"
         assert listed["timezone"]  # the page works out the station day from it
         assert listed["wall"]["pages"][0]["slots"][2]["not_after"] == "2000-01-01"
-        refused = rig.play()
-        assert refused.status_code == 409
-        assert refused.json()["detail"] == (
-            "Cart 3, Station ID was skipped: it is expired after 1 January 2000"
-        )
-        rig.bridge.liner_scheduler.play_cart.assert_not_called()
-        # A scheduled run fails with the same words.
+        assert rig.play().status_code == 200
+        rig.bridge.liner_scheduler.play_cart.assert_called_once()
+        rig.bridge.liner_scheduler.play_cart.reset_mock()
+        # A scheduled run observes the date restriction.
         with pytest.raises(Exception, match="expired after 1 January 2000"):
             rig.client.portal.call(rig.action.handle, {"page": "1", "slot": "3"})
+        rig.bridge.liner_scheduler.play_cart.assert_not_called()
 
         rig.assign(not_before="2099-12-31")
-        assert "not playable before 31 December 2099" in rig.play().json()["detail"]
+        assert rig.play().status_code == 200
+        rig.bridge.liner_scheduler.play_cart.reset_mock()
+        with pytest.raises(Exception, match="not playable before 31 December 2099"):
+            rig.client.portal.call(rig.action.handle, {"page": "1", "slot": "3"})
+        rig.bridge.liner_scheduler.play_cart.assert_not_called()
         assert rig.assign(not_before="2026-12-26", not_after="2026-11-27").status_code == 422
         rig.assign()
         assert rig.play().status_code == 200
         saved = json.loads((tmp_path / "carts.json").read_text(encoding="utf-8"))
         # Without dates the slot is written as before, so an older AutoDJ reads it.
         assert "not_after" not in saved["pages"][0]["slots"][2]
+
+
+def test_scheduled_cart_dates_include_station_local_boundary_days(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime
+
+    import autodj.clip_dates
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            instant = datetime(2027, 1, 1, 0, 30, tzinfo=UTC)
+            return instant.astimezone(tz) if tz is not None else instant.replace(tzinfo=None)
+
+    monkeypatch.setattr(autodj.clip_dates, "datetime", FrozenDateTime)
+    rig = _server_rig(tmp_path)
+    rig.bridge.player._cfg.station.timezone = "America/Los_Angeles"
+    with rig.client:
+        rig.upload()
+        # 00:30 UTC on 1 January is still 31 December at the station.
+        rig.assign(not_before="2026-12-31", not_after="2026-12-31")
+        rig.client.portal.call(rig.action.handle, {"page": "1", "slot": "3"})
+        rig.bridge.liner_scheduler.play_cart.assert_called_once()
+
+
+def test_manual_browser_cart_api_overrides_play_dates(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    with rig.client:
+        rig.upload()
+        rig.assign(not_after="2000-01-01")
+        played = rig.play()
+        assert played.status_code == 200
+        assert played.json()["url"] == "/api/carts/uploads/id.wav"
 
 
 def test_every_registered_liner_is_offered(tmp_path: Path) -> None:

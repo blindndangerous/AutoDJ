@@ -75,16 +75,17 @@ on any day.
   liner list says the dates in words, such as "Plays until 26 December 2026", and adds "Skipped
   now: expired after 26 December 2026". **Test** never picks a skipped liner. A cart that plays
   the liner still plays it; give the cart its own dates.
-- **Carts:** set the dates in the cart editor. Outside them, pressing the cart, its key or a
-  scheduled Play cart event plays nothing and says why, such as "Cart 3, Promo was skipped: it
-  is expired after 26 December 2026", and the cart button ends with "expired" or "not playable
-  yet".
+- **Carts:** set the dates in the cart editor. Outside them, a scheduled Play cart event plays
+  nothing and says why, such as "Cart 3, Promo was skipped: it is expired after 26 December
+  2026". The cart button labels the date restriction as applying to scheduled play. A manual
+  button press, key press, or API play overrides the date restriction. Playback state and
+  availability checks still apply.
 
 A page left open past midnight follows the station's day: the liner list adds or drops "Skipped
-now", and the cart buttons and the editor's cart list add or drop "expired" and "not playable
-yet", in place. Only the words change, so focus stays where it is and nothing is announced. A
-refused date in the cart editor is shown under the editor and linked to its field, whether the
-page or the server refused it.
+now", and the cart buttons and the editor's cart list add or drop "scheduled: expired" and
+"scheduled: not playable yet", in place. Only the words change, so focus stays where it is and
+nothing is announced. A refused date in the cart editor is shown under the editor and linked to
+its field, whether the page or the server refused it.
 
 Liner dates are kept in `liner_dates.json` in the station's folder, by the ID Browse voice
 liners uses (the library ID of a registered liner, or the file name of one in the liner folder),

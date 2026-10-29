@@ -13,9 +13,8 @@ uses the voice liner duck depth, ``over`` leaves the music alone and
 ``replace`` fades it out.  The song keeps playing silently under a
 replacing cart and fades back in when the cart ends.
 
-A slot may have play dates (:mod:`autodj.clip_dates`): before its "not
-before" day or after its "do not play after" day, in the station time zone,
-the cart is skipped with the reason in words, whether pressed or scheduled.
+A slot may have play dates (:mod:`autodj.clip_dates`) that restrict scheduled
+play in the station time zone; a manual press overrides them.
 """
 
 from __future__ import annotations
@@ -90,7 +89,7 @@ class CartSlot(BaseModel):
     mode: Literal["duck", "over", "replace"] = "duck"
     # Seconds; measured by the server when the slot is saved.
     duration: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    # Play dates, both included; outside them the cart is skipped.
+    # Play dates, both included; they restrict scheduled plays.
     not_before: Date | None = None
     not_after: Date | None = None
 
@@ -388,7 +387,7 @@ class StationCarts:
         )
         return True
 
-    async def play(self, page: int, slot: int) -> dict[str, Any]:
+    async def play(self, page: int, slot: int, *, scheduled: bool = False) -> dict[str, Any]:
         """Play the cart in *slot* on *page*.
 
         Raises:
@@ -396,10 +395,11 @@ class StationCarts:
                 decode, or the server mix cannot air it now.
         """
         assigned = self.store.slot(page, slot)
-        dates = assigned.dates()
-        refusal = None if dates.empty else dates.refusal(station_today(self.bridge.player._cfg))
-        if refusal is not None:
-            raise CartError(409, f"Cart {slot}, {assigned.name} was skipped: it is {refusal}")
+        if scheduled:
+            dates = assigned.dates()
+            refusal = None if dates.empty else dates.refusal(station_today(self.bridge.player._cfg))
+            if refusal is not None:
+                raise CartError(409, f"Cart {slot}, {assigned.name} was skipped: it is {refusal}")
         scheduler = self.bridge.liner_scheduler
         if scheduler is not None and (reason := self.not_on_air()) is not None:
             raise CartError(409, reason)
@@ -483,7 +483,7 @@ class StationCarts:
     async def _scheduled(self, params: dict[str, str]) -> None:
         if self.bridge.liner_scheduler is None:
             raise ValueError("Scheduled carts need server audio or stream mode")
-        await self.play(int(params["page"]), int(params["slot"]))
+        await self.play(int(params["page"]), int(params["slot"]), scheduled=True)
 
 
 def _http(exc: CartError) -> HTTPException:
