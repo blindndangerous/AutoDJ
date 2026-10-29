@@ -228,6 +228,23 @@ def _path(path: str | Path) -> str:
     return os.path.normcase(value) if os.name == "nt" else value
 
 
+def _source_analysis(
+    kind: str, analysis: str | None, advanced: bool | None, *, current: str | None = None
+) -> str | None:
+    """Resolve explicit modes and the legacy advanced flag in one place."""
+    if analysis is not None and analysis not in {"basic", "audio", "similarity"}:
+        raise ValueError("analysis must be 'basic', 'audio', or 'similarity'")
+    if kind == "liner":
+        return "basic"
+    if analysis is not None:
+        return analysis
+    if advanced is None:
+        return current
+    if current is not None and (current == "similarity") == bool(advanced):
+        return current
+    return "similarity" if advanced else "audio"
+
+
 def normalize_path(path: str | Path) -> str:
     """*path* spelled the way the catalog stores it (absolute, normalized, case-folded on Windows)."""
     return _path(path)
@@ -871,16 +888,14 @@ class LibraryCatalog:
         row = db.execute(
             "SELECT * FROM catalog_sources WHERE kind=? AND path=?", (kind, normalized)
         ).fetchone()
-        if kind == "liner":
-            analysis = "basic"
-        elif analysis is None:
-            analysis = (
-                row["analysis"]
-                if row is not None and bool(row["advanced"]) == bool(advanced)
-                else "similarity"
-                if advanced
-                else "audio"
-            )
+        if (
+            analysis is None
+            and row is not None
+            and kind == "music"
+            and bool(row["advanced"]) == bool(advanced)
+        ):
+            analysis = row["analysis"]
+        analysis = _source_analysis(kind, analysis, advanced)
         advanced = analysis == "similarity"
         if row:
             db.execute(
@@ -936,34 +951,44 @@ class LibraryCatalog:
             ]
 
     def update_source(
-        self, source_id: str, recursive: bool, advanced: bool, *, analysis: str | None = None
+        self,
+        source_id: str,
+        recursive: bool | None = None,
+        advanced: bool | None = None,
+        *,
+        analysis: str | None = None,
     ) -> bool:
         with self._lock:
-            if analysis is not None and analysis not in {"basic", "audio", "similarity"}:
-                raise ValueError("analysis must be 'basic', 'audio', or 'similarity'")
-            row = (
-                self._db()
-                .execute("SELECT kind,analysis FROM catalog_sources WHERE id=?", (source_id,))
-                .fetchone()
-            )
-            if row is None:
-                return False
-            if row["kind"] == "liner":
-                analysis = "basic"
-            elif analysis is None:
-                analysis = (
-                    row["analysis"]
-                    if bool(row["analysis"] == "similarity") == bool(advanced)
-                    else "similarity"
-                    if advanced
-                    else "audio"
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT kind,recursive,advanced,analysis FROM catalog_sources WHERE id=?",
+                    (source_id,),
+                ).fetchone()
+                if row is None:
+                    db.rollback()
+                    return False
+                resolved = _source_analysis(
+                    row["kind"], analysis, advanced, current=row["analysis"]
                 )
-            cur = self._db().execute(
-                "UPDATE catalog_sources SET recursive=?, advanced=?, analysis=? WHERE id=?",
-                (int(recursive), int(analysis == "similarity"), analysis, source_id),
-            )
-            self._db().commit()
-            return cur.rowcount > 0
+                # A missing legacy flag means no request to alter analysis.
+                if resolved is None:
+                    resolved = row["analysis"]
+                db.execute(
+                    "UPDATE catalog_sources SET recursive=?, advanced=?, analysis=? WHERE id=?",
+                    (
+                        int(row["recursive"] if recursive is None else recursive),
+                        int(resolved == "similarity"),
+                        resolved,
+                        source_id,
+                    ),
+                )
+                db.commit()
+                return True
+            except BaseException:
+                db.rollback()
+                raise
 
     def remove_source(self, source_id: str) -> bool:
         with self._lock:

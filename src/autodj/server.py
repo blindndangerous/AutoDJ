@@ -2345,18 +2345,15 @@ def create_app(
     @app.patch("/api/library/folders/{source_id}")
     async def api_library_update_folder(source_id: str, body: LibraryFolderUpdateBody) -> dict:
         library = _catalog_library()
-        source = next((s for s in library.catalog.sources() if s["id"] == source_id), None)
-        if source is None:
-            raise HTTPException(status_code=404, detail="Folder not registered")
-        recursive = source["recursive"] if body.recursive is None else body.recursive
-        advanced = source["advanced"] if body.advanced is None else body.advanced
-        await asyncio.to_thread(
+        updated = await asyncio.to_thread(
             library.catalog.update_source,
             source_id,
-            recursive,
-            advanced if source["kind"] == "music" else False,
+            recursive=body.recursive,
+            advanced=body.advanced,
             analysis=body.analysis,
         )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Folder not registered")
         library.start_scan({source_id})
         return await asyncio.to_thread(library.snapshot)
 
