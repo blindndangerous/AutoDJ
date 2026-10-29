@@ -181,7 +181,7 @@ function reportInvalid(control, message, settingsStatus) {
   announceStatus(settingsStatus, message, { dwellMs: 6000, force: true, tone: "error" });
 }
 
-export function applyRepeatSettings(st, els) {
+export function applyRepeatSettings(st, els, { acceptDraft = true } = {}) {
   const playback = st?.playback;
   showDefaultFile(els.defaultFile, playback?.related_artists_default_file);
   showDefaultFile(els.tracksDefaultFile, playback?.related_tracks_default_file);
@@ -191,7 +191,7 @@ export function applyRepeatSettings(st, els) {
   if (playback && "related_tracks_problem" in playback) {
     showStatus(els.tracksFileStatus, playback.related_tracks_problem);
   }
-  if (playback?.repeat_rules) els.draft?.accept({ repeat_rules: playback.repeat_rules });
+  if (acceptDraft && playback?.repeat_rules) els.draft?.accept({ repeat_rules: playback.repeat_rules });
 }
 
 export function resetRepeatSettings(els) {
