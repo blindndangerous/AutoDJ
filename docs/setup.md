@@ -40,8 +40,9 @@ just to replace it with a GPU build. GPU packages are pinned by the installation
 application's other dependency versions come from the release lock.
 
 Setup synchronizes setup-managed runtimes on every run from the frozen lock and selected backend
-profile, then verifies dependency compatibility, application imports and an actual tensor
-calculation before remembering the runtime. It reuses the existing environment when its backend is
+profile, removing packages that neither of them needs. It then verifies dependency compatibility,
+application imports and an actual tensor calculation before remembering the runtime.
+It reuses the existing environment when its backend is
 unchanged. Unsupported hardware or unavailable hardware detection gets a clearly reported CPU
 recommendation. A supported GPU whose driver/runtime fails the calculation is reported as a setup
 failure; retry after fixing the driver or choose `setup --backend cpu`. No automatic GPU installation
@@ -181,7 +182,8 @@ even with `--yes`. Optional
 adopts an existing installation without changing its Python packages. A remembered adopted
 environment also stays externally managed on reruns. Use `--manage-environment` to explicitly let
 setup synchronize that remembered environment or a supplied `--environment`; after successful
-verification it becomes setup managed. A failed update leaves the saved selection unchanged.
+verification it becomes setup managed. Synchronization removes packages from it that AutoDJ does
+not need. A failed update leaves the saved selection unchanged.
 `--dry-run` shows the target environment and planned synchronization without writing files or
 installing packages.
 

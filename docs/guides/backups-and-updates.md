@@ -61,7 +61,7 @@ While no server runs, the launcher follows the [upgrade checklist](operations/up
 2. It refuses when `git status --porcelain` lists anything: a changed file, or a file git does not track. Save those changes on a branch, or move the files out of the AutoDJ folder, then try again.
 3. It makes a backup with `autodj backup` in `.uv/update/backups` in the AutoDJ folder. It keeps the three newest of these.
 4. For Stable it fetches only that release's tag and runs `git switch --detach vX.Y.Z`; if that tag differs from the one in your AutoDJ folder, it stops and says so. For Development it runs `git fetch origin master`, `git switch master` and `git merge --ff-only origin/master`.
-5. It runs `setup --yes`, which synchronizes the runtime setup manages to the new release's lock, installing any new Python packages, and checks it. An environment you adopted with `setup --environment` keeps its packages unless you chose `setup --manage-environment`.
+5. It runs `setup --yes`, which synchronizes the runtime setup manages to the new release's lock, installing any new Python packages and removing ones it no longer lists, and checks it. An environment you adopted with `setup --environment` keeps its packages unless you chose `setup --manage-environment`.
 6. It runs Doctor. If the library needs a migration, it does not migrate: it goes back, and the page lists the commands that migrate by hand.
 7. It starts the new version. The new version must answer `/healthz` within 3 minutes, or AutoDJ goes back.
 

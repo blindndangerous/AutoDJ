@@ -676,6 +676,48 @@ def test_cpu_and_no_model_package_exports(
 
 
 @pytest.mark.parametrize(
+    ("backend", "system", "machine", "amd_arch"),
+    [
+        ("cpu", "Linux", "x86_64", None),
+        ("cpu", "Darwin", "arm64", None),
+        ("nvidia", "Windows", "x86_64", None),
+        ("amd", "Linux", "x86_64", "gfx1201"),
+        ("no-model", "Linux", "x86_64", None),
+    ],
+)
+def test_managed_sync_removes_packages_the_lock_no_longer_lists(
+    setup_modules, tmp_path: Path, backend: str, system: str, machine: str, amd_arch: str | None
+) -> None:
+    """ADR-0012-10: only the final, complete install is exact, so backend wheels stay."""
+    root, _ = _project(tmp_path)
+    commands = setup_modules.support.install_commands(
+        root, root / ".uv" / f"setup-{backend}", backend, system, machine, amd_arch
+    )
+    installs = [command for command in commands if command[1:3] == ["pip", "install"]]
+
+    assert "--exact" in installs[-1]
+    assert installs[-1][installs[-1].index("-r") + 1].endswith(f"setup-{backend}-requirements.txt")
+    assert all("--exact" not in command for command in installs[:-1])
+
+
+def test_no_model_sync_keeps_installed_sound_card_output(setup_modules, tmp_path: Path) -> None:
+    """ADR-0012-10: an exact no-model sync keeps sound-card packages already installed."""
+    root, _ = _project(tmp_path)
+    environment = root / ".uv/setup-no-model"
+    site = environment / (
+        "Lib/site-packages" if sys.platform == "win32" else "lib/python3.14/site-packages"
+    )
+    (site / "sounddevice-0.5.3.dist-info").mkdir(parents=True)
+
+    commands = setup_modules.support.install_commands(root, environment, "no-model", "Linux")
+    export = next(command for command in commands if command[1] == "export")
+
+    assert export[export.index("--extra") + 1] == "play"
+    assert commands[-1][-2:] == ["-e", ".[play]"]
+    assert "--exact" in commands[-1]
+
+
+@pytest.mark.parametrize(
     ("backend", "system", "amd_arch", "expected"),
     [
         (
