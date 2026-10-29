@@ -372,6 +372,7 @@ def _every_entry(slot, entries, beets=None, categories=None, now=None):
 
 
 def test_whole_pool_matching_gives_the_songs_testing_each_one_gives():
+    """ADR-0009-14: categories, Beets and metadata matched for the whole pool at once."""
     from autodj.clockwheel import ConditionPaths, condition_paths
 
     rng = Random(3)
@@ -437,6 +438,7 @@ def test_whole_pool_matching_gives_the_songs_testing_each_one_gives():
 
 
 def test_steps_that_share_a_condition_match_it_once(monkeypatch):
+    """ADR-0009-14."""
     from autodj import clock_conditions
     from autodj.clockwheel import ConditionPaths
 
@@ -471,7 +473,7 @@ def test_steps_that_share_a_condition_match_it_once(monkeypatch):
 
 
 def test_beets_values_follow_new_songs_and_a_new_read_of_beets(monkeypatch):
-    """The Beets values of a large pool are looked up once per library and Beets read."""
+    """ADR-0009-14: a large pool's Beets values are looked up once per library and Beets read."""
     from autodj import catalog, clockwheel
     from autodj.clockwheel import ConditionPaths
 

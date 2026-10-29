@@ -2271,3 +2271,162 @@ def test_pending_time_check_replaces_automatic_liner_without_consuming_live_stat
     )
     assert checks._pending
     assert checks._aired_hour is None
+
+
+# -- a preview that fills in ------------------------------------------------------------
+
+
+def _slow_picks(monkeypatch, seconds: float = 0.03) -> None:
+    """Each predicted pick takes at least *seconds*, as on a slow server; slices go on at once."""
+    monkeypatch.setattr(hour_preview, "_PICK_PAUSE_S", seconds)
+    monkeypatch.setattr(hour_preview, "FILL_PAUSE_SECONDS", 0.0)
+
+
+def _filled(previews: HourPreviews, source: Any, minutes: int = 60) -> list[dict[str, Any]]:
+    """Each view the page would see, asking until the preview stops filling."""
+    views = [previews.submit(source, minutes).result(timeout=30)]
+    deadline = time.monotonic() + 30
+    while views[-1]["filling"] and time.monotonic() < deadline:
+        time.sleep(0.05)
+        view = previews.submit(source, minutes).result(timeout=30)
+        if view is not views[-1]:
+            views.append(view)
+    return views
+
+
+def _rows(view: dict[str, Any]) -> list[tuple[Any, ...]]:
+    return [(row["status"], row["path"], row["starts_at"]) for row in view["items"]]
+
+
+def test_a_preview_past_its_time_limit_fills_in_as_one_long_run_would(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """ADR-0009-13."""
+    source, _power, gold = _station(tmp_path, varied=True)
+    _playing(source, gold[0], time.time() - 30)
+    _slow_picks(monkeypatch)
+    unlimited = HourPreviews(budget=60.0)
+    try:
+        whole = unlimited.submit(source, 60).result(timeout=60)
+    finally:
+        assert unlimited.shutdown(5.0)
+    assert whole["filling"] is None and whole["stopped"] is None
+    previews = HourPreviews(budget=0.1, fill_slice=0.1)
+    try:
+        views = _filled(previews, source)
+    finally:
+        assert previews.shutdown(5.0)
+    first, last = views[0], views[-1]
+    # The first answer says the rest is still coming, not that the prediction stopped.
+    assert first["stopped"] is None
+    assert first["filling"].startswith("Still working out the rest of the preview.")
+    assert "So far the list runs to" in first["filling"]
+    assert len(first["items"]) < len(whole["items"])
+    assert len(views) > 2
+    # Each later view is longer, and the last is the whole run's.
+    for before, after in itertools.pairwise(views):
+        assert _rows(after)[: len(before["items"])] == _rows(before)
+    assert last["filling"] is None and last["stopped"] is None
+    assert _rows(last) == _rows(whole)
+    assert last["counts_text"] == whole["counts_text"]
+    # Nothing on the air changed.
+    assert source.ledger.writes == 0 and source.library.catalog.writes == 0
+
+
+def test_a_preview_that_cannot_fill_in_time_says_it_stopped(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0009-13: once its work runs out, the preview says the prediction stopped early."""
+    source, _power, gold = _station(tmp_path)
+    _playing(source, gold[0], time.time() - 30)
+    _slow_picks(monkeypatch)
+    previews = HourPreviews(budget=0.1, fill=0.35, fill_slice=0.1)
+    try:
+        views = _filled(previews, source)
+    finally:
+        assert previews.shutdown(5.0)
+    assert views[0]["filling"] and views[0]["stopped"] is None
+    assert views[-1]["filling"] is None
+    assert views[-1]["stopped"] == (
+        "The prediction stopped early: it reached its time limit. "
+        "The list ends at the last song it picked."
+    )
+    assert not previews._filling
+
+
+def test_a_preview_stops_filling_when_something_new_is_fixed(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0009-13: a new song, a forced refresh or the end of its keep stops the old one."""
+    source, _power, gold = _station(tmp_path)
+    _playing(source, gold[0], time.time() - 30)
+    _slow_picks(monkeypatch, 0.05)
+    monkeypatch.setattr(hour_preview, "FILL_PAUSE_SECONDS", 0.5)
+    previews = HourPreviews(budget=0.1, fill_slice=0.1)
+    try:
+        first = previews.submit(source, 60).result(timeout=30)
+        assert first["filling"]
+        filling = previews._filling[(source.station, 60)]
+        source.player._state.next_track = gold[5]
+        deadline = time.monotonic() + 10
+        while previews._filling and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not previews._filling and filling.fill.done
+        # The next ask makes a new preview, which fills in on its own.
+        again = previews.submit(source, 60).result(timeout=30)
+        assert again is not first and again["filling"]
+        replaced = previews._filling[(source.station, 60)]
+        forced = previews.submit(source, 60, force=True).result(timeout=30)
+        assert forced is not again and replaced.fill.done
+    finally:
+        assert previews.shutdown(5.0)
+
+    kept = HourPreviews(keep=0.3, budget=0.1, fill_slice=0.1)
+    try:
+        assert kept.submit(source, 30).result(timeout=30)["filling"]
+        filling = kept._filling[(source.station, 30)]
+        deadline = time.monotonic() + 10
+        while kept._filling and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not kept._filling and filling.fill.done
+    finally:
+        assert kept.shutdown(5.0)
+
+
+def test_filling_waits_for_the_page_and_never_holds_up_an_ask(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0009-13: only a preview the page still asks for goes on, behind any ask."""
+    source, _power, gold = _station(tmp_path)
+    _playing(source, gold[0], time.time() - 30)
+    _slow_picks(monkeypatch)
+    previews = HourPreviews(waiting=1, budget=0.1, fill_slice=0.1)
+    try:
+        assert previews.submit(source, 60).result(timeout=30)["filling"]
+        filling = previews._filling[(source.station, 60)]
+        # The page stopped asking: no more work until it asks again.
+        monkeypatch.setattr(hour_preview, "FILL_IDLE_SECONDS", 0.0)
+        time.sleep(0.3)
+        worked = filling.fill.worked
+        time.sleep(0.3)
+        assert filling.fill.worked == worked and not filling.fill.done
+        # Asks are still taken while a preview fills; none waits behind its work.
+        other = previews.submit(source, 30)
+        assert other.result(timeout=30)["items"]
+        monkeypatch.setattr(hour_preview, "FILL_IDLE_SECONDS", 15.0)
+        views = _filled(previews, source)
+        assert views[-1]["filling"] is None
+    finally:
+        assert previews.shutdown(5.0)
+
+
+def test_filling_ends_within_the_keep_and_the_page_asks_often_enough() -> None:
+    """ADR-0009-13: the slices fit in KEEP_SECONDS; the filling page asks within the idle time."""
+    slices = -(
+        -(hour_preview.FILL_SECONDS - hour_preview.BUDGET_SECONDS)
+        // hour_preview.FILL_SLICE_SECONDS
+    )
+    wall = hour_preview.BUDGET_SECONDS + slices * (
+        hour_preview.FILL_SLICE_SECONDS + hour_preview.FILL_PAUSE_SECONDS
+    )
+    assert wall < KEEP_SECONDS
+    script = (Path(hour_preview.__file__).parent / "static/modules/hour-preview.js").read_text(
+        encoding="utf-8"
+    )
+    found = re.search(r"const FILLING_REFRESH_MS = (\d+);", script)
+    assert found is not None
+    assert int(found[1]) / 1000 < hour_preview.FILL_IDLE_SECONDS / 2

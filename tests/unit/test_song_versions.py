@@ -442,6 +442,7 @@ def _oldest_first(entries, played, rng, *, allowed, versions, preferred_path=Non
 
 @pytest.mark.parametrize("seed", range(12))
 def test_least_recent_ages_each_song_once_as_it_ages_each_version(seed: int) -> None:
+    """ADR-0009-14: the same choice as ageing each version of each song one by one."""
     rng = random.Random(seed)
     entries = [
         SimpleNamespace(

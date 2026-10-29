@@ -122,7 +122,7 @@ def test_missing_library_is_human_readable_and_legacy_config_safe() -> None:
 
 
 def test_a_read_with_the_same_songs_does_not_list_them_again(tmp_path: Path) -> None:
-    """Every clockwheel pick reads Beets: an unchanged library is not walked for it."""
+    """ADR-0009-14: every clockwheel pick reads Beets; an unchanged library is not walked."""
     looked = []
 
     class Song:
