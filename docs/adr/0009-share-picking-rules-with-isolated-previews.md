@@ -275,7 +275,8 @@ plays instead of building it again for each pick; its contents and order match a
 again.
 
 In a benchmark at that shape (78,500 synthetic songs, 70% with plays, four categories and two
-conditions steps, on one desktop machine), a 60-minute preview fell from 2.2 to 2.9 seconds to
-1.1 to 1.4 seconds, and with Count versions as one song from 4.4 to 6.7 seconds to 1.4 to 2.0
-seconds; the picks were the same. These are measurements on one machine. The time limit is
-unchanged. Contract `ADR-0009-12` records this; the ADR remains Proposed.
+conditions steps, pinned to 2 cores of one laptop CPU), a 60-minute preview fell from 0.73 to
+0.76 seconds to 0.31 to 0.40 seconds, and with Count versions as one song from 1.38 to 1.48
+seconds to 0.40 to 0.55 seconds; the previews were the same. These are measurements on one
+machine, not on the server where the limit was reached. The time limit is unchanged.
+Contract `ADR-0009-12` records this; the ADR remains Proposed.
