@@ -332,5 +332,14 @@ reached, the Hour preview now goes on from its last pick instead of stopping:
 Going on at the next ask alone was considered: the page asks every 30 seconds and a preview is
 kept for 45, so a preview would get at most two slices before a new one started from scratch. A
 longer time limit was also considered: it delays the first answer and holds the worker, and the
-interpreter, for one long run. Contract `ADR-0009-13` records the filling behaviour. The ADR
-remains Proposed.
+interpreter, for one long run. Contract `ADR-0009-13` records the filling behaviour.
+
+In a benchmark at that station's shape (80,000 synthetic songs, 70% with plays, 17 Beets query
+categories, an 18-step clockwheel of conditions steps, artist and title separation and Count
+versions as one song), the previews were the same before and after. Pinned to one core of one
+laptop CPU, a 60-minute preview fell from 0.071 to 0.034 seconds per pick. Limited to 7% of that
+core, where the unchanged code took 1.23 seconds per pick, about what the server took, the
+unchanged preview stopped at its time limit with 2 to 5 predicted songs; the new one answered
+after 4.1 seconds with 7 predicted songs and filled the whole hour, 15 songs, 14 seconds after it
+was first asked for. A 3-hour preview there ran out of its 20 seconds of work after 13 songs and
+said so. These are measurements on other machines, not on that server. The ADR remains Proposed.
