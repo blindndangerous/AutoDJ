@@ -467,18 +467,18 @@ class ProfileSettings:
                 name = selected_name or ""
             values = self.resolve(name)
             self.validate(values)
+            if selection.get("revision") == self._revision(values):
+                # Ordinary restarts keep the persisted live state. An offline edit
+                # to defaults or the selected profile changes this revision and is
+                # deliberately applied below. Older selection files migrate once.
+                self.active = name or None
+                self.problem = None
+                return
+            # Applying writes each group's store, which may fail like the reads.
+            self.apply(name)
         except (OSError, ValueError) as exc:
             self.problem = f"Could not restore the saved profile: {exc}. Using the last saved station settings."
             logger.warning("%s", self.problem)
-            return
-        if selection.get("revision") == self._revision(values):
-            # Ordinary restarts keep the persisted live state. An offline edit
-            # to defaults or the selected profile changes this revision and is
-            # deliberately applied below. Older selection files migrate once.
-            self.active = name or None
-            self.problem = None
-            return
-        self.apply(name)
 
 
 def profile_settings(station: Any) -> ProfileSettings:

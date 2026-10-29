@@ -164,3 +164,26 @@ def test_failed_resource_change_restores_exact_profile_documents(tmp_path):
         raise OSError("rename failed")
 
     assert {path: path.read_bytes() for path in paths} == before
+
+
+@pytest.mark.parametrize("failure", ["apply", "selection"])
+def test_restore_reports_an_apply_failure_instead_of_blocking_the_start(
+    tmp_path, monkeypatch, failure
+):
+    """With no saved selection the defaults are applied; a write failure there is not fatal."""
+    station = _station(tmp_path)
+    manager = ProfileSettings(station)
+    _defaults(manager, crossfade=7.0)
+    if failure == "apply":
+        monkeypatch.setattr(
+            manager.owner, "apply_settings_patch", Mock(side_effect=OSError("disk full"))
+        )
+    else:
+        monkeypatch.setattr(manager, "_write", Mock(side_effect=OSError("disk full")))
+
+    manager.restore()
+
+    assert manager.problem is not None
+    assert "disk full" in manager.problem
+    assert manager.active is None
+    assert not manager.selection_path.exists()
