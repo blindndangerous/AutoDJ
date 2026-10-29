@@ -27,7 +27,7 @@ encodes its own audio, so each one adds to the work the computer does.
 
 ## Add a station
 
-1. Open Settings, Stations.
+1. Open Settings, Station, Stations.
 2. Under **New station**, choose **Start from**:
    - **AutoDJ defaults** starts with AutoDJ's own settings.
    - A station's name copies that station's saved settings, including changes made in the page.
@@ -51,7 +51,7 @@ shows, intros, profiles and liners. Set those up again for the new station.
 
 ## Start and stop stations
 
-The **Stations on this server** table in Settings, Stations lists every station with what it is
+The **Stations on this server** table in Settings, Station, Stations lists every station with what it is
 playing and how many people are listening. For each station:
 
 - **Start with the server** sets whether it starts when AutoDJ starts.
@@ -75,11 +75,11 @@ selected station. Shared controls say "Shared by all stations" for screen reader
 
 Switch to the new station, then work through its settings as you did for the first one:
 
-1. Settings, Stream: give it a station name, quality and any relays. See
+1. Settings, Station, Broadcasting: give it a station name, quality and any relays. See
    [Streaming and relays](streaming-and-relays.md).
 2. Library tools: make its categories and clockwheels. The music folders are already shared.
-3. Settings, Song picking: choose its pick mode and repeat rules.
-4. Settings, Schedule: add its events.
+3. Settings, Profile, Song picking: choose its pick mode and repeat rules.
+4. Settings, Station, Schedule: add its events.
 
 ## Each station's addresses
 
@@ -98,7 +98,7 @@ When AutoDJ starts, it prints each station's stream address and status page.
 
 ## Time zone, time format, and output
 
-In Settings, Stations, **Time for the selected station** holds **Time zone**. It controls that
+In Settings, Station, Stations, **Time for the selected station** holds **Time zone**. It controls that
 station's schedule, ad breaks, and clockwheel restarts. A change takes effect when that station
 next starts. **Time format for all stations** changes the display between 24 hour and 12 hour
 time. Press **Save changes** in **Stations** after changing either.
@@ -158,7 +158,7 @@ server**. It then stays stopped and uses no resources.
 ## Stereo Tool licences
 
 Stations can share one Stereo Tool licence key or have their own. With several stations,
-Settings, Sound shows **For this station only** beside the licence key. Ticked, the key is saved
+Settings, Global, Server shows **For this station only** beside the licence key. Ticked, the key is saved
 for the current station. Unticked, it is for every station that has no key of its own.
 
 ## Backups

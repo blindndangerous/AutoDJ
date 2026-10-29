@@ -33,6 +33,7 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | [15: Prepared editions](0015-prepare-speech-for-specific-show-editions.md) | Accepted | Occurrence-bound recordings, full-target review receipts, explicit approval, local playout and interrupted-edition recovery |
 | [16: Updates and restart](0016-update-and-restart-from-the-web.md) | Proposed | Update channels, the update check and notice, restart from the web page, the launcher restart loop, published container images and the CUDA image |
 | [17: Explicit settings saves](0017-save-settings-through-one-draft-boundary.md) | Proposed | Shared drafts, revision conflicts, separate storage owners and removal of superseded writes |
+| [18: Profile overrides](0018-profiles-store-overrides-of-station-defaults.md) | Proposed | Station-owned profile overrides, defaults inheritance, activation and startup resolution |
 
 [ADR 13](0013-produce-speech-outside-playout.md) describes selected
 Showcraft-inspired speech capabilities inside AutoDJ. Its contract table records

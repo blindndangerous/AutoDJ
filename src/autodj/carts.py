@@ -543,8 +543,23 @@ def install_carts(router: StationRouter) -> None:
             for other in carts.store.wall.pages
         ):
             raise HTTPException(status_code=409, detail=f"Another page is named {body.name}")
-        target.name = body.name
-        await carts.changed()
+        from autodj.profile_settings import profile_settings
+
+        def rename() -> None:
+            previous = target.name
+            with profile_settings(station).changing_reference("cart", previous, body.name):
+                try:
+                    target.name = body.name
+                    carts.store.save()
+                except Exception:
+                    target.name = previous
+                    raise
+
+        try:
+            await asyncio.to_thread(rename)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        await carts.publish({"type": "cart_changed"})
         return {"name": body.name}
 
     @router.put("/carts/active-page/{page}")

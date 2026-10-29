@@ -518,6 +518,106 @@ def test_restore_replaces_only_the_station_files_in_the_archive(tmp_path: Path) 
     assert (folder / "carts.json").read_bytes() == b"current carts"
 
 
+@pytest.mark.parametrize(
+    ("station", "prefix"),
+    [("default", ""), ("nightowl", "stations/nightowl/")],
+)
+def test_legacy_profile_folder_restore_removes_unarchived_profile_metadata(
+    tmp_path: Path, station: str, prefix: str
+) -> None:
+    cfg = _config(tmp_path)
+    folder = cfg.index.stations_dir / station
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in ("profile-defaults.json", "profile-selection.json"):
+        (folder / name).write_text('{"current": true}', encoding="utf-8")
+    archive = _archive(
+        tmp_path / "legacy-profiles.zip",
+        {f"{prefix}profiles/Night/profile.json": b'{"saved": true}'},
+        stations=["nightowl"] if station == "nightowl" else None,
+    )
+
+    restore_backup(cfg, archive, force=True)
+
+    assert (folder / "profiles" / "Night" / "profile.json").read_bytes() == b'{"saved": true}'
+    assert not (folder / "profile-defaults.json").exists()
+    assert not (folder / "profile-selection.json").exists()
+
+
+def test_failed_legacy_profile_restore_puts_unarchived_metadata_back(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    folder = cfg.index.stations_dir / "default"
+    folder.mkdir(parents=True, exist_ok=True)
+    original = {}
+    for name in ("profile-defaults.json", "profile-selection.json"):
+        path = folder / name
+        path.write_bytes((name + " current").encode())
+        original[name] = path.read_bytes()
+    archive = _archive(tmp_path / "legacy-profiles.zip", {"profiles/Night/profile.json": b"saved"})
+    from autodj import backup as backup_module
+
+    real_move_aside = backup_module._Swap.move_aside
+    raised = False
+
+    def fail_after_metadata_aside(swap, path):
+        nonlocal raised
+        real_move_aside(swap, path)
+        if path.name == "profile-defaults.json" and not raised:
+            raised = True
+            raise OSError("injected failure while removing legacy profile metadata")
+
+    with (
+        patch.object(backup_module._Swap, "move_aside", fail_after_metadata_aside),
+        pytest.raises(BackupError, match="nothing was changed"),
+    ):
+        restore_backup(cfg, archive, force=True)
+
+    assert raised
+    assert {name: (folder / name).read_bytes() for name in original} == original
+    assert not (folder / "profiles").exists()
+    assert not (cfg.index.library_dir / ".autodj-restore.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("station", "member", "stations"),
+    [
+        ("default", "index/web_state.json", None),
+        ("nightowl", "stations/nightowl/index/web_state.json", ["nightowl"]),
+    ],
+)
+def test_station_index_restore_without_profiles_removes_unarchived_profile_metadata(
+    tmp_path: Path, station: str, member: str, stations: list[str] | None
+) -> None:
+    cfg = _config(tmp_path)
+    folder = cfg.index.stations_dir / station
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in ("profile-defaults.json", "profile-selection.json"):
+        (folder / name).write_text('{"current": true}', encoding="utf-8")
+    archive = _archive(tmp_path / "station-index.zip", {member: b"{}"}, stations=stations)
+
+    restore_backup(cfg, archive, force=True)
+
+    assert (folder / "web_state.json").read_bytes() == b"{}"
+    assert not (folder / "profile-defaults.json").exists()
+    assert not (folder / "profile-selection.json").exists()
+
+
+def test_station_index_restore_requires_force_to_remove_unarchived_profile_metadata(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    folder = cfg.index.stations_dir / "default"
+    folder.mkdir(parents=True, exist_ok=True)
+    defaults = folder / "profile-defaults.json"
+    defaults.write_text('{"current": true}', encoding="utf-8")
+    archive = _archive(tmp_path / "station-index.zip", {"index/web_state.json": b"{}"})
+
+    with pytest.raises(BackupError, match="pass --force"):
+        restore_backup(cfg, archive, force=False)
+
+    assert defaults.read_text(encoding="utf-8") == '{"current": true}'
+    assert not (folder / "web_state.json").exists()
+
+
 # ---------------------------------------------------------------------------
 # Restore is all or nothing; backups hold one moment and nothing from outside
 # ---------------------------------------------------------------------------

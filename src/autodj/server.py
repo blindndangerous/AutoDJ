@@ -408,6 +408,7 @@ async def _broadcast_state_once(
     recording_status: Callable[[], dict[str, object]] | None = None,
     station_list: Callable[[], list[dict[str, Any]]] | None = None,
     live_state: Callable[[], dict[str, Any]] | None = None,
+    active_profile: Callable[[], str | None] | None = None,
 ) -> None:
     """Push the player state to every WebSocket client, if any are connected.
 
@@ -432,6 +433,8 @@ async def _broadcast_state_once(
             state["stations"] = station_list()
         if live_state is not None:
             state.update(live_state())
+        if active_profile is not None:
+            state["active_profile"] = active_profile()
         payload = json.dumps(state)
         await _broadcast_and_prune(clients, clients_lock, payload)
     except Exception as exc:
@@ -2243,17 +2246,37 @@ def create_app(
         # Every station's preset: the running ones' and the stopped ones' saved
         # choice, read off the event loop (web_state.json may be on a NAS).
         in_use = await asyncio.to_thread(stations.stereo_tool_presets)
+
+        def remove() -> None:
+            from contextlib import ExitStack
+
+            from autodj.profile_settings import profile_settings
+            from autodj.stereotool_presets import INCLUDED
+
+            with ExitStack() as references:
+                for slug in sorted(stations.slugs()):
+                    try:
+                        station = stations.editable(slug)
+                    except StationControlError as exc:
+                        # Its saved references cannot change now, and nothing
+                        # would update them later: refuse, deleting nothing.
+                        raise StationControlError(
+                            f"{stations.get(slug).name}: {exc}; try again in a moment"
+                        ) from exc
+                    manager = profile_settings(station)
+                    references.enter_context(manager.changing_reference("preset", name, INCLUDED))
+                delete_preset(
+                    cfg.index.shared_dir, name, active=[preset for _station, preset in in_use]
+                )
+
         try:
-            await asyncio.to_thread(
-                delete_preset,
-                cfg.index.shared_dir,
-                name,
-                active=[preset for _station, preset in in_use],
-            )
+            await asyncio.to_thread(remove)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except StationControlError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except PresetInUseError as exc:
             users = [station for station, preset in in_use if preset == exc.args[0]]
             where = f" on {', '.join(users)}" if len(stations.slugs()) > 1 and users else ""
@@ -2889,6 +2912,9 @@ def _connection_limit(cfg: Any) -> int:
 
 def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, Any, None]]:
     """The loop that pushes *station*'s state to its WebSocket clients once a second."""
+    from autodj.profile_settings import profile_settings
+
+    profiles = profile_settings(station)
 
     async def broadcast() -> None:  # pragma: no cover — long-running task
         failures = _BroadcastFailureLog()
@@ -2913,6 +2939,7 @@ def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, A
                 recorder.status if recorder is not None else None,
                 station.station_list,
                 station.live_state,
+                lambda: profiles.active,
             )
 
     return broadcast

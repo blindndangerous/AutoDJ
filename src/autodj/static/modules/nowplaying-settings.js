@@ -12,7 +12,7 @@ import { copyByCommand } from "./clipboard.js";
 //     here asks for more.
 //   - Failures are said in words with the error tone.  A 401 already
 //     opened the sign-in dialog, so it says nothing more.
-//   - DMCA mode (set in Settings > Song picking) shows a plain-text status line and
+//   - DMCA mode (set in Settings > Station > Broadcasting) shows a plain-text status line and
 //     keeps the show-next box focusable but aria-disabled, its reason
 //     added to the box's description.  Pressing it says the reason and
 //     leaves it unticked: listeners never get the next song in that mode.

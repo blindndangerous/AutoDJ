@@ -18,7 +18,7 @@ Open **Track info** for the song (from Now Playing, History, or the lists in Que
 go to **Matched intros**, below the cue points. It lists the intros **For this song** and **For
 any song by** the song's artist, each with how often it plays, its play dates and how many seconds
 of speech it holds, and a **Listen** and a **Remove** button. Listen plays the clip on the Preview
-output device when one is chosen in Settings, Sound, and is pressed until the clip ends or you
+output device when one is chosen in Settings, Global, Browser preferences, and is pressed until the clip ends or you
 press it again. Remove asks first and deletes the clip.
 
 Under **Add an intro**:

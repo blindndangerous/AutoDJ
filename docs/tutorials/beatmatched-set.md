@@ -70,7 +70,7 @@ Record the original settings before changing them so you can restore them later.
    **Key shift** where available. In **Transitions**,
    set **Transition effect** to **none** so it does not distract from this comparison.
 3. In **Voice liners**, leave **Enable voice liners** unchecked.
-4. In **Settings**, **Stations**, set **Playback output** to **Radio stream**.
+4. In **Settings**, **Station**, **Stations**, set **Playback output** to **Radio stream**.
    Leave **Also play the radio stream on the server sound card** unchecked.
 5. Press **Save changes** in the Stations tab. In Practice's station row press **Stop**,
    confirm **Stop station**, wait for **Off air**, then press **Start**.
@@ -105,7 +105,7 @@ continued operation does not establish that your chosen comparison ran.
 
 ## Repeat with beatmatching
 
-1. Stop listening with **Listen here**, then stop Practice in **Settings**, **Stations**.
+1. Stop listening with **Listen here**, then stop Practice in **Settings**, **Station**, **Stations**.
 2. In **DJ mixing**, check **Beatmatch**, set **Beatmatch stretch limit (percent)**
    to `8` and **Glide back (bars)** to `8`. Uncheck **Drop mixing**,
    and leave **Phrase align** and **Key shift** off.

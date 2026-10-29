@@ -1099,17 +1099,22 @@ class TestProfileApplyBranches:
             "bpm_hi": 130,
             "harmonic_mode": "compatible",
         }
-        client.post("/api/profiles", json=body)
+        created = client.post("/api/profiles", json=body)
+        assert created.status_code == 200, created.text
         resp = client.post(f"/api/profiles/{body['name']}/apply")
         assert resp.status_code == 200
         applied = resp.json()["applied"]
         assert "bpm_range" in applied
-        assert "harmonic_mode" in applied
+        assert "djmix" in applied
+        settings = client.get("/api/settings").json()
+        assert settings["bpm_range"] == {"lo": 90.0, "hi": 130.0}
+        assert settings["djmix"]["harmonic_mode"] == "compatible"
         client.request("DELETE", f"/api/profiles/{body['name']}")
 
     def test_apply_with_preset_set(self, client) -> None:
-        body = {"name": "branchcov-preset", "preset": "chill"}
-        client.post("/api/profiles", json=body)
+        body = {"name": "branchcov-preset", "preset": "winddown"}
+        created = client.post("/api/profiles", json=body)
+        assert created.status_code == 200, created.text
         resp = client.post(f"/api/profiles/{body['name']}/apply")
         assert resp.status_code == 200
         assert "preset" in resp.json()["applied"]
@@ -1117,8 +1122,19 @@ class TestProfileApplyBranches:
 
     def test_apply_with_missing_preset_is_refused_and_changes_nothing(self, client) -> None:
         """A preset the config no longer has used to be dropped without a word."""
-        body = {"name": "branchcov-gone", "preset": "warmup", "bpm_lo": 90, "bpm_hi": 130}
-        client.post("/api/profiles", json=body)
+        body = {"name": "branchcov-gone", "preset": "winddown", "bpm_lo": 90, "bpm_hi": 130}
+        created = client.post("/api/profiles", json=body)
+        assert created.status_code == 200, created.text
+        station = client.app.state.stations.default
+        from autodj.profiles import ProfileSnapshot, ProfileStore
+
+        store = ProfileStore(station.paths.profiles)
+        store.save(
+            ProfileSnapshot(
+                name=body["name"],
+                settings={"preset": {"name": "warmup"}, "bpm_range": {"lo": 90.0, "hi": 130.0}},
+            )
+        )
         before = client.get("/api/status").json()["settings"]["bpm_range"]
 
         resp = client.post(f"/api/profiles/{body['name']}/apply")

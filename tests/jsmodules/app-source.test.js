@@ -83,9 +83,10 @@ function settingsServer(initialValues = {}) {
   let nextFailure = null;
   const handle = (url, options = {}) => {
     // api-client routes /api/settings to the selected station's settings URL.
-    if (url !== "/api/settings" && !/^\/api\/stations\/[^/]+\/settings$/.test(url)) return null;
+    const target = new URL(url, "http://localhost");
+    if (target.pathname !== "/api/settings" && !/^\/api\/stations\/[^/]+\/settings$/.test(target.pathname)) return null;
     if (String(options.method || "GET").toUpperCase() !== "PATCH") {
-      return jsonResponse({ revision, values: globalThis.structuredClone(values) });
+      return jsonResponse({ revision, profile: target.searchParams.get("profile") ?? undefined, values: globalThis.structuredClone(values) });
     }
     if (nextFailure) {
       const failure = nextFailure;
@@ -98,7 +99,7 @@ function settingsServer(initialValues = {}) {
       values[group] = { ...(values[group] || {}), ...changes };
     }
     revision = revision === "one" ? "two" : `next-${revision}`;
-    return jsonResponse({ revision, settings: { revision, values: globalThis.structuredClone(values) },
+    return jsonResponse({ revision, settings: { revision, profile: body.profile, values: globalThis.structuredClone(values) },
       applied: Object.keys(body.changes), failed: {} });
   };
   handle.failNext = (payload, status = 503) => { nextFailure = { payload, status }; };
@@ -111,12 +112,12 @@ async function settingsDraftApi() {
 
 async function applyAppSettings(values, revision = "one") {
   const { applySettingsDrafts } = await settingsDraftApi();
-  applySettingsDrafts({ revision, values }, document);
+  applySettingsDrafts({ profile: "", revision, values }, document);
 }
 
 async function saveSettingsControl(control) {
   const { saveSettingsPanel } = await settingsDraftApi();
-  return saveSettingsPanel(control.closest('[id^="spanel-"]'));
+  return saveSettingsPanel(control.closest('[id^="spanel-"][role="tabpanel"]'));
 }
 
 function installDocument() {
@@ -743,7 +744,7 @@ describe("app request behavior", () => {
       onRequest: (url, options) => settings(url, options) || jsonResponse({ ok: true }),
     });
     const status = document.querySelector("#settings-status");
-    const saveStatus = document.querySelector("#spanel-sound .settings-save-status");
+    const saveStatus = document.querySelector("#spanel-display .settings-save-status");
     const records = [];
     await vi.waitFor(() =>
       expect(status.textContent).toContain("Could not switch audio device"));
@@ -806,9 +807,9 @@ describe("app request behavior", () => {
     expect(await saveSettingsControl(select)).toBe(false);
     expect(store.get("autodj.sinkId")).toBe("old-dac");
     expect(liveRoute).toBe("old-dac");
-    await vi.waitFor(() => expect(document.querySelector("#spanel-sound .settings-save-status").textContent)
+    await vi.waitFor(() => expect(document.querySelector("#spanel-display .settings-save-status").textContent)
       .toContain("storage full"));
-    document.querySelector("#spanel-sound [data-settings-discard]").click();
+    document.querySelector("#spanel-display [data-settings-discard]").click();
     expect(select.value).toBe("old-dac");
     expect(liveRoute).toBe("old-dac");
     expect(deck.audio.setSinkId).not.toHaveBeenCalledWith("new-dac");
@@ -2204,7 +2205,10 @@ describe("app request behavior", () => {
         })
         : jsonResponse({ ok: true }),
     });
-    await vi.waitFor(() => expect(document.querySelector("#stab-live").hidden).toBe(false));
+    document.querySelector("#tab-settings").click();
+    await vi.waitFor(() => expect(document.querySelector("#panel-settings").hidden).toBe(false));
+    document.querySelector("#stab-stream").click();
+    await vi.waitFor(() => expect(document.querySelector("#spanel-live").open).toBe(true));
     expect(document.querySelector("#talk-desk").hidden).toBe(false);
     expect(document.querySelector("#live-on-air").textContent).toMatch(/^Live: DJ Alice since /);
     expect(document.querySelector("#live-dj-none").hidden).toBe(false);
@@ -2346,8 +2350,8 @@ describe("app request behavior", () => {
       document.querySelector("#track-info-return").click();
       await vi.waitFor(() => expect(document.activeElement).toBe(nowButton));
 
-      // Liner file maintenance is in Settings > Voice liners.
-      document.querySelector("#stab-liners").click();
+      // Liner file maintenance is under Profile settings > Announcements.
+      document.querySelector("#stab-announcements").click();
       await vi.waitFor(() => expect(document.querySelector("#spanel-liners").hidden).toBe(false));
       const { renderLinerFileList } = await vi.importActual("../../src/autodj/static/modules/liners.js");
       const list = document.querySelector("#ln-file-list");
@@ -4755,14 +4759,24 @@ describe("repeat snapshots in the app", () => {
   });
 
   it("uses the versioned repeat snapshot without accepting the flat copy again", async () => {
-    await setupApp({
+    const { webSocket } = await setupApp({
       initialState: { settings: {
-        djmix: {}, transition: {}, revision: "versioned",
+        djmix: {}, transition: {}, revision: "versioned", profile: "",
         values: { playback: { repeat_rules: { artist: { tracks: 7, minutes: 0 } } } },
         playback: { repeat_rules: { artist: { tracks: 99, minutes: 0 } } },
       } },
       onRequest: () => jsonResponse({}),
     });
     expect(document.getElementById("repeat-artist-tracks").value).toBe("7");
+
+    // Live snapshots and another profile's replies cannot replace this edit target.
+    for (const target of [{}, { profile: "Evening" }]) {
+      webSocket.onmessage({ data: JSON.stringify({ settings: {
+        djmix: {}, transition: {}, revision: "later", ...target,
+        values: { playback: { repeat_rules: { artist: { tracks: 11, minutes: 0 } } } },
+        playback: { repeat_rules: { artist: { tracks: 99, minutes: 0 } } },
+      }, queue: [] }) });
+      expect(document.getElementById("repeat-artist-tracks").value).toBe("7");
+    }
   });
 });

@@ -119,8 +119,8 @@ export function installStereoToolPresets({ document: doc = document, request = r
     const confirmed = await confirm(doc, {
       title: `Delete preset ${label}?`,
       message: wasActive
-        ? "Stereo Tool switches to the Included preset first, then the file is removed."
-        : "The preset file is removed from the station's data folder.",
+        ? "Stereo Tool switches to the Included preset first, then the file is removed. Saved defaults and profiles that refer to it switch to Included too."
+        : "The preset file is removed from the station's data folder. Saved defaults and profiles that refer to it switch to Included.",
       confirmLabel: "Delete preset",
       // Runs while the dialog is open; focus goes to the list as it closes.
       onConfirm: async () => {

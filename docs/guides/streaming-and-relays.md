@@ -13,12 +13,12 @@ and macOS, install it yourself (see [Install AutoDJ](install.md)).
 
 ## Turn on the stream
 
-For the selected station, open **Settings**, **Stations**. Under **Output for the selected station**,
+For the selected station, open **Settings**, **Station**, **Stations**. Under **Output for the selected station**,
 set **Playback output** to **Radio stream**, then press **Save changes** in **Stations**. The change takes
 effect when that station next starts. In **Stations on this server**, use that station's
 **Stop**, confirm **Stop station**, then **Start**. This disconnects its listeners.
 You can edit any station while it is stopped, including the default station.
-The **Stream** tab and its stream settings appear when the selected station uses **Radio stream**.
+The **Broadcasting** tab and its stream settings appear when the selected station uses **Radio stream**.
 Start that station to obtain a working stream address.
 
 For a one-time default stream, start AutoDJ with `--stream`, for example
@@ -33,7 +33,7 @@ New named stations use stream output by default. The default station can use bro
 
 ## Find the stream address
 
-1. After stream output is active, open the web page and go to **Settings**, **Stream**.
+1. After stream output is active, open the web page and go to **Settings**, **Station**, **Broadcasting**.
 2. **Stream address** shows the address. Press **Copy address** to copy it.
 3. **Download playlist file (.m3u)** saves a small playlist file that holds the same address.
 
@@ -49,7 +49,7 @@ Network Stream. Listening never needs pairing.
 
 ## Name the station and choose the quality
 
-In Settings, Stream:
+In Settings, Station, Broadcasting:
 
 - **Station name** is what players show, up to 100 characters. Players pick up a new name the
   next time they connect. A clockwheel or show can use another name while it is on the air; see
@@ -86,13 +86,13 @@ save. It takes the same characters as **Station name**, up to 100.
   before a show, reconnect them once. A listener's player shows it the next
   time it connects. Saving a new name for the clockwheel that is playing applies at once, whatever
   **Apply saved changes** says, and does not restart the wheel.
-- The normal **Station name** in Settings, Stream stays as you saved it. After a restart AutoDJ
+- The normal **Station name** in Settings, Station, Broadcasting stays as you saved it. After a restart AutoDJ
   uses the name of the clockwheel that is active again; a show resumed after a restart uses its
   name again from its next song.
 
 ### More formats: AAC and Opus
 
-Open the **More formats** section of Settings, Stream to add a second or third format beside the
+Open the **More formats** section of Settings, Station, Broadcasting to add a second or third format beside the
 MP3 one:
 
 - **AAC quality**: Off, 64, 96, 128, 192 or 256 kbps. AAC sounds better than MP3 at the same
@@ -108,7 +108,7 @@ section lists the address of each format, ending in `/stream.aac` or `/stream.op
 
 Anyone who can reach the AutoDJ address can listen. These controls limit that:
 
-- **Connections per address (0 for unlimited)**, under Listeners in Settings, Stream, limits
+- **Connections per address (0 for unlimited)**, under Listeners in Settings, Station, Broadcasting, limits
   how many streams one network address may open at once. The default is 0, no limit.
 - **Add address ban** blocks one address or a range of addresses (written as a CIDR, such as
   `203.0.113.0/24`). Choose 1 hour, 1 day, 7 days or Until removed, and add a note if you like.
@@ -150,7 +150,7 @@ keeps AutoDJ playing without direct listeners.
 You need these details from your host: the server type, host name, port, source password, and
 for Icecast the mount point.
 
-1. In Settings, Stream, open **Relays** and press **Add relay**.
+1. In Settings, Station, Broadcasting, open **Relays** and press **Add relay**.
 2. Fill in the form:
    - **Name**: a short name of your own, using letters, digits, `-` and `_` (up to 32).
    - **Server type**: Icecast, Shoutcast 1 or Shoutcast 2.
@@ -174,12 +174,12 @@ The Relays table shows status and the last error. A disconnected relay retries a
 A station can have up to 8 relays. Two relays cannot use the same server and mount.
 
 AutoDJ saves each station's relays and passwords in private
-`index/stations/<station-id>/relays.json`. Change them in **Settings**, **Stream**, **Relays**.
+`index/stations/<station-id>/relays.json`. Change them in **Settings**, **Station**, **Broadcasting**, **Relays**.
 The [Settings reference](../settings-reference.md#relays) lists the relay fields.
 
 ## Record the broadcast
 
-Broadcast recording, in Settings, Stream, saves what listeners hear as dated MP3 files.
+Broadcast recording, in Settings, Station, Broadcasting, saves what listeners hear as dated MP3 files.
 
 - **Record broadcast** starts and stops recording. While it records, the station keeps playing
   even without listeners.
@@ -197,7 +197,7 @@ Recordings go in `recordings` by default and are not backed up.
 ## Share what is playing
 
 AutoDJ has public pages and feeds that need no pairing. Find their links in the **Now-playing
-feed** section of Settings, Stream.
+feed** section of Settings, Station, Broadcasting.
 
 - **Now-playing link** is a JSON feed (`/api/nowplaying`) for web pages, overlays and other
   services. It lists the current song, recent songs and the listener count.
@@ -207,7 +207,7 @@ feed** section of Settings, Stream.
 
 A public request page and a listening page are also available. Both are off by default. The
 request page is switched on in the **Listener requests** card in Queue & Search. The listening
-page and its embeddable version are set under **Settings**, **Stream**, with allowed embed sites.
+page and its embeddable version are set under **Settings**, **Station**, **Broadcasting**, with allowed embed sites.
 The selected station saves them in `station.json`; see the [Settings reference](../settings-reference.md#player-page).
 
 ## Related pages

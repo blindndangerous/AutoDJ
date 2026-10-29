@@ -7,7 +7,7 @@ Choose AAC or Opus alongside MP3, check encoder behavior, and inspect or export 
 ## More formats: AAC and Opus
 
 Beside the MP3 stream, a station can serve the same mix in AAC, in Opus, or both, each at its
-own address and bitrate. Turn them on in Settings, Stream, **More formats** (a card closed until you open it), with **AAC
+own address and bitrate. Turn them on in Settings, Station, Broadcasting, **More formats** (a card closed until you open it), with **AAC
 quality** and **Opus quality** (Off, or a bitrate). In `station.json`, these keys are in the
 station's `stream` section:
 
@@ -22,7 +22,7 @@ station's `stream` section:
 
 A format that is on answers at `/stream.aac` or `/stream.opus` for the default station, and at
 `/<slug>.aac` or `/<slug>.opus` for any station; a format that is off answers
-404. Settings, Stream lists the address of every format that is on, each with its own Copy
+404. Settings, Station, Broadcasting lists the address of every format that is on, each with its own Copy
 button. The addresses are public like `/stream.mp3`, and the station's listener password, bans
 and per-address limit apply to them too. The choice made in Settings is saved in
 `web_state.json` and wins over the station definition at the next start, as the MP3 quality does.
@@ -74,7 +74,7 @@ encoders, so multiply by the stations whose format is being heard.
 
 ## Listener statistics
 
-Settings, Stream, **Listener statistics**, a card closed until you open it, shows, for the station
+Settings, Station, Broadcasting, **Listener statistics**, a card closed until you open it, shows, for the station
 the page controls:
 
 - a summary in words: how many are listening now on each format, today's peak and when it was,

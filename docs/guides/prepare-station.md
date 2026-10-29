@@ -26,7 +26,7 @@ fallback is possible.
 
 ## Test the rotation, then rehearse the output
 
-1. In **Settings, Song picking**, open **Test rotation**, choose a span covering
+1. In **Settings, Profile, Song picking**, open **Test rotation**, choose a span covering
    the intended session and relevant schedule boundaries, and run the test.
    Inspect rule relaxations, empty/skipped clock steps, never-played songs,
    fallback picks and dead-air findings. Record the seed and settings when

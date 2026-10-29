@@ -1,10 +1,10 @@
 # Plan a schedule
 
-Use **Settings**, **Schedule** to change a station at set times. Events use the selected station's time zone, shown at the top of the panel. Set it in **Settings**, **Stations**, under **Time for the selected station**, then press **Save changes** in **Stations**. The change takes effect when that station next starts. In **Stations on this server**, use its **Stop**, confirm **Stop station**, then **Start**. This applies to the default station too and disconnects its listeners.
+Use **Settings**, **Station**, **Schedule** to change a station at set times. Events use the selected station's time zone, shown at the top of the panel. Set it in **Settings**, **Station**, **Stations**, under **Time for the selected station**, then press **Save changes** in **Stations**. The change takes effect when that station next starts. In **Stations on this server**, use its **Stop**, confirm **Stop station**, then **Start**. This applies to the default station too and disconnects its listeners.
 
 ## Add an event
 
-1. Open **Settings**, **Schedule** and press **Add event**.
+1. Open **Settings**, **Station**, **Schedule** and press **Add event**.
 2. Enter a **Name** and choose an **Action**. The form then shows fields for that action.
 3. Choose **Repeat**: **Once**, **Every day**, **Weekdays, Monday to Friday**, **On chosen days**, or **Every few minutes**. Enter the date, time, days, or interval that appears.
 4. For a repeating event, use **Date range** when it should run only during a season. An interval event can also have **Active from** and **Active until** times.
@@ -31,7 +31,7 @@ recording, approval, re-air warnings and explicit interrupted-edition resumption
 
 ## Schedule music, liners, and announcements
 
-An event can **Change song picking** to a saved clockwheel, switch a profile or preset, turn discovery on or off, or play a voice liner or station ID. For a seasonal clockwheel, create one event to select it and a second event to return to the usual clockwheel. See [Build your sound](build-your-sound.md) for clockwheels and voice liners.
+An event can **Change song picking** to a saved clockwheel, switch a profile or preset, turn discovery on or off, or play a voice liner or station ID. Applying a profile resolves its saved overrides over the station's latest saved defaults; an open profile draft remains attached to the profile selected for editing. For a seasonal clockwheel, create one event to select it and a second event to return to the usual clockwheel. See [Build your sound](build-your-sound.md) for clockwheels and voice liners.
 
 To play a spoken announcement, upload it as a voice liner in **Settings**, **Voice liners**. Add an event that plays that liner. Liner and cart actions require server audio or radio stream output. A hard liner event may fade out the song; a soft one waits for the next change. Use **Run now** and listen before leaving the event enabled.
 

@@ -49,7 +49,7 @@
 //         its help, 24 px targets, a described button, a visible reason
 //         where the browser cannot choose a device, and a change said
 //         staged without moving focus or announcing a save;
-//       - Settings > Analysis workers, Machine tokens: the Station choice
+//       - Settings > General > Server, Machine tokens: the Station choice
 //         is hidden until Token use is an announcer, then shows as a
 //         named select with linked help and 24 px targets, focus staying
 //         on Token use; it is measured in every theme mode (axe-core and
@@ -442,7 +442,7 @@ const TIME_CHECKS = {
 };
 const timeCheckPages = new WeakSet();
 
-// Settings > Analysis workers (#554) with two stood-in workers, one too old
+// Settings > General > Server, Analysis workers (#554), with two stood-in workers, one too old
 // to apply settings, and a refusal notice, so the worker settings, their
 // state lines and Dismiss are measured on a server with no worker.  A
 // pairing code is stood in for too; Pair a worker shows it with its
@@ -975,7 +975,7 @@ async function openPackDatesError(page, visit) {
   await page.locator("#tc-not-after").fill("2026-12-01");
   await page.locator("#tc-dates-save").click();
   await page.locator("#tc-dates-error").waitFor({ state: "visible" });
-  await visit("settings/time-checks/dates-error");
+  await visit("settings/announcements/dates-error");
   await page.locator("#tc-not-after").fill("2026-12-31");
 }
 
@@ -1450,7 +1450,7 @@ async function openLiveDjError(page, visit) {
   await page.locator("#live-dj-save").click();
   await page.locator("#live-dj-error").waitFor({ state: "visible", timeout: 5000 });
   await settle(page);
-  await visit("settings/live/dj-error");
+  await visit("settings/stream/dj-error");
   await page.locator("#live-dj-cancel").click();
 }
 
@@ -1640,7 +1640,7 @@ async function speechStudioProblems(page) {
   try {
     await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
     await page.locator("#tab-settings").click();
-    await page.locator("#stab-liners").click();
+    await clickSubtabUnprompted(page, "stab-announcements");
     await page.locator("#speech-studio").evaluate((element) => { element.open = true; });
     const name = page.locator("#speech-results").getByLabel("Liner name");
     await name.fill("Morning station ID");
@@ -1822,28 +1822,30 @@ async function eachTarget(page, measure) {
       }
       continue;
     }
-    const ids = await page.$$eval("#settings-tabs [role='tab']:not([hidden])",
-      (tabs) => tabs.map((tab) => tab.id));
-    for (const id of ids) {
-      // Reset fixture drafts only if they still differ when the click runs.
-      await page.locator('[data-settings-discard]:visible').evaluateAll((buttons) => {
-        for (const button of buttons) if (button.getAttribute("aria-disabled") !== "true") button.click();
-      });
-      await clickSubtabUnprompted(page, id);
-      await page.waitForTimeout(150);
-      await openEveryCard(page);
-      await visit(`settings/${id.replace(/^stab-/, "")}`);
-      if (id === "stab-picking") {
-        await openRotationTest(page, visit);
-        await openRepeatHoursError(page, visit);
-        await openHourFit(page, visit);
+    for (const kind of ["profile", "station", "server", "browser"]) {
+      const ids = await page.$$eval("#settings-tabs [role='tab']",
+        (tabs, wanted) => tabs.filter((tab) => tab.dataset.settingsKind === wanted).map((tab) => tab.id), kind);
+      for (const id of ids) {
+        // Reset fixture drafts only if they still differ when the click runs.
+        await page.locator('[data-settings-discard]:visible').evaluateAll((buttons) => {
+          for (const button of buttons) if (button.getAttribute("aria-disabled") !== "true") button.click();
+        });
+        await clickSubtabUnprompted(page, id);
+        await page.waitForTimeout(150);
+        await openEveryCard(page);
+        await visit(`settings/${id.replace(/^stab-/, "")}`);
+        if (id === "stab-picking") {
+          await openRotationTest(page, visit);
+          await openRepeatHoursError(page, visit);
+          await openHourFit(page, visit);
+        }
+        if (id === "stab-schedule") await openScheduleWaitError(page, visit);
+        if (id === "stab-announcements") await openPackDatesError(page, visit);
+        if (id === "stab-stations") await openStationCreateError(page, visit);
+        if (id === "stab-stream") await openLiveDjError(page, visit);
+        if (id === "stab-workers") await openWorkerStates(page, visit);
+        if (id === "stab-updates") await openRestartConfirm(page, visit);
       }
-      if (id === "stab-schedule") await openScheduleWaitError(page, visit);
-      if (id === "stab-time-checks") await openPackDatesError(page, visit);
-      if (id === "stab-stations") await openStationCreateError(page, visit);
-      if (id === "stab-live") await openLiveDjError(page, visit);
-      if (id === "stab-workers") await openWorkerStates(page, visit);
-      if (id === "stab-updates") await openRestartConfirm(page, visit);
     }
   }
 }
@@ -2219,7 +2221,11 @@ async function footerLinkProblems(page) {
 function startOf(target) {
   const [view, sub] = target.split("/");
   // Only Settings targets name a subtab; "track-info/tags" is a state.
-  return view === "settings" && sub ? `#stab-${sub}` : `#tab-${view}`;
+  const owner = {
+    transitions: "mixing", djmix: "mixing", liners: "announcements",
+    "time-checks": "announcements", breaks: "announcements", live: "stream",
+  }[sub] || sub;
+  return view === "settings" && sub ? `#stab-${owner}` : `#tab-${view}`;
 }
 
 async function themeContext(browser, mode) {
@@ -2362,6 +2368,12 @@ async function recordConfirmOpeners(page) {
 // Click a Settings subtab; an unexpected confirmation fails with the
 // dirty parts the draft module reports, instead of a 30 s timeout.
 async function clickSubtabUnprompted(page, id) {
+  const tabIds = {
+    "stab-transitions": "stab-mixing", "stab-djmix": "stab-mixing",
+    "stab-liners": "stab-announcements", "stab-time-checks": "stab-announcements",
+    "stab-breaks": "stab-announcements", "stab-live": "stab-stream",
+  };
+  id = tabIds[id] || id;
   // The page's own module instance, by the URL app.js loads it from.
   const unexpected = () => page.evaluate(async (drafts) => {
     if (!document.getElementById("confirm-dialog")?.open) return null;
@@ -2553,7 +2565,7 @@ async function toastBehaviourProblems(page) {
 }
 
 // The preview output device setting, in whatever this engine supports.
-// Settings > Analysis workers with an announcer token chosen: the Station
+// Settings > General > Server with an announcer token chosen: the Station
 // choice shows (#88).  Back to the default choice with `false`.
 // New station by keyboard: a refused create marks, links and focuses
 // Station ID and says nothing else; a stood-in create says it once and
@@ -2561,7 +2573,7 @@ async function toastBehaviourProblems(page) {
 async function stationCreateProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
-  await page.locator("#stab-stations").click();
+  await clickSubtabUnprompted(page, "stab-stations");
   await page.locator("#station-create-name").waitFor({ state: "visible" });
   const problems = [];
   const state = () => page.evaluate(() => {
@@ -2626,7 +2638,7 @@ async function chooseAnnouncer(page, announcer = true) {
 async function tokenScopeProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
-  await page.locator("#stab-workers").click();
+  await clickSubtabUnprompted(page, "stab-workers");
   const scope = page.locator("#token-scope");
   await scope.waitFor({ state: "visible" });
   const problems = [];
@@ -3048,7 +3060,7 @@ async function stationSwitcherProblems(page) {
 async function previewOutputProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
-  await page.locator("#stab-sound").click();
+  await clickSubtabUnprompted(page, "stab-display");
   const select = page.locator("#preview-device");
   await select.waitFor({ state: "visible" });
   // Let the device list load.

@@ -136,22 +136,20 @@ describe("clock folder and points controls", () => {
 
     const input = document.getElementById("advanced-length");
     input.value = "30";
-    document.getElementById("advanced-length-save").click();
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("#spanel-server [data-settings-save]").click();
     await new Promise((resolve) => setTimeout(resolve, 350));
-    expect(document.getElementById("sr-status").textContent).toBe("Saving the similarity analysis limit…");
-    expect(document.getElementById("status-toast").textContent).toBe("Saving the similarity analysis limit…");
+    expect(document.querySelector("#spanel-server .settings-save-status").textContent).toBe("Saving changes…");
     finish({ minutes: 30 });
-    await vi.waitFor(() => expect(document.getElementById("sr-status").textContent)
-      .toBe("Saved. Songs longer than 30 minutes get audio analysis only."));
-    expect(document.getElementById("status-toast").textContent).toBe("Saved. Songs longer than 30 minutes get audio analysis only.");
-    expect(document.getElementById("source-folders-status").textContent).toBe("");
+    await vi.waitFor(() => expect(document.querySelector("#spanel-server .settings-save-status").textContent)
+      .toContain("Songs longer than 30 minutes get audio analysis only."));
 
     failSave = true;
     input.value = "40";
-    document.getElementById("advanced-length-save").click();
-    await vi.waitFor(() => expect(document.getElementById("sr-status").textContent)
-      .toBe("Could not save the similarity analysis limit: Server unavailable"));
-    expect(document.getElementById("status-toast").textContent).toBe("Could not save the similarity analysis limit: Server unavailable");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("#spanel-server [data-settings-save]").click();
+    await vi.waitFor(() => expect(document.querySelector("#spanel-server .settings-save-status").textContent)
+      .toContain("Server unavailable"));
   });
 
   it("reconciles existing folder choices as similarity availability changes without losing focus", async () => {

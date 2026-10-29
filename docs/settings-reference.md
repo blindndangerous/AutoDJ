@@ -21,8 +21,9 @@ Each entry gives possible values, the default, and what the setting does. A page
 Persistent controls share one **Save changes / Discard changes** bar per Settings
 tab. Edits remain drafts until saved, including when a station is off air.
 The bar identifies station, browser and shared scope. Theme changes preview
-immediately; Discard restores the saved theme. Transport, volume, mute, private
-audition and test buttons remain immediate actions.
+immediately; Discard restores the saved theme. Record forms and operational
+controls keep their own actions. Transport, volume, mute, private audition and
+test buttons remain immediate actions.
 
 Leaving Settings, changing its tab or switching stations with edits offers Save,
 Discard or Stay. Failed saves keep the edits. If another browser changed server
@@ -32,23 +33,111 @@ edits remain pending. Output-mode changes take effect after restarting the stati
 
 | Tab | Persistent configuration and owner |
 | --- | --- |
-| Transitions, DJ mixing, Song picking | Selected station's playback settings, including repeat rules |
-| Sound | Station processing and browser output-device preferences |
-| Display and keys | Browser theme, shortcuts and track announcements; station display preferences |
-| Voice liners, Time checks, Breaks | Selected station's playback and feature settings |
-| Stream | Station stream formats, metadata, listener limits, retention, public player and recording configuration |
-| Live DJ | Station talkover configuration; available while stopped |
-| Stations | Selected station's output, scheduling timezone, upload limit and log label; shared server time display |
+| Mixing | Selected station's transitions and DJ mixing |
+| Song picking | Selected station's song selection and repeat rules |
+| Sound | Selected station's processing and presets |
+| Announcements | Selected station's liners, time checks and breaks |
+| Profiles | Profile management and activation; Profile to edit applies only to profile-aware controls |
+| Stations | Selected station's output, scheduling timezone, upload limit, log label, display, lyrics, keys and prefetch |
+| Broadcasting | Station stream formats, metadata, listener limits, retention, public player, DMCA mode, recording configuration and Live DJ talkover |
+| Schedule | Station schedule definitions and events |
+| Server | Shared analysis limits, time format, Stereo Tool installation and shared licence, browser access |
+| Analysis workers | Worker pairing, worker settings and machine tokens |
+| Update and restart | Update checks, channel, installation and restart |
+| Browser preferences | Browser display, keyboard and audio-device preferences |
 
-Relay, scheduled-event, profile and DJ-account forms submit individual records.
+Settings keeps three heading-labeled tab groups visible: **Profile**
+(four tabs), **Station** (Stations, Profiles, Broadcasting and Schedule),
+and **Global** (Server, Analysis workers, Update and restart, and Browser preferences). Each
+tab opens its settings panel; arrow, Home and End navigation stays within its
+group. The **Profile to edit** selector follows all three groups and is hidden
+while a non-Profile tab is selected. Profile selection edits profile-aware
+controls in their tabs; it does not make server configuration or browser
+preferences profile overrides. Presentation, lyrics, key notation and prefetch
+are station-owned settings in Stations.
+
+Relay, scheduled-event and DJ-account forms submit individual records. Profile
+edits use the selected profile in Settings and its shared draft save. Creation,
+activation, reset and deletion have their own buttons on Station > Profiles.
 Uploads, credentials, pairing and destructive actions also retain their explicit
 actions; they are not part of a tab's configuration save. Operational recording
 Start/Stop remains separate from recording configuration.
 The **Start with the server** checkbox edits one station record in **Stations**;
 Save and Discard appear on that row while its value differs from the server.
 
-Existing station JSON, private credentials, profiles and browser preference keys
-retain their storage owners and values. The former browser key
+### Profiles
+
+In Settings, choose **Station defaults** or a saved profile from the **Profile to edit**
+combobox. This chooses what you are editing; it does not change what is on air.
+Edits use the Settings tab's Save changes and Discard changes controls. A change
+to another profile or to Station defaults warns before discarding edits. Cancel
+keeps the current choice and draft. Profile edits remain bound to the selected
+target if a schedule or another control applies a different profile while you
+are editing.
+
+Saved profiles contain overrides of station defaults. Saving a value equal to
+the saved default leaves it inherited. Saving Station defaults immediately
+updates inherited values in the active profile while preserving its explicit
+overrides and active identity. Explicit `false` and `0` are saved overrides.
+Existing partial profiles keep their non-null values as
+overrides; omitted settings and legacy `null` values inherit from station
+defaults. In the new grouped format, `null` clears only settings that support
+clearing, such as a BPM limit or selected clockwheel. Remove an override to
+inherit its default; unsupported `null` values are rejected. Saving applies the
+edited fields immediately only if the selected profile is still active when
+Save is pressed. If another profile became active after editing began, Save
+stores the edits without switching back. Saving **Station defaults** applies
+its edited fields to the current active selection: inherited values update,
+explicit profile overrides remain, and active identity does not change.
+
+A normal restart keeps the last live settings, including changes made by scheduled
+events. These changes do not rewrite saved profiles. **Activate** reloads a
+profile's saved settings. Edits to defaults or the selected profile's JSON made
+while AutoDJ is stopped take effect at startup. If a saved profile cannot be
+loaded or validated, Profiles shows the problem and the station keeps its last
+saved settings.
+
+Renaming a cart page or clockwheel updates references in saved defaults and
+profiles. Deleting a clockwheel clears those references; deleting a voice pack
+removes it from saved selections. Deleted Stereo Tool preset references use the
+included preset. The delete confirmations explain these changes.
+
+To activate Station defaults, use **Activate station defaults** in **Station**,
+**Profiles**. This action is independent of the **Profile to edit** selection. Each saved
+profile also has its own **Activate** action in the profile list; activation does
+not change which target the Settings form edits. The picker marks the active
+profile with **(active)** and does not activate a selection. **Reset** requires confirmation; cancel
+leaves the saved profile and current draft intact. Deletion also requires
+confirmation. The Profiles tab shows which profile is active. Browser access is
+managed separately in the Server tab.
+
+Profiles can override station programming and playback controls: preset,
+transitions, DJ mixing, song picking and repeat rules, BPM range, discovery,
+crossfade EQ, breaks, time checks, the selected clockwheel and the shown cart
+page. Choose the clockwheel in **Profile**, **Song picking**, beside Pick mode,
+and the cart page in **Profile**, **Announcements**, under **Carts**.
+They do not own presentation choices (`key_notation`, `key_prefer_flats`,
+or `show_lyrics`) or playback-performance controls such as
+`prefetch_next_track`. Shared library folders, catalog and analysis settings
+remain shared-library settings. Station identity, time zone, audio output,
+live talkover and recording configuration, stream destinations and public
+listener access remain station infrastructure. Server settings and worker
+pairing remain shared-server settings; browser preferences, credentials and
+audio devices keep their browser, credential or machine owner. Profiles do not
+save schedule definitions, library data, access credentials, or operational
+recording actions.
+
+The active profile identity (or **Station defaults**) is saved in
+`stations/<slug>/profile-selection.json`. Station defaults are stored in
+`stations/<slug>/profile-defaults.json`, and profile overrides in
+`stations/<slug>/profiles/<name>.json`. On startup AutoDJ reads these files and
+resolves them again, so edits made while the server was stopped take effect at
+startup. It does not watch for or reconcile external JSON edits while running.
+For implementation and verification scope, see
+[Proposed ADR 18](adr/0018-profiles-store-overrides-of-station-defaults.md).
+
+Existing station JSON, private credentials and browser preference keys retain
+their storage owners and values. The former browser key
 `autodj.announceTrackChangesEverywhere` migrates once to
 `autodj.announceTrackChanges`: an existing canonical value wins; otherwise `on`
 becomes `all` and other values become `now`. The old key is removed only after
@@ -181,10 +270,10 @@ Station section: `playback` in `station.json`.
 - `pick_temperature`. Values: number from 0 to 10. Default: 0.3. Controls the randomness among those close songs; has no effect when pick_top_k is 1. **Pick randomness**.
 - `hour_fit`. Values: true or false. Default: false. Prefers songs ending near the next fixed time. **Fit songs to the hour**.
 - `hour_fit_window_minutes`. Values: whole number from 1 to 30. Default: 10. Starts hour fitting this many minutes before the fixed time. **Minutes before to start fitting**.
-- `key_notation`. Values: `camelot` (Camelot (8A or 8B)) or `musical` (Musical (C, A minor, F sharp minor)). Default: `camelot`. Chooses how keys are shown. **Key notation**.
-- `key_prefer_flats`. Values: true or false. Default: false. Uses flat names when musical key notation is selected. **Use flats**.
-- `show_lyrics`. Values: true or false. Default: true. Shows the lyrics card when lyrics exist. **Show lyrics**.
-- `prefetch_next_track`. Values: true or false. Default: true. Loads the next song early for browser playback. Server sound-card and stream playback do not use it: they always prepare the next song while the current one plays. **Load the next song early**.
+- `key_notation`. Values: `camelot` (Camelot (8A or 8B)) or `musical` (Musical (C, A minor, F sharp minor)). Default: `camelot`. Chooses how keys are shown. **Key notation** in Settings, **Station**, **Stations**.
+- `key_prefer_flats`. Values: true or false. Default: false. Uses flat names when musical key notation is selected. **Use flats** in Settings, **Station**, **Stations**.
+- `show_lyrics`. Values: true or false. Default: true. Shows the lyrics card when lyrics exist. **Show lyrics** in Settings, **Station**, **Stations**.
+- `prefetch_next_track`. Values: true or false. Default: true. Loads the next song early for browser playback. Server sound-card and stream playback do not use it: they always prepare the next song while the current one plays. **Load the next song early** in Settings, **Station**, **Stations**.
 - `silence_trigger_crossfade`. Values: true or false. Default: true. Starts a browser crossfade when the ending song falls silent. **Crossfade when a song goes quiet**.
 - `audio_device`. Values: device number, name fragment, or blank. Default: blank. Selects server speaker output; blank uses the system default.
 - `import_external_cues`. Values: true or false. Default: true. Imports cue points stored by supported DJ tools when songs are analysed.
@@ -305,17 +394,17 @@ Station section: `requests` in `station.json`. **Take listener requests** and th
 
 ### Player page
 
-Station section: `player_page` in `station.json`. Set these controls in **Settings**, **Stream** for the selected station.
+Station section: `player_page` in `station.json`. Set these controls in **Settings**, **Station**, **Broadcasting** for the selected station.
 
-- `enabled`. Values: true or false. Default: false. Opens the public listening page. **Public player page** in **Settings**, **Stream**.
-- `embed`. Values: true or false. Default: false. Opens an embeddable public player. **Embeddable player** in **Settings**, **Stream**.
-- `embed_origins`. Values: up to 20 HTTP or HTTPS origins. Default: empty list. Lists the sites that may embed the player. **Allowed embed sites** in **Settings**, **Stream**.
+- `enabled`. Values: true or false. Default: false. Opens the public listening page. **Public player page** in **Settings**, **Station**, **Broadcasting**.
+- `embed`. Values: true or false. Default: false. Opens an embeddable public player. **Embeddable player** in **Settings**, **Station**, **Broadcasting**.
+- `embed_origins`. Values: up to 20 HTTP or HTTPS origins. Default: empty list. Lists the sites that may embed the player. **Allowed embed sites** in **Settings**, **Station**, **Broadcasting**.
 
 ### DMCA mode
 
-Station section: `dmca` in `station.json`. Set this switch in **Settings**, **Song picking** for the selected station.
+Station section: `dmca` in `station.json`. Set this switch in **Settings**, **Station**, **Broadcasting** for the selected station.
 
-- `enabled`. Values: true or false. Default: false. When on, limits how often songs from one album, artist, or box set can play and hides the next song publicly. **DMCA mode** in **Settings**, **Song picking**.
+- `enabled`. Values: true or false. Default: false. When on, limits how often songs from one album, artist, or box set can play and hides the next song publicly. **DMCA mode** in **Settings**, **Station**, **Broadcasting**.
 
 ### Breaks
 
@@ -369,7 +458,7 @@ In **Settings**, **Song picking**, each Tracks value counts intervening songs an
 
 ### Relays
 
-Each entry in the station's private `relays.json` names one relay. Names use 1 to 32 letters, digits, internal spaces, hyphens, or underscores; they cannot start or end with a space. Change relays in **Settings**, **Stream**, **Relays**. Old TOML relay tables are migrated once at startup, then ignored.
+Each entry in the station's private `relays.json` names one relay. Names use 1 to 32 letters, digits, internal spaces, hyphens, or underscores; they cannot start or end with a space. Change relays in **Settings**, **Station**, **Broadcasting**, **Relays**. Old TOML relay tables are migrated once at startup, then ignored.
 
 - `type`. Values: `icecast` (Icecast), `shoutcast1` (Shoutcast 1), or `shoutcast2` (Shoutcast 2). Default: required in `relays.json`; the form starts with Icecast. Chooses the host server protocol. **Server type**.
 - `host`. Values: host name or IP address without a scheme or port. Default: required. Names the relay server. **Host**.
@@ -390,17 +479,17 @@ These values are saved for the selected station or browser rather than in the co
 
 - **Volume** in **Now Playing**: 0 to 100 percent; default 100. Changes playback loudness.
 - **EQ**, **Low**, **Mid**, and **High** in **Now Playing**: each 0 to 2 times normal level; default 1. Changes bass, middle, or treble; **Reset EQ** returns all three to 1.
-- **Audio output device** in **Settings**, **Sound**: system default or an available browser output device; default system default. Sends browser playback to that device.
-- **Preview output device** in **Settings**, **Sound**: system default or an available browser output device; default system default. Sends Track info and Voice tracks previews to that device.
-- **Stereo Tool licence key** in **Settings**, **Sound**: valid key or blank; default blank. Unlocks licensed Stereo Tool features. **For this station only**: on or off; default off. When on, saves this station's key in its private `secrets.json`; otherwise it is shared by stations without their own key.
+- **Audio output device** in **Settings**, **Global**, **Browser preferences**: system default or an available browser output device; default system default. Sends browser playback to that device.
+- **Preview output device** in **Settings**, **Global**, **Browser preferences**: system default or an available browser output device; default system default. Sends Track info and Voice tracks previews to that device.
+- **Stereo Tool licence key** in **Settings**, **Global**, **Server**: valid key or blank; default blank. Unlocks licensed Stereo Tool features. **For this station only**: on or off; default off. When on, saves this station's key in its private `secrets.json`; otherwise it is shared by stations without their own key.
 - **Automatic rescan every** in **Library tools**: **Hours** 0 to 168 and **Minutes** 0 to 59; default 0 and 0 (off). Runs **Rescan** after the last scan ends; the shortest enabled interval is 5 minutes.
 - **Add subfolders** for a registered music folder: on or off; default on. Includes nested folders in import. **Perform advanced analysis**: on or off; default on. Runs sound matching analysis for music in that folder.
 - **Find beats and song structure** in **Library tools**: on or off; default on. Finds beat grids and song sections during basic analysis.
 - **Longest song, in minutes** under **Advanced analysis length** in **Library tools**: 0 or a positive number; default 15. Longer songs get basic analysis only; 0 runs advanced analysis on every length.
 - **Music fade drop (dB)** under **Music fades** in **Library tools**: 1–30 dB; default 10. Sets the relative drop for new music Segue suggestions. Saved cues stay unchanged. See [cue rescans and fade detection](guides/operations/library.md#rescan-cue-points-in-track-info).
-- **Display name** in **Settings**, **Live DJ**: printable name up to 80 characters; default blank. Shows the DJ name to listeners and in History while live.
-- **Time format for all stations** in **Settings**, **Stations**: 24 hour or 12 hour; default 24 hour. Changes time display for every station.
-- **Theme** in **Settings**, **Display and keys**: System, Light, or Dark; default System. Changes this browser's colors.
+- **Display name** in **Settings**, **Station**, **Broadcasting**: printable name up to 80 characters; default blank. Shows the DJ name to listeners and in History while live.
+- **Time format** in **Settings**, **Global**, **Server**: 24 hour or 12 hour; default 24 hour. Changes time display for every station.
+- **Theme** in **Settings**, **Global**, **Browser preferences**: System, Light, or Dark; default System. Changes this browser's colors.
 - **Announce track changes**: On every tab, Only on Now Playing, or Off; default Only on Now Playing. Controls spoken song changes in this browser.
 - **Enable keyboard shortcuts**: on or off; default on. Lets keys control playback outside text fields.
 - **Bracket keys seek the song on air**: on or off; default off. Lets bracket shortcuts move the live song.
@@ -408,11 +497,11 @@ These values are saved for the selected station or browser rather than in the co
 - **BPM range** in **Song picking**: optional minimum and maximum BPM; default blank. Restricts automatic picks.
 - **Inject distant tracks**: on or off; default off. Enables the `discovery_every` interval.
 - **Start with the server** in **Stations**: on or off for a named station; new stations default off. Starts that station on server startup.
-- **Source address** and **DJ accounts** in **Live DJ**: station URL and named DJ credentials; no DJ accounts by default. They let a live source take over a stream.
+- **Source address** and **DJ accounts** in **Broadcasting**: station URL and named DJ credentials; no DJ accounts by default. They let a live source take over a stream.
 - **Return time (seconds)**: 0.1 to 10; default 0.5. Raises the music after browser talkover. **Duck amount (dB)**: 0 to 30; default 12. Lowers music while someone talks.
-- **Record broadcast** in **Stream**: on or off; default off. Saves the server mix as MP3 files.
+- **Record broadcast** in **Broadcasting**: on or off; default off. Saves the server mix as MP3 files.
 - **Station name**, **Quality**, and other stream page controls map to the `stream` entries above.
-- **Check for updates** in **Settings**, **Updates**: on or off; default on. When off, AutoDJ never asks GitHub or the git remote about updates. **Update channel**: Automatic, Stable or Development; default Automatic, which follows what the installation runs (a release tag is Stable, `master` is Development). Saved for every station in `shared/updates.json`. Stable on a checkout of `master` waits for the next release that includes it. See [Check for updates and restart](guides/backups-and-updates.md#check-for-updates-and-restart) and [Move from Development to Stable](guides/backups-and-updates.md#move-from-development-to-stable).
+- **Check for updates** in **Settings**, **Global**, **Update and restart**: on or off; default on. When off, AutoDJ never asks GitHub or the git remote about updates. **Update channel**: Automatic, Stable or Development; default Automatic, which follows what the installation runs (a release tag is Stable, `master` is Development). Saved for every station in `shared/updates.json`. Stable on a checkout of `master` waits for the next release that includes it. See [Check for updates and restart](guides/backups-and-updates.md#check-for-updates-and-restart) and [Move from Development to Stable](guides/backups-and-updates.md#move-from-development-to-stable).
 
 ### Transition effect choices
 

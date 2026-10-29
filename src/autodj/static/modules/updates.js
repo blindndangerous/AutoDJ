@@ -23,6 +23,7 @@
 import { requestJson, withDisabled } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
+import { registerSettingsGroup } from "./settings-drafts.js";
 
 const RESTART_POLL_MS = 2000;
 export const RESTART_WAIT_MS = 180000;
@@ -129,7 +130,6 @@ export function installUpdates({
   const enabled = get("updates-enabled");
   const channel = get("updates-channel");
   const automatic = get("updates-channel-auto");
-  const save = get("updates-save");
   const restartNote = get("updates-restart-note");
   const restartButton = get("updates-restart");
   const notes = get("updates-notes");
@@ -150,7 +150,7 @@ export function installUpdates({
   const updateRefused = get("updates-update-refused");
   const goBackRefused = get("updates-go-back-refused");
   const restartRefused = get("updates-restart-refused");
-  const parts = [panel, status, current, latest, check, enabled, channel, automatic, save,
+  const parts = [panel, status, current, latest, check, enabled, channel, automatic,
     restartNote, restartButton, notes, notesLink, updateButton, installNote, installWords,
     guideLink, goBack, goBackNote, goBackButton, last, result, how, commands, progress,
     reloadButton, updateRefused, goBackRefused, restartRefused];
@@ -226,8 +226,7 @@ export function installUpdates({
     current.textContent = installationWords(next);
     latest.textContent = checkWords(next);
     const settings = next.settings || {};
-    enabled.checked = settings.check !== false;
-    channel.value = settings.channel || "auto";
+    settingsDraft?.accept({ check: settings.check !== false, channel: settings.channel || "auto" });
     automatic.textContent = `Automatic: ${channelName(next.channel?.inferred)}`;
     check.hidden = settings.check === false;
     const words = notesWords(next.check);
@@ -289,21 +288,28 @@ export function installUpdates({
     say(view.check ? foundWords(view.check) : "Checked.");
   }
 
-  async function saveSettings() {
-    try {
-      show(await request("/api/updates/settings", {
+  const settingsDraft = registerSettingsGroup({
+    panel: panel.closest('[role="tabpanel"]') || panel,
+    scope: "server",
+    controls: [enabled, channel],
+    read: () => ({ check: enabled.checked, channel: channel.value }),
+    write: (value) => {
+      enabled.checked = value.check !== false;
+      channel.value = value.channel || "auto";
+    },
+    describe: (value) => value.check
+      ? `Update settings saved.  Channel: ${value.channel === "auto" ? channelName(view?.channel?.inferred) : channelName(value.channel)}.`
+      : "Update settings saved.  AutoDJ no longer checks for updates.",
+    commit: async (value) => {
+      const next = await request("/api/updates/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ check: enabled.checked, channel: channel.value }),
-      }));
-    } catch (errorValue) {
-      say(`Could not save the update settings: ${errorValue.message}`, "error");
-      return;
+        body: JSON.stringify(value),
+      });
+      show(next);
+      return next;
     }
-    say(enabled.checked
-      ? `Update settings saved.  Channel: ${channelName(view.channel?.name)}.`
-      : "Update settings saved.  AutoDJ no longer checks for updates.");
-  }
+  });
 
   // True once AutoDJ has gone away and answered again, or answered after
   // RESTART_UNSEEN_MS; false when it is still away after *waitMs*.
@@ -491,7 +497,6 @@ export function installUpdates({
     void withDisabled(button, action);
   };
   check.addEventListener("click", act(check, checkNow));
-  save.addEventListener("click", act(save, saveSettings));
   updateButton.addEventListener("click", act(updateButton, update));
   goBackButton.addEventListener("click", act(goBackButton, goBackNow));
   restartButton.addEventListener("click", act(restartButton, restart));

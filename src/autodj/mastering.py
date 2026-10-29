@@ -196,7 +196,7 @@ def _ffmpeg_command(audio_filter: str) -> list[str]:
 
 
 STEREOTOOL_MISSING: Final = (
-    "Stereo Tool is not installed. Download it in Settings, Sound, "
+    "Stereo Tool is not installed. Download it in Settings, Global, Server, "
     "with the Download Stereo Tool button."
 )
 

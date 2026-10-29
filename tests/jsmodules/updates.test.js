@@ -123,16 +123,13 @@ beforeEach(installIndex);
 afterEach(() => vi.restoreAllMocks());
 
 describe("Updates markup", () => {
-  it("is the last Settings subtab, after Analysis workers, with a labelled panel", () => {
+  it("has its own Global settings tabpanel", () => {
     const tab = byId("stab-updates");
     expect(tab.getAttribute("role")).toBe("tab");
-    expect(tab.hasAttribute("aria-controls")).toBe(false);
-    expect(tab.previousElementSibling.id).toBe("stab-workers");
-    expect(tab.nextElementSibling).toBeNull();
     const panel = byId(tab.dataset.panel);
     expect(panel.getAttribute("role")).toBe("tabpanel");
     expect(panel.getAttribute("aria-labelledby")).toBe("stab-updates");
-    expect(panel.querySelector(":scope > h3").textContent).toBe("Updates");
+    expect(byId("spanel-updates").closest('[role="tabpanel"]')).toBe(panel);
   });
 
   // ADR-0016-07
@@ -144,7 +141,7 @@ describe("Updates markup", () => {
     for (const id of ["updates-enabled", "updates-channel"]) {
       expect(document.querySelector(`label[for="${id}"]`), id).not.toBeNull();
     }
-    for (const id of ["updates-check", "updates-save", "updates-restart", "updates-update",
+    for (const id of ["updates-check", "updates-restart", "updates-update",
       "updates-go-back-button"]) {
       expect(byId(id).tagName).toBe("BUTTON");
       expect(byId(id).type).toBe("button");
@@ -321,8 +318,10 @@ describe("Updates panel", () => {
     open();
     await vi.waitFor(() => expect(byId("updates-restart").hidden).toBe(false));
     byId("updates-channel").value = "stable";
-    byId("updates-save").click();
-    expect(await said()).toBe("Update settings saved.  Channel: Stable.");
+    byId("updates-channel").dispatchEvent(new Event("change", { bubbles: true }));
+    document.querySelector("#spanel-updates [data-settings-save]").click();
+    await vi.waitFor(() => expect(document.querySelector("#spanel-updates .settings-save-status").textContent)
+      .toContain("Update settings saved.  Channel: Stable."));
     const call = request.mock.calls.find(([url]) => url === "/api/updates/settings");
     expect(JSON.parse(call[1].body)).toEqual({ check: true, channel: "stable" });
   });

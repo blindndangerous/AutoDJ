@@ -18,14 +18,15 @@ const state = {
 beforeEach(() => { groups.length = 0; installIndexMarkup(); });
 
 describe("public station settings", () => {
-  it("keeps the Stream tab available and labels every control with short help", () => {
-    expect(document.getElementById("stab-stream").hidden).toBe(false);
+  it("places Broadcasting in Station settings and labels every control with short help", () => {
+    expect(document.getElementById("stab-stream").dataset.settingsKind).toBe("station");
+    expect(document.getElementById("stab-stream").textContent).toBe("Broadcasting");
     for (const id of ["dmca", "page", "embed", "origins"]) {
       expect(document.querySelector(`label[for="public-${id}"]`)?.textContent.trim()).toBeTruthy();
       const help = document.getElementById(get(id).getAttribute("aria-describedby"));
       expect(help?.textContent.trim()).toBeTruthy();
     }
-    expect(document.getElementById("np-show-next-dmca").textContent).toMatch(/Settings, Song picking/);
+    expect(document.getElementById("np-show-next-dmca").textContent).toMatch(/Station, Broadcasting/);
     expect(document.getElementById("np-show-next-dmca").textContent).not.toMatch(/config\.toml/);
   });
 
@@ -40,12 +41,15 @@ describe("public station settings", () => {
     get("page").checked = true;
     get("embed").checked = true;
     get("origins").value = "https://one.example\nhttps://two.example";
-    const onTab = (id) => groups.find((group) => group.panel?.id === id);
-    expect(onTab("spanel-picking").group).toBe("public");
-    expect(onTab("spanel-picking").controls).toEqual([get("dmca")]);
-    expect(onTab("spanel-picking").read()).toEqual({ dmca_enabled: true });
-    expect(onTab("spanel-stream").group).toBe("public");
-    expect(onTab("spanel-stream").read()).toEqual({ player_page_enabled: true, embed_enabled: true,
+    const dmcaPanel = get("dmca").closest('[role="tabpanel"]');
+    const dmcaDraft = groups.find((group) => group.controls.includes(get("dmca")));
+    const pageDraft = groups.find((group) => group.controls.includes(get("page")));
+    expect(dmcaPanel.id).toBe("spanel-stream");
+    expect(dmcaDraft.group).toBe("public");
+    expect(dmcaDraft.controls).toEqual([get("dmca")]);
+    expect(dmcaDraft.read()).toEqual({ dmca_enabled: true });
+    expect(pageDraft.group).toBe("public");
+    expect(pageDraft.read()).toEqual({ player_page_enabled: true, embed_enabled: true,
       embed_origins: ["https://one.example", "https://two.example"] });
     expect(request).toHaveBeenCalledTimes(1);
     controls.clear();
@@ -58,7 +62,7 @@ describe("public station settings", () => {
     const controls = installPublicSettings({ doc: document, request });
     await controls.refresh();
     get("origins").value = "ftp://bad.example";
-    const draft = groups.find((group) => group.panel?.id === "spanel-stream");
+    const draft = groups.find((group) => group.controls.includes(get("origins")));
     expect(draft.validate()).toBe(false);
     expect(get("origins").getAttribute("aria-invalid")).toBe("true");
     expect(get("origins").getAttribute("aria-describedby")).toContain("public-origins-error");

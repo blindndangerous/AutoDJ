@@ -1,6 +1,6 @@
 import { settingsHaveChanges, confirmSettingsNavigation } from "./settings-drafts.js";
-// Settings subtabs: a second tablist inside the Settings view, one panel
-// per group of settings, so a new user meets one short group at a time.
+// Settings subtabs: labeled tablists inside Settings, sharing one
+// visible panel. All groups remain available while editing.
 //
 // Keys and selection follow the section tabs (tablist.js): arrows, Home
 // and End move and select, and clicking a tab moves focus to its panel's
@@ -8,7 +8,7 @@ import { settingsHaveChanges, confirmSettingsNavigation } from "./settings-draft
 // carry no aria-controls (see index.html).  Each tab names its panel in
 // data-panel instead.  The selected tab is remembered in this browser.
 //
-// Panels that load on demand (Profiles and access) need to know when
+// Panels that load on demand (Profiles, for example) need to know when
 // they are seen, as they did as <details> cards.  So each panel's `open`
 // says whether it is seen now -- its tab is selected and the Settings
 // view is showing -- and a "toggle" event fires on it when that changes.
@@ -17,6 +17,7 @@ import { markSelected, tabForKey } from "./tablist.js";
 import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
 
 const STORAGE_KEY = "autodj.settingsSubtab";
+const OLD_TABS = { transitions: "mixing", djmix: "mixing", liners: "announcements", "time-checks": "announcements", breaks: "announcements", live: "stream" };
 
 function readStored(storage) {
   return readStorage(storage, STORAGE_KEY);
@@ -38,13 +39,38 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
   const tabs = [...tablist.querySelectorAll('[role="tab"]')];
   const panels = new Map(tabs.map((tab) => [tab, doc.getElementById(tab.dataset.panel)]));
   const view = tablist.closest("section");
+  const settings = tablist.closest("#panel-settings");
+  const tablists = tablist.matches('[role="tablist"]') ? [tablist] : [...tablist.querySelectorAll('[role="tablist"]')];
+  const innerSections = [...(settings?.querySelectorAll("[data-settings-section]") || [])];
+  const profileTargets = [...(settings?.querySelectorAll(".profile-target-row") || [])];
   let selected = null;
   let pending = false;
+
+  function visibleTabs(list = tablist) {
+    return tabs.filter((tab) => !tab.hidden && list.contains(tab));
+  }
+
+  function markTabs() {
+    markSelected(tabs, selected);
+    // Every group stays reachable with Tab, even when another group's
+    // panel is selected. Arrow keys move within the focused tablist.
+    for (const list of tablists) {
+      const visible = visibleTabs(list);
+      if (!visible.includes(selected) && visible.length) visible[0].tabIndex = 0;
+    }
+  }
 
   function notify() {
     for (const panel of panels.values()) {
       if (!panel) continue;
       const seen = !panel.hidden && !view?.hidden;
+      if (Boolean(panel.open) === seen) continue;
+      panel.open = seen;
+      panel.dispatchEvent(new Event("toggle"));
+    }
+    for (const panel of innerSections) {
+      const outer = panel.closest('[role="tabpanel"]:not([data-settings-section])');
+      const seen = !panel.hidden && !outer?.hidden && !view?.hidden;
       if (Boolean(panel.open) === seen) continue;
       panel.open = seen;
       panel.dispatchEvent(new Event("toggle"));
@@ -63,11 +89,14 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
       return;
     }
     selected = tab;
-    markSelected(tabs, tab);
+    markTabs();
     for (const [each, panel] of panels) {
       if (panel) panel.hidden = each !== tab;
     }
-    if (remember) writeStored(storage, tab.dataset.subview);
+    for (const row of profileTargets) row.hidden = Boolean(tab.dataset.settingsKind) && tab.dataset.settingsKind !== "profile";
+    if (remember) {
+      writeStored(storage, tab.dataset.subview);
+    }
     notify();
     if (focusPanel) focusHeading(panels.get(tab));
     else if (focusTab) tab.focus();
@@ -76,7 +105,7 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
   for (const tab of tabs) {
     tab.addEventListener("click", () => select(tab, { focusPanel: true }));
     tab.addEventListener("keydown", (event) => {
-      const next = tabForKey(tabs, tab, event.key);
+      const next = tabForKey(visibleTabs(tab.closest('[role="tablist"]') || tablist), tab, event.key);
       if (!next) return;
       event.preventDefault();
       // Select first, then focus, so focus lands on a selected tab.
@@ -91,8 +120,12 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
     new Observer(notify).observe(view, { attributes: true, attributeFilter: ["hidden"] });
   }
 
-  const stored = tabs.find((tab) => tab.dataset.subview === readStored(storage) && !tab.hidden);
-  select(stored || tabs.find((tab) => !tab.hidden) || tabs[0], { remember: false });
+  const remembered = readStored(storage);
+  const stored = tabs.find((tab) =>
+    (tab.dataset.subview === remembered || OLD_TABS[remembered] === tab.dataset.subview) &&
+    !tab.hidden);
+  const defaultTab = visibleTabs()[0] || tabs[0];
+  select(stored || defaultTab, { remember: false });
 
   return {
     // Show or hide the tab named *name* (Stream exists only in stream
@@ -102,8 +135,8 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
       if (!tab || tab.hidden === hidden) return;
       tab.hidden = hidden;
       if (hidden && tab === selected) {
-        select(tabs.find((each) => !each.hidden) || tabs[0], { remember: false });
-      }
+        select(visibleTabs(tab.closest('[role="tablist"]') || tablist)[0] || visibleTabs()[0] || tabs[0], { remember: false });
+      } else markTabs();
     },
     // Put focus on the selected tab, for when the control that had it
     // has just gone away.

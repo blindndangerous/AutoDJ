@@ -8,15 +8,14 @@ Install the supported plugin library, configure shared or station-specific licen
 
 AutoDJ cannot include Thimeo's Stereo Tool, and the container image does not either. Each install
 gets Thimeo's Stereo Tool plugin library (`libStereoTool`, the same one AzuraCast and Liquidsoap
-use) itself, from Settings, Sound, with no configuration file:
+use) itself, from **Settings**, **Global**, **Server**, with no configuration file.
+Its processing mode and preset are set in **Settings**, **Profile**, **Sound**:
 
-1. Choose **Stereo Tool** under Output processing. The **Stereo Tool library and licence** group
-   appears under it.
-2. Read Thimeo's [terms and conditions](https://www.thimeo.com/terms-and-conditions/) and
+1. Read Thimeo's [terms and conditions](https://www.thimeo.com/terms-and-conditions/) and
    [licensing](https://www.thimeo.com/stereo-tool/licenses/) (both linked there), then tick
    **I accept Thimeo's terms for Stereo Tool**. Download refuses without the tick and moves focus
    to the box.
-3. Press **Download Stereo Tool**. The server fetches Thimeo's Generic plugin zip
+2. Press **Download Stereo Tool**. The server fetches Thimeo's Generic plugin zip
    (`Stereo_Tool_Generic_plugin.zip`, about 320 MB) straight from thimeo.com over HTTPS and keeps
    only the one library this server needs: `libStereoTool_intel64.so` on 64-bit Linux PCs,
    `libStereoTool_noX11_arm64.so` on 64-bit ARM Linux (a Raspberry Pi 4 or 5 with a 64-bit
@@ -26,7 +25,7 @@ use) itself, from Settings, Sound, with no configuration file:
    11.05 is installed", with the version from the zip. The button then reads **Update Stereo
    Tool**; press it to fetch Thimeo's latest plugin. A running Stereo Tool restarts with the new
    library, and the sound bypasses it for a moment.
-4. Paste the key Thimeo sent you (it starts with `<` and ends with `>`) in **Stereo Tool licence
+3. Paste the key Thimeo sent you (it starts with `<` and ends with `>`) in **Stereo Tool licence
    key** and press **Save licence key**. The status line says "Licence set" or "No licence"; the
    key is never shown again. Right after a save the page says "Stereo Tool checks the key in a
    moment"; a few seconds later, once Stereo Tool has restarted with the key, the line adds what
@@ -36,7 +35,8 @@ use) itself, from Settings, Sound, with no configuration file:
    asking. Stereo Tool restarts when the key changes: a key for every station restarts every
    station that runs Stereo Tool, a key for one station restarts only that one, and saving the
    same key again restarts nothing.
-5. Choose a preset in the **Stereo Tool** group below, or upload your own `.sts` file there.
+4. In **Sound**, choose Stereo Tool under **Output processing**, then choose a preset in the
+   **Stereo Tool** group or upload your own `.sts` file there.
    AutoDJ loads it with all of its processing settings but not Stereo Tool's configuration
    settings, so a preset cannot change how Stereo Tool itself is set up.
 
@@ -94,7 +94,7 @@ The page says so on those computers instead of offering the download.
 
 If a station is set to Stereo Tool and the library is not there, the station plays on with its
 limited bypass, and `/api/status` reports `playout.error` as "Stereo Tool master unavailable:
-Stereo Tool is not installed. Download it in Settings, Sound, with the Download Stereo Tool
+Stereo Tool is not installed. Download it in Settings, Global, Server, with the Download Stereo Tool
 button." It starts Stereo Tool by itself within a second of the download finishing. While
 Stereo Tool runs, `/api/status` reports what it said under `playout.stereotool`: its version, the
 delay its preset adds (`latency_ms`), and whether the licence covers the preset.
@@ -108,7 +108,7 @@ docker compose cp libStereoTool_intel64.so autodj:/index/tools/stereo-tool/libSt
 
 ### One licence or one per station
 
-The key saved from Settings, Sound is for every station. With more than one station, tick **For
+The key saved from Settings, Global, Server is for every station. With more than one station, tick **For
 this station only** before saving to give the station the page controls a key of its own; it uses
 that key instead. Thimeo requires a separate licence for each radio-processing instance; one key
 does not license several stations running at the same time. Check Thimeo's

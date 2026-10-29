@@ -44,7 +44,7 @@ Use Tab and Enter or Space for controls, and arrow keys in tab strips; see the
 2. In the registered folders table, find your practice music folder. Set **Music folder analysis**
    to **Similarity**. This row setting saves on change;
    wait for “Folder settings saved.”
-3. Under **Settings**, **Stations**, set the **Similarity analysis maximum song length** to `0`
+3. Under **Settings**, **Station**, **Stations**, set the **Similarity analysis maximum song length** to `0`
    for this exercise, then save it.
 4. Press **Import and analyze** once. Read **Output** and the job status until
    the job finishes.

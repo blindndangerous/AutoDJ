@@ -66,7 +66,7 @@ function setup(fail = false) {
     return new globalThis.Response(JSON.stringify({ revision: "two", settings: { revision: "two", values },
       applied: ["playback"], failed: {} }), { headers: { "Content-Type": "application/json" } });
   }));
-  applySettingsDrafts({ revision: "one", values: { playback: { repeat_rules: fullRules } } });
+  applySettingsDrafts({ profile: "", revision: "one", values: { playback: { repeat_rules: fullRules } } });
   els.save = panel.querySelector("[data-settings-save]");
   els.panel = panel;
   els.repeatGroup = els.artistTracks.closest("fieldset").parentElement;
@@ -260,7 +260,7 @@ describe("repeat settings", () => {
     expect(requests).toHaveLength(0);
     els.save.click();
     await vi.waitFor(() => expect(requests).toHaveLength(1));
-    expect(requests[0]).toEqual({ revision: "one", changes: { playback: { repeat_rules: {
+    expect(requests[0]).toEqual({ profile: "", revision: "one", changes: { playback: { repeat_rules: {
       ...fullRules, artist: { tracks: 7, minutes: 0 },
       daypart: { days: 0, start_hours: [0, 6, 19] },
     } } } });
@@ -316,7 +316,7 @@ describe("repeat settings", () => {
   it("keeps edits across old pushes and failed saves", async () => {
     const { els, requests } = setup(true);
     type(els.artistTracks, "7");
-    applySettingsDrafts({ revision: "old", values: { playback: { repeat_rules: fullRules } } });
+    applySettingsDrafts({ profile: "", revision: "old", values: { playback: { repeat_rules: fullRules } } });
     expect(els.artistTracks.value).toBe("7");
     els.save.click();
     await vi.waitFor(() => expect(requests).toHaveLength(1));

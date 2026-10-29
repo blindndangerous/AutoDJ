@@ -101,7 +101,7 @@ describe("Stereo Tool preset markup", () => {
   const group = page.getElementById("stereo-preset").closest("fieldset");
 
   it("groups the preset controls under a legend shown only for Stereo Tool", () => {
-    expect(group.querySelector(":scope > legend").textContent).toBe("Stereo Tool");
+    expect(group.querySelector(":scope > legend").textContent).toBe("Stereo Tool processing");
     expect(group.dataset.showWhen).toBe("pb-replaygain=stereotool");
     expect(css).toContain(
       'body:not(:has(#pb-replaygain option[value="stereotool"]:checked)) '
@@ -275,6 +275,7 @@ describe("Stereo Tool preset controls", () => {
       title: "Delete preset Night.sts?", confirmLabel: "Delete preset",
     });
     expect(confirm.mock.calls[0][1].message).toContain("switches to the Included preset");
+    expect(confirm.mock.calls[0][1].message).toContain("Saved defaults and profiles that refer to it switch to Included too.");
     expect(state.posts).toEqual(["included"]);
     expect(state.deletes).toEqual(["Night.sts"]);
     expect($("stereo-preset").value).toBe("included");

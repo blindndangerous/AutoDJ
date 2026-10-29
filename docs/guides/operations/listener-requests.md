@@ -45,7 +45,7 @@ start. The other keys are read from the station definition when AutoDJ starts:
 }
 ```
 
-For another station, select it in Settings > Stations and change the same settings.
+For another station, select it in Settings > Station > Stations and change the same settings.
 
 **What a listener does.** The page has a search box for title, artist or album. The songs it
 finds are links: at most 20, and never from a blocked folder or by a blocked artist. Choosing one

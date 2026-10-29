@@ -59,10 +59,9 @@ export function installPublicSettings({ doc = document, request = requestJson } 
     fillPages(settings);
   }
 
-  // DMCA mode lives on Song picking and the player pages on Stream, so each
-  // tab's Save bar owns its own controls.
+  // Each control's tab owns its Save bar.
   const dmcaDraft = registerSettingsGroup({
-    panel: doc.getElementById("spanel-picking"), group: "public",
+    panel: dmca.closest('[role="tabpanel"]') || doc.getElementById("spanel-picking"), group: "public",
     controls: [dmca],
     read: () => ({ dmca_enabled: dmca.checked }),
     write: fillDmca,

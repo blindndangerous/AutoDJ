@@ -1,4 +1,4 @@
-import { registerSettingsGroup, applySettingsDrafts, loadSettingsDrafts, resetSettingsDrafts, confirmSettingsNavigation, settingsDraftHolds } from "./modules/settings-drafts.js";
+import { registerSettingsGroup, applySettingsDrafts, loadSettingsDrafts, resetSettingsDrafts, confirmSettingsNavigation, settingsDraftHolds, setSettingsProfile } from "./modules/settings-drafts.js";
 // Pure helpers live in ./modules/dom-helpers.js.
 import {
   isDebug,
@@ -235,6 +235,22 @@ btnListen.addEventListener("click", () => {
 });
 // Settings subtabs (./modules/subtabs.js).  Stream shows only in stream mode.
 initSubtabs(document.getElementById("settings-tabs"));
+const settingsProfile = document.getElementById("settings-profile");
+let settingsProfileTarget = "";
+function resetSettingsProfileTarget() {
+  settingsProfileTarget = "";
+  if (settingsProfile) settingsProfile.value = "";
+}
+settingsProfile?.addEventListener("change", async () => {
+  const next = settingsProfile.value;
+  if (next === settingsProfileTarget) return;
+  if (!await confirmSettingsNavigation()) {
+    settingsProfile.value = settingsProfileTarget;
+    return;
+  }
+  settingsProfileTarget = next;
+  await setSettingsProfile(next);
+});
 // Settings > Stream > More formats: the AAC and Opus streams (#50).
 const streamFormats = installStreamFormats({
   doc: document,
@@ -428,6 +444,7 @@ function clearStationViews({ keepSettings = false } = {}) {
 
 function clearProtectedSessionData() {
   resetSettingsDrafts();
+  resetSettingsProfileTarget();
   streamMode.stop();
   clearStationViews();
   btnMute.innerHTML = '<span aria-hidden="true">🔊</span> Mute';
@@ -869,6 +886,7 @@ function applyState(s, { announceTrack = true } = {}) {
   if (s.settings) {
     applySavedSettings({ ...s.settings, discovery_enabled: s.discovery_enabled });
   }
+  if (Object.hasOwn(s, "active_profile")) profileControls?.updateActive(s.active_profile);
 
   // Last, so Play / Pause already has its enabled state for this push.
   if (losesFocus) (btnPause.disabled ? btnSkip : btnPause).focus();
@@ -877,6 +895,7 @@ function applyState(s, { announceTrack = true } = {}) {
 function applySavedSettings(settings) {
   applySettingsDrafts(settings);
   if (!settings) return;
+  if (Object.hasOwn(settings, "active_profile")) profileControls?.updateActive(settings.active_profile);
   if (stationOffAir) {
     streamSettings.apply({ settings });
     nowPlayingSettings.apply({ settings });
@@ -1382,13 +1401,15 @@ const _profileEls = {
   saveButton: document.getElementById("profile-save"),
   list:       document.getElementById("profile-list"),
   status:     document.getElementById("profiles-status"),
+  profileSelect: settingsProfile,
+  applyDefaultsButton: document.getElementById("profile-apply-defaults"),
+  clockSelect: document.getElementById("profile-clock"),
+  cartSelect: document.getElementById("profile-cart"),
 };
-const profileControls = installProfiles(_profileEls, {
-  getSettings: () => _lastState?.settings || null,
-});
+const profileControls = installProfiles(_profileEls);
 
 const _accessEls = {
-  card:     document.getElementById("spanel-access"),
+  card:     document.getElementById("spanel-server"),
   note:     document.getElementById("access-note"),
   controls: document.getElementById("access-controls"),
   signOut:  document.getElementById("access-sign-out"),
@@ -1711,7 +1732,7 @@ const stationSwitcher = installStationSwitcher({
   onChoose: (slug) => switchStation(slug),
 });
 
-// Settings > Stations (#233): the list and New station.  A created station
+// Settings > Station > Stations (#233): the list and New station.  A created station
 // joins the list at once; Switch to it puts focus on the Station button.
 const stationCreator = installStationCreator({
   onCreated: () => refreshStationList(),
@@ -1873,7 +1894,10 @@ function scheduleOffAirCheck() {
     await refreshStationList();
     if (station !== currentStation()) return;
     if (isOnAir(stationEntry())) void loadStation({ announce: false });
-    else scheduleOffAirCheck();
+    else {
+      if (!document.getElementById("panel-settings").hidden) void profileControls?.refresh();
+      scheduleOffAirCheck();
+    }
   }, 10000);
 }
 
@@ -2020,6 +2044,7 @@ async function switchStation(slug) {
   if (!await confirmLeavingStation(entry.name)) return;
   if (slug === currentStation()) return;
   resetSettingsDrafts();
+  resetSettingsProfileTarget();
   selectStation(slug);
   rememberStationInAddress(slug);
   rememberLastStation(slug);

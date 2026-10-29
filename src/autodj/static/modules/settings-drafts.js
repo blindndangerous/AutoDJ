@@ -11,7 +11,7 @@ const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 function editorFor(doc) {
   if (editors.has(doc)) return editors.get(doc);
-  const editor = { doc, panels: new Map(), revision: null, values: {}, loading: null, generation: 0 };
+  const editor = { doc, panels: new Map(), revision: null, values: {}, loading: null, generation: 0, profile: "" };
   editors.set(doc, editor);
   doc.defaultView?.addEventListener("beforeunload", (event) => {
     if (![...editor.panels.values()].some(dirtyPanel)) return;
@@ -49,9 +49,9 @@ function refresh(panel) {
   else panel.save.removeAttribute("aria-busy");
   panel.note.textContent = panel.saving ? "Saving changes…" : changed ? "Unsaved changes" : "No unsaved changes";
   const scopes = [];
-  if (panel.parts.some((part) => part.group)) scopes.push(`Station: ${stationName()}`);
-  if (panel.parts.some((part) => !part.group)) scopes.push("this browser");
-  if (panel.parts.some((part) => part.group === "time")) scopes.push("shared server time display");
+  if (panel.parts.some((part) => part.group && part.scope !== "server")) scopes.push(`Station: ${stationName()}`);
+  if (panel.parts.some((part) => !part.group && part.scope !== "server")) scopes.push("this browser");
+  if (panel.parts.some((part) => part.scope === "server")) scopes.push("shared server settings");
   panel.scope.textContent = scopes.join(" · ");
   for (const part of panel.parts) {
     for (const control of controls(part)) control.classList.toggle("settings-dirty", dirty(part));
@@ -92,6 +92,9 @@ function accept(part, value) {
 export function applySettingsDrafts(settings, doc = document) {
   if (!settings?.values || !settings.revision) return;
   const editor = editorFor(doc);
+  // Runtime pushes describe what is on air. A selected profile is only the
+  // editing target, so pushes without that target must never retarget drafts.
+  if (settings.profile !== editor.profile) return;
   const pending = [...editor.panels.values()].some(dirtyPanel);
   editor.values = clone(settings.values);
   if (!pending || !editor.revision) editor.revision = settings.revision;
@@ -101,11 +104,12 @@ export function applySettingsDrafts(settings, doc = document) {
   }
 }
 
-export async function loadSettingsDrafts(doc = document) {
+export async function loadSettingsDrafts(doc = document, profile = editorFor(doc).profile) {
   const editor = editorFor(doc);
   if (editor.loading) return editor.loading;
   const generation = editor.generation;
-  editor.loading = requestJson("/api/settings").then((settings) => {
+  const query = `?profile=${encodeURIComponent(profile)}`;
+  editor.loading = requestJson(`/api/settings${query}`).then((settings) => {
     if (generation === editor.generation) applySettingsDrafts(settings, doc);
   }).catch((error) => {
     if (generation !== editor.generation) return;
@@ -116,8 +120,18 @@ export async function loadSettingsDrafts(doc = document) {
   return editor.loading;
 }
 
+export async function setSettingsProfile(profile, doc = document) {
+  const editor = editorFor(doc);
+  editor.generation += 1;
+  editor.loading = null;
+  editor.profile = profile || "";
+  editor.revision = null;
+  editor.values = {};
+  await loadSettingsDrafts(doc, editor.profile);
+}
+
 export function registerSettingsGroup(spec) {
-  const element = spec.panel;
+  const element = spec.panel?.closest('[id^="spanel-"][role="tabpanel"]') || spec.panel;
   if (!element) return { accept() {}, dirty: () => false };
   const editor = editorFor(element.ownerDocument);
   let panel = editor.panels.get(element);
@@ -158,7 +172,9 @@ export function registerSettingsGroup(spec) {
       }
       refresh(panel);
     });
-    element.addEventListener("toggle", () => { if (element.open) void loadSettingsDrafts(doc); });
+    if (spec.loadSettings !== false) {
+      element.addEventListener("toggle", () => { if (element.open) void loadSettingsDrafts(doc); });
+    }
   }
   const part = { ...spec, baseline: null, latest: null, initial: clone(spec.read()), echoUntil: 0 };
   panel.parts.push(part);
@@ -169,7 +185,12 @@ export function registerSettingsGroup(spec) {
   }
   refresh(panel);
   return {
-    accept(value) { accept(part, value); refresh(panel); },
+    accept(value) {
+      const settingsView = editor.doc.getElementById("panel-settings");
+      if (part.group && (editor.profile || (settingsView && !settingsView.hidden))) return;
+      accept(part, value);
+      refresh(panel);
+    },
     dirty: () => dirty(part),
   };
 }
@@ -178,9 +199,12 @@ export function settingsDraftHolds(control) {
   if (!control) return false;
   const editor = editors.get(control.ownerDocument);
   if (!editor) return false;
+  const settingsView = editor.doc.getElementById("panel-settings");
+  const editing = editor.profile || (settingsView && !settingsView.hidden);
   for (const panel of editor.panels.values()) {
     for (const part of panel.parts) {
-      if ((panel.saving || dirty(part) || part.echoUntil > Date.now()) && controls(part).some((item) => item === control || item.contains(control))) return true;
+      if ((panel.saving || dirty(part) || part.echoUntil > Date.now() || (editing && part.group))
+          && controls(part).some((item) => item === control || item.contains(control))) return true;
     }
   }
   return false;
@@ -239,19 +263,20 @@ export async function saveSettingsPanel(element) {
     return false;
   }
   const station = currentStation();
+  const profile = editor.profile;
   const epoch = captureAuthenticatedRequestEpoch();
   const generation = editor.generation;
   const current = () => generation === editor.generation && station === currentStation() && isAuthenticatedRequestCurrent(epoch);
   panel.saving = true;
   refresh(panel);
-  const stopPending = sayIfStillPending((text) => say(panel, text), "Saving changes…");
+  const stopPending = sayIfStillPending((text) => { if (current()) say(panel, text); }, "Saving changes…");
   try {
     let result = { applied: [], failed: {} };
     if (Object.keys(changes).length) {
       if (!editor.revision) throw new Error("Reload settings before saving.");
       result = await requestJson("/api/settings", {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ revision: editor.revision, changes }),
+        body: JSON.stringify({ revision: editor.revision, changes, profile }),
       });
       if (!current()) return false;
       editor.revision = result.revision;
@@ -259,7 +284,7 @@ export async function saveSettingsPanel(element) {
     }
     for (const [part, value] of submitted) {
       if (part.group && !result.applied.includes(part.group)) continue;
-      if (!part.group && await part.commit(value) === false) throw new Error("Browser settings could not be applied.");
+      if (!part.group && await part.commit(value) === false) throw new Error("Settings could not be applied.");
       if (!current()) return false;
       const unchanged = equal(part.read(), value);
       part.latest = clone(part.group ? editor.values[part.group] : value);
@@ -280,10 +305,12 @@ export async function saveSettingsPanel(element) {
       for (const part of other.parts) if (part.group && !submitted.has(part)) accept(part, editor.values[part.group]);
       refresh(other);
     }
-    const scope = parts.some((part) => part.group) ? `for ${stationName()}` : "in this browser";
+    const scope = parts.every((part) => part.scope === "server") ? "for this server"
+      : parts.some((part) => part.scope === "server") ? ""
+        : parts.some((part) => part.group) ? `for ${stationName()}` : "in this browser";
     const done = [...described].filter(([part]) => !part.group || result.applied.includes(part.group))
       .map(([, words]) => words);
-    say(panel, [`Settings saved ${scope}.`, ...done, result.message || ""].join(" ").trim());
+    say(panel, [`Settings saved${scope ? ` ${scope}` : ""}.`, ...done, result.message || ""].join(" ").trim());
     return true;
   } catch (error) {
     if (current()) {
@@ -350,6 +377,7 @@ export function resetSettingsDrafts(doc = document) {
   editor.generation += 1;
   editor.revision = null;
   editor.values = {};
+  editor.profile = "";
   editor.loading = null;
   for (const panel of editor.panels.values()) {
     panel.saving = false;

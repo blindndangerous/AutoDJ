@@ -101,7 +101,7 @@ docker compose up -d
 
 The image tells AutoDJ its update channel. An image published as `stable` follows Stable, and
 one published as `development` follows Development, whichever checkout holds `compose.yaml`.
-A channel chosen in **Settings**, **Updates** still wins; the commands `autodj check-update`
+A channel chosen in **Settings**, **Global**, **Update and restart** still wins; Save changes in Update and restart saves it. The commands `autodj check-update`
 prints then say which image to name in `.env`.
 
 The published image is for 64-bit x86 computers (`linux/amd64`). On an ARM computer, such as a

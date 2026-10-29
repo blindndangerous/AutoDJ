@@ -1183,6 +1183,58 @@ def test_a_preset_any_station_uses_cannot_be_deleted(rig: Any) -> None:
     assert client.delete("/api/stereo-tool-presets/Owl.sts").status_code == 409
 
 
+def test_deleting_a_shared_preset_replaces_default_and_profile_references(rig: Any) -> None:
+    client, *_ = rig
+    upload = client.post(
+        "/api/stereo-tool-presets/upload",
+        files={"file": ("Owl.sts", b"[Stereo Tool]\nVersion=1\n", "text/plain")},
+    )
+    assert upload.status_code == 200, upload.text
+    for base in ("/api", OWL):
+        assert client.post(f"{base}/profiles", json={"name": "Saved"}).status_code == 200
+        for profile in ("Saved", ""):
+            view = client.get(f"{base}/settings", params={"profile": profile}).json()
+            changed = client.patch(
+                f"{base}/settings",
+                json={
+                    "revision": view["revision"],
+                    "profile": profile,
+                    "changes": {"playback": {"stereotool_preset": "Owl.sts"}},
+                },
+            )
+            assert changed.status_code == 200, changed.text
+
+        # Deletion still refuses a live selection; move it away without saving
+        # over the defaults or profile references we want to exercise.
+        changed = patch_station_settings(
+            client, {"playback": {"stereotool_preset": "included"}}, base=base
+        )
+        assert changed.status_code == 200, changed.text
+
+    assert client.post(f"{OWL}/stop").status_code == 200
+
+    # A station that is starting or stopping cannot have its references
+    # updated, so the preset stays until it has finished.
+    registry = client.app.state.stations
+
+    async def during_start() -> None:
+        async with registry._locks["nightowl"]:
+            refused = await asyncio.to_thread(client.delete, "/api/stereo-tool-presets/Owl.sts")
+            assert refused.status_code == 409, refused.text
+            assert "Night Owl Radio" in refused.json()["detail"]
+
+    asyncio.run(during_start())
+    values = client.get(f"{OWL}/settings", params={"profile": "Saved"}).json()["values"]
+    assert values["playback"]["stereotool_preset"] == "Owl.sts"
+
+    removed = client.delete("/api/stereo-tool-presets/Owl.sts")
+    assert removed.status_code == 200, removed.text
+    for base in ("/api", OWL):
+        for profile in ("", "Saved"):
+            values = client.get(f"{base}/settings", params={"profile": profile}).json()["values"]
+            assert values["playback"]["stereotool_preset"] == "included"
+
+
 # How long the soak runs: a few seconds in every test run, or as long as
 # AUTODJ_SOAK_SECONDS says (hours on the machine that will run the stations).
 SOAK_SECONDS = float(os.environ.get("AUTODJ_SOAK_SECONDS", "0") or 0)

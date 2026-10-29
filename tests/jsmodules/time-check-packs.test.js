@@ -55,7 +55,7 @@ afterEach(() => {
 });
 
 function seedTimeCheckDraft(value) {
-  applySettingsDrafts({ revision: "one", values: { time_checks: value } });
+  applySettingsDrafts({ profile: "", revision: "one", values: { time_checks: value } });
 }
 
 describe("Time checks panel text and controls", () => {
@@ -319,6 +319,7 @@ describe("adding and removing voice packs", () => {
     expect(await liveText()).toBe("Removed voice pack B.");
     expect(confirm.mock.calls[0][1]).toEqual(expect.objectContaining({
       title: "Remove voice pack B?", confirmLabel: "Remove voice pack", station: true }));
+    expect(confirm.mock.calls[0][1].message).toContain("saved profile/default selections");
     expect(request).toHaveBeenCalledWith("/api/time-checks/packs/B", { method: "DELETE" });
     expect(document.activeElement.value).toBe("C");
     // The last pack in the list: focus goes to the Voice packs group.
@@ -379,7 +380,7 @@ describe("recorded clips, intro and outro", () => {
     const controls = installTimeChecks({ request, interval: () => {} });
     await controls.refresh();
     byId("tc-enabled").click();
-    expect(await saveSettingsPanel(byId("spanel-time-checks"))).toBe(false);
+    expect(await saveSettingsPanel(byId("spanel-announcements"))).toBe(false);
     expect(await liveText()).toBe("Time check settings are still loading; try again in a moment.");
     expect(request.mock.calls.some(([, options]) => options?.method === "PUT")).toBe(false);
   });
@@ -430,7 +431,7 @@ describe("recorded clips, intro and outro", () => {
     byId("tc-recorded-folder").value = "Clips";
     byId("tc-recorded-folder").dispatchEvent(new Event("change"));
     expect(fetchImpl).not.toHaveBeenCalled();
-    await saveSettingsPanel(byId("spanel-time-checks"));
+    await saveSettingsPanel(byId("spanel-announcements"));
     let body = JSON.parse(fetchImpl.mock.calls.at(-1)[1].body).changes.time_checks;
     expect(body).toEqual({ recorded_folder: "Clips" });
     byId("tc-outro").value = "hello.wav";
@@ -438,7 +439,7 @@ describe("recorded clips, intro and outro", () => {
     byId("tc-intro").value = "";
     byId("tc-intro").dispatchEvent(new Event("change"));
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    await saveSettingsPanel(byId("spanel-time-checks"));
+    await saveSettingsPanel(byId("spanel-announcements"));
     body = JSON.parse(fetchImpl.mock.calls.at(-1)[1].body).changes.time_checks;
     expect(body.intro).toBe("");
     // None while config.toml has an intro turns it off; the outro is a file name.

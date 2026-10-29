@@ -725,33 +725,40 @@
   <h2>Settings</h2>
 
   <!-- Shared polite status region for Settings saves and failures. -->
-  <p>Changes stay in the form until you choose Save changes. Discard changes restores the saved settings. Record editors and actions have their own buttons.</p>
   <div id="settings-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
-
-  <!-- Like the section tabs, these carry no aria-controls: that relation
-       made NVDA speak the focused tab twice.  data-panel names the panel,
-       and each panel's aria-labelledby names it after its tab.  The
-       Stream controls appear in stream mode; public page settings stay available. -->
-  <div role="tablist" class="subtabs" id="settings-tabs" aria-label="Settings groups" aria-orientation="horizontal">
-    <button type="button" role="tab" id="stab-transitions" data-subview="transitions" data-panel="spanel-transitions" aria-selected="false" tabindex="-1">Transitions</button>
-    <button type="button" role="tab" id="stab-djmix" data-subview="djmix" data-panel="spanel-djmix" aria-selected="false" tabindex="-1">DJ mixing</button>
-    <button type="button" role="tab" id="stab-picking" data-subview="picking" data-panel="spanel-picking" aria-selected="false" tabindex="-1">Song picking</button>
-    <button type="button" role="tab" id="stab-sound" data-subview="sound" data-panel="spanel-sound" aria-selected="false" tabindex="-1">Sound</button>
-    <button type="button" role="tab" id="stab-display" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Display and keys</button>
-    <button type="button" role="tab" id="stab-liners" data-subview="liners" data-panel="spanel-liners" aria-selected="false" tabindex="-1">Voice liners</button>
-    <button type="button" role="tab" id="stab-time-checks" data-subview="time-checks" data-panel="spanel-time-checks" aria-selected="false" tabindex="-1">Time checks</button>
-    <button type="button" role="tab" id="stab-breaks" data-subview="breaks" data-panel="spanel-breaks" aria-selected="false" tabindex="-1">Breaks</button>
-    <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
-    <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1">Stream</button>
-    <button type="button" role="tab" id="stab-live" data-subview="live" data-panel="spanel-live" aria-selected="false" tabindex="-1">Live DJ</button>
-    <button type="button" role="tab" id="stab-stations" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Stations</button>
-    <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
-    <button type="button" role="tab" id="stab-workers" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
-    <button type="button" role="tab" id="stab-updates" data-subview="updates" data-panel="spanel-updates" aria-selected="false" tabindex="-1">Updates</button>
+  <div id="settings-tabs">
+  <h3 id="settings-profile-heading">Profile</h3>
+  <div role="tablist" class="subtabs" aria-labelledby="settings-profile-heading" aria-orientation="horizontal">
+    <button type="button" role="tab" id="stab-mixing" data-settings-kind="profile" data-subview="mixing" data-panel="spanel-mixing" aria-selected="false" tabindex="-1">Mixing</button>
+    <button type="button" role="tab" id="stab-picking" data-settings-kind="profile" data-subview="picking" data-panel="spanel-picking" aria-selected="false" tabindex="-1">Song picking</button>
+    <button type="button" role="tab" id="stab-sound" data-settings-kind="profile" data-subview="sound" data-panel="spanel-sound" aria-selected="false" tabindex="-1">Sound</button>
+    <button type="button" role="tab" id="stab-announcements" data-settings-kind="profile" data-subview="announcements" data-panel="spanel-announcements" aria-selected="false" tabindex="-1">Announcements</button>
+  </div>
+  <h3 id="settings-station-heading">Station</h3>
+  <div role="tablist" class="subtabs" aria-labelledby="settings-station-heading" aria-orientation="horizontal">
+    <button type="button" role="tab" id="stab-stations" data-settings-kind="station" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1">Stations</button>
+    <button type="button" role="tab" id="stab-access" data-settings-kind="station" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles</button>
+    <button type="button" role="tab" id="stab-stream" data-settings-kind="station" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1">Broadcasting</button>
+    <button type="button" role="tab" id="stab-schedule" data-settings-kind="station" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
+  </div>
+  <h3 id="settings-global-heading">Global</h3>
+  <div role="tablist" class="subtabs" aria-labelledby="settings-global-heading" aria-orientation="horizontal">
+    <button type="button" role="tab" id="stab-server" data-settings-kind="server" data-subview="server" data-panel="spanel-server" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Server</button>
+    <button type="button" role="tab" id="stab-workers" data-settings-kind="server" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
+    <button type="button" role="tab" id="stab-updates" data-settings-kind="server" data-subview="updates" data-panel="spanel-updates" aria-selected="false" tabindex="-1">Update and restart</button>
+    <button type="button" role="tab" id="stab-display" data-settings-kind="browser" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Browser preferences</button>
+  </div>
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-transitions" aria-labelledby="stab-transitions" hidden>
-    <h3>Transitions</h3>
+  <div class="settings-row profile-target-row">
+    <label for="settings-profile">Profile to edit</label>
+    <select id="settings-profile"><option value="">Station defaults</option></select>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-mixing" data-settings-kind="profile" aria-labelledby="stab-mixing" hidden>
+    <h3>Mixing</h3>
+    <section id="spanel-transitions" data-settings-section>
+      <h4>Transitions</h4>
     <fieldset>
       <legend>Crossfade</legend>
       <div class="settings-row">
@@ -951,10 +958,17 @@
         How Skip ends the song when the server mixes. Each effect lasts at most 2 seconds and ends on a beat when the tempo is known. Browser playback has its own skip.
       </span>
     </fieldset>
-  </div>
-
-  <div class="card" role="tabpanel" id="spanel-djmix" aria-labelledby="stab-djmix" hidden>
-    <h3>DJ mixing</h3>
+    <fieldset>
+      <legend>Quiet endings</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="pb-silence-trigger" checked>
+        <label for="pb-silence-trigger">Crossfade when a song goes quiet</label>
+      </div>
+      <span class="setting-desc" id="pb-silence-trigger-desc">Starts the crossfade when a track goes silent after its halfway point.</span>
+    </fieldset>
+    </section>
+    <section id="spanel-djmix" data-settings-section>
+      <h4>DJ mixing</h4>
     <p data-saved-points="note" hidden>These options are not used with saved segue points.  To use them, choose another Transition mode under Transitions.</p>
     <fieldset data-saved-points="hide">
       <legend>Tempo and key</legend>
@@ -1049,20 +1063,12 @@
         How far down the filter closes by the end of the crossfade, from 20 to 5000.  Lower sounds more muffled.  The default is 250.
       </span>
     </fieldset>
+    </section>
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-picking" aria-labelledby="stab-picking" hidden>
+  <div class="card" role="tabpanel" id="spanel-picking" data-settings-kind="profile" aria-labelledby="stab-picking" hidden>
     <h3>Song picking</h3>
-    <form id="public-dmca-form">
-      <fieldset>
-        <legend>DMCA mode</legend>
-        <div class="settings-check">
-          <input type="checkbox" id="public-dmca" aria-describedby="public-dmca-help">
-          <label for="public-dmca">Use DMCA mode</label>
-        </div>
-        <p class="setting-desc" id="public-dmca-help">Limits album, artist and box set picks, asks before queuing a song over a limit, and hides the next song publicly.</p>
-      </fieldset>
-    </form>
+
     <fieldset>
       <legend>Picking</legend>
       <div class="settings-row">
@@ -1088,9 +1094,13 @@
           <li><em>Similarity</em>: a song that sounds like the last one.</li>
           <li><em>Random walk</em>: a song at random.</li>
           <li><em>Least recently played</em>: the song that has waited longest.</li>
-          <li><em>Clockwheel</em>: follows the active clockwheel from Library tools.</li>
+          <li><em>Clockwheel</em>: follows the selected clockwheel.</li>
         </ul>
       </span>
+      <div class="settings-row">
+        <label for="profile-clock">Clockwheel</label>
+        <select id="profile-clock"><option value="">No clockwheel</option></select>
+      </div>
       <div class="settings-row" data-show-when="pb-pick-mode=similarity">
         <label for="pb-pick-top-k">Choose among the closest songs</label>
         <input type="number" id="pb-pick-top-k" min="1" max="100" step="1" value="1"
@@ -1383,7 +1393,7 @@
     </details>
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-sound" aria-labelledby="stab-sound" hidden>
+  <div class="card" role="tabpanel" id="spanel-sound" data-settings-kind="profile" aria-labelledby="stab-sound" hidden>
     <h3>Sound</h3>
     <fieldset>
       <legend>Output processing</legend>
@@ -1417,34 +1427,8 @@
       <span class="setting-desc" id="pb-rg-clip-desc" data-show-when="pb-replaygain=replaygain">1 prevents tagged peaks from clipping. Higher values allow clipping.</span>
     </fieldset>
 
-    <fieldset id="stereo-setup" data-show-when="pb-replaygain=stereotool">
-      <legend>Stereo Tool</legend>
-      <p class="setting-desc" id="stereo-install-status">Checking whether Stereo Tool is installed.</p>
-      <p class="setting-desc" id="stereo-install-desc">Downloads about 320 MB from thimeo.com. Use again to update.</p>
-      <div class="settings-check">
-        <input type="checkbox" id="stereo-accept-terms">
-        <label for="stereo-accept-terms">I accept Thimeo's terms for Stereo Tool</label>
-      </div>
-      <p class="setting-desc" id="stereo-terms-desc"><a href="https://www.thimeo.com/terms-and-conditions/" target="_blank" rel="noopener noreferrer">Thimeo's terms (opens in a new tab)</a> and <a href="https://www.thimeo.com/stereo-tool/licenses/" target="_blank" rel="noopener noreferrer">licensing (opens in a new tab)</a>.</p>
-      <div class="settings-row">
-        <button type="button" id="stereo-download">Download Stereo Tool</button>
-      </div>
-      <p class="setting-desc" id="stereo-license-status">Checking the licence.</p>
-      <div class="settings-row">
-        <label for="stereo-license-key">Stereo Tool licence key</label>
-        <input type="password" id="stereo-license-key" autocomplete="new-password" spellcheck="false" autocapitalize="off" maxlength="4096">
-      </div>
-      <span class="setting-desc" id="stereo-license-desc">Kept private and never shown again.</span>
-      <div class="settings-check" id="stereo-license-station-row" hidden>
-        <input type="checkbox" id="stereo-license-station-only">
-        <label for="stereo-license-station-only">For this station only</label>
-      </div>
-      <span class="setting-desc" id="stereo-license-station-desc" hidden>Otherwise applies to stations without their own key.</span>
-      <p class="field-error" id="stereo-license-error" hidden></p>
-      <div class="settings-row">
-        <button type="button" id="stereo-license-save">Save licence key</button>
-        <button type="button" id="stereo-license-clear">Clear licence</button>
-      </div>
+    <fieldset data-show-when="pb-replaygain=stereotool">
+      <legend>Stereo Tool processing</legend>
       <div class="settings-row">
         <label for="stereo-preset">Preset</label>
         <select id="stereo-preset">
@@ -1485,126 +1469,16 @@
         Adjust music speed from 10% slower to 10% faster.
       </span>
     </fieldset>
-    <fieldset>
-      <legend>Browser playback</legend>
-      <div class="settings-row">
-        <label for="audio-device">Audio output device</label>
-        <select id="audio-device">
-          <option value="">System default</option>
-        </select>
-        <button type="button" id="audio-device-refresh">
-          Show device names
-        </button>
-      </div>
-      <span class="setting-desc" id="audio-device-desc">Choose the browser's speakers or headphones. Showing names briefly requests microphone permission.</span>
-      <div class="settings-row">
-        <label for="preview-device">Preview output device</label>
-        <select id="preview-device">
-          <option value="">System default</option>
-        </select>
-        <button type="button" id="preview-device-choose">Show preview device names</button>
-      </div>
-      <span class="setting-desc" id="preview-device-desc">Audio device for private previews.</span>
-      <p class="setting-desc" id="preview-device-note" hidden></p>
-      <div class="settings-check">
-        <input type="checkbox" id="pb-prefetch" checked>
-        <label for="pb-prefetch">Load the next song early</label>
-      </div>
-      <span class="setting-desc" id="pb-prefetch-desc">Loads the next track early to reduce gaps.</span>
-      <div class="settings-check">
-        <input type="checkbox" id="pb-silence-trigger" checked>
-        <label for="pb-silence-trigger">Crossfade when a song goes quiet</label>
-      </div>
-      <span class="setting-desc" id="pb-silence-trigger-desc">Starts the crossfade when a track goes silent after its halfway point.</span>
-    </fieldset>
+
     <div class="settings-row">
     </div>
     <p class="setting-desc" id="mastering-save-note">Changing the Stereo Tool preset or AGC drive restarts Stereo Tool, with a brief bypass.</p>
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-display" aria-labelledby="stab-display" hidden>
-    <h3>Display and keys</h3>
-    <!-- Kept in this browser only (modules/theme.js); applied before first
-         paint by modules/theme-init.js.  No status message on change: the
-         checked radio button is the whole report. -->
-    <fieldset id="theme-choice">
-      <legend>Theme</legend>
-      <div class="settings-check">
-        <input type="radio" name="theme" id="theme-system" value="system" checked>
-        <label for="theme-system">System</label>
-      </div>
-      <div class="settings-check">
-        <input type="radio" name="theme" id="theme-light" value="light">
-        <label for="theme-light">Light</label>
-      </div>
-      <div class="settings-check">
-        <input type="radio" name="theme" id="theme-dark" value="dark">
-        <label for="theme-dark">Dark</label>
-      </div>
-      <span class="setting-desc" id="theme-choice-desc">
-        System follows the light or dark setting of this device.  Saved in this browser only.
-      </span>
-    </fieldset>
-
-    <fieldset>
-      <legend>Display</legend>
-      <div class="settings-check">
-        <input type="checkbox" id="pb-show-lyrics">
-        <label for="pb-show-lyrics">Show lyrics</label>
-      </div>
-      <span class="setting-desc" id="pb-show-lyrics-desc">
-        Display timed (LRC) or plain lyrics in the Lyrics card.
-      </span>
-      <div class="settings-row">
-        <label for="key-notation">Key notation</label>
-        <select id="key-notation">
-          <option value="camelot">Camelot (8A or 8B)</option>
-          <option value="musical">Musical (C, A minor, F sharp minor)</option>
-        </select>
-      </div>
-      <span class="setting-desc" id="key-notation-desc">
-        Show keys as Camelot positions (8A, 8B) or musical names (C, A minor). The key wheel always uses Camelot positions.
-      </span>
-      <div class="settings-row" data-show-when="key-notation=musical">
-        <label for="key-prefer-flats">Use flats</label>
-        <input type="checkbox" id="key-prefer-flats">
-      </div>
-      <span class="setting-desc" id="key-prefer-flats-desc" data-show-when="key-notation=musical">
-        Show flats such as D flat instead of sharps such as C sharp.
-      </span>
-    </fieldset>
-
-    <fieldset>
-      <legend>Announcements</legend>
-      <div class="settings-row">
-        <label for="announce-track-changes">Announce track changes</label>
-        <select id="announce-track-changes" aria-describedby="announce-track-changes-desc">
-          <option value="all">On every tab</option>
-          <option value="now">Only on Now Playing</option>
-          <option value="off">Off</option>
-        </select>
-      </div>
-      <span class="setting-desc" id="announce-track-changes-desc">Saved in this browser only.</span>
-    </fieldset>
-
-    <fieldset>
-      <legend>Keyboard</legend>
-      <div class="settings-check">
-        <input type="checkbox" id="hotkeys-enabled" checked>
-        <label for="hotkeys-enabled">Enable keyboard shortcuts</label>
-      </div>
-      <div class="settings-check">
-        <input type="checkbox" id="hotkeys-bracket-seek">
-        <label for="hotkeys-bracket-seek">Bracket keys seek the song on air</label>
-      </div>
-      <span class="setting-desc" id="hotkeys-bracket-seek-desc">
-        The bracket keys also move the song on air to its previous or next landmark, which listeners hear. Not in stream mode. Off by default.
-      </span>
-    </fieldset>
-  </div>
-
-  <div class="card" role="tabpanel" id="spanel-liners" aria-labelledby="stab-liners" hidden>
-    <h3>Voice liners</h3>
+  <div class="card" role="tabpanel" id="spanel-announcements" data-settings-kind="profile" aria-labelledby="stab-announcements" hidden>
+    <h3>Announcements</h3>
+    <section id="spanel-liners" data-settings-section>
+      <h4>Voice liners</h4>
     <details id="speech-studio">
       <summary>Speech studio</summary>
       <p>Compare voices, save liners, or prepare spoken time checks.</p>
@@ -1634,8 +1508,8 @@
         <button type="submit">Generate selected samples</button>
         <button type="button" id="speech-cancel">Cancel generation</button>
       </form>
-      <h4>Comparison results</h4><ul id="speech-results" aria-label="Comparison results"></ul>
-      <h4>Saved speech liners</h4><ul id="speech-saved" aria-label="Saved speech liners"></ul>
+      <h5>Comparison results</h5><ul id="speech-results" aria-label="Comparison results"></ul>
+      <h5>Saved speech liners</h5><ul id="speech-saved" aria-label="Saved speech liners"></ul>
       <details><summary>Generate time checks</summary>
         <div class="settings-row"><label for="speech-time-format">Hour format</label><select id="speech-time-format"><option value="12">12-hour</option><option value="24">24-hour</option></select></div>
         <p>Uses the selected voice preset. Check all 1440 minutes before generating; provider charges may apply.</p>
@@ -1749,17 +1623,16 @@
       </span>
     </fieldset>
     <p id="ln-browse-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></p>
-    <h4 id="ln-files-heading">Voice liner files</h4>
+    <h5 id="ln-files-heading">Voice liner files</h5>
     <ul id="ln-file-list" role="list" aria-labelledby="ln-files-heading" tabindex="-1"></ul>
     <form id="ln-dates-form" novalidate hidden><fieldset><legend id="ln-dates-legend">Play dates</legend><p id="ln-dates-error" class="field-error" hidden></p>
       <div class="settings-row"><label for="ln-not-before">Not before</label><input type="date" id="ln-not-before"></div>
       <div class="settings-row"><label for="ln-not-after">Do not play after</label><input type="date" id="ln-not-after"></div>
       <button type="submit" id="ln-dates-save">Save dates</button><button type="button" id="ln-dates-cancel">Cancel</button>
     </fieldset></form>
-  </div>
-
-  <div class="card" role="tabpanel" id="spanel-time-checks" aria-labelledby="stab-time-checks" hidden>
-    <h3>Time checks</h3>
+    </section>
+    <section id="spanel-time-checks" data-settings-section>
+      <h4>Time checks</h4>
     <!-- time-checks.js fills this panel when it is seen.  Voice packs,
          the recorded clips folder and the intro and outro clips are added and
          chosen here, by name, never by path; only the text-to-speech command
@@ -1867,7 +1740,7 @@
       <button type="button" id="tc-dates-save">Save play dates</button>
     </fieldset>
 
-    <h4>Recordings</h4>
+    <h5>Recordings</h5>
     <p id="tc-clips-status"></p>
     <div class="settings-row">
       <label for="tc-recorded-folder">Recorded minute clips folder</label>
@@ -1922,22 +1795,29 @@
     <span class="setting-desc" id="tc-test-desc">
       Plays the current time on the stream or server audio when the server mixes the music; otherwise in this browser.
     </span>
-  </div>
+    </section>
+    <section>
+      <h4>Carts</h4>
+      <div class="settings-row">
+        <label for="profile-cart">Cart page</label>
+        <select id="profile-cart"></select>
+      </div>
+    </section>
 
-  <div class="card" role="tabpanel" id="spanel-breaks" aria-labelledby="stab-breaks" hidden>
-    <h3>Breaks</h3>
+    <section id="spanel-breaks" data-settings-section>
+      <h4>Breaks</h4>
     <!-- breaks-settings.js fills this panel when it is seen.  The settings
          are this station's, saved with Save changes; the result is
          said once through #brk-status.  The upload limits, quotas and
          waiting times stay in config.toml.  #brk-reason is plain text,
          not live: it says why breaks cannot be taken now, if they cannot. -->
     <p class="card-desc">
-      DJ breaks, news and weather from an announcer program, and the voice tracks you record in the Voice tracks tab.  A break joins the song change after the next song.  An announcer program needs an announcer token from Settings, Analysis workers.
+      DJ breaks, news and weather from an announcer program, and the voice tracks you record in the Voice tracks tab.  A break joins the song change after the next song.  An announcer program needs an announcer token from Settings, Global, Server.
     </p>
     <div id="brk-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <p id="brk-reason" hidden></p>
     <form id="brk-form" novalidate>
-      <h4 id="brk-form-heading">Break settings</h4>
+      <h5 id="brk-form-heading">Break settings</h5>
       <div class="settings-check">
         <input type="checkbox" id="brk-enabled" aria-describedby="brk-enabled-help">
         <label for="brk-enabled">Accept announcer uploads</label>
@@ -1985,146 +1865,191 @@
         <p id="brk-duck-error" class="field-error" hidden></p>
       </div>
     </form>
+    </section>
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-schedule" aria-labelledby="stab-schedule" hidden>
-    <h3>Schedule</h3>
-    <!-- scheduler-panel.js fills this panel when it is seen, and again when
-         the server says the schedule changed or an event ran.  The lists
-         are plain text, not live regions: each result of a button is said
-         once through #schedule-status. -->
-    <p>Change the station at set times, in the station time zone: <span id="schedule-timezone"></span>.</p>
-    <div id="schedule-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
-    <h4 id="schedule-upcoming-heading">Next events</h4>
-    <ul id="schedule-upcoming" aria-labelledby="schedule-upcoming-heading"></ul>
-    <h4 id="schedule-events-heading">Events</h4>
-    <ul id="schedule-events" aria-labelledby="schedule-events-heading"></ul>
-    <button type="button" id="schedule-add">Add event</button>
-    <!-- Add and Edit share this form.  It checks its own fields: an error
-         is said, the field gets aria-invalid and focus, and the words stay
-         in #schedule-form-error.  Its required fields are aria-required,
-         not required: Firefox calls an empty required field, even a hidden
-         one such as Date for a repeating event, and its group "invalid
-         entry" before anything is typed. -->
-    <form id="schedule-form" novalidate hidden>
+  <div class="card" role="tabpanel" id="spanel-access" data-settings-kind="station" aria-labelledby="stab-access" hidden>
+    <h3>Profiles</h3>
+    <p class="card-desc">
+      Save different setups for your station and switch between them here.
+    </p>
+    <p id="profiles-problem" class="field-error" hidden></p>
+    <div id="profiles-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <fieldset>
+      <legend>Create a profile</legend>
+      <div class="settings-row">
+        <label for="profile-name">Profile name</label>
+        <input type="text" id="profile-name" maxlength="64" autocomplete="off">
+        <button type="button" id="profile-save">Create profile</button>
+      </div>
+    </fieldset>
+    <h4 id="profile-list-heading">Saved profiles</h4>
+    <button type="button" id="profile-apply-defaults">Activate station defaults</button>
+    <ul id="profile-list" aria-labelledby="profile-list-heading"></ul>
+
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-stations" data-settings-kind="station" aria-labelledby="stab-stations" hidden>
+    <h3>Stations</h3>
+    <p class="card-desc">
+      Every station on this server shares the music library, song analysis, song cue points and Stereo Tool preset files. Each has its own settings, queue, history, schedule, carts and stream.
+    </p>
+
+    <div id="stations-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <!-- Time for every station (#282, #286): time-settings.js. -->
+    <fieldset id="time-settings">
+      <legend>Time for the selected station</legend>
+      <div class="settings-row">
+        <label for="time-zone">Time zone</label>
+        <select id="time-zone" aria-describedby="time-zone-help"></select>
+      </div>
+      <span class="setting-desc" id="time-zone-help">
+        Changing it moves when scheduled events, ad breaks and clockwheel restarts happen, from the next time this station starts.
+      </span>
+
+    </fieldset>
+    <fieldset>
+      <legend>Output for the selected station</legend>
+      <label for="station-output">Playback output</label>
+      <select id="station-output">
+        <option value="browser">Browser</option>
+        <option value="server">Server sound card</option>
+        <option value="stream">Radio stream</option>
+      </select>
+      <label><input type="checkbox" id="station-monitor">Also play the radio stream on the server sound card</label>
+      <label for="station-upload-cap">Maximum liner upload size (MiB)</label>
+      <input type="number" id="station-upload-cap" min="1" max="1024" step="1">
+      <p>Output changes apply when this station next starts.</p>
+    </fieldset>
+    <fieldset>
+      <legend>Logs for the selected station</legend>
+      <div class="settings-row">
+        <label for="station-log-label">Log label</label>
+        <input type="text" id="station-log-label" maxlength="16" autocomplete="off"
+               autocapitalize="off" spellcheck="false" aria-describedby="station-log-label-help">
+      </div>
+      <p class="setting-desc" id="station-log-label-help">
+        Shown at the start of this station's log lines: up to 16 letters, digits, hyphens, underscores or dots, different from other stations' labels and IDs. Leave empty to use the station ID, <span id="station-log-label-id">default</span>.
+      </p>
+    </fieldset>
+    <h4 id="stations-list-heading">Stations on this server</h4>
+    <div class="data-table-scroll">
+      <table id="stations-table" role="grid" aria-labelledby="stations-list-heading">
+        <thead>
+          <tr>
+            <th scope="col">Station</th>
+            <th scope="col">Now playing</th>
+            <th scope="col">Listeners</th>
+            <th scope="col">Start with the server</th>
+            <th scope="col">Start or stop</th>
+          </tr>
+        </thead>
+        <tbody id="stations-list"></tbody>
+      </table>
+    </div>
+    <form id="station-create-form" novalidate>
       <fieldset>
-        <legend><h1 id="schedule-form-legend">Add event</h1></legend>
-        <p id="schedule-form-error" class="field-error" hidden></p>
+        <legend>New station</legend>
+        <p id="station-create-error" class="field-error" hidden></p>
         <div class="settings-row">
-          <label for="schedule-name">Name</label>
-          <input type="text" id="schedule-name" maxlength="100" autocomplete="off" aria-required="true">
-        </div>
-        <div class="settings-row">
-          <label for="schedule-action">Action</label>
-          <select id="schedule-action"></select>
-        </div>
-        <!-- The chosen action's settings, built from what the server lists. -->
-        <div id="schedule-params"></div>
-        <div class="settings-row">
-          <label for="schedule-repeat">Repeat</label>
-          <select id="schedule-repeat">
-            <option value="once">Once</option>
-            <option value="daily">Every day</option>
-            <option value="weekdays">Weekdays, Monday to Friday</option>
-            <option value="days">On chosen days</option>
-            <option value="interval">Every few minutes</option>
+          <label for="station-create-source">Start from</label>
+          <select id="station-create-source">
+            <option value="">AutoDJ defaults</option>
           </select>
         </div>
-        <!-- data-repeat lists the repeat choices each part belongs to. -->
-        <div class="settings-row" data-repeat="once">
-          <label for="schedule-date">Date</label>
-          <input type="date" id="schedule-date" aria-required="true">
+        <span class="setting-desc" id="station-create-source-help">
+          A copy takes the station's saved settings, including changes made on this page. It never takes its relays, listener password, webhooks, recording folder, log label, queue, history, requests, listeners, bans, statistics, ads, shows, intros, profiles or liners.
+        </span>
+        <div class="settings-row">
+          <label for="station-create-name">Name</label>
+          <input type="text" id="station-create-name" maxlength="80" autocomplete="off" aria-required="true">
         </div>
-        <div class="settings-row" data-repeat="once daily weekdays days">
-          <label for="schedule-time">Time</label>
-          <input type="time" id="schedule-time" aria-required="true">
+        <div class="settings-row">
+          <label for="station-create-slug">Station ID</label>
+          <input type="text" id="station-create-slug" maxlength="32" autocomplete="off"
+                 autocapitalize="off" spellcheck="false" aria-required="true"
+                 aria-describedby="station-create-slug-help">
         </div>
-        <div data-repeat="interval">
-          <div class="settings-row">
-            <label for="schedule-interval">Minutes between runs</label>
-            <input type="number" id="schedule-interval" min="1" max="1440" step="1" aria-required="true">
+        <span class="setting-desc" id="station-create-slug-help">
+          Lower-case letters, digits and hyphens, up to 32, such as nightowl.
+        </span>
+        <span class="setting-desc" id="station-create-slug-more">
+          The ID names the station's addresses and folder, and cannot be changed later. Left empty, it is made from the name.
+        </span>
+        <fieldset id="station-create-copies" hidden>
+          <legend>Also copy</legend>
+          <div class="settings-check">
+            <input type="checkbox" id="station-create-clockwheels">
+            <label for="station-create-clockwheels">Clockwheels</label>
           </div>
-          <div class="settings-row">
-            <label for="schedule-window-start">Active from</label>
-            <input type="time" id="schedule-window-start" aria-describedby="schedule-window-desc">
+          <div class="settings-check">
+            <input type="checkbox" id="station-create-schedule">
+            <label for="station-create-schedule">Schedule</label>
           </div>
-          <div class="settings-row">
-            <label for="schedule-window-end">Active until</label>
-            <input type="time" id="schedule-window-end" aria-describedby="schedule-window-desc">
+          <div class="settings-check">
+            <input type="checkbox" id="station-create-carts">
+            <label for="station-create-carts">Carts</label>
           </div>
-          <span class="setting-desc" id="schedule-window-desc">
-            Optional.  Leave both empty to run all day.  The window may cross midnight, such as 22:00 until 02:00.
+          <span class="setting-desc" id="station-create-copies-help">
+            The copies belong to the new station: changing them never changes the station they came from. A scheduled event that needs a profile, show or liner the new station does not have reports an error when it runs.
           </span>
-        </div>
-        <fieldset id="schedule-days" data-repeat="days interval">
-          <legend>Days</legend>
-          <!-- Named by the fieldset's aria-describedby only while shown (scheduler-panel.js). -->
-          <p class="setting-desc" id="schedule-days-desc" data-repeat="interval">
-            Optional.  Leave every day unchecked to run every day.  A window that crosses midnight belongs to the day it starts.
-          </p>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-0" value="0"><label for="schedule-day-0">Monday</label></div>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-1" value="1"><label for="schedule-day-1">Tuesday</label></div>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-2" value="2"><label for="schedule-day-2">Wednesday</label></div>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-3" value="3"><label for="schedule-day-3">Thursday</label></div>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-4" value="4"><label for="schedule-day-4">Friday</label></div>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-5" value="5"><label for="schedule-day-5">Saturday</label></div>
-          <div class="settings-check"><input type="checkbox" id="schedule-day-6" value="6"><label for="schedule-day-6">Sunday</label></div>
         </fieldset>
-        <fieldset id="schedule-range">
-          <legend>Date range</legend>
-          <div class="settings-row">
-            <label for="schedule-start-date">Start date</label>
-            <input type="date" id="schedule-start-date" aria-describedby="schedule-dates-repeat-desc">
-          </div>
-          <div class="settings-row">
-            <label for="schedule-end-date">End date</label>
-            <input type="date" id="schedule-end-date" aria-describedby="schedule-dates-repeat-desc">
-          </div>
-          <div class="settings-row">
-            <label for="schedule-dates-repeat">Repeat dates</label>
-            <select id="schedule-dates-repeat" aria-describedby="schedule-dates-repeat-desc">
-              <option value="none">Don't repeat</option>
-              <option value="yearly">Every year</option>
-            </select>
-          </div>
-          <!-- scheduler-panel.js sets the words for the Repeat dates choice. -->
-          <p class="setting-desc" id="schedule-dates-repeat-desc">The event runs only between these dates, both included.</p>
-        </fieldset>
-        <div class="settings-row">
-          <label for="schedule-timing">Timing</label>
-          <select id="schedule-timing" aria-describedby="schedule-timing-desc">
-            <option value="soft">Soft</option>
-            <option value="hard">Hard</option>
-          </select>
-        </div>
-        <span class="setting-desc" id="schedule-timing-desc">
-          Soft waits for the current song to end. Hard runs on time and, except for stream events, fades the current song out, unless the song ends within Wait up to seconds.
-        </span>
-        <p class="setting-desc">Hard starts the show at once. Soft waits for the next song change.</p>
-        <div class="settings-row" data-show-when="schedule-timing=hard">
-          <label for="schedule-wait">Wait up to seconds</label>
-          <input type="number" id="schedule-wait" min="0" max="300" step="1" value="0"
-                 inputmode="numeric" aria-describedby="schedule-wait-desc">
-        </div>
-        <span class="setting-desc" id="schedule-wait-desc" data-show-when="schedule-timing=hard">
-          How long the event waits for the current song to end, from 0 to 300 seconds. At 0 it always runs on time. Stream and show events never wait.
-        </span>
         <div class="settings-check">
-          <input type="checkbox" id="schedule-enabled">
-          <label for="schedule-enabled">Enabled</label>
+          <input type="checkbox" id="station-create-autostart">
+          <label for="station-create-autostart">Start with the server</label>
         </div>
-        <div class="dialog-actions">
-          <button type="submit" id="schedule-save">Save event</button>
-          <button type="button" id="schedule-cancel">Cancel</button>
-        </div>
+        <span class="setting-desc" id="station-create-autostart-help">
+          Creating a station never starts it, and no other station stops. It has no relays until you add them in its Stream settings, and records into its own folder.
+        </span>
+        <button type="submit" id="station-create-submit">Create station</button>
       </fieldset>
     </form>
-    <h4 id="schedule-runs-heading">Recent runs</h4>
-    <ul id="schedule-runs" aria-labelledby="schedule-runs-heading"></ul>
+    <!-- After a create: what was made, and the way to it.  Focus moves to
+         the Switch button; #stations-status says what was created. -->
+    <div id="station-create-done" class="flow-form" hidden>
+      <p id="station-create-done-text"></p>
+      <button type="button" id="station-create-switch">Switch to the new station</button>
+    </div>
+    <fieldset>
+      <legend>Station display</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="pb-show-lyrics">
+        <label for="pb-show-lyrics">Show lyrics</label>
+      </div>
+      <span class="setting-desc" id="pb-show-lyrics-desc">
+        Display timed (LRC) or plain lyrics in the Lyrics card.
+      </span>
+      <div class="settings-row">
+        <label for="key-notation">Key notation</label>
+        <select id="key-notation">
+          <option value="camelot">Camelot (8A or 8B)</option>
+          <option value="musical">Musical (C, A minor, F sharp minor)</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="key-notation-desc">
+        Show keys as Camelot positions (8A, 8B) or musical names (C, A minor). The key wheel always uses Camelot positions.
+      </span>
+      <div class="settings-row" data-show-when="key-notation=musical">
+        <label for="key-prefer-flats">Use flats</label>
+        <input type="checkbox" id="key-prefer-flats">
+      </div>
+      <span class="setting-desc" id="key-prefer-flats-desc" data-show-when="key-notation=musical">
+        Show flats such as D flat instead of sharps such as C sharp.
+      </span>
+    </fieldset>
+
+    <fieldset>
+      <legend>Browser playback</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="pb-prefetch" checked>
+        <label for="pb-prefetch">Load the next song early</label>
+      </div>
+      <span class="setting-desc" id="pb-prefetch-desc">Loads the next track early to reduce gaps.</span>
+    </fieldset>
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-stream" aria-labelledby="stab-stream" hidden>
-    <h3>Stream</h3>
+  <div class="card" role="tabpanel" id="spanel-stream" data-settings-kind="station" aria-labelledby="stab-stream" hidden>
+    <h3>Broadcasting</h3>
     <form id="public-page-form" novalidate>
       <fieldset>
         <legend>Public player pages</legend>
@@ -2346,7 +2271,7 @@
         <p class="stream-detail" id="np-loopback-note" hidden>These links only work on this computer. Open AutoDJ using its network address (see the start-up message) to copy links other devices can reach.</p>
         <!-- In DMCA mode, nowplaying-settings.js shows both notes and leaves
              show-next focusable with aria-disabled and its reason linked. -->
-        <p class="stream-detail" id="dmca-status" hidden>DMCA mode is on. Change it in Settings, Song picking.</p>
+        <p class="stream-detail" id="dmca-status" hidden>DMCA mode is on. Change it in Settings, Station, Broadcasting.</p>
         <div class="settings-check">
           <input type="checkbox" id="np-show-next" aria-describedby="np-show-next-desc">
           <label for="np-show-next">Show the next song publicly</label>
@@ -2354,7 +2279,7 @@
         <span class="setting-desc" id="np-show-next-desc">
           Add the upcoming song to the now-playing feed. Off by default, because some webcasting licences, such as the US statutory licence, do not allow announcing songs in advance.
         </span>
-        <span class="setting-desc" id="np-show-next-dmca" hidden>Not available: DMCA mode hides the next song publicly. Turn it off in Settings, Song picking to use this.</span>
+        <span class="setting-desc" id="np-show-next-dmca" hidden>Not available: DMCA mode hides the next song publicly. Turn it off in Settings, Station, Broadcasting to use this.</span>
         <p class="stream-detail" id="np-webhooks-intro">Track-change webhooks</p>
         <ul class="stream-detail" id="np-webhooks-list" aria-labelledby="np-webhooks-intro" hidden></ul>
         <p class="stream-detail" id="np-webhooks-empty" hidden></p>
@@ -2463,162 +2388,22 @@
         </span>
       </details>
     </fieldset>
-  </div>
-
-  <!-- Stations on this server, and creating one (#233).  Shared by every
-       station.  station-create.js fills the list and the Start from choice
-       from the station list the page keeps.  Help sits beside the fields,
-       readable by browsing; only the Station ID's format hint is linked.
-       A refused field gets aria-invalid, the error linked, and focus. -->
-  <div class="card" role="tabpanel" id="spanel-stations" aria-labelledby="stab-stations" hidden>
-    <h3>Stations</h3>
-    <p class="card-desc">
-      Every station on this server shares the music library, song analysis, song cue points and Stereo Tool preset files. Each has its own settings, queue, history, schedule, carts and stream.
-    </p>
-    <fieldset id="advanced-length-group">
-      <legend>Similarity analysis</legend>
-      <div class="settings-row">
-        <label for="advanced-length">Similarity analysis maximum song length (minutes)</label>
-        <input type="number" id="advanced-length" min="0" max="600" step="1" value="15" inputmode="numeric" aria-describedby="advanced-length-help">
-      </div>
-      <p class="setting-desc" id="advanced-length-help">0 means no limit. Longer tracks still get audio analysis when selected.</p>
-      <p class="field-error" id="advanced-length-error" hidden></p>
-      <button type="button" id="advanced-length-save">Save</button>
-    </fieldset>
-    <div id="stations-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
-    <!-- Time for every station (#282, #286): time-settings.js. -->
-    <fieldset id="time-settings">
-      <legend>Time for the selected station</legend>
-      <div class="settings-row">
-        <label for="time-zone">Time zone</label>
-        <select id="time-zone" aria-describedby="time-zone-help"></select>
-      </div>
-      <span class="setting-desc" id="time-zone-help">
-        Changing it moves when scheduled events, ad breaks and clockwheel restarts happen, from the next time this station starts.
-      </span>
-      <div class="settings-row">
-        <label for="time-format">Time format for all stations</label>
-        <select id="time-format">
-          <option value="24">24 hour (15:04)</option>
-          <option value="12">12 hour (3:04 PM)</option>
-        </select>
-      </div>
-    </fieldset>
-    <fieldset>
-      <legend>Output for the selected station</legend>
-      <label for="station-output">Playback output</label>
-      <select id="station-output">
-        <option value="browser">Browser</option>
-        <option value="server">Server sound card</option>
-        <option value="stream">Radio stream</option>
-      </select>
-      <label><input type="checkbox" id="station-monitor">Also play the radio stream on the server sound card</label>
-      <label for="station-upload-cap">Maximum liner upload size (MiB)</label>
-      <input type="number" id="station-upload-cap" min="1" max="1024" step="1">
-      <p>Output changes apply when this station next starts.</p>
-    </fieldset>
-    <fieldset>
-      <legend>Logs for the selected station</legend>
-      <div class="settings-row">
-        <label for="station-log-label">Log label</label>
-        <input type="text" id="station-log-label" maxlength="16" autocomplete="off"
-               autocapitalize="off" spellcheck="false" aria-describedby="station-log-label-help">
-      </div>
-      <p class="setting-desc" id="station-log-label-help">
-        Shown at the start of this station's log lines: up to 16 letters, digits, hyphens, underscores or dots, different from other stations' labels and IDs. Leave empty to use the station ID, <span id="station-log-label-id">default</span>.
-      </p>
-    </fieldset>
-    <h4 id="stations-list-heading">Stations on this server</h4>
-    <div class="data-table-scroll">
-      <table id="stations-table" role="grid" aria-labelledby="stations-list-heading">
-        <thead>
-          <tr>
-            <th scope="col">Station</th>
-            <th scope="col">Now playing</th>
-            <th scope="col">Listeners</th>
-            <th scope="col">Start with the server</th>
-            <th scope="col">Start or stop</th>
-          </tr>
-        </thead>
-        <tbody id="stations-list"></tbody>
-      </table>
-    </div>
-    <form id="station-create-form" novalidate>
+    <form id="public-dmca-form">
       <fieldset>
-        <legend>New station</legend>
-        <p id="station-create-error" class="field-error" hidden></p>
-        <div class="settings-row">
-          <label for="station-create-source">Start from</label>
-          <select id="station-create-source">
-            <option value="">AutoDJ defaults</option>
-          </select>
-        </div>
-        <span class="setting-desc" id="station-create-source-help">
-          A copy takes the station's saved settings, including changes made on this page. It never takes its relays, listener password, webhooks, recording folder, log label, queue, history, requests, listeners, bans, statistics, ads, shows, intros, profiles or liners.
-        </span>
-        <div class="settings-row">
-          <label for="station-create-name">Name</label>
-          <input type="text" id="station-create-name" maxlength="80" autocomplete="off" aria-required="true">
-        </div>
-        <div class="settings-row">
-          <label for="station-create-slug">Station ID</label>
-          <input type="text" id="station-create-slug" maxlength="32" autocomplete="off"
-                 autocapitalize="off" spellcheck="false" aria-required="true"
-                 aria-describedby="station-create-slug-help">
-        </div>
-        <span class="setting-desc" id="station-create-slug-help">
-          Lower-case letters, digits and hyphens, up to 32, such as nightowl.
-        </span>
-        <span class="setting-desc" id="station-create-slug-more">
-          The ID names the station's addresses and folder, and cannot be changed later. Left empty, it is made from the name.
-        </span>
-        <fieldset id="station-create-copies" hidden>
-          <legend>Also copy</legend>
-          <div class="settings-check">
-            <input type="checkbox" id="station-create-clockwheels">
-            <label for="station-create-clockwheels">Clockwheels</label>
-          </div>
-          <div class="settings-check">
-            <input type="checkbox" id="station-create-schedule">
-            <label for="station-create-schedule">Schedule</label>
-          </div>
-          <div class="settings-check">
-            <input type="checkbox" id="station-create-carts">
-            <label for="station-create-carts">Carts</label>
-          </div>
-          <span class="setting-desc" id="station-create-copies-help">
-            The copies belong to the new station: changing them never changes the station they came from. A scheduled event that needs a profile, show or liner the new station does not have reports an error when it runs.
-          </span>
-        </fieldset>
+        <legend>DMCA mode</legend>
         <div class="settings-check">
-          <input type="checkbox" id="station-create-autostart">
-          <label for="station-create-autostart">Start with the server</label>
+          <input type="checkbox" id="public-dmca" aria-describedby="public-dmca-help">
+          <label for="public-dmca">Use DMCA mode</label>
         </div>
-        <span class="setting-desc" id="station-create-autostart-help">
-          Creating a station never starts it, and no other station stops. It has no relays until you add them in its Stream settings, and records into its own folder.
-        </span>
-        <button type="submit" id="station-create-submit">Create station</button>
+        <p class="setting-desc" id="public-dmca-help">Limits album, artist and box set picks, asks before queuing a song over a limit, and hides the next song publicly.</p>
       </fieldset>
     </form>
-    <!-- After a create: what was made, and the way to it.  Focus moves to
-         the Switch button; #stations-status says what was created. -->
-    <div id="station-create-done" class="flow-form" hidden>
-      <p id="station-create-done-text"></p>
-      <button type="button" id="station-create-switch">Switch to the new station</button>
-    </div>
-  </div>
-
-  <!-- Live DJ (#48): DJ accounts for BUTT, Mixxx or another Icecast
-       source program, where they connect, and the talkover settings.
-       live-settings.js shows the tab while the station can go live.
-       Passwords are write-only.  Results go to #settings-status; a
-       refused save shows its words under the form, linked to its field. -->
-  <div class="card" role="tabpanel" id="spanel-live" aria-labelledby="stab-live" hidden>
-    <h3>Live DJ</h3>
+    <section id="spanel-live" data-settings-section>
+      <h4>Live DJ</h4>
     <p class="setting-desc" id="live-intro">A DJ can take over this station from BUTT, Mixxx or another Icecast source program. The music fades out when the DJ starts sending sound and comes back with a new song when they disconnect. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air and change these settings.</p>
     <p class="stream-detail" id="live-unavailable" hidden></p>
     <div id="live-settings" hidden>
-      <h4 id="live-connect-heading">Connect a DJ program</h4>
+      <h5 id="live-connect-heading">Connect a DJ program</h5>
       <div class="settings-row">
         <label for="live-source-url">Source address</label>
         <input type="text" id="live-source-url" readonly aria-describedby="live-source-desc">
@@ -2634,7 +2419,7 @@
         <dt>Format</dt><dd>MP3, AAC or Ogg</dd>
       </dl>
       <p class="stream-detail" id="live-transport-note"></p>
-      <h4 id="live-djs-heading">DJ accounts</h4>
+      <h5 id="live-djs-heading">DJ accounts</h5>
       <p class="setting-desc" id="live-djs-desc">Passwords are never shown, and backups leave them out: after restoring a backup, set each DJ's password again.</p>
       <button type="button" id="live-dj-add">Add DJ</button>
       <table id="live-dj-table" role="grid" aria-labelledby="live-djs-heading" aria-describedby="live-djs-desc" hidden>
@@ -2643,7 +2428,7 @@
       </table>
       <p class="stream-detail" id="live-dj-none">No DJ accounts yet.</p>
       <form id="live-dj-form" hidden novalidate>
-        <h5 id="live-dj-form-title">Add DJ</h5>
+        <h6 id="live-dj-form-title">Add DJ</h6>
         <div class="settings-row">
           <label for="live-dj-username">Username</label>
           <input id="live-dj-username" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="live-dj-username-desc">
@@ -2679,31 +2464,192 @@
         <p class="field-error" id="live-talkover-error" hidden></p>
       </fieldset>
     </div>
+    </section>
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-access" aria-labelledby="stab-access" hidden>
-    <h3>Profiles and access</h3>
-    <!-- profiles.js and devices.js load their lists when this panel is
-         seen; subtabs.js gives it the open and toggle of a card. -->
-    <p class="card-desc">
-      Save a mix setup and restore it later. Profiles include the preset, tempo range, key matching, transition mode and fade lengths, track selection, output processing, effect sync, beatmatch on skip, and liner enable and rotation settings.
-    </p>
-    <div id="profiles-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
-    <fieldset>
-      <legend>Save the current settings</legend>
-      <div class="settings-row">
-        <label for="profile-name">Profile name</label>
-        <input type="text" id="profile-name" maxlength="64" autocomplete="off"
-               aria-describedby="profile-name-desc">
-        <button type="button" id="profile-save">Save profile</button>
-      </div>
-      <span class="setting-desc" id="profile-name-desc">
-        Letters, digits, spaces, dashes and underscores, up to 64 characters.  Saving under a name that already exists asks before replacing it.
-      </span>
-    </fieldset>
-    <h4 id="profile-list-heading">Saved profiles</h4>
-    <ul id="profile-list" aria-labelledby="profile-list-heading"></ul>
+  <div class="card" role="tabpanel" id="spanel-schedule" data-settings-kind="station" aria-labelledby="stab-schedule" hidden>
+    <h3>Schedule</h3>
+    <!-- scheduler-panel.js fills this panel when it is seen, and again when
+         the server says the schedule changed or an event ran.  The lists
+         are plain text, not live regions: each result of a button is said
+         once through #schedule-status. -->
+    <p>Change the station at set times, in the station time zone: <span id="schedule-timezone"></span>.</p>
+    <div id="schedule-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <h4 id="schedule-upcoming-heading">Next events</h4>
+    <ul id="schedule-upcoming" aria-labelledby="schedule-upcoming-heading"></ul>
+    <h4 id="schedule-events-heading">Events</h4>
+    <ul id="schedule-events" aria-labelledby="schedule-events-heading"></ul>
+    <button type="button" id="schedule-add">Add event</button>
+    <!-- Add and Edit share this form.  It checks its own fields: an error
+         is said, the field gets aria-invalid and focus, and the words stay
+         in #schedule-form-error.  Its required fields are aria-required,
+         not required: Firefox calls an empty required field, even a hidden
+         one such as Date for a repeating event, and its group "invalid
+         entry" before anything is typed. -->
+    <form id="schedule-form" novalidate hidden>
+      <fieldset>
+        <legend><h1 id="schedule-form-legend">Add event</h1></legend>
+        <p id="schedule-form-error" class="field-error" hidden></p>
+        <div class="settings-row">
+          <label for="schedule-name">Name</label>
+          <input type="text" id="schedule-name" maxlength="100" autocomplete="off" aria-required="true">
+        </div>
+        <div class="settings-row">
+          <label for="schedule-action">Action</label>
+          <select id="schedule-action"></select>
+        </div>
+        <!-- The chosen action's settings, built from what the server lists. -->
+        <div id="schedule-params"></div>
+        <div class="settings-row">
+          <label for="schedule-repeat">Repeat</label>
+          <select id="schedule-repeat">
+            <option value="once">Once</option>
+            <option value="daily">Every day</option>
+            <option value="weekdays">Weekdays, Monday to Friday</option>
+            <option value="days">On chosen days</option>
+            <option value="interval">Every few minutes</option>
+          </select>
+        </div>
+        <!-- data-repeat lists the repeat choices each part belongs to. -->
+        <div class="settings-row" data-repeat="once">
+          <label for="schedule-date">Date</label>
+          <input type="date" id="schedule-date" aria-required="true">
+        </div>
+        <div class="settings-row" data-repeat="once daily weekdays days">
+          <label for="schedule-time">Time</label>
+          <input type="time" id="schedule-time" aria-required="true">
+        </div>
+        <div data-repeat="interval">
+          <div class="settings-row">
+            <label for="schedule-interval">Minutes between runs</label>
+            <input type="number" id="schedule-interval" min="1" max="1440" step="1" aria-required="true">
+          </div>
+          <div class="settings-row">
+            <label for="schedule-window-start">Active from</label>
+            <input type="time" id="schedule-window-start" aria-describedby="schedule-window-desc">
+          </div>
+          <div class="settings-row">
+            <label for="schedule-window-end">Active until</label>
+            <input type="time" id="schedule-window-end" aria-describedby="schedule-window-desc">
+          </div>
+          <span class="setting-desc" id="schedule-window-desc">
+            Optional.  Leave both empty to run all day.  The window may cross midnight, such as 22:00 until 02:00.
+          </span>
+        </div>
+        <fieldset id="schedule-days" data-repeat="days interval">
+          <legend>Days</legend>
+          <!-- Named by the fieldset's aria-describedby only while shown (scheduler-panel.js). -->
+          <p class="setting-desc" id="schedule-days-desc" data-repeat="interval">
+            Optional.  Leave every day unchecked to run every day.  A window that crosses midnight belongs to the day it starts.
+          </p>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-0" value="0"><label for="schedule-day-0">Monday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-1" value="1"><label for="schedule-day-1">Tuesday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-2" value="2"><label for="schedule-day-2">Wednesday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-3" value="3"><label for="schedule-day-3">Thursday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-4" value="4"><label for="schedule-day-4">Friday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-5" value="5"><label for="schedule-day-5">Saturday</label></div>
+          <div class="settings-check"><input type="checkbox" id="schedule-day-6" value="6"><label for="schedule-day-6">Sunday</label></div>
+        </fieldset>
+        <fieldset id="schedule-range">
+          <legend>Date range</legend>
+          <div class="settings-row">
+            <label for="schedule-start-date">Start date</label>
+            <input type="date" id="schedule-start-date" aria-describedby="schedule-dates-repeat-desc">
+          </div>
+          <div class="settings-row">
+            <label for="schedule-end-date">End date</label>
+            <input type="date" id="schedule-end-date" aria-describedby="schedule-dates-repeat-desc">
+          </div>
+          <div class="settings-row">
+            <label for="schedule-dates-repeat">Repeat dates</label>
+            <select id="schedule-dates-repeat" aria-describedby="schedule-dates-repeat-desc">
+              <option value="none">Don't repeat</option>
+              <option value="yearly">Every year</option>
+            </select>
+          </div>
+          <!-- scheduler-panel.js sets the words for the Repeat dates choice. -->
+          <p class="setting-desc" id="schedule-dates-repeat-desc">The event runs only between these dates, both included.</p>
+        </fieldset>
+        <div class="settings-row">
+          <label for="schedule-timing">Timing</label>
+          <select id="schedule-timing" aria-describedby="schedule-timing-desc">
+            <option value="soft">Soft</option>
+            <option value="hard">Hard</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="schedule-timing-desc">
+          Soft waits for the current song to end. Hard runs on time and, except for stream events, fades the current song out, unless the song ends within Wait up to seconds.
+        </span>
+        <p class="setting-desc">Hard starts the show at once. Soft waits for the next song change.</p>
+        <div class="settings-row" data-show-when="schedule-timing=hard">
+          <label for="schedule-wait">Wait up to seconds</label>
+          <input type="number" id="schedule-wait" min="0" max="300" step="1" value="0"
+                 inputmode="numeric" aria-describedby="schedule-wait-desc">
+        </div>
+        <span class="setting-desc" id="schedule-wait-desc" data-show-when="schedule-timing=hard">
+          How long the event waits for the current song to end, from 0 to 300 seconds. At 0 it always runs on time. Stream and show events never wait.
+        </span>
+        <div class="settings-check">
+          <input type="checkbox" id="schedule-enabled">
+          <label for="schedule-enabled">Enabled</label>
+        </div>
+        <div class="dialog-actions">
+          <button type="submit" id="schedule-save">Save event</button>
+          <button type="button" id="schedule-cancel">Cancel</button>
+        </div>
+      </fieldset>
+    </form>
+    <h4 id="schedule-runs-heading">Recent runs</h4>
+    <ul id="schedule-runs" aria-labelledby="schedule-runs-heading"></ul>
+  </div>
 
+  <div class="card" role="tabpanel" id="spanel-server" data-settings-kind="server" aria-labelledby="stab-server" hidden>
+    <h3>Server</h3>
+    <fieldset id="advanced-length-group">
+      <legend>Similarity analysis</legend>
+      <div class="settings-row">
+        <label for="advanced-length">Similarity analysis maximum song length (minutes)</label>
+        <input type="number" id="advanced-length" min="0" max="600" step="1" value="15" inputmode="numeric" aria-describedby="advanced-length-help">
+      </div>
+      <p class="setting-desc" id="advanced-length-help">0 means no limit. Longer tracks still get audio analysis when selected.</p>
+      <p class="field-error" id="advanced-length-error" hidden></p>
+    </fieldset>
+    <div class="settings-row">
+      <label for="time-format">Time format</label>
+      <select id="time-format">
+        <option value="24">24 hour (15:04)</option>
+        <option value="12">12 hour (3:04 PM)</option>
+      </select>
+    </div>
+    <fieldset id="stereo-setup">
+      <legend>Stereo Tool installation and licence</legend>
+      <p class="setting-desc" id="stereo-install-status">Checking whether Stereo Tool is installed.</p>
+      <p class="setting-desc" id="stereo-install-desc">Downloads about 320 MB from thimeo.com. Use again to update.</p>
+      <div class="settings-check">
+        <input type="checkbox" id="stereo-accept-terms">
+        <label for="stereo-accept-terms">I accept Thimeo's terms for Stereo Tool</label>
+      </div>
+      <p class="setting-desc" id="stereo-terms-desc"><a href="https://www.thimeo.com/terms-and-conditions/" target="_blank" rel="noopener noreferrer">Thimeo's terms (opens in a new tab)</a> and <a href="https://www.thimeo.com/stereo-tool/licenses/" target="_blank" rel="noopener noreferrer">licensing (opens in a new tab)</a>.</p>
+      <div class="settings-row">
+        <button type="button" id="stereo-download">Download Stereo Tool</button>
+      </div>
+      <p class="setting-desc" id="stereo-license-status">Checking the licence.</p>
+      <div class="settings-row">
+        <label for="stereo-license-key">Stereo Tool licence key</label>
+        <input type="password" id="stereo-license-key" autocomplete="new-password" spellcheck="false" autocapitalize="off" maxlength="4096">
+      </div>
+      <span class="setting-desc" id="stereo-license-desc">Kept private and never shown again.</span>
+      <div class="settings-check" id="stereo-license-station-row" hidden>
+        <input type="checkbox" id="stereo-license-station-only">
+        <label for="stereo-license-station-only">For this station only</label>
+      </div>
+      <span class="setting-desc" id="stereo-license-station-desc" hidden>Otherwise applies to stations without their own key.</span>
+      <p class="field-error" id="stereo-license-error" hidden></p>
+      <div class="settings-row">
+        <button type="button" id="stereo-license-save">Save licence key</button>
+        <button type="button" id="stereo-license-clear">Clear licence</button>
+      </div>
+    </fieldset>
     <!-- Browser access: pairing or names owned by the signed-in SSO user. -->
     <h4>Browser access</h4>
     <div id="access-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
@@ -2736,7 +2682,7 @@
     </div>
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-workers" aria-labelledby="stab-workers" hidden>
+  <div class="card" role="tabpanel" id="spanel-workers" data-settings-kind="server" aria-labelledby="stab-workers" hidden>
     <h3>Analysis workers</h3>
     <!-- analysis-workers.js loads this panel when it is seen and refreshes
          the workers every ten seconds while it stays seen; only Refresh
@@ -2831,8 +2777,8 @@
     <ul id="token-list" aria-labelledby="token-list-heading"></ul>
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-updates" aria-labelledby="stab-updates" hidden>
-    <h3>Updates</h3>
+  <div class="card" role="tabpanel" id="spanel-updates" data-settings-kind="server" aria-labelledby="stab-updates" hidden>
+    <h3>Update and restart</h3>
     <!-- updates.js loads this panel when it is seen.  The version and
          result lines are plain text; only Check now, Save update settings,
          Update, Go back and Restart speak, once each, through
@@ -2890,13 +2836,91 @@
         </select>
       </div>
       <span class="setting-desc">Stable follows releases; Development follows the newest code on master. Automatic follows what this installation runs.</span>
-      <button type="button" id="updates-save">Save update settings</button>
     </fieldset>
 
     <h4>Restart</h4>
     <p id="updates-restart-note" class="setting-desc"></p>
     <button type="button" id="updates-restart" hidden>Restart AutoDJ</button>
     <p id="updates-restart-refused" aria-live="off" hidden></p>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-display" data-settings-kind="browser" aria-labelledby="stab-display" hidden>
+    <h3>Browser preferences</h3>
+    <!-- Kept in this browser only (modules/theme.js); applied before first
+         paint by modules/theme-init.js.  No status message on change: the
+         checked radio button is the whole report. -->
+    <fieldset id="theme-choice">
+      <legend>Theme</legend>
+      <div class="settings-check">
+        <input type="radio" name="theme" id="theme-system" value="system" checked>
+        <label for="theme-system">System</label>
+      </div>
+      <div class="settings-check">
+        <input type="radio" name="theme" id="theme-light" value="light">
+        <label for="theme-light">Light</label>
+      </div>
+      <div class="settings-check">
+        <input type="radio" name="theme" id="theme-dark" value="dark">
+        <label for="theme-dark">Dark</label>
+      </div>
+      <span class="setting-desc" id="theme-choice-desc">
+        System follows the light or dark setting of this device.
+      </span>
+    </fieldset>
+
+
+
+    <fieldset>
+      <legend>Announcements</legend>
+      <div class="settings-row">
+        <label for="announce-track-changes">Announce track changes</label>
+        <select id="announce-track-changes">
+          <option value="all">On every tab</option>
+          <option value="now">Only on Now Playing</option>
+          <option value="off">Off</option>
+        </select>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Keyboard</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="hotkeys-enabled" checked>
+        <label for="hotkeys-enabled">Enable keyboard shortcuts</label>
+      </div>
+      <div class="settings-check">
+        <input type="checkbox" id="hotkeys-bracket-seek">
+        <label for="hotkeys-bracket-seek">Bracket keys seek the song on air</label>
+      </div>
+      <span class="setting-desc" id="hotkeys-bracket-seek-desc">
+        The bracket keys also move the song on air to its previous or next landmark, which listeners hear. Not in stream mode. Off by default.
+      </span>
+    </fieldset>
+
+    <fieldset>
+      <legend>Browser playback</legend>
+      <div class="settings-row">
+        <label for="audio-device">Audio output device</label>
+        <select id="audio-device">
+          <option value="">System default</option>
+        </select>
+        <button type="button" id="audio-device-refresh">
+          Show device names
+        </button>
+      </div>
+      <span class="setting-desc" id="audio-device-desc">Choose the browser's speakers or headphones. Showing names briefly requests microphone permission.</span>
+      <div class="settings-row">
+        <label for="preview-device">Preview output device</label>
+        <select id="preview-device">
+          <option value="">System default</option>
+        </select>
+        <button type="button" id="preview-device-choose">Show preview device names</button>
+      </div>
+      <span class="setting-desc" id="preview-device-desc">Audio device for private previews.</span>
+      <p class="setting-desc" id="preview-device-note" hidden></p>
+
+
+    </fieldset>
   </div>
 
   </section>

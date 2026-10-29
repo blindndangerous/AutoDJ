@@ -190,6 +190,8 @@ STATION = frozenset(
         "/profiles",
         "/profiles/{name}",
         "/profiles/{name}/apply",
+        "/profiles/apply-defaults",
+        "/profiles/{name}/reset",
         "/categories",
         "/categories/check",
         "/categories/{category_id}",
@@ -302,7 +304,7 @@ def _app(tmp_path: Path | None = None, **server: object) -> tuple[TestClient, Pl
 def test_every_route_is_classified_as_shared_or_station() -> None:
     """A new route must say whether it acts on one station; this test fails until it does.
 
-    ADR-0005-04.
+    ADR-0005-04, ADR-0018-05.
     """
     client, _bridge = _app()
     paths = {route.path for route in client.app.routes}

@@ -33,6 +33,7 @@ import subprocess  # nosec B404 -- operator-configured argv, never a shell
 import tempfile
 import threading
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -41,7 +42,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import soundfile as sf
-from fastapi import Body, File, HTTPException, UploadFile
+from fastapi import Body, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, field_validator
 
@@ -50,7 +51,7 @@ from autodj.fsutil import confirm_missing
 from autodj.liner_scheduler import LinerDecodeError, decode_liner_path
 from autodj.scheduler import Action
 from autodj.station_routes import SavedStationDep, StationDep, StationRouter
-from autodj.stations import StationPaths
+from autodj.stations import DEFAULT_SLUG, StationControlError, StationPaths
 from autodj.stereo import SAMPLE_RATE
 from autodj.time_check_files import (
     MAX_PACK_UPLOAD_BYTES,
@@ -1342,13 +1343,54 @@ def install_time_checks(router: StationRouter) -> None:
         return {**await asyncio.to_thread(checks.status), "added": added}
 
     @router.delete("/time-checks/packs/{name}", response_model=None)
-    async def delete_pack(station: SavedStationDep, name: str) -> dict[str, Any] | JSONResponse:
-        """Remove a voice pack that is a folder in the station's time checks folder."""
+    async def delete_pack(
+        request: Request, station: SavedStationDep, name: str
+    ) -> dict[str, Any] | JSONResponse:
+        """Remove a voice pack that is a folder in the station's time checks folder.
+
+        The default station's folder is the library's shared one, so every
+        station that finds the pack in that same folder drops its saved
+        references to it too.
+        """
         checks = station.time_checks
+        registry = request.app.state.stations
+        own_slug = request.path_params.get("slug", DEFAULT_SLUG)
+        from autodj.profile_settings import profile_settings
+
+        def users() -> list[Any]:
+            """The station in the URL, then each other one finding the pack in the same folder."""
+            found = checks.rescan().get(name)
+            result = []
+            for slug in sorted(registry.slugs()):
+                if slug == own_slug:
+                    result.append(station)
+                elif found is not None:
+                    try:
+                        other = registry.editable(slug)
+                    except StationControlError as exc:
+                        # Its references could not be updated: delete nothing.
+                        raise StationControlError(
+                            f"{registry.get(slug).name}: {exc}; try again in a moment"
+                        ) from exc
+                    theirs = other.time_checks.rescan().get(name)
+                    if theirs is not None and _folder_key(theirs.path) == _folder_key(found.path):
+                        result.append(other)
+            return result
+
+        def remove() -> None:
+            with ExitStack() as references:
+                for user in users():
+                    references.enter_context(
+                        profile_settings(user).changing_reference("pack", name, None)
+                    )
+                checks.delete_pack(name)
+
         try:
-            await asyncio.to_thread(checks.delete_pack, name)
+            await asyncio.to_thread(remove)
         except (PackError, OSError) as exc:
             return _file_error(exc)
+        except StationControlError as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc)})
         return {**await asyncio.to_thread(checks.status), "removed": name}
 
     @router.post("/time-checks/clips", response_model=None)

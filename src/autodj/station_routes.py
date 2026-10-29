@@ -22,7 +22,6 @@ import logging
 import os
 import re
 from collections.abc import Awaitable, Callable, Iterator, Sequence
-from dataclasses import fields
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar
@@ -90,7 +89,6 @@ from autodj.relay_settings import (
 )
 from autodj.scheduler import Action, ActionField, system_timezone
 from autodj.settings_bodies import (
-    BpmRangeBody,
     EqBody,
     FadeSeconds,
     FiniteFloat,
@@ -510,7 +508,9 @@ def _recording_saved_status(station: Any) -> dict[str, object]:
     }
 
 
-def _station_settings_values(station: Any, request: Request) -> dict[str, dict[str, Any]]:
+def _station_settings_values(
+    station: Any, request: Request, profile: str | None = None
+) -> dict[str, dict[str, Any]]:
     """Collect the editable bodies from each station-owned settings store."""
     from autodj import timefmt
     from autodj.breaks_api import break_settings_view
@@ -563,7 +563,23 @@ def _station_settings_values(station: Any, request: Request) -> dict[str, dict[s
         "free_space_mb": recording.free_space_mb,
     }
     values["stream"]["show_next"] = configuration.nowplaying.show_next
+    if profile is not None:
+        from autodj.profile_settings import merge_values, profile_settings
+
+        values = merge_values(values, profile_settings(station).resolve(profile))
     return values
+
+
+def _profile_document(station: Any, settings: dict, profile: str | None) -> dict:
+    from autodj.profile_settings import profile_settings
+
+    settings["active_profile"] = profile_settings(station).active
+    if profile is not None:
+        from autodj.profile_settings import PROFILE_GROUPS
+
+        settings["profile"] = profile
+        settings["profile_groups"] = sorted(PROFILE_GROUPS)
+    return settings
 
 
 def _settings_revision(values: dict[str, Any]) -> str:
@@ -977,105 +993,30 @@ def _existing_clock(station: StationRuntime, name: str) -> dict:
 
 
 async def apply_profile(station: StationRuntime, name: str) -> dict:
-    """Load a saved profile and push every set field through the station's bridge."""
-    from autodj.profiles import ProfileSnapshot
+    """Activate the latest saved defaults plus a profile's overrides."""
+    from autodj.profile_settings import profile_settings
 
-    bridge = station.bridge
-    with _profile_http_errors():
-        snap = await asyncio.to_thread(_profile_store(station).load, name)
-
-    # A preset the configuration no longer has would be dropped without a
-    # word by set_preset, so the profile is refused before anything
-    # changes, the same as a bad playback choice below.
-    if snap.preset is not None:
-        from autodj.presets import get_preset
-
-        try:
-            get_preset(snap.preset, station.cfg.presets)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Profile {name} uses preset {snap.preset!r}, which does not exist",
-            ) from exc
-    if snap.clockwheel is not None:
-        try:
-            _clock_store(station).load(snap.clockwheel)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    applied: list[str] = []
-    # Playback flags: every snapshot field not applied on its own below.
-    kw: dict = {}
-    for fld in fields(ProfileSnapshot):
-        if fld.name in {
-            "name",
-            "preset",
-            "bpm_lo",
-            "bpm_hi",
-            "harmonic_mode",
-            "cart_page",
-            "clockwheel",
-        }:
-            continue
-        v = getattr(snap, fld.name)
-        if v is not None:
-            kw[fld.name] = v
-            applied.append(fld.name)
-    # A profile saved before its fields were validated, or edited by hand,
-    # can hold a bad value.  Both bodies are validated before any setter
-    # runs, so a rejected profile leaves the session untouched.
+    manager = profile_settings(station)
     try:
-        playback = PlaybackSettingsBody.model_validate(kw)
-        bpm = BpmRangeBody(lo=snap.bpm_lo, hi=snap.bpm_hi)
-    except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=f"Profile {name} is invalid: {exc}") from exc
-    # The profile names its cart page.  A page renamed since then refuses
-    # the profile before anything changes, like a missing preset.
-    carts = station.carts
-    cart_page = None
-    if snap.cart_page is not None:
-        cart_page = next(
-            (
-                number
-                for number, page in enumerate(carts.store.wall.pages, 1)
-                if page.name.casefold() == snap.cart_page.casefold()
-            ),
-            None,
-        )
-        if cart_page is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Profile {name} uses cart page {snap.cart_page!r}, which does not exist",
-            )
+        values = await asyncio.to_thread(manager.resolve, name)
+        await asyncio.to_thread(manager.validate, values)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Profile {name or 'Station defaults'}: {exc}"
+        ) from exc
     try:
-        await asyncio.to_thread(bridge.set_playback_settings, playback)
-    except ValueError as exc:
-        # Refused before anything changed, such as Stereo Tool already
-        # processing another station.
-        raise HTTPException(status_code=400, detail=f"Profile {name}: {exc}") from exc
-    if snap.clockwheel is not None:
-        await select_clock(station, _catalog_library(station), snap.clockwheel)
-        applied.append("clockwheel")
-    # BPM range
-    if bpm.lo is not None and bpm.hi is not None:
-        bridge.set_bpm_range(bpm.lo, bpm.hi)
-        applied.append("bpm_range")
-    # DJ-mix harmonic mode
-    if snap.harmonic_mode is not None:
-        bridge.set_djmix(harmonic_mode=snap.harmonic_mode)
-        applied.append("harmonic_mode")
-    # Preset, checked above
-    if snap.preset is not None:
-        bridge.set_preset(snap.preset)
-        applied.append("preset")
-    if cart_page is not None:
-        carts.store.wall.active_page = cart_page
-        await carts.changed()
-        applied.append("cart_page")
-    bridge.save_persistent_state()
-    if station.recorder is not None:
-        station.recorder.show_changed()
-    return {"applied": applied, "name": name}
+        await asyncio.to_thread(manager.apply, name)
+        await station.carts.changed()
+        if station.recorder is not None:
+            station.recorder.show_changed()
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Profile application did not finish; some settings may already be active: {exc}",
+        ) from exc
+    return {"applied": sorted(values), "name": name, "active": manager.active}
 
 
 async def _recording_call(
@@ -1329,6 +1270,9 @@ def equip_station(station: Any, publish: Callable[[dict[str, Any]], Awaitable[No
     )
     if bridge.player is not None:
         bridge.player.matched_intros = station.intros
+    from autodj.profile_settings import profile_settings
+
+    profile_settings(station).restore()
 
 
 def request_desk(station: StationRuntime) -> RequestDesk:
@@ -1476,12 +1420,17 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.time_checks import install_time_checks
 
     @router.get("/settings")
-    async def api_settings(station: SavedStationDep, request: Request) -> dict:
+    async def api_settings(
+        station: SavedStationDep, request: Request, profile: str | None = None
+    ) -> dict:
         settings = await asyncio.to_thread(station.bridge.get_settings)
-        values = await asyncio.to_thread(_station_settings_values, station, request)
+        try:
+            values = await asyncio.to_thread(_station_settings_values, station, request, profile)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         settings["values"] = values
         settings["revision"] = _settings_revision(values)
-        return settings
+        return _profile_document(station, settings, profile)
 
     @router.patch("/settings")
     async def api_settings_patch(
@@ -1493,7 +1442,9 @@ def install_station_routes(router: StationRouter) -> None:
         if lock is None:
             lock = request.app.state.station_settings_lock = asyncio.Lock()
         async with lock:
-            values = await asyncio.to_thread(_station_settings_values, station, request)
+            values = await asyncio.to_thread(
+                _station_settings_values, station, request, body.profile
+            )
             revision = _settings_revision(values)
             if body.revision != revision:
                 raise HTTPException(
@@ -1540,7 +1491,7 @@ def install_station_routes(router: StationRouter) -> None:
                 if name == "time_checks":
                     proposed = validated(
                         TimeChecksSettingsBody,
-                        {**station.time_checks.settings.model_dump(), **value},
+                        {**values["time_checks"], **value},
                     )
                     for pack in proposed.enabled_packs:
                         from autodj.time_checks import _known_pack
@@ -1687,36 +1638,57 @@ def install_station_routes(router: StationRouter) -> None:
                 if getattr(changes, key) is not None
             }
             if core_changes:
-                from autodj.settings_bodies import StationSettingsChangesBody as ChangesModel
+                from autodj.station_settings import StationSettings
 
-                validated_core = ChangesModel.model_validate(core_changes)
-                if validated_core.preset and validated_core.preset.name:
-                    from autodj.presets import get_preset
+                # Live edits report file problems on their actual settings owner.
+                # Profile drafts must not change the active station's diagnostics.
+                validator = (
+                    StationSettings(station.cfg)
+                    if body.profile is not None
+                    else getattr(station.bridge, "settings", station.bridge)
+                )
+                try:
+                    await asyncio.to_thread(validator.validate_settings_patch, core_changes)
+                except (OSError, ValueError) as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+            profile_changes: dict[str, Any] = {}
+            if body.profile is not None:
+                from autodj.profile_settings import LOCAL_PLAYBACK, PROFILE_GROUPS, profile_settings
 
+                profile_changes = {
+                    key: value for key, value in body.changes.items() if key in PROFILE_GROUPS
+                }
+                if "playback" in profile_changes:
+                    profile_changes["playback"] = {
+                        key: value
+                        for key, value in profile_changes["playback"].items()
+                        if key not in LOCAL_PLAYBACK
+                    }
+                    if not profile_changes["playback"]:
+                        del profile_changes["playback"]
+                if profile_changes:
+                    manager = profile_settings(station)
                     try:
-                        get_preset(validated_core.preset.name, station.cfg.presets)
-                    except ValueError as exc:
-                        raise HTTPException(status_code=400, detail=str(exc)) from exc
-                if validated_core.transition:
-                    from autodj.transitions import TRANSITION_EFFECT_NAMES
+                        from autodj.profile_settings import merge_values
 
-                    if validated_core.transition.effect.lower() not in TRANSITION_EFFECT_NAMES:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Unknown transition effect: {validated_core.transition.effect}",
+                        target_values = await asyncio.to_thread(manager.resolve, body.profile)
+                        await asyncio.to_thread(
+                            manager.validate, merge_values(target_values, profile_changes)
                         )
-                if validated_core.playback:
-                    try:
-                        playback = validated_core.playback
-                        if playback.stereotool_preset:
-                            from autodj.stereotool_presets import preset_path
-
-                            preset_path(station.cfg.index.shared_dir, playback.stereotool_preset)
-                        settings_owner = getattr(station.bridge, "settings", station.bridge)
-                        settings_owner._read_related_artists(playback, restoring=False)
-                        settings_owner._read_related_tracks(playback, restoring=False)
                     except (OSError, ValueError) as exc:
                         raise HTTPException(status_code=400, detail=str(exc)) from exc
+                    for key in profile_changes:
+                        core_changes.pop(key, None)
+                        parsed.pop(key, None)
+                    local = {
+                        key: value
+                        for key, value in body.changes.get("playback", {}).items()
+                        if key in LOCAL_PLAYBACK
+                    }
+                    if local:
+                        core_changes["playback"] = PlaybackSettingsBody.model_validate(local)
+            elif "clock" in parsed or "cart" in parsed:
+                raise HTTPException(status_code=400, detail="Choose a profile editing target first")
             applied: list[str] = []
             failed: dict[str, str] = {}
 
@@ -1733,6 +1705,19 @@ def install_station_routes(router: StationRouter) -> None:
                         failure = f"Settings are active in memory but could not be saved: {failure}"
                     failed[name] = failure
 
+            if profile_changes:
+                await apply_group(
+                    "profile",
+                    lambda: asyncio.to_thread(manager.save, body.profile or "", profile_changes),
+                )
+                if "profile" in applied:
+                    applied.remove("profile")
+                    applied.extend(sorted(profile_changes))
+                    if "cart" in profile_changes:
+                        await station.carts.publish({"type": "cart_changed"})
+                if "profile" in failed:
+                    failure = failed.pop("profile")
+                    failed.update(dict.fromkeys(profile_changes, failure))
             if core_changes:
                 settings_owner = getattr(station.bridge, "settings", station.bridge)
                 await apply_group("core", lambda: settings_owner.apply_settings_patch(core_changes))
@@ -1921,9 +1906,12 @@ def install_station_routes(router: StationRouter) -> None:
 
                     await apply_group(name, save_stream)
 
-            values = await asyncio.to_thread(_station_settings_values, station, request)
+            values = await asyncio.to_thread(
+                _station_settings_values, station, request, body.profile
+            )
             document = await asyncio.to_thread(station.bridge.get_settings)
             document.update({"values": values, "revision": _settings_revision(values)})
+            _profile_document(station, document, body.profile)
             response = {
                 "revision": document["revision"],
                 "applied": sorted(applied),
@@ -1946,8 +1934,11 @@ def install_station_routes(router: StationRouter) -> None:
     @router.get("/status")
     async def api_status(station: StationDep) -> JSONResponse:
         """Return the current player state snapshot."""
+        from autodj.profile_settings import profile_settings
+
         state = await asyncio.to_thread(station.bridge.get_state)
         state.update(station.live_state())
+        state["active_profile"] = profile_settings(station).active
         if station.recorder is not None:
             state["recording"] = station.recorder.status()
         return JSONResponse(state)
@@ -2261,7 +2252,16 @@ def install_station_routes(router: StationRouter) -> None:
     async def api_profiles(station: SavedStationDep) -> dict:
         """List saved profile bundles."""
         store = _profile_store(station)
-        return {"profiles": await asyncio.to_thread(store.list_names), "root": str(store.root)}
+        from autodj.profile_settings import profile_settings
+
+        return {
+            "profiles": await asyncio.to_thread(store.list_names),
+            "root": str(store.root),
+            "active": profile_settings(station).active,
+            "problem": profile_settings(station).problem,
+            "clockwheels": await asyncio.to_thread(_clock_store(station).list_names),
+            "cart_pages": [page.name for page in station.carts.store.wall.pages],
+        }
 
     @router.post("/profiles")
     async def api_profile_save(station: SavedStationDep, body: ProfileSaveBody) -> dict:
@@ -2269,22 +2269,38 @@ def install_station_routes(router: StationRouter) -> None:
         from autodj.profiles import ProfileSnapshot
 
         values = body.model_dump()
-        # The cart page shown now is part of the profile.
-        store = station.carts.store
-        values["cart_page"] = store.page(store.wall.active_page).name
         snap = ProfileSnapshot(**values)
-        # The active clockwheel goes with the picking settings.
-        library = station.bridge.library
-        snap.clockwheel = _active_clock(station, library) if library is not None else None
+        from autodj.profile_settings import profile_settings
+
         with _profile_http_errors():
-            target = await asyncio.to_thread(_profile_store(station).save, snap)
-        return {"saved": snap.name, "path": str(target)}
+            await asyncio.to_thread(profile_settings(station).create, snap)
+        return {"saved": snap.name}
+
+    @router.post("/profiles/apply-defaults")
+    async def api_profile_defaults(station: SavedStationDep) -> dict:
+        return await apply_profile(station, "")
+
+    @router.post("/profiles/{name}/reset")
+    async def api_profile_reset(station: SavedStationDep, name: str) -> dict:
+        from autodj.profile_settings import profile_settings
+
+        with _profile_http_errors():
+            await asyncio.to_thread(profile_settings(station).reset, name)
+        return {"reset": name}
 
     @router.delete("/profiles/{name}")
     async def api_profile_delete(station: SavedStationDep, name: str) -> dict:
         """Delete a saved profile bundle by name."""
+        from autodj.profile_settings import profile_settings
+
+        manager = profile_settings(station)
+        if manager.active and manager.active.casefold() == name.casefold():
+            raise HTTPException(
+                status_code=409,
+                detail="Activate another profile or Station defaults before deleting the active profile",
+            )
         with _profile_http_errors():
-            ok = await asyncio.to_thread(_profile_store(station).delete, name)
+            ok = await asyncio.to_thread(manager.delete, name)
         if not ok:
             raise HTTPException(status_code=404, detail="Profile not found")
         return {"deleted": name}
@@ -2913,15 +2929,22 @@ def install_station_routes(router: StationRouter) -> None:
         library = _catalog_library(station)
         clock = _existing_clock(station, name)
         store = _clock_store(station)
-        try:
+        from autodj.profile_settings import profile_settings
+
+        def rename() -> dict:
             renamed = validate_clockwheel({**clock, "name": body.name})
-            if body.name.casefold() == name.casefold():
-                # Only the letter case changes: the same file on Windows.
-                store.delete(name)
-                store.save(renamed)
-            else:
-                store.save(renamed, overwrite=False)
-                store.delete(name)
+            with profile_settings(station).changing_reference("clock", name, body.name):
+                if body.name.casefold() == name.casefold():
+                    # Only the letter case changes: the same file on Windows.
+                    store.delete(name)
+                    store.save(renamed)
+                else:
+                    store.save(renamed, overwrite=False)
+                    store.delete(name)
+            return renamed
+
+        try:
+            renamed = await asyncio.to_thread(rename)
             if _active_clock(station, library) == name:
                 await select_clock(station, library, body.name, renamed_from=name)
             return renamed
@@ -2932,8 +2955,14 @@ def install_station_routes(router: StationRouter) -> None:
     async def api_library_delete_clock(station: SavedStationDep, name: str) -> dict:
         library = _catalog_library(station)
         _existing_clock(station, name)
+        from autodj.profile_settings import profile_settings
+
+        def remove() -> None:
+            with profile_settings(station).changing_reference("clock", name, None):
+                _clock_store(station).delete(name)
+
         try:
-            _clock_store(station).delete(name)
+            await asyncio.to_thread(remove)
             if _active_clock(station, library) == name:
                 return await select_clock(station, library, None)
             return await asyncio.to_thread(_clock_snapshot, station, library)

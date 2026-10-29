@@ -7,7 +7,7 @@ Enable the selected station's listener pages and check the stream and allowed fr
 ## Player page and embeddable player
 
 A station can have a public page where listeners press Play to hear it in the browser, and
-a compact version for another website. Both are off by default. Use **Settings**, **Stream**
+a compact version for another website. Both are off by default. Use **Settings**, **Station**, **Broadcasting**
 to turn on the **Public player page** or **Embeddable player** and set **Allowed embed sites**.
 You can change them while the station is stopped, and saving takes effect immediately.
 The settings belong to the selected station and are saved in `station.json`:
@@ -22,7 +22,7 @@ The settings belong to the selected station and are saved in `station.json`:
 }
 ```
 
-For another station, select it in Settings > Stations and change the same controls; its pages are at
+For another station, select it in Settings > Station > Stations and change the same controls; its pages are at
 `/stations/<slug>/player` and `/stations/<slug>/embed` (the default station's also answer at
 `/stations/default/player` and `/stations/default/embed`). A page that is off answers 404. The
 settings also load when AutoDJ starts. `GET /api/stations` lists each station's `player_path` and

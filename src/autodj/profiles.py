@@ -105,10 +105,14 @@ class ProfileSnapshot:
     liners_enabled: bool | None = None
     liners_pick_mode: str | None = None
     cart_page: str | None = None
+    settings: dict | None = None
 
     def to_dict(self) -> dict:
         """Return a plain JSON-serialisable representation."""
         data = asdict(self)
+        if self.settings is not None:
+            return {"name": self.name, "settings": self.settings}
+        data.pop("settings")
         legacy_shuffle = data.pop("pure_shuffle")
         if legacy_shuffle is not None and data["pick_mode"] is None:
             data["pick_mode"] = "random" if legacy_shuffle else "similarity"
@@ -187,10 +191,9 @@ class ProfileStore:
                     "or delete it first."
                 )
         self.root.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(snapshot.to_dict(), indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        from autodj.fsutil import atomic_write
+
+        atomic_write(target, json.dumps(snapshot.to_dict(), indent=2, sort_keys=True))
         return target
 
     def load(self, name: str) -> ProfileSnapshot:
