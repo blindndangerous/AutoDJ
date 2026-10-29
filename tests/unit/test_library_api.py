@@ -119,6 +119,22 @@ def test_folder_routes_check_beets_paths_off_event_loop(library_api, tmp_path, m
     assert len(checked) == 3
 
 
+def test_folder_update_reports_source_deleted_during_catalog_update(library_api, monkeypatch):
+    manager, call, _app = library_api
+    source = manager.catalog.sources("music")[0]
+    monkeypatch.setattr(manager.catalog, "update_source", lambda *_args, **_kwargs: False)
+    manager.start_scan.reset_mock()
+    with pytest.raises(HTTPException) as missing:
+        call(
+            "PATCH",
+            "/api/library/folders/{source_id}",
+            source["id"],
+            LibraryFolderUpdateBody(recursive=False),
+        )
+    assert missing.value.status_code == 404
+    manager.start_scan.assert_not_called()
+
+
 def test_rescan_passes_explicit_tag_override_option(library_api):
     manager, call, _app = library_api
 
