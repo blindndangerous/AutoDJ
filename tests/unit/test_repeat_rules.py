@@ -788,6 +788,17 @@ class TestTrackKeyCache:
         assert sum(map(repeat, entries)) == allowed
         assert calls == first_pick
 
+    def test_a_copy_starts_with_the_keys_and_keeps_new_ones_to_itself(self) -> None:
+        cache = TrackKeyCache(ArtistSplitter(known={"calvin harris"}))
+        first = cache.keys(_entry("a", artist="Calvin Harris & Dua Lipa", title="One Kiss"))
+        credits = dict(cache.splitter._cache)
+        twin = cache.copy()
+        assert twin.keys(_entry("a", artist="Calvin Harris & Dua Lipa", title="One Kiss")) is first
+        twin.keys(_entry("b", artist="Earth & Fire", title="Song"))
+        assert set(cache._keys) == {"a"}
+        assert cache.splitter._cache == credits
+        assert twin.splitter.known == cache.splitter.known
+
 
 class TestHistoryBounds:
     def test_history_is_capped(self) -> None:
