@@ -185,20 +185,18 @@ describe("cart buttons", () => {
     expect(plays(server)).toHaveLength(0);
   });
 
-  it("says why an expired cart plays nothing, by mouse and by its key", async () => {
-    const { server } = await install();
-    const refusal = "Cart 3, Station ID was skipped: it is expired after 26 December 2026";
-    api.requestJson.mockImplementation(async (url) => {
-      if (url.endsWith("/play")) throw new Error(refusal);
-      return JSON.parse(JSON.stringify(server));
-    });
+  it("allows manual button and key presses for a cart outside its scheduled dates", async () => {
+    const playAudio = vi.fn().mockResolvedValue(true);
+    const { server, controls } = await install({ playAudio });
+    server.today = "2026-12-27";
+    server.wall.pages[0].slots[2].not_after = "2026-12-26";
+    await controls.refresh();
+    expect(cart(3).textContent).toContain("scheduled: expired");
     cart(3).click();
-    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe(`Cart 3 did not play. ${refusal}`));
-    expect(byId("cart-status").getAttribute("role") || byId("cart-status").getAttribute("aria-live")).toBeTruthy();
-    byId("cart-status").textContent = "";
+    await vi.waitFor(() => expect(plays(server)).toHaveLength(1));
     cart(1).focus();
     press(cart(1), "3");
-    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe(`Cart 3 did not play. ${refusal}`));
+    await vi.waitFor(() => expect(plays(server)).toHaveLength(2));
   });
 
   it("reports a cart the server refuses", async () => {
@@ -374,9 +372,9 @@ describe("cart editor", () => {
     server.wall.pages[0].slots[2].not_after = "2026-12-26";
     server.wall.pages[0].slots[0] = { name: "Advent", source: "liner", clip: "rec-1", mode: "duck", not_before: "2026-12-28" };
     await controls.refresh();
-    expect(cart(3).textContent).toBe("Cart 3, Station ID, 0:07, expired");
-    expect(cart(1).textContent).toBe("Cart 1, Advent, not playable yet");
-    expect([...byId("cart-edit-slot").options][2].textContent).toBe("Cart 3, Station ID, 0:07, expired");
+    expect(cart(3).textContent).toBe("Cart 3, Station ID, 0:07, scheduled: expired");
+    expect(cart(1).textContent).toBe("Cart 1, Advent, scheduled: not playable yet");
+    expect([...byId("cart-edit-slot").options][2].textContent).toBe("Cart 3, Station ID, 0:07, scheduled: expired");
 
     byId("cart-edit-slot").value = "3";
     byId("cart-edit-slot").dispatchEvent(new Event("change"));
@@ -384,7 +382,7 @@ describe("cart editor", () => {
     expect(byId("cart-not-before").value).toBe("");
     byId("cart-not-before").value = "2026-12-01";
     byId("cart-save").click();
-    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe("Saved. Cart 3, Station ID, 0:03, expired."));
+    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe("Saved. Cart 3, Station ID, 0:03, scheduled: expired."));
     expect(server.calls.find((call) => call.method === "PUT" && call.url.includes("/slots/")).body).toEqual({
       name: "Station ID", source: "liner", clip: "rec-1", mode: "duck",
       not_before: "2026-12-01", not_after: "2026-12-26",
@@ -455,9 +453,9 @@ describe("cart editor", () => {
     expect(cart(3).textContent).toBe("Cart 3, Station ID, 0:07"); // still 26 December there
     now = new Date("2026-12-27T07:01:00Z");
     ticks.forEach((tick) => tick());
-    expect(cart(3).textContent).toBe("Cart 3, Station ID, 0:07, expired");
+    expect(cart(3).textContent).toBe("Cart 3, Station ID, 0:07, scheduled: expired");
     expect(byId("cart-edit-slot").options[2]).toBe(option); // relabelled, not rebuilt
-    expect(option.textContent).toBe("Cart 3, Station ID, 0:07, expired");
+    expect(option.textContent).toBe("Cart 3, Station ID, 0:07, scheduled: expired");
     expect(document.activeElement).toBe(cart(3));
     expect(byId("cart-status").textContent).toBe(status); // nothing announced
     expect(server.calls.filter((call) => call.url === "/api/carts")).toHaveLength(1);

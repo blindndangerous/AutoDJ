@@ -15,7 +15,7 @@
 // spoken once, through #sr-status, so a scheduled cart is heard on any
 // tab.  The wall's own status region reports what the user just did.
 //
-// "expired" and "not playable yet" follow the station's day: a page left
+// scheduled-date labels follow the station's day: a page left
 // open past midnight relabels the carts in place, without a sound or a
 // move of focus, when the day changes.
 
@@ -41,12 +41,11 @@ function clock(seconds) {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
-// Why a cart is skipped on the station's day *today* (ISO dates compare as
-// text), or "".  The server makes the same check when the cart is played.
+// Whether scheduled cart events may play today (ISO dates compare as text).
 function cartSkipped(assigned, today) {
   if (!assigned || !today) return "";
-  if (assigned.not_after && today > assigned.not_after) return "expired";
-  if (assigned.not_before && today < assigned.not_before) return "not playable yet";
+  if (assigned.not_after && today > assigned.not_after) return "scheduled: expired";
+  if (assigned.not_before && today < assigned.not_before) return "scheduled: not playable yet";
   return "";
 }
 
@@ -190,8 +189,8 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     }
   }
 
-  // The station's day changed while the page was open: say "expired" or
-  // "not playable yet" on the carts it changes, in place.  Only the text
+  // The station's day changed while the page was open: update scheduled-date
+  // labels on the carts it changes, in place. Only the text
   // changes, so focus stays where it is and nothing is announced.
   function followStationDay() {
     const current = page();
