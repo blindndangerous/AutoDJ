@@ -41,7 +41,7 @@ from autodj.hour_preview import (
     song_changes,
 )
 from autodj.identity_map import IdentityMap
-from autodj.mixbus import RenderedTrack
+from autodj.mixbus import MixBus, RenderedTrack
 from autodj.player import apply_repeat_windows
 from autodj.repeat_rules import PlayRecord
 from autodj.rotation_sim import (
@@ -1322,6 +1322,58 @@ def test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh(
     assert len(builds) == 11
 
 
+def test_a_kept_preview_survives_the_jitter_of_the_playing_position(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0009-03: the song change read from a playing bus jitters; only a real move rebuilds."""
+    source, _power, gold = _station(tmp_path)
+    player = source.player
+    # Started so that the next song change falls just before a half second.
+    started = NOW - 50 + 0.47
+    _playing(source, gold[0], started)
+    player.bus = object()
+    player._playing_render = _render(gold[0], 200, gold[1], 5)
+    player._pending_entry = gold[1]
+    player._pending_offset = round(5 * SR)
+    wall = [NOW]
+    real = hour_preview.read_station
+    monkeypatch.setattr(
+        hour_preview, "read_station", lambda *args, **kwargs: real(*args, now=wall[0], **kwargs)
+    )
+    builds: list[float] = []
+
+    def counting(*_args: Any, decided: hour_preview.Decided, **_kwargs: Any) -> dict[str, Any]:
+        builds.append(decided.handoff)
+        return {}
+
+    monkeypatch.setattr(hour_preview, "build_preview", counting)
+
+    def play(after: float, late: float) -> None:
+        # The bus reports its place once per block it renders, and a busy
+        # server renders a few blocks late, then catches up.
+        wall[0] = NOW + after
+        played = (wall[0] - started - late) * SR
+        player._playback_pos[0] = int(played) // MixBus.BLOCK * MixBus.BLOCK
+
+    previews = HourPreviews()
+    handoffs = []
+    for ask, late in enumerate((0.0, 0.06, 0.0, 0.1, 0.02)):
+        play(ask * 9 + 0.013 * ask, late)
+        handoffs.append(real(player, now=wall[0]).handoff)
+        previews.get(source, 60)
+    # Nothing changed on the air: the readings differ by a few blocks only,
+    # yet they straddle a half second.
+    assert max(handoffs) - min(handoffs) < 0.15
+    assert len({round(handoff) for handoff in handoffs}) == 2
+    assert len(builds) == 1
+    # A seek moves the song change: the preview is made again.
+    play(40, 0.0)
+    player._playback_pos[0] += round(2 * SR)
+    previews.get(source, 60)
+    assert len(builds) == 2
+    assert builds[1] == pytest.approx(builds[0] - 2, abs=0.15)
+
+
 def test_category_signature_does_not_hold_the_category_pick_lock(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -2390,6 +2442,50 @@ def test_a_preview_stops_filling_when_something_new_is_fixed(tmp_path: Path, mon
         assert not kept._filling and filling.fill.done
     finally:
         assert kept.shutdown(5.0)
+
+
+def test_a_preview_goes_on_filling_through_the_jitter_of_the_playing_position(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0009-13: a song change read a few blocks apart is not a new fixed song."""
+    source, _power, gold = _station(tmp_path)
+    player = source.player
+    # Started so that the next song change falls just before a half second.
+    started = int(time.time()) - 30 + 0.47
+    _playing(source, gold[0], started)
+    player.bus = object()
+    player._playing_render = _render(gold[0], 200, gold[1], 5)
+    player._pending_entry = gold[1]
+    player._pending_offset = round(5 * SR)
+    lateness = itertools.cycle((0.0, 0.1))
+    real = hour_preview.read_station
+
+    def playing(*args: Any, **kwargs: Any) -> hour_preview.Decided:
+        # Each read finds the bus a block or a few late, as on a busy server.
+        now = time.time()
+        played = (now - started - next(lateness)) * SR
+        player._playback_pos[0] = int(played) // MixBus.BLOCK * MixBus.BLOCK
+        return real(*args, now=now, **kwargs)
+
+    monkeypatch.setattr(hour_preview, "read_station", playing)
+    built: list[int] = []
+    build = hour_preview.build_preview
+
+    def counting(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        built.append(1)
+        return build(*args, **kwargs)
+
+    monkeypatch.setattr(hour_preview, "build_preview", counting)
+    _slow_picks(monkeypatch)
+    previews = HourPreviews(budget=0.1, fill_slice=0.1)
+    try:
+        views = _filled(previews, source)
+    finally:
+        assert previews.shutdown(5.0)
+    assert views[0]["filling"]
+    assert len(views) > 2
+    assert views[-1]["filling"] is None and views[-1]["stopped"] is None
+    assert len(built) == 1
 
 
 def test_filling_waits_for_the_page_and_never_holds_up_an_ask(tmp_path: Path, monkeypatch) -> None:
