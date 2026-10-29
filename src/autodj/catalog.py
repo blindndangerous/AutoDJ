@@ -1498,6 +1498,37 @@ class LibraryCatalog:
             return result.model_dump(mode="json")
         return AudioAnalysis.model_validate(result).model_dump(mode="json")
 
+    def _store_audio_analysis(
+        self,
+        db: sqlite3.Connection,
+        row: sqlite3.Row,
+        entry: IndexEntry,
+        size: int,
+        fingerprint: str,
+        value: dict,
+    ) -> None:
+        """Store one validated feature result inside the caller's transaction."""
+        db.execute(
+            "INSERT INTO catalog_audio_analysis VALUES (?,?,?,?,?) "
+            "ON CONFLICT(entry_id) DO UPDATE SET size=excluded.size,"
+            "fingerprint=excluded.fingerprint,version=excluded.version,result=excluded.result",
+            (row["id"], size, fingerprint, value["version"], json.dumps(value)),
+        )
+        from autodj.indexer import _apply_analysis_metadata
+
+        _apply_analysis_metadata(entry, value, keep=_user_tags(row["user_tags"], fingerprint))
+        db.execute(
+            "UPDATE catalog_entries SET energy=?,key=?,mode=?,bpm=?,tempo_confidence=? WHERE id=?",
+            (
+                entry.energy,
+                entry.key,
+                entry.mode,
+                entry.bpm,
+                entry.tempo_confidence,
+                row["id"],
+            ),
+        )
+
     def get_audio_analysis(self, path: str | Path) -> dict | None:
         """Return current-version audio features only for the exact catalog file identity."""
         normalized = _path(path)
@@ -1571,29 +1602,7 @@ class LibraryCatalog:
                 ):
                     db.rollback()
                     return False
-                db.execute(
-                    "INSERT INTO catalog_audio_analysis VALUES (?,?,?,?,?) "
-                    "ON CONFLICT(entry_id) DO UPDATE SET size=excluded.size,"
-                    "fingerprint=excluded.fingerprint,version=excluded.version,result=excluded.result",
-                    (row["id"], size, fingerprint, value["version"], json.dumps(value)),
-                )
-                from autodj.indexer import _apply_analysis_metadata
-
-                entry = self._entry(row)
-                _apply_analysis_metadata(
-                    entry, value, keep=_user_tags(row["user_tags"], fingerprint)
-                )
-                db.execute(
-                    "UPDATE catalog_entries SET energy=?,key=?,mode=?,bpm=?,tempo_confidence=? WHERE id=?",
-                    (
-                        entry.energy,
-                        entry.key,
-                        entry.mode,
-                        entry.bpm,
-                        entry.tempo_confidence,
-                        row["id"],
-                    ),
-                )
+                self._store_audio_analysis(db, row, self._entry(row), size, fingerprint, value)
                 if file_fingerprint(normalized) != (size, fingerprint):
                     db.rollback()
                     return False
@@ -1881,32 +1890,7 @@ class LibraryCatalog:
                         (scan["energy"], row["id"]),
                     )
                 if audio_value is not None:
-                    db.execute(
-                        "INSERT INTO catalog_audio_analysis VALUES (?,?,?,?,?) "
-                        "ON CONFLICT(entry_id) DO UPDATE SET size=excluded.size,"
-                        "fingerprint=excluded.fingerprint,version=excluded.version,result=excluded.result",
-                        (
-                            row["id"],
-                            size,
-                            fingerprint,
-                            audio_value["version"],
-                            json.dumps(audio_value),
-                        ),
-                    )
-                    _apply_analysis_metadata(
-                        entry, audio_value, keep=_user_tags(row["user_tags"], fingerprint)
-                    )
-                    db.execute(
-                        "UPDATE catalog_entries SET energy=?,key=?,mode=?,bpm=?,tempo_confidence=? WHERE id=?",
-                        (
-                            entry.energy,
-                            entry.key,
-                            entry.mode,
-                            entry.bpm,
-                            entry.tempo_confidence,
-                            row["id"],
-                        ),
-                    )
+                    self._store_audio_analysis(db, row, entry, size, fingerprint, audio_value)
                 if file_fingerprint(normalized) != (size, fingerprint):
                     db.rollback()
                     return False
