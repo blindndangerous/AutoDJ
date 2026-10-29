@@ -1970,7 +1970,7 @@ describe("static accessibility contracts", () => {
     expect(globalTabs.hidden).toBe(false);
     expect(profileTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect(stationTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
-    expect(globalTabs.querySelectorAll('[role="tab"]')).toHaveLength(2);
+    expect(globalTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)
       ?.textContent.replace(/\s+/g, " ").trim();
     const describedBy = (element) => (element.getAttribute("aria-describedby") || "")

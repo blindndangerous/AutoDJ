@@ -51,7 +51,7 @@ describe("Settings subtabs markup", () => {
     for (const list of [profileList, stationList, globalList]) expect(list.hidden).toBe(false);
     expect(profileList.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect(stationList.querySelectorAll('[role="tab"]')).toHaveLength(4);
-    expect([...globalList.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Server", "Browser preferences"]);
+    expect([...globalList.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Server", "Analysis workers", "Update and restart", "Browser preferences"]);
     expect(profileList.compareDocumentPosition(stationList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(stationList.compareDocumentPosition(globalList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const targetRow = byId("settings-profile").closest(".profile-target-row");
@@ -59,8 +59,8 @@ describe("Settings subtabs markup", () => {
     expect(targetRow.compareDocumentPosition(byId("spanel-mixing")) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const tabs = [...outer.querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent)).toEqual([
-      "Mixing", "Song picking", "Sound", "Announcements", "Profiles",
-      "Stations", "Broadcasting", "Schedule", "Server", "Browser preferences",
+      "Mixing", "Song picking", "Sound", "Announcements", "Stations",
+      "Profiles", "Broadcasting", "Schedule", "Server", "Analysis workers", "Update and restart", "Browser preferences",
     ]);
     for (const tab of tabs) {
       expect(tab.hasAttribute("aria-controls")).toBe(false);
@@ -131,6 +131,8 @@ describe("initSubtabs", () => {
     expect(ui.selected).toBe("mixing");
     byId("stab-stations").focus();
     press(byId("stab-stations"), "ArrowRight");
+    expect(document.activeElement).toBe(byId("stab-access"));
+    press(document.activeElement, "ArrowRight");
     expect(document.activeElement).toBe(byId("stab-stream"));
     expect(byId("settings-profile").closest(".profile-target-row").hidden).toBe(true);
     press(document.activeElement, "End");
@@ -138,15 +140,19 @@ describe("initSubtabs", () => {
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-stream"));
     press(document.activeElement, "ArrowLeft");
-    expect(document.activeElement).toBe(byId("stab-stations"));
-    press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-access"));
+    press(document.activeElement, "ArrowLeft");
+    expect(document.activeElement).toBe(byId("stab-stations"));
     expect(byId("settings-profile").closest(".profile-target-row").hidden).toBe(true);
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-schedule"));
     byId("stab-server").focus();
     press(document.activeElement, "End");
     expect(document.activeElement).toBe(byId("stab-display"));
+    press(document.activeElement, "ArrowLeft");
+    expect(document.activeElement).toBe(byId("stab-updates"));
+    press(document.activeElement, "ArrowLeft");
+    expect(document.activeElement).toBe(byId("stab-workers"));
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-server"));
     byId("stab-display").focus();
@@ -185,18 +191,18 @@ describe("initSubtabs", () => {
     expect(byId("spanel-stream").hidden).toBe(false);
     ui.setTabHidden("stream", true);
     expect(byId("stab-stream").hidden).toBe(true);
-    expect(ui.selected).toBe("access");
+    expect(ui.selected).toBe("stations");
     expect(byId("spanel-stream").hidden).toBe(true);
     ui.focusSelected();
-    expect(document.activeElement).toBe(byId("stab-access"));
+    expect(document.activeElement).toBe(byId("stab-stations"));
   });
 
-  it("tells outer and inner sections when they are seen, including when Settings hides", async () => {
+  it.each(["access", "workers", "updates"])("notifies %s only while its tab and Settings are visible", async (name) => {
     const { ui } = setup();
-    const panel = byId("spanel-access");
+    const panel = byId(`spanel-${name}`);
     const seen = [];
     panel.addEventListener("toggle", () => seen.push(panel.open));
-    byId("stab-access").click();
+    byId(`stab-${name}`).click();
     expect(seen).toEqual([true]);
     byId("panel-settings").hidden = true;
     await flush();

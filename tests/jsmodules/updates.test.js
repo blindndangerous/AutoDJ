@@ -123,12 +123,12 @@ beforeEach(installIndex);
 afterEach(() => vi.restoreAllMocks());
 
 describe("Updates markup", () => {
-  it("is part of the Server settings tabpanel", () => {
-    const tab = byId("stab-server");
+  it("has its own Global settings tabpanel", () => {
+    const tab = byId("stab-updates");
     expect(tab.getAttribute("role")).toBe("tab");
     const panel = byId(tab.dataset.panel);
     expect(panel.getAttribute("role")).toBe("tabpanel");
-    expect(panel.getAttribute("aria-labelledby")).toBe("stab-server");
+    expect(panel.getAttribute("aria-labelledby")).toBe("stab-updates");
     expect(byId("spanel-updates").closest('[role="tabpanel"]')).toBe(panel);
   });
 
@@ -319,8 +319,8 @@ describe("Updates panel", () => {
     await vi.waitFor(() => expect(byId("updates-restart").hidden).toBe(false));
     byId("updates-channel").value = "stable";
     byId("updates-channel").dispatchEvent(new Event("change", { bubbles: true }));
-    document.querySelector("#spanel-server [data-settings-save]").click();
-    await vi.waitFor(() => expect(document.querySelector("#spanel-server .settings-save-status").textContent)
+    document.querySelector("#spanel-updates [data-settings-save]").click();
+    await vi.waitFor(() => expect(document.querySelector("#spanel-updates .settings-save-status").textContent)
       .toContain("Update settings saved.  Channel: Stable."));
     const call = request.mock.calls.find(([url]) => url === "/api/updates/settings");
     expect(JSON.parse(call[1].body)).toEqual({ check: true, channel: "stable" });
@@ -443,8 +443,8 @@ describe("Update and Go back", () => {
     expect(byId("updates-reload").hidden).toBe(true);
     expect(byId("updates-how").hidden).toBe(false);
     const heading = byId("updates-how-heading");
-    expect(heading.tagName).toBe("H6");
-    expect(heading.closest("#updates-last").querySelector("h5").textContent).toBe("Last update");
+    expect(heading.tagName).toBe("H5");
+    expect(heading.closest("#updates-last").querySelector("h4").textContent).toBe("Last update");
     expect([...byId("updates-commands").querySelectorAll("li > code")].map((code) => code.textContent))
       .toEqual(commands);
     expect(byId("updates-commands").getAttribute("aria-labelledby")).toBe("updates-how-heading");

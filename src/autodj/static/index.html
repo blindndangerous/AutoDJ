@@ -736,14 +736,16 @@
   </div>
   <h3 id="settings-station-heading">Station</h3>
   <div role="tablist" class="subtabs" aria-labelledby="settings-station-heading" aria-orientation="horizontal">
-    <button type="button" role="tab" id="stab-access" data-settings-kind="station" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles</button>
     <button type="button" role="tab" id="stab-stations" data-settings-kind="station" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1">Stations</button>
+    <button type="button" role="tab" id="stab-access" data-settings-kind="station" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles</button>
     <button type="button" role="tab" id="stab-stream" data-settings-kind="station" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1">Broadcasting</button>
     <button type="button" role="tab" id="stab-schedule" data-settings-kind="station" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
   </div>
   <h3 id="settings-global-heading">Global</h3>
   <div role="tablist" class="subtabs" aria-labelledby="settings-global-heading" aria-orientation="horizontal">
     <button type="button" role="tab" id="stab-server" data-settings-kind="server" data-subview="server" data-panel="spanel-server" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Server</button>
+    <button type="button" role="tab" id="stab-workers" data-settings-kind="server" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
+    <button type="button" role="tab" id="stab-updates" data-settings-kind="server" data-subview="updates" data-panel="spanel-updates" aria-selected="false" tabindex="-1">Update and restart</button>
     <button type="button" role="tab" id="stab-display" data-settings-kind="browser" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Browser preferences</button>
   </div>
   </div>
@@ -2677,8 +2679,10 @@
         </div>
       </div>
     </div>
-    <section id="spanel-workers" data-settings-section>
-      <h4>Analysis workers</h4>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-workers" data-settings-kind="server" aria-labelledby="stab-workers" hidden>
+    <h3>Analysis workers</h3>
     <!-- analysis-workers.js loads this panel when it is seen and refreshes
          the workers every ten seconds while it stays seen; only Refresh
          workers and the token buttons speak, through #workers-status. -->
@@ -2691,15 +2695,15 @@
     <div id="workers-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <!-- Shown only while the server has refused a worker; a refusal a
          refresh finds is said once through #workers-status. -->
-    <h5 id="workers-refusals-heading" hidden>Refused workers</h5>
+    <h4 id="workers-refusals-heading" hidden>Refused workers</h4>
     <ul id="workers-refusals" aria-labelledby="workers-refusals-heading" hidden></ul>
-    <h5 id="workers-heading">Workers</h5>
+    <h4 id="workers-heading">Workers</h4>
     <p id="workers-queue">Loading…</p>
     <!-- Each worker row has its own settings and Save button (#554). -->
     <ul id="workers-list" aria-labelledby="workers-heading"></ul>
     <button type="button" id="workers-refresh">Refresh workers</button>
 
-    <h5 id="pair-worker-heading">Worker pairing</h5>
+    <h4 id="pair-worker-heading">Worker pairing</h4>
     <div class="settings-row">
       <label for="pair-worker-name">Worker name</label>
       <input type="text" id="pair-worker-name" maxlength="64" autocomplete="off"
@@ -2722,7 +2726,7 @@
       </p>
     </div>
 
-    <h5>Machine tokens</h5>
+    <h4>Machine tokens</h4>
     <fieldset>
       <legend>Create a token</legend>
       <div class="settings-row">
@@ -2767,20 +2771,21 @@
         This token is shown only now and cannot be shown again.  Copy it before you leave this page.  If it is lost, revoke it and create another.
       </p>
     </div>
-    <h6 id="token-list-heading">Tokens</h6>
+    <h5 id="token-list-heading">Tokens</h5>
     <p id="token-list-empty">No tokens yet.</p>
     <ul id="token-list" aria-labelledby="token-list-heading"></ul>
-    </section>
-    <section id="spanel-updates" data-settings-section>
-      <h4>Updates</h4>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-updates" data-settings-kind="server" aria-labelledby="stab-updates" hidden>
+    <h3>Update and restart</h3>
     <!-- updates.js loads this panel when it is seen.  The version and
          result lines are plain text; only Check now, Save update settings,
          Update, Go back and Restart speak, once each, through
          #updates-status. -->
     <div id="updates-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
-    <h5>This installation</h5>
+    <h4>This installation</h4>
     <p id="updates-current" aria-live="off">Loading…</p>
-    <h5>Latest version</h5>
+    <h4>Latest version</h4>
     <p id="updates-latest" aria-live="off"></p>
     <p id="updates-notes" hidden><a id="updates-notes-link" href="#">Release notes</a></p>
     <button type="button" id="updates-check">Check now</button>
@@ -2798,17 +2803,17 @@
     <!-- Shown on the Stable channel when the updater kept the backup of the
          release it moved this installation to Development from. -->
     <div id="updates-go-back" hidden>
-      <h5>Go back to Stable now</h5>
+      <h4>Go back to Stable now</h4>
       <p id="updates-go-back-note" class="setting-desc"></p>
       <button type="button" id="updates-go-back-button" hidden>Go back</button>
       <p id="updates-go-back-refused" aria-live="off" hidden></p>
     </div>
     <!-- How the last update went; commands only after a failure. -->
     <div id="updates-last" hidden>
-      <h5>Last update</h5>
+      <h4>Last update</h4>
       <p id="updates-result" aria-live="off"></p>
       <div id="updates-how" hidden>
-        <h6 id="updates-how-heading">Commands to finish by hand</h6>
+        <h5 id="updates-how-heading">Commands to finish by hand</h5>
         <p id="updates-how-note" class="setting-desc">Run these in order in the AutoDJ folder.</p>
         <ol id="updates-commands" aria-labelledby="updates-how-heading"></ol>
       </div>
@@ -2832,11 +2837,10 @@
       <span class="setting-desc">Stable follows releases; Development follows the newest code on master. Automatic follows what this installation runs.</span>
     </fieldset>
 
-    <h5>Restart</h5>
+    <h4>Restart</h4>
     <p id="updates-restart-note" class="setting-desc"></p>
     <button type="button" id="updates-restart" hidden>Restart AutoDJ</button>
     <p id="updates-restart-refused" aria-live="off" hidden></p>
-    </section>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-display" data-settings-kind="browser" aria-labelledby="stab-display" hidden>

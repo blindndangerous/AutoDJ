@@ -17,7 +17,7 @@ import { markSelected, tabForKey } from "./tablist.js";
 import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
 
 const STORAGE_KEY = "autodj.settingsSubtab";
-const OLD_TABS = { transitions: "mixing", djmix: "mixing", liners: "announcements", "time-checks": "announcements", breaks: "announcements", live: "stream", workers: "server", updates: "server" };
+const OLD_TABS = { transitions: "mixing", djmix: "mixing", liners: "announcements", "time-checks": "announcements", breaks: "announcements", live: "stream" };
 
 function readStored(storage) {
   return readStorage(storage, STORAGE_KEY);

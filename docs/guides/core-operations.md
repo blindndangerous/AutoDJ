@@ -131,7 +131,7 @@ you have recorded its result and confirmed it contains no sole copy of needed da
 
 ## Update and keep a rollback path
 
-A checkout started with its launcher can do these steps from **Settings**, **Global**, **Server**, **Updates** with
+A checkout started with its launcher can do these steps from **Settings**, **Global**, **Update and restart** with
 **Update AutoDJ**, which goes back by itself when the new version fails; see
 [Update from the page](backups-and-updates.md#update-from-the-page). By hand:
 

@@ -41,12 +41,14 @@ edits remain pending. Output-mode changes take effect after restarting the stati
 | Stations | Selected station's output, scheduling timezone, upload limit, log label, display, lyrics, keys and prefetch |
 | Broadcasting | Station stream formats, metadata, listener limits, retention, public player, DMCA mode, recording configuration and Live DJ talkover |
 | Schedule | Station schedule definitions and events |
-| Server | Shared analysis limits, time format, Stereo Tool installation and shared licence, browser access, workers and updates |
+| Server | Shared analysis limits, time format, Stereo Tool installation and shared licence, browser access |
+| Analysis workers | Worker pairing, worker settings and machine tokens |
+| Update and restart | Update checks, channel, installation and restart |
 | Browser preferences | Browser display, keyboard and audio-device preferences |
 
 Settings keeps three heading-labeled tab groups visible: **Profile**
-(four tabs), **Station** (Profiles, Stations, Broadcasting and Schedule),
-and **Global** (Server and Browser preferences). Each
+(four tabs), **Station** (Stations, Profiles, Broadcasting and Schedule),
+and **Global** (Server, Analysis workers, Update and restart, and Browser preferences). Each
 tab opens its settings panel; arrow, Home and End navigation stays within its
 group. The **Profile to edit** selector follows all three groups and is hidden
 while a non-Profile tab is selected. Profile selection edits profile-aware
@@ -487,7 +489,7 @@ These values are saved for the selected station or browser rather than in the co
 - **Return time (seconds)**: 0.1 to 10; default 0.5. Raises the music after browser talkover. **Duck amount (dB)**: 0 to 30; default 12. Lowers music while someone talks.
 - **Record broadcast** in **Broadcasting**: on or off; default off. Saves the server mix as MP3 files.
 - **Station name**, **Quality**, and other stream page controls map to the `stream` entries above.
-- **Check for updates** in **Settings**, **Global**, **Server**: on or off; default on. When off, AutoDJ never asks GitHub or the git remote about updates. **Update channel**: Automatic, Stable or Development; default Automatic, which follows what the installation runs (a release tag is Stable, `master` is Development). Saved for every station in `shared/updates.json`. Stable on a checkout of `master` waits for the next release that includes it. See [Check for updates and restart](guides/backups-and-updates.md#check-for-updates-and-restart) and [Move from Development to Stable](guides/backups-and-updates.md#move-from-development-to-stable).
+- **Check for updates** in **Settings**, **Global**, **Update and restart**: on or off; default on. When off, AutoDJ never asks GitHub or the git remote about updates. **Update channel**: Automatic, Stable or Development; default Automatic, which follows what the installation runs (a release tag is Stable, `master` is Development). Saved for every station in `shared/updates.json`. Stable on a checkout of `master` waits for the next release that includes it. See [Check for updates and restart](guides/backups-and-updates.md#check-for-updates-and-restart) and [Move from Development to Stable](guides/backups-and-updates.md#move-from-development-to-stable).
 
 ### Transition effect choices
 

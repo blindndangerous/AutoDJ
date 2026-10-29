@@ -2364,7 +2364,6 @@ async function clickSubtabUnprompted(page, id) {
     "stab-transitions": "stab-mixing", "stab-djmix": "stab-mixing",
     "stab-liners": "stab-announcements", "stab-time-checks": "stab-announcements",
     "stab-breaks": "stab-announcements", "stab-live": "stab-stream",
-    "stab-workers": "stab-server", "stab-updates": "stab-server",
   };
   id = tabIds[id] || id;
   // The page's own module instance, by the URL app.js loads it from.

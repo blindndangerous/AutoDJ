@@ -56,7 +56,8 @@ it("guards direct cross-group tab changes and remembers the last selected tab", 
 
 it.each([
   ["liners", "announcements"],
-  ["updates", "server"],
+  ["updates", "updates"],
+  ["workers", "workers"],
 ])("maps old tab %s to %s settings", async (legacy, tab) => {
   const { initSubtabs } = await import("../../src/autodj/static/modules/subtabs.js");
   const ui = initSubtabs(document.getElementById("settings-tabs"), {

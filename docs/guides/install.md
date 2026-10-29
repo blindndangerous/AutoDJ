@@ -171,7 +171,7 @@ Some things to know:
 
 ### A NAS without a graphics card
 
-For faster analysis, create a token in **Settings**, **Global**, **Server**, **Analysis workers** and run
+For faster analysis, create a token in **Settings**, **Global**, **Analysis workers** and run
 `autodj worker` on a GPU computer. See [Using a GPU machine](../operations.md#using-a-gpu-machine).
 
 ## Use AutoDJ from other devices
@@ -230,7 +230,7 @@ has the steps.
 ## Update AutoDJ
 
 A source checkout started with `./autodj serve` or `.\autodj.cmd serve` updates from
-**Settings**, **Global**, **Server**, **Updates** with **Update AutoDJ**, which makes the backup itself; see
+**Settings**, **Global**, **Update and restart** with **Update AutoDJ**, which makes the backup itself; see
 [Update from the page](backups-and-updates.md#update-from-the-page). Otherwise back up first with
 `autodj backup` and follow [Back up and update AutoDJ](backups-and-updates.md) for source, wheel,
 and Docker updates.

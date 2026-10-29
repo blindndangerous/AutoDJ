@@ -54,8 +54,8 @@ async function audit(name, launcher) {
       if (!response.url().includes("/api/settings?")) return false;
       return new URL(response.url()).searchParams.get("profile") === markerA;
     });
-    await page.locator("#settings-profile").selectOption(markerA);
     await page.locator("#stab-mixing").click();
+    await page.locator("#settings-profile").selectOption(markerA);
     assert.equal((await markerSettings).status(), 200);
     const crossfade = page.locator("#pb-crossfade");
     const savedCrossfade = await crossfade.inputValue();
@@ -138,8 +138,8 @@ async function audit(name, launcher) {
       && response.request().method() === "POST");
     await page.locator("#profile-save").click();
     assert.equal((await createProfile).status(), 200);
-    await page.locator("#settings-profile").selectOption(profileName);
     await page.locator("#stab-sound").click();
+    await page.locator("#settings-profile").selectOption(profileName);
     await speed.fill("6");
     const saveInactive = page.waitForResponse((response) => response.url() === `${endpoint}/settings`
       && response.request().method() === "PATCH");
@@ -184,8 +184,8 @@ async function audit(name, launcher) {
       && response.request().method() === "POST");
     await page.getByRole("button", { name: `Activate profile ${profileName}` }).click();
     assert.equal((await profileReapply).status(), 200);
-    await page.locator("#settings-profile").selectOption("");
     await page.locator("#stab-sound").click();
+    await page.locator("#settings-profile").selectOption("");
     await speed.fill("3");
     await page.locator("#stab-server").click();
     // The dialog's close event returns focus to its opener a task later, so

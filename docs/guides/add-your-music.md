@@ -95,7 +95,7 @@ analysis. The first local MuQ run downloads weights into the `models` folder.
 The default model's weights are licensed for non-commercial use only. Read [Credits and licensing](../../README.md#credits-and-licensing) before commercial use.
 
 If the AutoDJ computer has no graphics card, another computer that has one can do the analysis.
-Create a token in Settings, **Global**, **Server**, **Analysis workers**, then run `autodj worker` on that computer. See
+Create a token in Settings, **Global**, **Analysis workers**, then run `autodj worker` on that computer. See
 [Using a GPU machine](../operations.md#using-a-gpu-machine) for the steps. While a worker is
 connected, the AutoDJ server pauses its own analysis.
 

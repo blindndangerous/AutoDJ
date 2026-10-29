@@ -24,7 +24,7 @@ Share this station's request page, `/requests` for the default station or `/stat
 
 An announcer program can submit a recorded break, such as news or weather, for an open song change. This needs **Server sound card** or **Radio stream** output and **Use saved segue points** in **Settings**, **Profile**, **Mixing**, **Transitions**. In **Settings**, **Profile**, **Announcements**, **Breaks**, turn on **Accept announcer uploads** and choose where a DJ break plays. **Talk up the next song** uses the next intro when possible; **Between the songs** keeps it separate. Set **Shortest intro to talk up (seconds)** and **Music under a break (decibels)** as needed, then save with the **Announcements** tab's shared Save changes bar.
 
-Give the announcer program its own token through **Settings**, **Global**, **Server**, **Analysis workers**. Follow the program's instructions to send audio to AutoDJ. AutoDJ queues the break and joins it at a song change. The [announcer breaks reference](../operations.md#announcer-breaks-dj-breaks-news-and-weather) gives API details and expiry rules.
+Give the announcer program its own token through **Settings**, **Global**, **Analysis workers**. Follow the program's instructions to send audio to AutoDJ. AutoDJ queues the break and joins it at a song change. The [announcer breaks reference](../operations.md#announcer-breaks-dj-breaks-news-and-weather) gives API details and expiry rules.
 
 ## Record a voice track in the browser
 

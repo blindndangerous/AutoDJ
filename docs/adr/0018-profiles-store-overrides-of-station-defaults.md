@@ -109,10 +109,11 @@ Station and Global. One selected tab across the groups controls the visible
 settings panel. Profile
 has four tabs: Mixing (transitions and DJ mixing), Song picking, Sound
 (profile processing), and Announcements (liners, time checks, carts and breaks).
-Station has Profiles, Stations, Broadcasting (stream, Live DJ and
+Station has Stations, Profiles, Broadcasting (stream, Live DJ and
 DMCA), and Schedule. Global has Server (analysis limits, shared time
-format, Stereo Tool installation and shared licence, browser access, workers
-and updates) and Browser preferences (browser display, keyboard and audio
+format, Stereo Tool installation and shared licence, and browser access),
+Analysis workers (worker pairing, settings and machine tokens), Update and
+restart, and Browser preferences (browser display, keyboard and audio
 device controls). The tabs keep their server and browser owners. Station
 display, lyrics, key notation and prefetch controls are in Stations.
 Profiles manages profile creation, activation, reset and deletion. The selected

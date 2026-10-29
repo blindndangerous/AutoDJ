@@ -44,7 +44,7 @@ for one lost browser. Do not share the signing token.
 
 ## Worker and announcer tokens
 
-1. Open **Settings, Global, Server, Analysis workers**, under **Machine tokens**. Create a named
+1. Open **Settings, Global, Analysis workers**, under **Machine tokens**. Create a named
    token for its intended use and copy it immediately; it is shown only once.
    Analysis workers can claim songs, fetch claimed audio and submit analysis.
    Announcer tokens are bound to a station and its break operations. Neither

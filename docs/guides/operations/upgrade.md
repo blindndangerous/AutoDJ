@@ -8,7 +8,7 @@ Retain a backup, move a clean source checkout to the desired release, validate m
 
 These steps apply to a native installation from a source checkout. A checkout started with
 `./autodj serve` or `.\autodj.cmd serve` can run them from the page instead: **Update AutoDJ** in
-**Settings**, **Global**, **Server**, **Updates** makes the backup, refuses a changed folder, switches, runs setup and
+**Settings**, **Global**, **Update and restart** makes the backup, refuses a changed folder, switches, runs setup and
 Doctor, and goes back when the new version needs a migration or does not start (see
 [Update from the page](../backups-and-updates.md#update-from-the-page)). Use the steps below by hand
 for any other checkout, or to finish what the page could not; after a failed update the page
