@@ -43,6 +43,7 @@ from autodj.liner_files import (
     LinerConflictError,
     LinerTooLargeError,
     open_liner_file,
+    resolve_liner_path,
     store_liner_upload,
     validate_liner_name,
 )
@@ -322,20 +323,7 @@ class StationCarts:
 
     def liner_file(self, clip: str) -> Path:
         """The file behind liner *clip*, found the way ``/api/liners/file`` finds it."""
-        library = self.bridge.library
-        record = library.record_for_id(clip) if library is not None else None
-        if (
-            record is not None
-            and record.get("kind") == "liner"
-            and library.entry_for_path(record["path"]) is not None
-        ):
-            path = Path(record["path"])
-            if path.is_symlink() or not path.is_file():
-                raise FileNotFoundError(clip)
-            return path
-        folder = self.liner_folder()
-        open_liner_file(folder, clip).file.close()
-        return folder / clip
+        return resolve_liner_path(self.bridge.library, self.liner_folder(), clip)[0]
 
     def decode(self, assigned: CartSlot) -> np.ndarray:
         """Decode the audio the cart plays (blocking)."""
