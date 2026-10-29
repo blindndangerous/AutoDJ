@@ -2328,7 +2328,8 @@ def test_a_preview_past_its_time_limit_fills_in_as_one_long_run_would(
         assert _rows(after)[: len(before["items"])] == _rows(before)
     assert last["filling"] is None and last["stopped"] is None
     assert _rows(last) == _rows(whole)
-    assert last["counts_text"] == whole["counts_text"]
+    # counts_text ends at a wall-clock time, which may move on a second between the two runs.
+    assert last["counts"] == whole["counts"]
     # Nothing on the air changed.
     assert source.ledger.writes == 0 and source.library.catalog.writes == 0
 
