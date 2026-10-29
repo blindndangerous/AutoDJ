@@ -18,7 +18,7 @@ import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import Any, BinaryIO, Protocol
 
 from autodj.liners import LINER_EXTS
 
@@ -49,6 +49,25 @@ class OpenedLiner:
 
     file: BinaryIO
     stat_result: os.stat_result
+
+
+def resolve_liner_path(library: Any, root: Path, name: str) -> tuple[Path, os.stat_result, bool]:
+    """Resolve a liner path, metadata, and whether it came from the catalog."""
+    record = library.record_for_id(name) if library is not None else None
+    if (
+        record is not None
+        and record.get("kind") == "liner"
+        and library.entry_for_path(record["path"]) is not None
+    ):
+        path = Path(record["path"])
+        if path.is_symlink() or not path.is_file():
+            raise FileNotFoundError(name)
+        return path, path.stat(), True
+    opened = open_liner_file(root, name)
+    try:
+        return Path(root) / name, opened.stat_result, False
+    finally:
+        opened.file.close()
 
 
 _CHUNK_BYTES = 1024 * 1024

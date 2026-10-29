@@ -2510,30 +2510,19 @@ def install_station_routes(router: StationRouter) -> None:
     @router.get("/liners/file/{name}")
     async def api_liner_file(station: SavedStationDep, name: str) -> FileResponse:
         """Serve one validated plain liner file."""
-        from autodj.liner_files import InvalidLinerName, open_liner_file
+        from autodj.liner_files import InvalidLinerName, resolve_liner_path
 
-        library = station.bridge.library
-        record = library.record_for_id(name) if library is not None else None
-        if (
-            record is not None
-            and record.get("kind") == "liner"
-            and library.entry_for_path(record["path"]) is not None
-        ):
-            path = Path(record["path"])
-            if path.is_symlink() or not path.is_file():
-                raise HTTPException(status_code=404, detail="Liner not found")
-            metadata = await asyncio.to_thread(path.stat)
-            return FileResponse(path, media_type=audio_mime(path), stat_result=metadata)
-
-        folder = station.paths.liners
         try:
-            opened = await asyncio.to_thread(open_liner_file, folder, name)
+            path, metadata, registered = await asyncio.to_thread(
+                resolve_liner_path, station.bridge.library, station.paths.liners, name
+            )
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Liner not found") from exc
-        await asyncio.to_thread(opened.file.close)
-        return FileResponse(folder / name, stat_result=opened.stat_result)
+        if registered:
+            return FileResponse(path, media_type=audio_mime(path), stat_result=metadata)
+        return FileResponse(path, stat_result=metadata)
 
     @router.post("/liners/test")
     async def api_liner_test(station: StationDep, body: LinerTestBody) -> dict[str, str | None]:

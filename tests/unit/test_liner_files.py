@@ -13,6 +13,7 @@ from autodj.liner_files import (
     LinerTooLargeError,
     delete_liner_file,
     open_liner_file,
+    resolve_liner_path,
     store_liner_upload,
     validate_liner_name,
 )
@@ -185,6 +186,39 @@ async def test_upload_rejects_nonbytes_reader_result(tmp_path: Path) -> None:
     with pytest.raises(TypeError):
         await store_liner_upload(tmp_path, "clip.mp3", TextReader(), max_bytes=50, replace=False)
     assert _leftovers(tmp_path) == []
+
+
+def test_resolve_liner_path_uses_active_catalog_record_or_local_name(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    root = tmp_path / "station-liners"
+    root.mkdir()
+    local = root / "local.wav"
+    local.write_bytes(b"local")
+    registered = tmp_path / "shared" / "nested" / "registered.mp3"
+    registered.parent.mkdir(parents=True)
+    registered.write_bytes(b"registered")
+    record = {"id": "stable-id", "path": str(registered), "kind": "liner"}
+
+    class Library:
+        def record_for_id(self, value: str) -> dict[str, str] | None:
+            return record if value == "stable-id" else None
+
+        def entry_for_path(self, value: str) -> Any:
+            return SimpleNamespace(path=value) if value == str(registered) else None
+
+    path, metadata, catalog_backed = resolve_liner_path(Library(), root, "stable-id")
+    assert path == registered
+    assert catalog_backed
+    assert metadata.st_size == len(b"registered")
+
+    path, metadata, catalog_backed = resolve_liner_path(None, root, "local.wav")
+    assert path == local
+    assert not catalog_backed
+    assert metadata.st_size == len(b"local")
+
+    with pytest.raises(InvalidLinerName):
+        resolve_liner_path(None, root, "../registered.mp3")
 
 
 @pytest.mark.asyncio

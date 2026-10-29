@@ -402,6 +402,7 @@ class TestLiners:
         response = tc.get("/api/liners/file/stable-liner-id")
         assert response.status_code == 200
         assert response.content == b"registered-audio"
+        assert response.headers["content-type"] == "audio/mpeg"
         deleted = tc.delete("/api/liners/file/stable-liner-id")
         assert deleted.status_code == 200
         assert deleted.json() == {"deleted": "voice.mp3"}
@@ -1349,7 +1350,7 @@ class TestProfiles:
             "list_names",
             "load",
             "delete",
-            "open_liner_file",
+            "resolve_liner_path",
             "delete_liner_file",
         ):
             assert name in offloaded, name
