@@ -78,6 +78,8 @@ INDEX_FILES = (
     "dj_meta.db",
     "library.db",
     "web_state.json",
+    "profile-defaults.json",
+    "profile-selection.json",
     "related-artists.toml",
     "related-tracks.toml",
     "schedule.json",
@@ -116,6 +118,8 @@ _FOLDERS = (
 _STATE_FILES = (
     "station.json",
     "web_state.json",
+    "profile-defaults.json",
+    "profile-selection.json",
     "schedule.json",
     "carts.json",
     "time_checks.json",

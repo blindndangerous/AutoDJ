@@ -1112,6 +1112,15 @@ class TestRepeatSettings:
 
 
 class TestProfiles:
+    @pytest.fixture(autouse=True)
+    def valid_profile_defaults(self, bridge):
+        """Keep profile validation realistic despite the mock config's MagicMock values."""
+        cfg = bridge.player._cfg
+        cfg.djmix.beatmatch_max_stretch = 0.3
+        cfg.djmix.filter_sweep_floor_hz = 100.0
+        cfg.replaygain.target_db = -12.0
+        cfg.playback.crossfade_bass_cutoff_hz = 120.0
+
     def test_profiles_empty(self, client) -> None:
         resp = client.get("/api/profiles")
         assert resp.status_code == 200
@@ -1134,6 +1143,17 @@ class TestProfiles:
         assert resp.status_code == 200
         body = tc.get("/api/profiles").json()
         assert "Wakeup" in body["profiles"]
+
+    def test_profile_create_rejects_duplicate_name(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+        assert tc.post("/api/profiles", json={"name": "Wakeup"}).status_code == 200
+        duplicate = tc.post("/api/profiles", json={"name": "Wakeup"})
+        assert duplicate.status_code == 400
+        assert "Wakeup" in tc.get("/api/profiles").json()["profiles"]
 
     def test_profile_invalid_name_rejected(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -1174,7 +1194,7 @@ class TestProfiles:
         resp = tc.post("/api/profiles/Quiet/apply")
         assert resp.status_code == 200
         body = resp.json()
-        assert "beat_sync_fx" in body["applied"]
+        assert "playback" in body["applied"]
         # Bridge set_playback_settings invoked on the mock cfg.
         assert bridge.player._cfg.playback.beat_sync_fx is False
         assert bridge.player._cfg.playback.key_sync_fx is False
@@ -1339,6 +1359,7 @@ class TestProfiles:
         assert tc.post("/api/profiles", json={"name": "Io"}).status_code == 200
         assert tc.get("/api/profiles").status_code == 200
         assert tc.post("/api/profiles/Io/apply").status_code == 200
+        assert tc.post("/api/profiles/apply-defaults").status_code == 200
         assert tc.delete("/api/profiles/Io").status_code == 200
         files = {"file": ("b.wav", wav_bytes(), "audio/wav")}
         assert tc.post("/api/liners/upload", files=files).status_code == 200
@@ -1346,9 +1367,10 @@ class TestProfiles:
         assert tc.delete("/api/liners/file/a.mp3").status_code == 200
 
         for name in (
-            "save",
+            "create",
+            "apply",
             "list_names",
-            "load",
+            "resolve",
             "delete",
             "resolve_liner_path",
             "delete_liner_file",

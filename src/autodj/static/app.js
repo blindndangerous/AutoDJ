@@ -1,4 +1,4 @@
-import { registerSettingsGroup, applySettingsDrafts, loadSettingsDrafts, resetSettingsDrafts, confirmSettingsNavigation, settingsDraftHolds } from "./modules/settings-drafts.js";
+import { registerSettingsGroup, applySettingsDrafts, loadSettingsDrafts, resetSettingsDrafts, confirmSettingsNavigation, settingsDraftHolds, setSettingsProfile } from "./modules/settings-drafts.js";
 // Pure helpers live in ./modules/dom-helpers.js.
 import {
   isDebug,
@@ -235,6 +235,22 @@ btnListen.addEventListener("click", () => {
 });
 // Settings subtabs (./modules/subtabs.js).  Stream shows only in stream mode.
 initSubtabs(document.getElementById("settings-tabs"));
+const settingsProfile = document.getElementById("settings-profile");
+let settingsProfileTarget = "";
+function resetSettingsProfileTarget() {
+  settingsProfileTarget = "";
+  if (settingsProfile) settingsProfile.value = "";
+}
+settingsProfile?.addEventListener("change", async () => {
+  const next = settingsProfile.value;
+  if (next === settingsProfileTarget) return;
+  if (!await confirmSettingsNavigation()) {
+    settingsProfile.value = settingsProfileTarget;
+    return;
+  }
+  settingsProfileTarget = next;
+  await setSettingsProfile(next);
+});
 // Settings > Stream > More formats: the AAC and Opus streams (#50).
 const streamFormats = installStreamFormats({
   doc: document,
@@ -428,6 +444,7 @@ function clearStationViews({ keepSettings = false } = {}) {
 
 function clearProtectedSessionData() {
   resetSettingsDrafts();
+  resetSettingsProfileTarget();
   streamMode.stop();
   clearStationViews();
   btnMute.innerHTML = '<span aria-hidden="true">🔊</span> Mute';
@@ -1380,10 +1397,12 @@ const _profileEls = {
   saveButton: document.getElementById("profile-save"),
   list:       document.getElementById("profile-list"),
   status:     document.getElementById("profiles-status"),
+  profileSelect: settingsProfile,
+  applyDefaultsButton: document.getElementById("profile-apply-defaults"),
+  clockSelect: document.getElementById("profile-clock"),
+  cartSelect: document.getElementById("profile-cart"),
 };
-const profileControls = installProfiles(_profileEls, {
-  getSettings: () => _lastState?.settings || null,
-});
+const profileControls = installProfiles(_profileEls);
 
 const _accessEls = {
   card:     document.getElementById("spanel-access"),
@@ -2018,6 +2037,7 @@ async function switchStation(slug) {
   if (!await confirmLeavingStation(entry.name)) return;
   if (slug === currentStation()) return;
   resetSettingsDrafts();
+  resetSettingsProfileTarget();
   selectStation(slug);
   rememberStationInAddress(slug);
   rememberLastStation(slug);

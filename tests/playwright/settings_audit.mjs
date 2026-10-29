@@ -29,16 +29,20 @@ async function audit(name, launcher) {
     assert.equal(created.status(), 201, await created.text());
     await page.goto(`${BASE}/?station=${slug}#settings`, { waitUntil: "networkidle" });
     const endpoint = `${BASE}/api/stations/${slug}`;
-    const saved = async () => (await (await page.request.get(`${endpoint}/settings`)).json());
+    const runtimeSettings = async () => (await (await page.request.get(`${endpoint}/settings`)).json());
+    const editingSettings = async (profile = "") => (await (await page.request.get(
+      `${endpoint}/settings?profile=${encodeURIComponent(profile)}`)).json());
     await page.locator("#stab-sound").click();
     const panel = page.locator("#spanel-sound");
     assert.equal(await panel.locator("[data-settings-save]").count(), 1);
     const speed = page.locator("#pb-music-speed-number");
-    const original = await saved();
+    const original = await editingSettings();
+    const runtimeBefore = await runtimeSettings();
     const before = original.values.playback.music_speed_percent;
+    assert.equal(runtimeBefore.values.playback.music_speed_percent, before);
     const wanted = before === 1 ? 2 : 1;
     await speed.fill(String(wanted));
-    assert.equal((await saved()).values.playback.music_speed_percent, before);
+    assert.equal((await editingSettings()).values.playback.music_speed_percent, before);
     // The result is said through a status region rendered before its words
     // arrive, and the pressed button keeps focus (WCAG 4.1.3, 2.4.3).
     const status = panel.locator(".settings-save-status");
@@ -49,7 +53,8 @@ async function audit(name, launcher) {
     await panel.locator("[data-settings-save]").focus();
     await page.keyboard.press("Enter");
     assert.equal((await saving).status(), 200);
-    assert.equal((await saved()).values.playback.music_speed_percent, wanted);
+    assert.equal((await editingSettings()).values.playback.music_speed_percent, wanted);
+    assert.equal((await runtimeSettings()).values.playback.music_speed_percent, before);
     await page.waitForFunction(() => document.querySelector("#spanel-sound .settings-save-status")
       .textContent.startsWith("Settings saved for"));
     const focusAfter = (selector) => page.evaluate((target) => {
@@ -59,6 +64,45 @@ async function audit(name, launcher) {
     }, selector);
     assert.deepEqual(await focusAfter("#spanel-sound [data-settings-save]"),
       { kept: true, disabled: false, unavailable: "true" });
+    await page.locator("#stab-access").click();
+    const applyDefaults = page.waitForResponse((response) => response.url() === `${endpoint}/profiles/apply-defaults`
+      && response.request().method() === "POST");
+    await page.locator("#profile-apply-defaults").click();
+    assert.equal((await applyDefaults).status(), 200);
+    assert.equal((await runtimeSettings()).values.playback.music_speed_percent, wanted);
+    const profileName = `Audit ${name}`;
+    await page.locator("#profile-name").fill(profileName);
+    const createProfile = page.waitForResponse((response) => response.url() === `${endpoint}/profiles`
+      && response.request().method() === "POST");
+    await page.locator("#profile-save").click();
+    assert.equal((await createProfile).status(), 200);
+    await page.locator("#settings-profile").selectOption(profileName);
+    await page.locator("#stab-sound").click();
+    await speed.fill("6");
+    await panel.locator("[data-settings-save]").click();
+    await page.waitForFunction(() => document.querySelector("#spanel-sound .settings-save-status")
+      .textContent.startsWith("Settings saved for"));
+    assert.equal((await editingSettings(profileName)).values.playback.music_speed_percent, 6);
+    assert.equal((await runtimeSettings()).values.playback.music_speed_percent, wanted);
+    await speed.fill("7");
+    await page.locator("#settings-profile").selectOption("");
+    await page.getByRole("button", { name: "Stay", exact: true }).click();
+    assert.equal(await page.locator("#settings-profile").inputValue(), profileName);
+    assert.equal(await speed.inputValue(), "7");
+    await panel.locator("[data-settings-discard]").click();
+    await page.waitForFunction(() => document.getElementById("pb-music-speed-number").value === "6");
+    await page.locator("#stab-access").click();
+    const profileApply = page.waitForResponse((response) => response.url() === `${endpoint}/profiles/${encodeURIComponent(profileName)}/apply`
+      && response.request().method() === "POST");
+    await page.getByRole("button", { name: `Apply profile ${profileName}` }).click();
+    assert.equal((await profileApply).status(), 200);
+    assert.equal((await runtimeSettings()).values.playback.music_speed_percent, 6);
+    const profileReapply = page.waitForResponse((response) => response.url() === `${endpoint}/profiles/${encodeURIComponent(profileName)}/apply`
+      && response.request().method() === "POST");
+    await page.getByRole("button", { name: `Apply profile ${profileName}` }).click();
+    assert.equal((await profileReapply).status(), 200);
+    await page.locator("#settings-profile").selectOption("");
+    await page.locator("#stab-sound").click();
     await speed.fill("3");
     await page.locator("#stab-stream").click();
     // The dialog's close event returns focus to its opener a task later, so
@@ -79,12 +123,13 @@ async function audit(name, launcher) {
       { kept: true, disabled: false, unavailable: "true" });
 
     await speed.fill("4");
-    const current = await saved();
+    const current = await editingSettings();
     const concurrent = await page.request.patch(`${endpoint}/settings`, {
       headers: { Origin: ORIGIN },
-      data: { revision: current.revision, changes: { playback: { music_speed_percent: 5 } } },
+      data: { revision: current.revision, profile: "", changes: { playback: { music_speed_percent: 5 } } },
     });
     assert.equal(concurrent.status(), 200);
+    assert.equal((await runtimeSettings()).values.playback.music_speed_percent, 6);
     const conflict = page.waitForResponse((response) => response.url() === `${endpoint}/settings`
       && response.request().method() === "PATCH");
     await panel.locator("[data-settings-save]").click();

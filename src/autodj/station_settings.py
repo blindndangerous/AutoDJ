@@ -263,8 +263,8 @@ class StationSettings:
             "eq": settings["eq"],
         }
 
-    def apply_settings_patch(self, changes: Any) -> None:
-        """Apply validated groups and persist them through the station settings store."""
+    def validate_settings_patch(self, changes: Any) -> Any:
+        """Validate all core settings and file-backed choices before mutation."""
         from autodj.presets import get_preset
         from autodj.settings_bodies import StationSettingsChangesBody
         from autodj.transitions import TRANSITION_EFFECT_NAMES
@@ -274,14 +274,26 @@ class StationSettings:
             getattr(patch, name) is not None for name in StationSettingsChangesBody.model_fields
         ):
             raise ValueError("At least one settings group is required")
-        with self._lock:
-            if patch.preset is not None and patch.preset.name:
-                get_preset(patch.preset.name, self.cfg.presets)
-            if patch.transition is not None and patch.transition.effect.lower() not in (
-                TRANSITION_EFFECT_NAMES
-            ):
-                raise ValueError(f"unknown transition effect: {patch.transition.effect}")
+        if patch.preset is not None and patch.preset.name:
+            get_preset(patch.preset.name, self.cfg.presets)
+        if (
+            patch.transition is not None
+            and patch.transition.effect.lower() not in TRANSITION_EFFECT_NAMES
+        ):
+            raise ValueError(f"unknown transition effect: {patch.transition.effect}")
+        if patch.playback is not None:
+            if patch.playback.stereotool_preset:
+                from autodj.stereotool_presets import preset_path
 
+                preset_path(self.cfg.index.shared_dir, patch.playback.stereotool_preset)
+            self._read_related_artists(patch.playback, restoring=False)
+            self._read_related_tracks(patch.playback, restoring=False)
+        return patch
+
+    def apply_settings_patch(self, changes: Any) -> None:
+        """Apply validated groups and persist them through the station settings store."""
+        with self._lock:
+            patch = self.validate_settings_patch(changes)
             # Playback is the only setter here that can reject file-backed choices;
             # run it before the simple in-memory groups so validation cannot leave a
             # subset applied.

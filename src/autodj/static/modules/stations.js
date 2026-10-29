@@ -87,6 +87,8 @@ export const STATION_ROUTES = Object.freeze([
   "/categories/check",
   "/categories/{category_id}",
   "/profiles/{name}/apply",
+  "/profiles/apply-defaults",
+  "/profiles/{name}/reset",
   "/liners",
   "/liners/upload",
   "/liners/file/{name}",

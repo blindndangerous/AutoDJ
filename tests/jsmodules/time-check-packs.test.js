@@ -55,7 +55,7 @@ afterEach(() => {
 });
 
 function seedTimeCheckDraft(value) {
-  applySettingsDrafts({ revision: "one", values: { time_checks: value } });
+  applySettingsDrafts({ profile: "", revision: "one", values: { time_checks: value } });
 }
 
 describe("Time checks panel text and controls", () => {

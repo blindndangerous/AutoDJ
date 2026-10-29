@@ -336,6 +336,14 @@ class StationPaths:
         return self.state_dir / "liners"
 
     @property
+    def profile_defaults(self) -> Path:
+        return self.state_dir / "profile-defaults.json"
+
+    @property
+    def profile_selection(self) -> Path:
+        return self.state_dir / "profile-selection.json"
+
+    @property
     def profiles(self) -> Path:
         """Saved profiles."""
         return self.state_dir / "profiles"

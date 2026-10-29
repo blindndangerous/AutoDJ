@@ -83,9 +83,10 @@ function settingsServer(initialValues = {}) {
   let nextFailure = null;
   const handle = (url, options = {}) => {
     // api-client routes /api/settings to the selected station's settings URL.
-    if (url !== "/api/settings" && !/^\/api\/stations\/[^/]+\/settings$/.test(url)) return null;
+    const target = new URL(url, "http://localhost");
+    if (target.pathname !== "/api/settings" && !/^\/api\/stations\/[^/]+\/settings$/.test(target.pathname)) return null;
     if (String(options.method || "GET").toUpperCase() !== "PATCH") {
-      return jsonResponse({ revision, values: globalThis.structuredClone(values) });
+      return jsonResponse({ revision, profile: target.searchParams.get("profile") ?? undefined, values: globalThis.structuredClone(values) });
     }
     if (nextFailure) {
       const failure = nextFailure;
@@ -98,7 +99,7 @@ function settingsServer(initialValues = {}) {
       values[group] = { ...(values[group] || {}), ...changes };
     }
     revision = revision === "one" ? "two" : `next-${revision}`;
-    return jsonResponse({ revision, settings: { revision, values: globalThis.structuredClone(values) },
+    return jsonResponse({ revision, settings: { revision, profile: body.profile, values: globalThis.structuredClone(values) },
       applied: Object.keys(body.changes), failed: {} });
   };
   handle.failNext = (payload, status = 503) => { nextFailure = { payload, status }; };
@@ -111,7 +112,7 @@ async function settingsDraftApi() {
 
 async function applyAppSettings(values, revision = "one") {
   const { applySettingsDrafts } = await settingsDraftApi();
-  applySettingsDrafts({ revision, values }, document);
+  applySettingsDrafts({ profile: "", revision, values }, document);
 }
 
 async function saveSettingsControl(control) {

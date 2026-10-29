@@ -372,6 +372,8 @@ class StationSettingsChangesBody(BaseModel):
     station: dict[str, Any] | None = None
     live: dict[str, Any] | None = None
     recording: dict[str, Any] | None = None
+    clock: dict[str, Any] | None = None
+    cart: dict[str, Any] | None = None
 
 
 class StationSettingsPatchBody(BaseModel):
@@ -381,3 +383,4 @@ class StationSettingsPatchBody(BaseModel):
 
     revision: str = Field(min_length=1, max_length=64)
     changes: dict[str, Any]
+    profile: str | None = None

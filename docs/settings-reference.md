@@ -40,15 +40,69 @@ edits remain pending. Output-mode changes take effect after restarting the stati
 | Live DJ | Station talkover configuration; available while stopped |
 | Stations | Selected station's output, scheduling timezone, upload limit and log label; shared server time display |
 
-Relay, scheduled-event, profile and DJ-account forms submit individual records.
+Relay, scheduled-event and DJ-account forms submit individual records. Profile
+creation and editing use the selected profile in Settings and its shared draft
+save; activation stays on the Profiles tab.
 Uploads, credentials, pairing and destructive actions also retain their explicit
 actions; they are not part of a tab's configuration save. Operational recording
 Start/Stop remains separate from recording configuration.
 The **Start with the server** checkbox edits one station record in **Stations**;
 Save and Discard appear on that row while its value differs from the server.
 
-Existing station JSON, private credentials, profiles and browser preference keys
-retain their storage owners and values. The former browser key
+### Profiles
+
+In Settings, choose **Station defaults** or a saved profile from the **Editing**
+combobox. This chooses what you are editing; it does not change what is on air.
+Edits use the Settings tab's Save changes and Discard changes controls. A change
+to another profile or to Station defaults warns before discarding edits. Cancel
+keeps the current choice and draft. Profile edits remain bound to the selected
+target if a schedule or another control applies a different profile while you
+are editing.
+
+Saved profiles contain overrides of station defaults. Saving a value equal to
+the saved default leaves it inherited, so a later default change takes effect
+the next time the profile is applied or AutoDJ starts. Explicit `false` and `0`
+are saved overrides. Existing partial profiles keep their non-null values as
+overrides; omitted settings and legacy `null` values inherit from station
+defaults. Saving or editing a profile, including the active one, does not
+change on-air settings. Use **Apply** in **Settings**, **Profiles and access**,
+**Saved profiles** to activate it. Each Apply resolves the latest saved station
+defaults and the selected profile's overrides; playback already in progress
+continues until an explicit Apply.
+
+To return to station defaults, use **Apply station defaults** in **Profiles and
+access**. This action is independent of the **Editing** selection. Each saved
+profile also has its own **Apply** action in the profile list; applying a profile
+does not change which target the Settings form edits. **Reset** requires confirmation; cancel
+leaves the saved profile and current draft intact. Deletion also requires
+confirmation. The Profiles tab shows which profile is active; Browser access
+on that tab remains a separate device-management feature.
+
+Profiles can override station programming and playback controls: preset,
+transitions, DJ mixing, song picking and repeat rules, BPM range, discovery,
+crossfade EQ, breaks, time checks, the selected clockwheel and the shown cart
+page. They do not own presentation choices (`key_notation`, `key_prefer_flats`,
+or `show_lyrics`) or playback-performance controls such as
+`prefetch_next_track`. Shared library folders, catalog and analysis settings
+remain shared-library settings. Station identity, time zone, audio output,
+live talkover and recording configuration, stream destinations and public
+listener access remain station infrastructure. Server settings and worker
+pairing remain shared-server settings; browser preferences, credentials and
+audio devices keep their browser, credential or machine owner. Profiles do not
+save schedule definitions, library data, access credentials, or operational
+recording actions.
+
+The active profile identity (or **Station defaults**) is saved in
+`stations/<slug>/profile-selection.json`. Station defaults are stored in
+`stations/<slug>/profile-defaults.json`, and profile overrides in
+`stations/<slug>/profiles/<name>.json`. On startup AutoDJ reads these files and
+resolves them again, so edits made while the server was stopped take effect at
+startup. It does not watch for or reconcile external JSON edits while running.
+For implementation and verification scope, see
+[Proposed ADR 18](adr/0018-profiles-store-overrides-of-station-defaults.md).
+
+Existing station JSON, private credentials and browser preference keys retain
+their storage owners and values. The former browser key
 `autodj.announceTrackChangesEverywhere` migrates once to
 `autodj.announceTrackChanges`: an existing canonical value wins; otherwise `on`
 becomes `all` and other values become `now`. The old key is removed only after

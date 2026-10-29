@@ -197,12 +197,12 @@ describe("applySettingsState", () => {
     applySettingsState({ playback: { loudness_processing: "stereotool" } }, els);
     expect(els.pbLoudness.value).toBe("stereotool");
     installSettingsControls(els);
-    applySettingsDrafts({ revision: "one", values: { playback: { loudness_processing: "off" } } }, document);
+    applySettingsDrafts({ profile: "", revision: "one", values: { playback: { loudness_processing: "off" } } }, document);
     els.pbLoudness.value = "stereotool";
     els.pbLoudness.dispatchEvent(new Event("change", { bubbles: true }));
     expect(api.requests).toHaveLength(0);
     await saveSettingsPanel(panel);
-    expect(api.requests).toEqual([{ revision: "one", changes: { playback: { loudness_processing: "stereotool" } } }]);
+    expect(api.requests).toEqual([{ profile: "", revision: "one", changes: { playback: { loudness_processing: "stereotool" } } }]);
   });
 
   it("hides settings that do not apply to saved-point transitions", () => {
@@ -333,7 +333,7 @@ function settingsApi(initial, failPatch = false) {
   let values = JSON.parse(JSON.stringify(initial));
   const requests = [];
   const fetch = vi.fn(async (url, options = {}) => {
-    if (url !== "/api/settings") throw new Error(`Unexpected request: ${url}`);
+    if (url !== "/api/settings" && url !== "/api/settings?profile=") throw new Error(`Unexpected request: ${url}`);
     if (options.method === "PATCH") {
       const request = JSON.parse(options.body);
       requests.push(request);
@@ -352,7 +352,7 @@ function settingsApi(initial, failPatch = false) {
         message: "",
       }), { headers: { "Content-Type": "application/json" } });
     }
-    return new globalThis.Response(JSON.stringify({ revision, values }), {
+    return new globalThis.Response(JSON.stringify({ revision, profile: "", values }), {
       headers: { "Content-Type": "application/json" },
     });
   });
@@ -389,7 +389,7 @@ describe("settings drafts from settings controls", () => {
     expect(api.fetch).toHaveBeenCalledTimes(1);
 
     await saveSettingsPanel(panel);
-    expect(api.requests).toEqual([{ revision: "revision-1", changes: { djmix: { beatmatch: true } } }]);
+    expect(api.requests).toEqual([{ profile: "", revision: "revision-1", changes: { djmix: { beatmatch: true } } }]);
     expect(els.djBeatmatch.checked).toBe(true);
     expect(els.djDropMix.checked).toBe(false);
   });
@@ -397,14 +397,14 @@ describe("settings drafts from settings controls", () => {
   it("keeps a failed patch as a draft and ignores the old pushed value", async () => {
     const { panel, els } = mount();
     const api = settingsApi(initial, true);
-    applySettingsDrafts({ revision: "revision-1", values: initial }, document);
+    applySettingsDrafts({ profile: "", revision: "revision-1", values: initial }, document);
     els.djBeatmatch.checked = true;
     els.djBeatmatch.dispatchEvent(new Event("change", { bubbles: true }));
-    applySettingsDrafts({ revision: "revision-old", values: initial }, document);
+    applySettingsDrafts({ profile: "", revision: "revision-old", values: initial }, document);
     expect(els.djBeatmatch.checked).toBe(true);
 
     await expect(saveSettingsPanel(panel)).resolves.toBe(false);
-    expect(api.requests).toEqual([{ revision: "revision-1", changes: { djmix: { beatmatch: true } } }]);
+    expect(api.requests).toEqual([{ profile: "", revision: "revision-1", changes: { djmix: { beatmatch: true } } }]);
     expect(els.djBeatmatch.checked).toBe(true);
     expect(panel.querySelector("[data-settings-save]").disabled).toBe(false);
     await vi.waitFor(() => expect(panel.querySelector(".settings-save-status").textContent)

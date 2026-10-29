@@ -33,6 +33,7 @@ describe("relay settings", () => {
       remove: vi.fn(), announce: vi.fn(),
     });
     applySettingsDrafts({
+      profile: "",
       revision: "test-revision",
       values: { stream: {
         station_name: "AutoDJ", genre: "", description: "", url: "",

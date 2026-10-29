@@ -211,6 +211,12 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     (liners / "station.mp3").write_bytes(b"liner")
     (profiles / "night").mkdir(parents=True)
     (profiles / "night" / "profile.json").write_text("{}", encoding="utf-8")
+    profile_state = {
+        "profile-defaults.json": '{"playback": {"crossfade_seconds": 4}}',
+        "profile-selection.json": '{"profile": "Night"}',
+    }
+    for filename, content in profile_state.items():
+        (active / filename).write_text(content, encoding="utf-8")
     dj_meta = _dj_meta(cfg)
     dj_meta.execute("INSERT INTO cues VALUES ('in the WAL')")
     dj_meta.commit()
@@ -229,6 +235,8 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     (library / "related-artists.toml").write_text("replaced links", encoding="utf-8")
     (library / "related-tracks.toml").write_text("replaced groups", encoding="utf-8")
     (liners / "extra.mp3").write_bytes(b"new")
+    for filename in profile_state:
+        (active / filename).write_text("{}", encoding="utf-8")
     with closing(_dj_meta(cfg)) as conn:
         conn.execute("DELETE FROM cues")
         conn.commit()
@@ -271,6 +279,8 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
         assert conn.execute("SELECT points FROM catalog_entries").fetchall() == [('{"start": 1}',)]
         assert conn.execute("SELECT title FROM catalog_entries").fetchall() == [("Kept",)]
         assert conn.execute("SELECT title FROM play_history").fetchall() == [("Kept",)]
+    for filename, content in profile_state.items():
+        assert (active / filename).read_text(encoding="utf-8") == content
     assert not list(active.parent.glob(".*restore-*"))
 
 

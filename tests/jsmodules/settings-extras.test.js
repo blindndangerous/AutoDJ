@@ -5,7 +5,7 @@ import { applyMixSettings, installMixSettings, resetMixSettings } from
   "../../src/autodj/static/modules/mix-settings.js";
 import { applySettingsDrafts, resetSettingsDrafts, saveSettingsPanel } from
   "../../src/autodj/static/modules/settings-drafts.js";
-import { installProfiles, profileFromSettings } from
+import { installProfiles } from
   "../../src/autodj/static/modules/profiles.js";
 import {
   installAccess, lastSeenWords, REVOKED_REASON, SIGNED_OUT_REASON, spokenCode,
@@ -91,7 +91,7 @@ describe("mix settings", () => {
         applied: Object.keys(body.changes), failed: {} }), { headers: { "Content-Type": "application/json" } });
     }));
     installMixSettings(els, { settingsStatus });
-    applySettingsDrafts({ revision: "one", values: initial });
+    applySettingsDrafts({ profile: "", revision: "one", values: initial });
     return { panel, els, settingsStatus, requests };
   }
 
@@ -107,7 +107,7 @@ describe("mix settings", () => {
     els.djMaxStretch.dispatchEvent(new Event("change", { bubbles: true }));
     expect(requests).toHaveLength(0);
     await saveSettingsPanel(panel);
-    expect(requests).toEqual([{ revision: "one", changes: {
+    expect(requests).toEqual([{ profile: "", revision: "one", changes: {
       playback: { transition_wet_mix: 0.75 }, djmix: { beatmatch_max_stretch: 0.06 },
     } }]);
     expect(els.pbCrossfade.value).toBe("4");
@@ -176,7 +176,7 @@ describe("mix settings", () => {
         applied: ["playback"], failed: {} }), { headers: { "Content-Type": "application/json" } });
     }));
     installMixSettings(els, { settingsStatus: panel.querySelector("#settings-status") });
-    applySettingsDrafts({ revision: "one", values: initial });
+    applySettingsDrafts({ profile: "", revision: "one", values: initial });
     els.pbLoudness.value = "replaygain";
     els.pbIntroLift.value = "5";
     els.pbRgTarget.value = "-12";
@@ -199,7 +199,7 @@ describe("mix settings", () => {
     els.pbStereoAgcDrive.dispatchEvent(new Event("input", { bubbles: true }));
 
     await saveSettingsPanel(panel);
-    expect(requests).toEqual([{ revision: "one", changes: { playback: {
+    expect(requests).toEqual([{ profile: "", revision: "one", changes: { playback: {
       loudness_processing: "replaygain", intro_lift_max_db: 5,
       replaygain_target_db: -12, replaygain_max_clip_safe_gain: 1.2,
       stereotool_input_trim_db: -2, stereotool_agc_drive_db: 5.5,
@@ -230,31 +230,72 @@ describe("profiles", () => {
   function setup(fetchImpl) {
     document.body.innerHTML = `
       <details id="card"><summary>Profiles</summary>
-        <input id="name"><button id="save">Save profile</button>
+        <input id="name"><button id="save">Create profile</button>
+        <select id="profile"><option value="">Station defaults</option></select>
+        <select id="clock"><option value="">Use station default</option></select>
+        <select id="cart"><option value="">Use station default</option></select>
+        <button id="apply-defaults">Apply station defaults</button>
         <ul id="list"></ul><p id="status"></p></details>${CONFIRM}`;
     vi.stubGlobal("fetch", fetchImpl);
     const $ = (id) => document.getElementById(id);
     const els = {
       card: $("card"), nameInput: $("name"), saveButton: $("save"),
-      list: $("list"), status: $("status"),
+      list: $("list"), status: $("status"), profileSelect: $("profile"),
+      clockSelect: $("clock"), cartSelect: $("cart"),
+      applyDefaultsButton: $("apply-defaults"),
     };
-    const settings = {
-      preset: "chill", bpm_range: { lo: 90, hi: 120 }, djmix: { harmonic_mode: "strict" },
-      playback: { crossfade_seconds: 4, liners_pick_mode: "random", library_size: 9 },
-    };
-    installProfiles(els, { getSettings: () => settings });
+    installProfiles(els);
     const answer = confirmDialog();
     els.card.open = true;
     els.card.dispatchEvent(new Event("toggle"));
     return { els, answer };
   }
 
-  it("saves only the fields a profile holds", () => {
-    const body = profileFromSettings("Late", {
-      preset: null, bpm_range: {}, djmix: {}, playback: { library_size: 9, crossfade_seconds: 2 },
+  it("creates an empty profile and offers clock and cart references", async () => {
+    const fetchImpl = vi.fn((url, init = {}) => {
+      if (init.method === "POST") return json({ profiles: ["Late"], active: null, clockwheels: ["Morning"], cart_pages: ["Main"] });
+      return json({ profiles: [], active: null, clockwheels: ["Morning"], cart_pages: ["Main"] });
     });
-    expect(body).not.toHaveProperty("library_size");
-    expect(body).toMatchObject({ name: "Late", crossfade_seconds: 2, preset: null });
+    const { els } = setup(fetchImpl);
+    els.nameInput.value = "Late";
+    els.saveButton.click();
+    await vi.waitFor(() => expect(els.status.textContent).toBe("Created profile Late."));
+    expect(JSON.parse(fetchImpl.mock.calls.find(([, init]) => init?.method === "POST")[1].body)).toEqual({ name: "Late" });
+    expect([...els.clockSelect.options].map((option) => option.textContent)).toEqual(["No clockwheel", "Morning"]);
+    expect([...els.cartSelect.options].map((option) => option.textContent)).toEqual(["Main"]);
+  });
+
+  it("activates station defaults explicitly", async () => {
+    let active = "Late";
+    const fetchImpl = vi.fn((url, init = {}) => {
+      if (url === "/api/profiles/apply-defaults" && init.method === "POST") active = null;
+      return json({ profiles: ["Late"], active });
+    });
+    const { els } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.applyDefaultsButton.disabled).toBe(false));
+    els.applyDefaultsButton.click();
+    await vi.waitFor(() => expect(els.status.textContent).toBe("Applied station defaults."));
+    expect(fetchImpl.mock.calls.some(([url, init]) => url === "/api/profiles/apply-defaults" && init?.method === "POST")).toBe(true);
+  });
+
+  // ADR-0018-03
+  it("keeps Apply available for the active profile so it can be reapplied", async () => {
+    const fetchImpl = vi.fn(() => json({ profiles: ["Late"], active: "Late" }));
+    const { els } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
+
+    const row = els.list.querySelector("li");
+    const apply = row.querySelector("button");
+    expect(row.querySelector(".profile-name").textContent).toBe("Late (active)");
+    expect(apply.textContent).toBe("Apply");
+    expect(apply.getAttribute("aria-label")).toBe("Apply profile Late");
+    expect(apply.disabled).toBe(false);
+
+    apply.click();
+
+    await vi.waitFor(() => expect(els.status.textContent).toBe("Applied profile Late."));
+    expect(fetchImpl.mock.calls.some(([url, init]) =>
+      url === "/api/profiles/Late/apply" && init?.method === "POST")).toBe(true);
   });
 
   it("asks before deleting and then moves focus to the next row", async () => {
@@ -276,6 +317,40 @@ describe("profiles", () => {
 
     await vi.waitFor(() => expect(els.status.textContent).toBe("Deleted profile Early."));
     expect(document.activeElement.getAttribute("aria-label")).toBe("Delete profile Late");
+  });
+
+  it("confirms reset before removing a profile's overrides", async () => {
+    const fetchImpl = vi.fn(() => json({ profiles: ["Late"], active: null }));
+    const { els, answer } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
+    els.list.querySelector('[aria-label="Reset profile Late to defaults"]').click();
+    await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
+    await answer("cancel");
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    els.list.querySelector('[aria-label="Reset profile Late to defaults"]').click();
+    await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
+    await answer("confirm");
+    await vi.waitFor(() => expect(fetchImpl.mock.calls.some(([url, init]) => url.endsWith("/Late/reset") && init?.method === "POST")).toBe(true));
+    await vi.waitFor(() => expect(els.status.textContent).toBe("Reset profile Late to station defaults."));
+  });
+
+  it("reloads the selected target after reset without applying it", async () => {
+    const fetchImpl = vi.fn((url) => {
+      if (url.startsWith("/api/settings")) return json({
+        revision: "profile-revision", profile: "Late",
+        values: { clock: { name: null }, cart: { page: null } },
+      });
+      return json({ profiles: ["Late"], active: null, clockwheels: [], cart_pages: [] });
+    });
+    const { els, answer } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.profileSelect.querySelector('option[value="Late"]')).not.toBeNull());
+    els.profileSelect.value = "Late";
+    els.list.querySelector('[aria-label="Reset profile Late to defaults"]').click();
+    await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
+    await answer("confirm");
+    await vi.waitFor(() => expect(els.status.textContent).toBe("Reset profile Late to station defaults."));
+    expect(fetchImpl.mock.calls.some(([url]) => url === "/api/settings?profile=Late")).toBe(true);
+    expect(fetchImpl.mock.calls.some(([url]) => url.endsWith("/Late/apply"))).toBe(false);
   });
 
   it("keeps profile controls on an unchanged refresh", async () => {
@@ -342,7 +417,7 @@ describe("profiles", () => {
       ? json({ detail: "Profile Late uses a preset that does not exist" }, 400)
       : json({ profiles: ["Late"] })));
     const { els } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("button")).toHaveLength(2));
+    await vi.waitFor(() => expect(els.list.querySelectorAll("button")).toHaveLength(3));
     const apply = els.list.querySelector('[aria-label="Apply profile Late"]');
     els.nameInput.focus();
 
@@ -607,7 +682,7 @@ describe("browser access", () => {
   });
 
   it("signs this browser out when its own entry is revoked", async () => {
-    const fetchImpl = vi.fn((url, init = {}) => json(init.method === "DELETE"
+    const fetchImpl = vi.fn((_url, init = {}) => json(init.method === "DELETE"
       ? { revoked: "b".repeat(32), signed_out: true } : { pairing: true, devices }));
     const { els, onSignedOut, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));

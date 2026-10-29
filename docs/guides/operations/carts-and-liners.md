@@ -37,9 +37,10 @@ browser playback the page that plays the cart plays it, as the voice liner Test 
 
 The server keeps the wall in `carts.json` in the station's folder and the uploads in its
 `carts/` folder. The file is versioned; one that cannot be read is moved aside as
-`carts.json.bad-<id>` and an empty wall loads. Backups include the wall and the uploads. Saving
-a profile records the name of the cart page shown, and applying the profile shows that page; a
-profile whose page has been renamed is refused.
+`carts.json.bad-<id>` and an empty wall loads. Backups include the wall and the uploads. A saved
+profile can override the name of the cart page shown. Editing or saving the profile only saves
+that override; applying the profile shows the page. A profile that refers to a renamed page
+cannot be applied.
 
 A cart can also have play dates; see [Liner and cart play dates](#liner-and-cart-play-dates).
 

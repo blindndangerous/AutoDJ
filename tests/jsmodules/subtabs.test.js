@@ -32,7 +32,7 @@ describe("tabForKey", () => {
 });
 
 describe("Settings subtabs markup", () => {
-  it("puts every Settings control in a panel named by its tab, with no aria-controls", () => {
+  it("keeps settings in their named panels with one editing target above the tabs", () => {
     installIndex();
     const section = byId("panel-settings");
     expect(section.querySelector(":scope > h2").textContent).toBe("Settings");
@@ -53,7 +53,12 @@ describe("Settings subtabs markup", () => {
     }
     const panels = [...section.querySelectorAll('[role="tabpanel"]')];
     for (const control of section.querySelectorAll("input, select, textarea")) {
-      expect(panels.some((panel) => panel.contains(control)), control.id).toBe(true);
+      if (control.id === "settings-profile") {
+        expect(section.querySelector('label[for="settings-profile"]').textContent).toBe("Editing");
+        expect(panels.some((panel) => panel.contains(control))).toBe(false);
+      } else {
+        expect(panels.some((panel) => panel.contains(control)), control.id).toBe(true);
+      }
     }
   });
 

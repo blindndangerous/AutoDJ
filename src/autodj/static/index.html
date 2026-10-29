@@ -727,6 +727,10 @@
   <!-- Shared polite status region for Settings saves and failures. -->
   <p>Changes stay in the form until you choose Save changes. Discard changes restores the saved settings. Record editors and actions have their own buttons.</p>
   <div id="settings-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+  <div class="settings-row profile-target-row">
+    <label for="settings-profile">Editing</label>
+    <select id="settings-profile"><option value="">Station defaults</option></select>
+  </div>
 
   <!-- Like the section tabs, these carry no aria-controls: that relation
        made NVDA speak the focused tab twice.  data-panel names the panel,
@@ -2686,23 +2690,27 @@
     <!-- profiles.js and devices.js load their lists when this panel is
          seen; subtabs.js gives it the open and toggle of a card. -->
     <p class="card-desc">
-      Save a mix setup and restore it later. Profiles include the preset, tempo range, key matching, transition mode and fade lengths, track selection, output processing, effect sync, beatmatch on skip, and liner enable and rotation settings.
+      Station defaults provide the starting settings. Profiles save selected overrides; choose Apply to use a profile with the latest defaults.
     </p>
     <div id="profiles-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <fieldset>
-      <legend>Save the current settings</legend>
+      <legend>Create a profile</legend>
       <div class="settings-row">
         <label for="profile-name">Profile name</label>
-        <input type="text" id="profile-name" maxlength="64" autocomplete="off"
-               aria-describedby="profile-name-desc">
-        <button type="button" id="profile-save">Save profile</button>
+        <input type="text" id="profile-name" maxlength="64" autocomplete="off">
+        <button type="button" id="profile-save">Create profile</button>
       </div>
-      <span class="setting-desc" id="profile-name-desc">
-        Letters, digits, spaces, dashes and underscores, up to 64 characters.  Saving under a name that already exists asks before replacing it.
-      </span>
+      <p>Choose the profile in Editing above to change its saved overrides. Creating a profile starts with no overrides.</p>
     </fieldset>
     <h4 id="profile-list-heading">Saved profiles</h4>
+    <button type="button" id="profile-apply-defaults">Apply station defaults</button>
     <ul id="profile-list" aria-labelledby="profile-list-heading"></ul>
+    <div class="settings-row">
+      <label for="profile-clock">Clockwheel</label>
+      <select id="profile-clock"><option value="">No clockwheel</option></select>
+      <label for="profile-cart">Cart page</label>
+      <select id="profile-cart"></select>
+    </div>
 
     <!-- Browser access: pairing or names owned by the signed-in SSO user. -->
     <h4>Browser access</h4>
