@@ -247,25 +247,9 @@ def _validate_legacy_history(index_dir: Path) -> None:
         raise ValueError("legacy play-history JSON is invalid; no files were changed") from exc
     if not isinstance(rows, list):
         raise ValueError("legacy play-history must be a JSON list; no files were changed")
-    from autodj.catalog import LibraryCatalog
+    from autodj.catalog import _legacy_history_duration
 
-    invalid = 0
-    for row in rows:
-        if not isinstance(row, dict):
-            invalid += 1
-            continue
-        if (
-            not isinstance(row.get("title"), str)
-            or not isinstance(row.get("artist"), str)
-            or LibraryCatalog._duration(row.get("duration")) is None
-            or not LibraryCatalog._valid_played_at(row.get("played_at"))
-            or ("path" in row and not isinstance(row["path"], str))
-            or ("event_id" in row and (not isinstance(row["event_id"], str) or not row["event_id"]))
-            or ("station" in row and (not isinstance(row["station"], str) or not row["station"]))
-            or ("interrupted" in row and type(row["interrupted"]) is not bool)
-            or ("performances" in row and LibraryCatalog._count(row["performances"]) is None)
-        ):
-            invalid += 1
+    invalid = sum(_legacy_history_duration(row) is None for row in rows)
     if invalid:
         raise ValueError(f"legacy play-history has {invalid} invalid row(s); no files were changed")
 
