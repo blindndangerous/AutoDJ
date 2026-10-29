@@ -1391,6 +1391,8 @@ def install_time_checks(router: StationRouter) -> None:
             return _file_error(exc)
         except StationControlError as exc:
             return JSONResponse(status_code=409, content={"detail": str(exc)})
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
         return {**await asyncio.to_thread(checks.status), "removed": name}
 
     @router.post("/time-checks/clips", response_model=None)
