@@ -232,10 +232,10 @@ describe("profiles", () => {
       <details id="card"><summary>Profiles</summary>
         <input id="name"><button id="save">Create profile</button>
         <select id="profile"><option value="">Station defaults</option></select>
-        <select id="clock"><option value="">Use station default</option></select>
-        <select id="cart"><option value="">Use station default</option></select>
         <button id="apply-defaults">Activate station defaults</button>
-        <ul id="list"></ul><p id="status"></p></details>${CONFIRM}`;
+        <ul id="list"></ul><p id="status"></p></details>
+      <div id="spanel-picking" role="tabpanel"><select id="clock"></select></div>
+      <div id="spanel-announcements" role="tabpanel"><select id="cart"></select></div>${CONFIRM}`;
     vi.stubGlobal("fetch", fetchImpl);
     const $ = (id) => document.getElementById(id);
     const els = {
@@ -263,6 +263,34 @@ describe("profiles", () => {
     expect(JSON.parse(fetchImpl.mock.calls.find(([, init]) => init?.method === "POST")[1].body)).toEqual({ name: "Late" });
     expect([...els.clockSelect.options].map((option) => option.textContent)).toEqual(["No clockwheel", "Morning"]);
     expect([...els.cartSelect.options].map((option) => option.textContent)).toEqual(["Main"]);
+  });
+
+  it("saves clock and cart drafts from their own tabs without a Profiles save bar", async () => {
+    const values = { clock: { name: "Morning" }, cart: { page: "Main" } };
+    const writes = [];
+    const fetchImpl = vi.fn((url, init = {}) => {
+      if (init.method === "PATCH") {
+        const body = JSON.parse(init.body);
+        writes.push(body.changes);
+        Object.assign(values, body.changes);
+        return json({ revision: "two", settings: { revision: "two", values },
+          applied: Object.keys(body.changes), failed: {} });
+      }
+      if (url.startsWith("/api/settings")) return json({ profile: "", revision: "one", values });
+      return json({ profiles: [], clockwheels: ["Morning", "Evening"], cart_pages: ["Main", "Night"] });
+    });
+    const { els } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.clockSelect.value).toBe("Morning"));
+    expect(els.card.querySelector("[data-settings-save]")).toBeNull();
+    els.clockSelect.value = "Evening";
+    els.clockSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    els.cartSelect.value = "Night";
+    els.cartSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await saveSettingsPanel(document.getElementById("spanel-picking"));
+    expect(writes).toEqual([{ clock: { name: "Evening" } }]);
+    expect(els.cartSelect.value).toBe("Night");
+    await saveSettingsPanel(document.getElementById("spanel-announcements"));
+    expect(writes).toEqual([{ clock: { name: "Evening" } }, { cart: { page: "Night" } }]);
   });
 
   it("activates station defaults explicitly", async () => {

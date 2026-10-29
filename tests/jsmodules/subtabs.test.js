@@ -49,8 +49,8 @@ describe("Settings subtabs markup", () => {
     expect(globalList).not.toBeNull();
     expect(outer.querySelectorAll('[role="tablist"]')).toHaveLength(3);
     for (const list of [profileList, stationList, globalList]) expect(list.hidden).toBe(false);
-    expect(profileList.querySelectorAll('[role="tab"]')).toHaveLength(5);
-    expect(stationList.querySelectorAll('[role="tab"]')).toHaveLength(3);
+    expect(profileList.querySelectorAll('[role="tab"]')).toHaveLength(4);
+    expect(stationList.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect([...globalList.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Server", "Preferences"]);
     expect(profileList.compareDocumentPosition(stationList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(stationList.compareDocumentPosition(globalList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -69,6 +69,9 @@ describe("Settings subtabs markup", () => {
       expect(panel.getAttribute("aria-labelledby")).toBe(tab.id);
       expect(panel.querySelector(":scope > h3").textContent).toBe(tab.textContent);
     }
+    expect(byId("profile-clock").closest('[role="tabpanel"]').id).toBe("spanel-picking");
+    expect(byId("profile-cart").closest('[role="tabpanel"]').id).toBe("spanel-announcements");
+    expect(byId("spanel-access").dataset.settingsKind).toBe("station");
     const panels = [...section.querySelectorAll('[role="tabpanel"]')];
     for (const control of section.querySelectorAll("input, select, textarea")) {
       if (control.id === "settings-profile") {
@@ -122,7 +125,7 @@ describe("initSubtabs", () => {
     expect(byId("spanel-mixing").hidden).toBe(true);
 
     press(document.activeElement, "End");
-    expect(document.activeElement).toBe(byId("stab-access"));
+    expect(document.activeElement).toBe(byId("stab-announcements"));
     press(document.activeElement, "ArrowRight");
     expect(document.activeElement).toBe(byId("stab-mixing"));
     expect(ui.selected).toBe("mixing");
@@ -136,6 +139,9 @@ describe("initSubtabs", () => {
     expect(document.activeElement).toBe(byId("stab-stream"));
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-stations"));
+    press(document.activeElement, "ArrowLeft");
+    expect(document.activeElement).toBe(byId("stab-access"));
+    expect(byId("settings-profile").closest(".profile-target-row").hidden).toBe(true);
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-schedule"));
     byId("stab-server").focus();
@@ -179,10 +185,10 @@ describe("initSubtabs", () => {
     expect(byId("spanel-stream").hidden).toBe(false);
     ui.setTabHidden("stream", true);
     expect(byId("stab-stream").hidden).toBe(true);
-    expect(ui.selected).toBe("stations");
+    expect(ui.selected).toBe("access");
     expect(byId("spanel-stream").hidden).toBe(true);
     ui.focusSelected();
-    expect(document.activeElement).toBe(byId("stab-stations"));
+    expect(document.activeElement).toBe(byId("stab-access"));
   });
 
   it("tells outer and inner sections when they are seen, including when Settings hides", async () => {

@@ -1,4 +1,4 @@
-// Settings > Profiles: create and edit saved overrides, activate profiles,
+// Settings > Station > Profiles: create and edit saved overrides, activate profiles,
 // and reset or delete them.
 //
 // The list loads when the Profiles subtab is shown. Every result is said
@@ -281,11 +281,11 @@ export function installProfiles(els) {
   const clock = els.clockSelect;
   const cart = els.cartSelect;
   if (clock) registerSettingsGroup({
-    panel: card, group: "clock", controls: [clock], loadSettings: false, read: () => ({ name: clock.value || null }),
+    panel: clock.closest('[role="tabpanel"]') || card, group: "clock", controls: [clock], loadSettings: false, read: () => ({ name: clock.value || null }),
     write: (value) => { if ("name" in value) showChoice(clock, value.name); },
   });
   if (cart) registerSettingsGroup({
-    panel: card, group: "cart", controls: [cart], loadSettings: false, read: () => ({ page: cart.value || null }),
+    panel: cart.closest('[role="tabpanel"]') || card, group: "cart", controls: [cart], loadSettings: false, read: () => ({ page: cart.value || null }),
     write: (value) => { if ("page" in value) showChoice(cart, value.page); },
   });
   // After a station switch (#70): the open list shows the new station's.

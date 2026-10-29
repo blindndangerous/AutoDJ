@@ -45,7 +45,7 @@ edits remain pending. Output-mode changes take effect after restarting the stati
 | Preferences | Browser display, keyboard and audio-device preferences |
 
 Settings keeps three heading-labeled tab groups visible: **Profile**
-(five tabs), **Station** (Stations, Broadcasting and Schedule),
+(four tabs), **Station** (Profiles, Stations, Broadcasting and Schedule),
 and **Global** (Server and Preferences). Each
 tab opens its settings panel; arrow, Home and End navigation stays within its
 group. The **Profile to edit** selector follows all three groups and is hidden
@@ -55,8 +55,8 @@ preferences profile overrides. Presentation, lyrics, key notation and prefetch
 are station-owned settings in Stations.
 
 Relay, scheduled-event and DJ-account forms submit individual records. Profile
-creation and editing use the selected profile in Settings and its shared draft
-save; activation stays on the Profiles tab.
+edits use the selected profile in Settings and its shared draft save. Creation,
+activation, reset and deletion have their own buttons on Station > Profiles.
 Uploads, credentials, pairing and destructive actions also retain their explicit
 actions; they are not part of a tab's configuration save. Operational recording
 Start/Stop remains separate from recording configuration.
@@ -88,7 +88,7 @@ stores the edits without switching back. Saving **Station defaults** applies
 its edited groups to the current active selection: inherited values update,
 explicit profile overrides remain, and active identity does not change.
 
-To activate Station defaults, use **Activate station defaults** in **Profile**,
+To activate Station defaults, use **Activate station defaults** in **Station**,
 **Profiles**. This action is independent of the **Profile to edit** selection. Each saved
 profile also has its own **Activate** action in the profile list; activation does
 not change which target the Settings form edits. The picker marks the active
@@ -100,7 +100,9 @@ managed separately in the Server tab.
 Profiles can override station programming and playback controls: preset,
 transitions, DJ mixing, song picking and repeat rules, BPM range, discovery,
 crossfade EQ, breaks, time checks, the selected clockwheel and the shown cart
-page. They do not own presentation choices (`key_notation`, `key_prefer_flats`,
+page. Choose the clockwheel in **Profile**, **Song picking**, beside Pick mode,
+and the cart page in **Profile**, **Announcements**, under **Carts**.
+They do not own presentation choices (`key_notation`, `key_prefer_flats`,
 or `show_lyrics`) or playback-performance controls such as
 `prefetch_next_track`. Shared library folders, catalog and analysis settings
 remain shared-library settings. Station identity, time zone, audio output,

@@ -1968,8 +1968,8 @@ describe("static accessibility contracts", () => {
     expect(profileTabs.hidden).toBe(false);
     expect(stationTabs.hidden).toBe(false);
     expect(globalTabs.hidden).toBe(false);
-    expect(profileTabs.querySelectorAll('[role="tab"]')).toHaveLength(5);
-    expect(stationTabs.querySelectorAll('[role="tab"]')).toHaveLength(3);
+    expect(profileTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
+    expect(stationTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect(globalTabs.querySelectorAll('[role="tab"]')).toHaveLength(2);
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)
       ?.textContent.replace(/\s+/g, " ").trim();

@@ -49,7 +49,7 @@ settings and legacy `null` values inherit from the station's saved defaults.
 Migration must not infer override values from the settings that happen to be on
 air.
 
-Manual activation uses **Activate** actions in Settings, **Profile**,
+Manual activation uses **Activate** actions in Settings, **Station**,
 **Profiles**, for a saved profile or Station defaults. The **Profile to edit**
 combobox selects a draft target only; it does not activate a profile. It marks
 the active profile with **(active)** and updates that marker when activation
@@ -107,14 +107,18 @@ and partial-failure response behavior remains an implementation criterion.
 Settings presents three always-visible, heading-labelled tab groups: Profile,
 Station and Global. One selected tab across the groups controls the visible
 settings panel. Profile
-has five tabs: Mixing (transitions and DJ mixing), Song picking, Sound
-(profile processing), Announcements (liners, time checks and breaks), and
-Profiles. Station has Stations, Broadcasting (stream, Live DJ and
+has four tabs: Mixing (transitions and DJ mixing), Song picking, Sound
+(profile processing), and Announcements (liners, time checks, carts and breaks).
+Station has Profiles, Stations, Broadcasting (stream, Live DJ and
 DMCA), and Schedule. Global has Server (analysis limits, shared time
 format, Stereo Tool installation and shared licence, browser access, workers
 and updates) and Preferences (browser display, keyboard and audio
 device controls). The tabs keep their server and browser owners. Station
 display, lyrics, key notation and prefetch controls are in Stations.
+Profiles manages profile creation, activation, reset and deletion. The selected
+clockwheel is edited in Song picking beside Pick mode; the cart-page selection
+is edited in Announcements under Carts. Each uses its containing tab's Save
+changes control and the selected Profile to edit target.
 
 The **Profile to edit** selector applies only to profile-aware controls. Browser
 preferences remain outside profile storage; key notation, lyrics and prefetch

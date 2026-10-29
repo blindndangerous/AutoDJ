@@ -38,7 +38,8 @@ browser playback the page that plays the cart plays it, as the voice liner Test 
 The server keeps the wall in `carts.json` in the station's folder and the uploads in its
 `carts/` folder. The file is versioned; one that cannot be read is moved aside as
 `carts.json.bad-<id>` and an empty wall loads. Backups include the wall and the uploads. A saved
-profile can override the name of the cart page shown. Saving applies that changed group when
+profile can override the name of the cart page shown using **Cart page** in
+**Settings**, **Profile**, **Announcements**, under **Carts**. Saving applies that changed group when
 the edited profile is still active; an inactive profile is only saved. **Activate** in the Profiles
 list resolves all eligible groups for the selected profile. A profile that refers to a renamed
 page cannot be activated.
