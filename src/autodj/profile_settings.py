@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import logging
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import fields
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -13,6 +18,8 @@ from pydantic import BaseModel, ConfigDict
 from autodj.fsutil import atomic_write
 from autodj.profiles import ProfileSnapshot, ProfileStore
 from autodj.settings_bodies import BreakSettingsBody
+
+logger = logging.getLogger(__name__)
 
 CORE_GROUPS = frozenset(
     {"preset", "transition", "djmix", "playback", "bpm_range", "discovery", "eq"}
@@ -121,6 +128,7 @@ class ProfileSettings:
         self.selection_path = station.paths.profile_selection
         self.lock = threading.RLock()
         self.active: str | None = None
+        self.problem: str | None = None
 
     @property
     def owner(self) -> Any:
@@ -151,6 +159,8 @@ class ProfileSettings:
         if not self.defaults_path.exists():
             values = self.capture()
             self._write(self.defaults_path, values)
+            if not self.selection_path.exists():
+                self._remember_selection(values)
             return values
         value = json.loads(self.defaults_path.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
@@ -160,6 +170,16 @@ class ProfileSettings:
     @staticmethod
     def _write(path: Any, values: dict) -> None:
         atomic_write(path, json.dumps(values, indent=2, sort_keys=True, allow_nan=False))
+
+    @staticmethod
+    def _revision(values: dict) -> str:
+        encoded = json.dumps(values, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _remember_selection(self, values: dict) -> None:
+        self._write(
+            self.selection_path, {"profile": self.active, "revision": self._revision(values)}
+        )
 
     def resolve(self, name: str) -> dict:
         with self.lock:
@@ -194,7 +214,12 @@ class ProfileSettings:
         if core:
             scratch.validate_settings_patch(core)
         if "breaks" in values:
-            BreakSettingsBody.model_validate(values["breaks"])
+            body = BreakSettingsBody.model_validate(values["breaks"])
+            for key in body.model_fields_set - {"duck_db"}:
+                if getattr(body, key) is None:
+                    raise ValueError(
+                        f"breaks.{key} cannot be null; remove the override to inherit defaults"
+                    )
         if "time_checks" in values:
             checks = SettingsBody.model_validate(values["time_checks"])
             for pack in checks.enabled_packs:
@@ -226,14 +251,15 @@ class ProfileSettings:
         with self.lock:
             # Partial groups need their saved values before schema validation.
             # Validate before computing overrides so invalid groups cannot disappear.
-            values = merge_values(self.resolve(name), changes)
+            before = self.resolve(name)
+            values = merge_values(before, changes)
             self.validate(values)
             defaults = self.defaults()
             apply_changes: dict | None = None
             if name:
                 self.store.save(ProfileSnapshot(name=name, settings=overrides(defaults, values)))
                 if self.active == name:
-                    apply_changes = {group: values[group] for group in changes}
+                    apply_changes = overrides(before, values)
             else:
                 # Resolve the active profile against the candidate defaults and
                 # validate the complete effective result before persisting either
@@ -243,13 +269,9 @@ class ProfileSettings:
                     active_before = merge_values(defaults, profile_overrides)
                     active_after = merge_values(values, profile_overrides)
                     self.validate(active_after)
-                    apply_changes = {
-                        group: active_after[group]
-                        for group in active_after
-                        if active_before.get(group) != active_after.get(group)
-                    }
+                    apply_changes = overrides(active_before, active_after)
                 else:
-                    apply_changes = {group: values[group] for group in changes}
+                    apply_changes = overrides(before, values)
                 self._write(self.defaults_path, values)
             # Apply under the same lock as scheduled Apply, without changing the
             # active identity. A profile draft that went off air is storage only.
@@ -257,12 +279,25 @@ class ProfileSettings:
                 try:
                     # Apply only affected groups to avoid reselecting unchanged
                     # clockwheels or rewriting unrelated feature stores.
+                    # These two stores require a complete group. Merge changed
+                    # fields with live values, not an older saved profile.
+                    if "time_checks" in apply_changes:
+                        apply_changes["time_checks"] = merge_values(
+                            self.station.time_checks.settings.model_dump(),
+                            apply_changes["time_checks"],
+                        )
+                    if "bpm_range" in apply_changes:
+                        apply_changes["bpm_range"] = merge_values(
+                            self.owner.editable_values()["bpm_range"], apply_changes["bpm_range"]
+                        )
                     self.apply_values(apply_changes)
                 except ValueError as exc:
                     raise ValueError(
                         "Settings were saved, but could not be fully applied. "
                         f"Some settings may already be active: {exc}"
                     ) from exc
+            if not name or self.active == name:
+                self._remember_selection(self.resolve(self.active or ""))
             return values
 
     def create(self, snapshot: ProfileSnapshot) -> None:
@@ -280,6 +315,8 @@ class ProfileSettings:
         with self.lock:
             self.store.load(name)
             self.store.save(ProfileSnapshot(name=name, settings={}))
+            if self.active == name:
+                self._remember_selection(self.resolve(name))
 
     def apply_values(self, values: dict) -> None:
         """Apply already validated groups; each persistence owner keeps its errors."""
@@ -296,10 +333,19 @@ class ProfileSettings:
             if "breaks" in values:
                 body = BreakSettingsBody.model_validate(values["breaks"])
                 was_on = station.cfg.breaks.enabled is True
-                for key in body.model_fields_set:
-                    setattr(station.cfg.breaks, key, getattr(body, key))
-                self.owner.page_saved.add("breaks")
-                self.owner.save(strict=True)
+                before = {key: getattr(station.cfg.breaks, key) for key in body.model_fields_set}
+                page_was_saved = "breaks" in self.owner.page_saved
+                try:
+                    for key in body.model_fields_set:
+                        setattr(station.cfg.breaks, key, getattr(body, key))
+                    self.owner.page_saved.add("breaks")
+                    self.owner.save(strict=True)
+                except Exception:
+                    for key, value in before.items():
+                        setattr(station.cfg.breaks, key, value)
+                    if not page_was_saved:
+                        self.owner.page_saved.discard("breaks")
+                    raise
                 if was_on and station.cfg.breaks.enabled is not True:
                     station.breaks.drop_waiting_breaks(TURNED_OFF)
             group = "time checks"
@@ -328,20 +374,111 @@ class ProfileSettings:
             values = self.resolve(name)
             self.validate(values)
             self.apply_values(values)
-            self._write(self.selection_path, {"profile": name or None})
+            self._write(
+                self.selection_path, {"profile": name or None, "revision": self._revision(values)}
+            )
             self.active = name or None
+            self.problem = None
             return values
 
-    def restore(self) -> None:
-        if not self.selection_path.exists():
+    def delete(self, name: str) -> bool:
+        with self.lock:
+            if self.active and self.active.casefold() == name.casefold():
+                raise ValueError(
+                    "Activate another profile or Station defaults before deleting the active profile"
+                )
+            return self.store.delete(name)
+
+    @contextmanager
+    def changing_reference(self, kind: str, old: str, new: str | None) -> Iterator[None]:
+        """Keep saved references consistent with an explicit rename or deletion.
+
+        Individual files are atomic writes. If the resource operation fails,
+        put back the affected documents before reporting the failure.
+        """
+        with self.lock:
+            documents: list[tuple[Path, dict, str | None]] = []
             if self.defaults_path.exists():
-                self.apply("")
+                documents.append((self.defaults_path, self.defaults(), None))
+            for profile_name in self.store.list_names():
+                snapshot = self.store.load(profile_name)
+                documents.append(
+                    (
+                        self.store.root / f"{profile_name}.json",
+                        legacy_groups(snapshot),
+                        snapshot.name,
+                    )
+                )
+            previous = []
+            try:
+                for path, values, name in documents:
+                    updated = copy.deepcopy(values)
+                    if kind == "pack":
+                        checks = updated.get("time_checks", {})
+                        if old in checks.get("enabled_packs", []):
+                            checks["enabled_packs"] = [
+                                item for item in checks["enabled_packs"] if item != old
+                            ]
+                    else:
+                        group, key = {
+                            "clock": ("clock", "name"),
+                            "cart": ("cart", "page"),
+                            "preset": ("playback", "stereotool_preset"),
+                        }[kind]
+                        value = updated.get(group, {}).get(key)
+                        if isinstance(value, str) and value.casefold() == old.casefold():
+                            updated[group][key] = new
+                    if updated != values:
+                        previous.append((path, path.read_text(encoding="utf-8")))
+                        self._write(
+                            path,
+                            ProfileSnapshot(name=name, settings=updated).to_dict()
+                            if name
+                            else updated,
+                        )
+                if self.selection_path.exists() and self.problem is None:
+                    previous.append(
+                        (self.selection_path, self.selection_path.read_text(encoding="utf-8"))
+                    )
+                    self._remember_selection(self.resolve(self.active or ""))
+                yield
+            except Exception:
+                for path, content in reversed(previous):
+                    atomic_write(path, content)
+                raise
+
+    def restore(self) -> None:
+        # Validate the entire saved selection before touching the last saved
+        # station state. Invalid JSON or missing resources must not lock its
+        # editors out of the repair path.
+        try:
+            if not self.selection_path.exists():
+                if not self.defaults_path.exists():
+                    return
+                name = ""
+                selection = {}
+            else:
+                selection = json.loads(self.selection_path.read_text(encoding="utf-8"))
+                if not isinstance(selection, dict):
+                    raise ValueError("Saved profile selection must be an object")
+                selected_name = selection.get("profile")
+                if selected_name is not None and not isinstance(selected_name, str):
+                    raise ValueError("Selected profile must be a name or null")
+                name = selected_name or ""
+            values = self.resolve(name)
+            self.validate(values)
+        except (OSError, ValueError) as exc:
+            self.problem = f"Could not restore the saved profile: {exc}. Using the last saved station settings."
+            logger.warning("%s", self.problem)
             return
-        selection = json.loads(self.selection_path.read_text(encoding="utf-8"))
-        name = selection.get("profile")
-        if name is not None and not isinstance(name, str):
-            raise ValueError("Selected profile must be a name or null")
-        self.apply(name or "")
+        if selection.get("revision") == self._revision(values):
+            # Ordinary restarts keep the persisted live state. An offline edit
+            # to defaults or the selected profile changes this revision and is
+            # deliberately applied below. Older selection files migrate once.
+            self.active = name or None
+            self.problem = None
+            return
+        self.apply(name)
 
 
 def profile_settings(station: Any) -> ProfileSettings:

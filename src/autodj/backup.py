@@ -984,7 +984,11 @@ class _Swap:
 
 
 def _install(
-    swap: _Swap, files: list[str], roots: dict[str, Path], stages: dict[str, Path]
+    swap: _Swap,
+    files: list[str],
+    roots: dict[str, Path],
+    stages: dict[str, Path],
+    remove_files: Iterable[str] = (),
 ) -> None:
     """Replace what the archive holds: first move every old file and folder aside, then put the new ones in."""
     keys = list(stages)
@@ -992,12 +996,16 @@ def _install(
     file_names = {
         key: sorted(path.name for path in stages[key].iterdir()) for key in keys if _is_files(key)
     }
+    remove_names: dict[str, list[str]] = {}
+    for name in remove_files:
+        key, rest = _split(name)
+        remove_names.setdefault(key, []).append(rest[0])
     swap.start()
     for key in folder_keys:
         swap.move_aside(roots[key])
     for key, names in file_names.items():
         root = roots[key]
-        for name in names:
+        for name in (*names, *remove_names.get(key, ())):
             for suffix in (*_SQLITE_SIDECARS, ""):
                 swap.move_aside(root / f"{name}{suffix}")
     for key in folder_keys:
@@ -1108,10 +1116,32 @@ def _restore(
     files = archive_files
     targets = {name: archive_targets[name] for name in files}
     keys = list(dict.fromkeys(_split(name)[0] for name in files))
+    # Keep profile metadata in sync with restored station state. Older
+    # archives may restore only the station index, without profile folders;
+    # metadata absent from that snapshot must not remain from today.
+    remove_profile_state = []
+    index_keys = set()
+    for key in keys:
+        if key == "index" or (key.startswith("stations/") and key.endswith("/index")):
+            index_keys.add(key)
+        elif key == "profiles":
+            index_keys.add("index")
+        elif key.startswith("stations/") and key.endswith("/profiles"):
+            index_keys.add(key.removesuffix("/profiles") + "/index")
+    for index_key in index_keys:
+        for filename in ("profile-defaults.json", "profile-selection.json"):
+            member = f"{index_key}/{filename}"
+            if member not in files:
+                remove_profile_state.append(member)
+    for member in remove_profile_state:
+        key, _ = _split(member)
+        if key not in keys:
+            keys.append(key)
     _check_layout(roots, keys)
     folders = [key for key in keys if not _is_files(key)]
     replaced = [targets[name] for name in files if _is_files(_split(name)[0])]
     replaced += [roots[key] for key in folders]
+    replaced += [_target(roots, member) for member in remove_profile_state]
     existing = [path for path in replaced if path.exists()]
     if existing and not force:
         raise BackupError(f"{existing[0]} already exists; pass --force to replace it")
@@ -1134,6 +1164,8 @@ def _restore(
     keep_stages = False
     with im.publication_lock(roots["library"]):
         try:
+            for stage in stages.values():
+                stage.mkdir(parents=True, exist_ok=True)
             for name in files:
                 key, rest = _split(name)
                 _stage_member(archive, name, stages[key].joinpath(*rest))
@@ -1180,7 +1212,7 @@ def _restore(
             _check_layout(roots, list(stages))
             swap = _Swap(roots["library"] / JOURNAL_NAME, stages.values())
             try:
-                _install(swap, files, roots, stages)
+                _install(swap, files, roots, stages, remove_profile_state)
             except BaseException as exc:
                 left = swap.undo()
                 if left:

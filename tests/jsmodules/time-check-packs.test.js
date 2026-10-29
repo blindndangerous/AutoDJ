@@ -319,6 +319,7 @@ describe("adding and removing voice packs", () => {
     expect(await liveText()).toBe("Removed voice pack B.");
     expect(confirm.mock.calls[0][1]).toEqual(expect.objectContaining({
       title: "Remove voice pack B?", confirmLabel: "Remove voice pack", station: true }));
+    expect(confirm.mock.calls[0][1].message).toContain("saved profile/default selections");
     expect(request).toHaveBeenCalledWith("/api/time-checks/packs/B", { method: "DELETE" });
     expect(document.activeElement.value).toBe("C");
     // The last pack in the list: focus goes to the Voice packs group.

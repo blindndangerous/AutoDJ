@@ -84,11 +84,23 @@ overrides; omitted settings and legacy `null` values inherit from station
 defaults. In the new grouped format, `null` clears only settings that support
 clearing, such as a BPM limit or selected clockwheel. Remove an override to
 inherit its default; unsupported `null` values are rejected. Saving applies the
-edited groups immediately only if the selected profile is still active when
+edited fields immediately only if the selected profile is still active when
 Save is pressed. If another profile became active after editing began, Save
 stores the edits without switching back. Saving **Station defaults** applies
-its edited groups to the current active selection: inherited values update,
+its edited fields to the current active selection: inherited values update,
 explicit profile overrides remain, and active identity does not change.
+
+A normal restart keeps the last live settings, including changes made by scheduled
+events. These changes do not rewrite saved profiles. **Activate** reloads a
+profile's saved settings. Edits to defaults or the selected profile's JSON made
+while AutoDJ is stopped take effect at startup. If a saved profile cannot be
+loaded or validated, Profiles shows the problem and the station keeps its last
+saved settings.
+
+Renaming a cart page or clockwheel updates references in saved defaults and
+profiles. Deleting a clockwheel clears those references; deleting a voice pack
+removes it from saved selections. Deleted Stereo Tool preset references use the
+included preset. The delete confirmations explain these changes.
 
 To activate Station defaults, use **Activate station defaults** in **Station**,
 **Profiles**. This action is independent of the **Profile to edit** selection. Each saved

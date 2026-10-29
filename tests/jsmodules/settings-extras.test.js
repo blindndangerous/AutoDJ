@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatPlayedAt } from "../../src/autodj/static/modules/history-format.js";
 import { applyMixSettings, installMixSettings, resetMixSettings } from
   "../../src/autodj/static/modules/mix-settings.js";
-import { applySettingsDrafts, resetSettingsDrafts, saveSettingsPanel } from
+import { applySettingsDrafts, resetSettingsDrafts, saveSettingsPanel, setSettingsProfile } from
   "../../src/autodj/static/modules/settings-drafts.js";
 import { installProfiles } from
   "../../src/autodj/static/modules/profiles.js";
@@ -436,6 +436,30 @@ describe("profiles", () => {
     expect(els.list.querySelector('[aria-label="Activate profile Early"]')).toBe(apply);
     expect([...mutations, ...observer.takeRecords()]).toEqual([]);
     observer.disconnect();
+  });
+
+  it("keeps a deleted editing target and its draft selected on refresh", async () => {
+    let names = ["Late"];
+    const values = { clock: { name: "Morning" }, cart: { page: null } };
+    const fetchImpl = vi.fn((url) => {
+      if (url.startsWith("/api/settings")) return json({ profile: "Late", revision: "one", values });
+      return json({ profiles: names, clockwheels: ["Morning", "Evening"], cart_pages: [] });
+    });
+    const { els, controls } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.profileSelect.querySelector('option[value="Late"]')).not.toBeNull());
+    els.profileSelect.value = "Late";
+    await setSettingsProfile("Late");
+    els.clockSelect.value = "Evening";
+    els.clockSelect.dispatchEvent(new Event("change", { bubbles: true }));
+
+    names = [];
+    await controls.refresh();
+
+    expect(els.profileSelect.value).toBe("Late");
+    expect(els.profileSelect.selectedOptions[0].textContent).toBe("Late (deleted)");
+    expect(els.clockSelect.value).toBe("Evening");
+    expect(document.querySelector('[data-settings-save]').getAttribute("aria-disabled")).toBe("false");
+    expect(fetchImpl.mock.calls.some(([url]) => url === "/api/settings?profile=Late")).toBe(true);
   });
 
   it("moves focus from the dialog straight to the name field when the last profile goes", async () => {

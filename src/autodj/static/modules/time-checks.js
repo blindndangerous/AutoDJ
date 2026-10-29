@@ -542,7 +542,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
     const confirmed = await confirm(doc, {
       station: true,
       title: `Remove voice pack ${name}?`,
-      message: `Its folder and audio files are deleted from the time checks folder, with its tick and play dates.${sharedNote(pack)}`,
+      message: `Its folder and audio files are deleted from the time checks folder, with its tick, play dates and saved profile/default selections.${sharedNote(pack)}`,
       confirmLabel: "Remove voice pack",
       onConfirm: async () => {
         try {

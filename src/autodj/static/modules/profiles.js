@@ -89,7 +89,8 @@ export function installProfiles(els) {
         select.add(choice(active, active));
       }
       for (const option of select.options) {
-        const label = `${option.value || "Station defaults"}${(option.value || null) === active ? " (active)" : ""}`;
+        const unavailable = option.value && option.value !== active && !names.includes(option.value);
+        const label = `${option.value || "Station defaults"}${unavailable ? " (deleted)" : (option.value || null) === active ? " (active)" : ""}`;
         if (option.textContent !== label) option.textContent = label;
       }
     }
@@ -103,6 +104,11 @@ export function installProfiles(els) {
       if (!isAuthenticatedRequestCurrent(epoch)) return false;
       names = Array.isArray(body.profiles) ? body.profiles : [];
       active = body.active ?? null;
+      const problem = doc.getElementById("profiles-problem");
+      if (problem) {
+        problem.textContent = body.problem || "";
+        problem.hidden = !body.problem;
+      }
       if (els.applyDefaultsButton) {
         els.applyDefaultsButton.textContent = "Activate station defaults";
       }
@@ -112,11 +118,14 @@ export function installProfiles(els) {
       updateChoices(els.cartSelect, cartPages, null);
       if (els.profileSelect) {
         const selected = els.profileSelect.value;
-        const wanted = ["", ...names];
+        const unavailable = selected && !names.includes(selected) ? selected : null;
+        const wanted = ["", ...names, ...(unavailable ? [unavailable] : [])];
         if (JSON.stringify([...els.profileSelect.options].map((option) => option.value)) !== JSON.stringify(wanted)) {
-          els.profileSelect.replaceChildren(...wanted.map((profile) => choice(profile || "Station defaults", profile)));
+          els.profileSelect.replaceChildren(...wanted.map((profile) => choice(
+            profile === unavailable ? `${profile} (deleted)` : profile || "Station defaults", profile,
+          )));
         }
-        els.profileSelect.value = names.includes(selected) ? selected : "";
+        els.profileSelect.value = selected;
       }
       updateActive(active);
       return true;

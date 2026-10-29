@@ -458,3 +458,77 @@ def test_unsupported_json_null_does_not_retain_a_previous_profile_value(tmp_path
     assert manager.station.cfg.playback.crossfade_seconds == before
     assert manager.active is None
     assert not manager.selection_path.exists()
+
+
+@pytest.mark.parametrize("target", ["", "Night"])
+def test_restart_preserves_live_changes_without_rewriting_saved_profiles(tmp_path, target):
+    """ADR-0018-04: live changes survive until explicit activation or an offline profile edit."""
+    station = _station(tmp_path)
+    manager = ProfileSettings(station)
+    _defaults(manager)
+    manager.save("", {"playback": {"pick_mode": "random"}})
+    if target:
+        manager.create(ProfileSnapshot(name=target))
+    manager.apply(target)
+    defaults_before = manager.defaults_path.read_bytes()
+    profile_before = manager.store.load(target).to_dict() if target else None
+
+    # Manual controls and scheduled actions persist live settings separately.
+    manager.owner.apply_settings_patch({"playback": {"pick_mode": "least_recent"}})
+    restarted = _station(tmp_path)
+    restarted.bridge.settings.load()
+    restored = ProfileSettings(restarted)
+    restored.restore()
+
+    assert restarted.cfg.playback.pick_mode == "least_recent"
+    assert restored.active == (target or None)
+    assert manager.defaults_path.read_bytes() == defaults_before
+    if target:
+        assert manager.store.load(target).to_dict() == profile_before
+    restored.apply(target)
+    assert restarted.cfg.playback.pick_mode == "random"
+
+
+@pytest.mark.parametrize("target", ["", "Night"])
+def test_saving_one_profile_field_preserves_other_live_fields(tmp_path, target):
+    manager = ProfileSettings(_station(tmp_path))
+    _defaults(manager)
+    manager.save("", {"playback": {"pick_mode": "random"}})
+    if target:
+        manager.create(ProfileSnapshot(name=target))
+    manager.apply(target)
+    manager.owner.apply_settings_patch({"playback": {"pick_mode": "least_recent"}})
+
+    manager.save(target, {"playback": {"crossfade_seconds": 7.0}})
+
+    assert manager.station.cfg.playback.crossfade_seconds == 7.0
+    assert manager.station.cfg.playback.pick_mode == "least_recent"
+    assert manager.resolve(target)["playback"]["pick_mode"] == "random"
+    restarted = _station(tmp_path)
+    restarted.bridge.settings.load()
+    ProfileSettings(restarted).restore()
+    assert restarted.cfg.playback.crossfade_seconds == 7.0
+    assert restarted.cfg.playback.pick_mode == "least_recent"
+
+
+def test_reset_active_profile_keeps_live_state_until_activation_even_after_restart(tmp_path):
+    manager = ProfileSettings(_station(tmp_path))
+    _defaults(manager)
+    manager.save("", {"playback": {"pick_mode": "random"}})
+    manager.create(
+        ProfileSnapshot(name="Night", settings={"playback": {"pick_mode": "least_recent"}})
+    )
+    manager.apply("Night")
+
+    manager.reset("Night")
+
+    assert manager.store.load("Night").settings == {}
+    assert manager.station.cfg.playback.pick_mode == "least_recent"
+    restarted = _station(tmp_path)
+    restarted.bridge.settings.load()
+    restored = ProfileSettings(restarted)
+    restored.restore()
+    assert restored.active == "Night"
+    assert restarted.cfg.playback.pick_mode == "least_recent"
+    restored.apply("Night")
+    assert restarted.cfg.playback.pick_mode == "random"

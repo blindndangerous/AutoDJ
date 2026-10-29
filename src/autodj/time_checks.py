@@ -1345,8 +1345,14 @@ def install_time_checks(router: StationRouter) -> None:
     async def delete_pack(station: SavedStationDep, name: str) -> dict[str, Any] | JSONResponse:
         """Remove a voice pack that is a folder in the station's time checks folder."""
         checks = station.time_checks
+        from autodj.profile_settings import profile_settings
+
+        def remove() -> None:
+            with profile_settings(station).changing_reference("pack", name, None):
+                checks.delete_pack(name)
+
         try:
-            await asyncio.to_thread(checks.delete_pack, name)
+            await asyncio.to_thread(remove)
         except (PackError, OSError) as exc:
             return _file_error(exc)
         return {**await asyncio.to_thread(checks.status), "removed": name}

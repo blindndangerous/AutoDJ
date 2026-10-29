@@ -1713,6 +1713,8 @@ def install_station_routes(router: StationRouter) -> None:
                 if "profile" in applied:
                     applied.remove("profile")
                     applied.extend(sorted(profile_changes))
+                    if "cart" in profile_changes:
+                        await station.carts.publish({"type": "cart_changed"})
                 if "profile" in failed:
                     failure = failed.pop("profile")
                     failed.update(dict.fromkeys(profile_changes, failure))
@@ -2256,6 +2258,7 @@ def install_station_routes(router: StationRouter) -> None:
             "profiles": await asyncio.to_thread(store.list_names),
             "root": str(store.root),
             "active": profile_settings(station).active,
+            "problem": profile_settings(station).problem,
             "clockwheels": await asyncio.to_thread(_clock_store(station).list_names),
             "cart_pages": [page.name for page in station.carts.store.wall.pages],
         }
@@ -2290,13 +2293,14 @@ def install_station_routes(router: StationRouter) -> None:
         """Delete a saved profile bundle by name."""
         from autodj.profile_settings import profile_settings
 
-        if profile_settings(station).active == name:
+        manager = profile_settings(station)
+        if manager.active and manager.active.casefold() == name.casefold():
             raise HTTPException(
                 status_code=409,
-                detail="Apply another profile or Station defaults before deleting the active profile",
+                detail="Activate another profile or Station defaults before deleting the active profile",
             )
         with _profile_http_errors():
-            ok = await asyncio.to_thread(_profile_store(station).delete, name)
+            ok = await asyncio.to_thread(manager.delete, name)
         if not ok:
             raise HTTPException(status_code=404, detail="Profile not found")
         return {"deleted": name}
@@ -2925,15 +2929,22 @@ def install_station_routes(router: StationRouter) -> None:
         library = _catalog_library(station)
         clock = _existing_clock(station, name)
         store = _clock_store(station)
-        try:
+        from autodj.profile_settings import profile_settings
+
+        def rename() -> dict:
             renamed = validate_clockwheel({**clock, "name": body.name})
-            if body.name.casefold() == name.casefold():
-                # Only the letter case changes: the same file on Windows.
-                store.delete(name)
-                store.save(renamed)
-            else:
-                store.save(renamed, overwrite=False)
-                store.delete(name)
+            with profile_settings(station).changing_reference("clock", name, body.name):
+                if body.name.casefold() == name.casefold():
+                    # Only the letter case changes: the same file on Windows.
+                    store.delete(name)
+                    store.save(renamed)
+                else:
+                    store.save(renamed, overwrite=False)
+                    store.delete(name)
+            return renamed
+
+        try:
+            renamed = await asyncio.to_thread(rename)
             if _active_clock(station, library) == name:
                 await select_clock(station, library, body.name, renamed_from=name)
             return renamed
@@ -2944,8 +2955,14 @@ def install_station_routes(router: StationRouter) -> None:
     async def api_library_delete_clock(station: SavedStationDep, name: str) -> dict:
         library = _catalog_library(station)
         _existing_clock(station, name)
+        from autodj.profile_settings import profile_settings
+
+        def remove() -> None:
+            with profile_settings(station).changing_reference("clock", name, None):
+                _clock_store(station).delete(name)
+
         try:
-            _clock_store(station).delete(name)
+            await asyncio.to_thread(remove)
             if _active_clock(station, library) == name:
                 return await select_clock(station, library, None)
             return await asyncio.to_thread(_clock_snapshot, station, library)

@@ -2246,13 +2246,23 @@ def create_app(
         # Every station's preset: the running ones' and the stopped ones' saved
         # choice, read off the event loop (web_state.json may be on a NAS).
         in_use = await asyncio.to_thread(stations.stereo_tool_presets)
+
+        def remove() -> None:
+            from contextlib import ExitStack
+
+            from autodj.profile_settings import profile_settings
+            from autodj.stereotool_presets import INCLUDED
+
+            with ExitStack() as references:
+                for slug in sorted(stations.slugs()):
+                    manager = profile_settings(stations.editable(slug))
+                    references.enter_context(manager.changing_reference("preset", name, INCLUDED))
+                delete_preset(
+                    cfg.index.shared_dir, name, active=[preset for _station, preset in in_use]
+                )
+
         try:
-            await asyncio.to_thread(
-                delete_preset,
-                cfg.index.shared_dir,
-                name,
-                active=[preset for _station, preset in in_use],
-            )
+            await asyncio.to_thread(remove)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:

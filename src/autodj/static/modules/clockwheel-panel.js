@@ -1122,8 +1122,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
     await confirmAction(doc, {
       title: `Delete clockwheel ${name}?`,
       message: name === data.active
-        ? "It is the active clockwheel, so no clockwheel plays until you activate another."
-        : "Its file is removed. Backups made earlier still hold it.",
+        ? "It is the active clockwheel, so no clockwheel plays until you activate another. Its references are removed from saved profiles and station defaults."
+        : "Its file is removed, along with its references in saved profiles and station defaults. Backups made earlier still hold it.",
       confirmLabel: "Delete clockwheel",
       onConfirm: async () => {
         deleted = await command(() => send(clockUrl(name), "DELETE"), () => close());

@@ -341,6 +341,7 @@ def test_profile_reports_a_store_failure_after_playback_changed(rig: Any, monkey
     def fail_save(_settings):
         raise OSError("disk write failed")
 
+    selection_before = station.paths.profile_selection.read_bytes()
     monkeypatch.setattr(station.time_checks, "save", fail_save)
     response = client.post(f"{OWL}/profiles/Partial/apply")
     assert response.status_code == 503
@@ -348,4 +349,112 @@ def test_profile_reports_a_store_failure_after_playback_changed(rig: Any, monkey
     assert "time checks" in response.json()["detail"]
     assert station.cfg.playback.crossfade_seconds == 8.0
     assert client.get(f"{OWL}/profiles").json()["active"] is None
-    assert not station.paths.profile_selection.exists()
+    assert station.paths.profile_selection.read_bytes() == selection_before
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_cart_rename_keeps_defaults_and_profiles_usable(rig):
+    client, *_ = rig
+    station = client.app.state.stations.editable("nightowl")
+    defaults = settings_view(client, "")
+    old = defaults["values"]["cart"]["page"]
+    store = ProfileStore(station.paths.profiles)
+    store.save(ProfileSnapshot(name="Saved", cart_page=old))
+    response = client.put(f"{OWL}/carts/pages/1/name", json={"name": "Renamed"})
+    assert response.status_code == 200, response.text
+    assert settings_view(client, "")["values"]["cart"]["page"] == "Renamed"
+    assert settings_view(client, "Saved")["values"]["cart"]["page"] == "Renamed"
+    response = patch_profile(
+        client, settings_view(client, ""), "", {"playback": {"crossfade_seconds": 5.0}}
+    )
+    assert response.status_code == 200, response.text
+    assert client.post(f"{OWL}/profiles/Saved/apply").status_code == 200
+    assert (
+        client.get("/api/settings", params={"profile": ""}).json()["values"]["cart"]["page"]
+        == "Page 1"
+    )
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_active_profile_cart_save_notifies_other_pages(rig, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    client, *_ = rig
+    station = client.app.state.stations.editable("nightowl")
+    changed = AsyncMock(wraps=station.carts.publish)
+    monkeypatch.setattr(station.carts, "publish", changed)
+    view = settings_view(client, "")
+    response = patch_profile(
+        client, view, "", {"cart": {"page": station.carts.store.wall.pages[1].name}}
+    )
+    assert response.status_code == 200, response.text
+    changed.assert_awaited_once_with({"type": "cart_changed"})
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_active_profile_delete_rejects_different_letter_case(rig):
+    client, *_ = rig
+    assert client.post(f"{OWL}/profiles", json={"name": "Night"}).status_code == 200
+    assert client.post(f"{OWL}/profiles/Night/apply").status_code == 200
+    response = client.delete(f"{OWL}/profiles/night")
+    assert response.status_code == 409, response.text
+    assert "Night" in client.get(f"{OWL}/profiles").json()["profiles"]
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_clockwheel_rename_and_delete_update_saved_default_and_profile_references(rig):
+    client, *_ = rig
+    created = client.post(
+        f"{OWL}/library/clock",
+        json={
+            "version": 1,
+            "name": "Morning",
+            "resync_minutes": [0],
+            "steps": [
+                {
+                    "type": "music",
+                    "match": "all",
+                    "conditions": [{"field": "genre", "operator": "is_not", "value": "Slow Jam"}],
+                }
+            ],
+        },
+    )
+    assert created.status_code == 200, created.text
+    assert client.post(f"{OWL}/profiles", json={"name": "Saved"}).status_code == 200
+    for profile in ("Saved", ""):
+        view = settings_view(client, profile)
+        saved = patch_profile(client, view, profile, {"clock": {"name": "Morning"}})
+        assert saved.status_code == 200, saved.text
+
+    renamed = client.post(f"{OWL}/library/clock/Morning/rename", json={"name": "Day"})
+    assert renamed.status_code == 200, renamed.text
+    assert settings_view(client, "")["values"]["clock"]["name"] == "Day"
+    assert settings_view(client, "Saved")["values"]["clock"]["name"] == "Day"
+
+    deleted = client.delete(f"{OWL}/library/clock/Day")
+    assert deleted.status_code == 200, deleted.text
+    assert settings_view(client, "")["values"]["clock"]["name"] is None
+    assert settings_view(client, "Saved")["values"]["clock"]["name"] is None
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_deleting_pack_removes_it_from_saved_enabled_pack_references(rig):
+    client, *_ = rig
+    station = client.app.state.stations.editable("nightowl")
+    (station.time_checks.root / "SavedPack").mkdir(parents=True)
+    station.time_checks.rescan()
+    assert client.post(f"{OWL}/profiles", json={"name": "Saved"}).status_code == 200
+    for profile in ("Saved", ""):
+        view = settings_view(client, profile)
+        result = patch_profile(
+            client,
+            view,
+            profile,
+            {"time_checks": {"enabled_packs": ["SavedPack"]}},
+        )
+        assert result.status_code == 200, result.text
+
+    removed = client.delete(f"{OWL}/time-checks/packs/SavedPack")
+    assert removed.status_code == 200, removed.text
+    for profile in ("", "Saved"):
+        assert settings_view(client, profile)["values"]["time_checks"]["enabled_packs"] == []

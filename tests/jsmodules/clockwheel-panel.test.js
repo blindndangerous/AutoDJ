@@ -1097,6 +1097,7 @@ describe("clockwheel editor", () => {
     await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
     expect(byId("confirm-title").textContent).toBe("Delete clockwheel Morning?");
     expect(byId("confirm-message").textContent).toContain("active clockwheel");
+    expect(byId("confirm-message").textContent).toContain("references are removed from saved profiles and station defaults");
     byId("confirm-accept").click();
     await vi.waitFor(() => expect(status()).toBe("Deleted Morning."));
     expect(server.clocks).toEqual({});

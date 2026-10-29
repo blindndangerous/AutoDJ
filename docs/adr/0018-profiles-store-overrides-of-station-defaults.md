@@ -32,8 +32,8 @@ target and its draft. A scheduled or external profile application cannot retarge
 an open draft.
 
 When a draft is saved, compare its target with the station's active identity at
-that time. Saving changed groups for the currently active profile applies those
-groups immediately. Saving changed groups for Station defaults updates the
+that time. Saving changed fields for the currently active profile applies those
+fields immediately. Saving changed fields for Station defaults updates the
 currently active selection immediately: inherited values update, explicit
 profile overrides remain unchanged, and the active profile identity does not
 change. If a schedule activates another profile while one is being edited,
@@ -70,11 +70,27 @@ visibly separate from profile management. The Settings Profile combobox uses
 native labeling and established focus/validation behavior; it adds no
 profile-switch announcement or extra `aria-describedby` help.
 
-At startup, read and validate station defaults and the persisted active profile
-identity from disk, then resolve them again. This supports stopping AutoDJ,
-editing station JSON, and restarting without restoring an older effective
-settings snapshot over those edits. Running processes do not watch or reconcile
-external JSON changes; live changes use the existing controls.
+At startup, validate station defaults and the selected profile. Persist the
+active name and a revision of its resolved saved settings. When that revision
+is unchanged, retain the separately persisted live station state: manual and
+scheduled changes survive a normal restart without rewriting saved profiles.
+If defaults or the selected profile were edited while the server was stopped,
+resolve and apply the new values. Explicit Activate always reloads saved values.
+Older selection files without a revision resolve once and acquire one.
+
+Saving an active editing target applies only changed fields. Unrelated live
+changes remain in place. An invalid or missing saved profile is reported in
+Profiles and logged before any profile settings are applied; the station keeps
+its last saved state so the operator can repair it. Failures while actually
+applying validated settings retain the existing partial-failure reporting.
+
+Explicit resource renames update saved references. Confirmed deletion clears
+clockwheel references, removes deleted voice packs from saved selections, and
+replaces deleted Stereo Tool preset references with the included preset.
+Reference file updates use atomic writes and are restored if the resource
+operation fails; this is not a power-loss-safe cross-store transaction.
+Legacy backup restoration removes profile metadata that was absent from the
+archive instead of combining it with restored profiles.
 
 ### Profile field inventory
 
@@ -154,8 +170,9 @@ test references alone do not establish a passing run.
 Profiles stop being independent partial-snapshot writes and become station-owned
 overrides applied through shared station validation. Defaults can evolve without
 silently rewriting each saved profile, and profile editing no longer doubles as
-activation. The one active identity is enough to resolve startup state; no
-snapshot of the last effective runtime configuration is needed.
+activation. The active identity and saved-settings revision distinguish a
+normal restart from an offline profile edit; live settings remain in their
+existing station stores.
 
 Because activation can touch station settings and named operational resources, errors
 must identify which group failed, and documentation and tests must distinguish
@@ -173,6 +190,6 @@ or evidence that implementation is complete.
 | `ADR-0018-01` | Saving profiles stores only overrides; false, zero and supported clear/reset values remain explicit, while omitted and legacy null values inherit. | automated | `tests/integration/test_profile_editing.py::test_profile_defaults_editing_apply_reset_and_station_isolation`; `tests/unit/test_profile_settings.py::test_override_diff_keeps_false_zero_and_explicit_clear`; `tests/unit/test_profile_settings.py::test_legacy_profile_keeps_only_non_null_fields_as_overrides` |
 | `ADR-0018-02` | Editing a selected profile is draft-only; target changes honor the unsaved-changes warning and scheduled applies cannot retarget or overwrite the draft. | gap | The checked-in Settings browser audit covers target-switch cancellation and external activation on a running station while a profile has an unsaved draft, including the active marker. Unit/integration tests cover draft isolation and scheduled application. Triggering the combined browser scenario through a real scheduled event remains separate evidence; the external-activation scenario does not establish schedule timing. |
 | `ADR-0018-03` | Manual and scheduled activation resolve current saved defaults plus overrides through shared validation; invalid harmonic groups do not partially change active playback, and the active profile can be activated again. Saving defaults updates inherited values in the active selection without changing overrides or identity. | automated | `tests/integration/test_profile_editing.py::test_profile_defaults_editing_apply_reset_and_station_isolation`; `tests/integration/test_profile_editing.py::test_invalid_harmonic_group_does_not_partially_apply_profile`; `tests/jsmodules/settings-extras.test.js::keeps Apply available for the active profile so it can be reapplied` |
-| `ADR-0018-04` | Startup resolves persisted defaults and active profile from the latest JSON without an older effective snapshot overwriting them. | automated | `tests/unit/test_profile_settings.py::test_restart_reads_offline_edits_to_defaults_and_selected_profile`; `tests/unit/test_profile_settings.py::test_restart_applies_saved_defaults_before_any_profile_has_been_selected` |
+| `ADR-0018-04` | Normal restarts retain persisted live changes without rewriting profiles; offline edits to defaults or the selected profile are applied. | automated | `tests/unit/test_profile_settings.py::test_restart_reads_offline_edits_to_defaults_and_selected_profile`; `tests/unit/test_profile_settings.py::test_restart_applies_saved_defaults_before_any_profile_has_been_selected`; `tests/unit/test_profile_settings.py::test_restart_preserves_live_changes_without_rewriting_saved_profiles` |
 | `ADR-0018-05` | Profile overrides and active selection are isolated per station, and profile routes are classified as station-owned. | automated | `tests/integration/test_profile_editing.py::test_profile_defaults_editing_apply_reset_and_station_isolation`; `tests/integration/test_station_routes.py::test_every_route_is_classified_as_shared_or_station` |
 | `ADR-0018-06` | The Profile to edit combobox and reset confirmation preserve native keyboard focus and report confirmation results accessibly. | manual | Walk through target changes, cancelled switch, reset confirmation and cancellation with keyboard and a supported screen reader; record browser, screen reader, date and actual speech. |
