@@ -115,6 +115,11 @@ FILL_IDLE_SECONDS = 15.0
 #: new fixed costs no dry run.  It counts from the preview's first answer;
 #: a preview still filling goes on only while it is kept.
 KEEP_SECONDS = 45.0
+#: How far, in seconds, the next song change may move while a kept preview
+#: still holds.  Read from a playing mix bus it jitters by a few 20 ms
+#: blocks, and by more while a busy server catches up; a seek, a skip or a
+#: pause moves it by more than this.
+HANDOFF_TOLERANCE_SECONDS = 1.0
 #: The most previews that may wait for the worker at once (each station and
 #: span waits once: later asks share its answer).
 MAX_WAITING = 8
@@ -3132,6 +3137,28 @@ class _ClockChoices:
         self.paths = dict(list(current.items())[: 2 * MAX_PREDICTED])
 
 
+@dataclass(frozen=True)
+class _Signature:
+    """What a kept preview must still match: a hash of its inputs, and its song change.
+
+    The song change is the wall-clock time the song after the fixed part
+    starts.  It is compared within :data:`HANDOFF_TOLERANCE_SECONDS`, not
+    hashed: read from the playing position it jitters, and rounding it
+    flips whenever it lies near a half second.
+    """
+
+    inputs: str
+    handoff: float
+
+    def holds(self, current: _Signature | None) -> bool:
+        """Whether *current*, read now, still matches this kept one."""
+        return (
+            current is not None
+            and current.inputs == self.inputs
+            and abs(current.handoff - self.handoff) <= HANDOFF_TOLERANCE_SECONDS
+        )
+
+
 @dataclass
 class _Filling:
     """A kept preview whose dry run goes on in the background, in slices."""
@@ -3140,7 +3167,7 @@ class _Filling:
     source: SimulationSource
     minutes: int
     desk: Any
-    signature: str
+    signature: _Signature
     clock_choices: _ClockChoices
     #: When the page last asked for it, and when its next slice may start
     #: (:func:`time.monotonic`).
@@ -3181,7 +3208,7 @@ class HourPreviews:
         self._fill_limit = fill
         self._fill_slice = fill_slice
         self._cond = threading.Condition()
-        self._kept: dict[_Key, tuple[float, str, dict[str, Any]]] = {}
+        self._kept: dict[_Key, tuple[float, _Signature, dict[str, Any]]] = {}
         self._choices: dict[_Key, dict[str, str]] = {}
         self._clock_choices: dict[_Key, _ClockChoices] = {}
         self._filling: dict[_Key, _Filling] = {}
@@ -3315,7 +3342,7 @@ class HourPreviews:
         except Exception:
             logger.exception("Could not check the hour preview before going on with it")
             signature = None
-        if signature != filling.signature:
+        if not filling.signature.holds(signature):
             with self._cond:
                 self._stop_filling(key, filling)
             return
@@ -3363,7 +3390,9 @@ class HourPreviews:
         thread.join(timeout)
         return not thread.is_alive()
 
-    def _signature(self, source: SimulationSource, minutes: int, desk: Any) -> tuple[Decided, str]:
+    def _signature(
+        self, source: SimulationSource, minutes: int, desk: Any
+    ) -> tuple[Decided, _Signature]:
         """What is fixed on *source* now, and the signature a kept preview must match."""
         decided = read_station(source.player, desk, show=_on_air_show(source))
         player = source.player
@@ -3397,12 +3426,12 @@ class HourPreviews:
                 except OSError:
                     voice_files.append(None)
         category_signature = categories.cache_signature() if categories else None
-        # The wall-clock handoff stays steady during playback but moves after a seek.
-        signature = hashlib.sha256(
+        # The wall-clock handoff is compared apart (see _Signature): it jitters
+        # during playback but moves further after a seek.
+        inputs = hashlib.sha256(
             repr(
                 (
                     decided.signature(),
-                    round(decided.handoff),
                     decided.clock_boundary,
                     repr(getattr(player, "_cfg", None)),
                     settings,
@@ -3418,7 +3447,7 @@ class HourPreviews:
                 )
             ).encode("utf-8")
         ).hexdigest()
-        return decided, signature
+        return decided, _Signature(inputs, decided.handoff)
 
     def get(
         self,
@@ -3443,7 +3472,7 @@ class HourPreviews:
             if (
                 not force
                 and kept is not None
-                and kept[1] == signature
+                and kept[1].holds(signature)
                 and time.monotonic() - kept[0] < self._keep
             ):
                 return kept[2]
