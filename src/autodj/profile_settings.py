@@ -229,17 +229,35 @@ class ProfileSettings:
             values = merge_values(self.resolve(name), changes)
             self.validate(values)
             defaults = self.defaults()
+            apply_changes: dict | None = None
             if name:
                 self.store.save(ProfileSnapshot(name=name, settings=overrides(defaults, values)))
+                if self.active == name:
+                    apply_changes = {group: values[group] for group in changes}
             else:
+                # Resolve the active profile against the candidate defaults and
+                # validate the complete effective result before persisting either
+                # defaults or applying any of it.
+                if self.active:
+                    profile_overrides = legacy_groups(self.store.load(self.active))
+                    active_before = merge_values(defaults, profile_overrides)
+                    active_after = merge_values(values, profile_overrides)
+                    self.validate(active_after)
+                    apply_changes = {
+                        group: active_after[group]
+                        for group in active_after
+                        if active_before.get(group) != active_after.get(group)
+                    }
+                else:
+                    apply_changes = {group: values[group] for group in changes}
                 self._write(self.defaults_path, values)
-            # Check the active identity under the same lock as scheduled Apply.
-            # A draft for a profile that has gone off air must not switch it back.
-            if (name or None) == self.active:
+            # Apply under the same lock as scheduled Apply, without changing the
+            # active identity. A profile draft that went off air is storage only.
+            if apply_changes:
                 try:
-                    # Apply the edited groups without reselecting an unchanged
-                    # clockwheel or rewriting unrelated feature stores.
-                    self.apply_values({group: values[group] for group in changes})
+                    # Apply only affected groups to avoid reselecting unchanged
+                    # clockwheels or rewriting unrelated feature stores.
+                    self.apply_values(apply_changes)
                 except ValueError as exc:
                     raise ValueError(
                         "Settings were saved, but could not be fully applied. "

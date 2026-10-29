@@ -85,7 +85,7 @@ as a voice liner.
 ## The token
 
 An announcer token can read one station's coming songs and send that station breaks, and nothing
-else. It works for one station only. In Settings, General settings, Server, Analysis workers, Machine tokens, type a name,
+else. It works for one station only. In Settings, Server settings, Server, Analysis workers, Machine tokens, type a name,
 choose Token use: Announcer, choose the Station, and choose Create
 token. Copy the token when it appears; it is never shown again. From the command line:
 
@@ -142,7 +142,7 @@ The monitor never books a take or joins the station output.
    **Record** again to stop. **Alt+R** starts and stops recording from anywhere in the tab without
    moving focus, which suits a screen reader user who wants to stay on another control.
 2. Choose **Listen back** to hear the take, on the Preview output device when one is chosen in
-   Settings, General settings, Preferences (headphones, say). **Record** again replaces it; **Discard recording**
+   Settings, Browser settings, Preferences (headphones, say). **Record** again replaces it; **Discard recording**
    throws it away.
 3. Leave **Placement** at **Fit over outro and intro** to use the ending song's usable
    Outro and the next song's instrumental Intro. Speech uses its detected Start and Segue;

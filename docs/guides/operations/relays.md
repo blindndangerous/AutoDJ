@@ -14,7 +14,7 @@ connections. Relays run in stream mode only. Supported servers:
 - Shoutcast 1 (DNAS 1.9).
 - Shoutcast 2 (DNAS 2), through its Shoutcast 1 source login with a stream ID.
 
-In **Settings > General settings > Broadcasting**, open the **Relays** card to add or edit relays, enable or disable them,
+In **Settings > Station settings > Broadcasting**, open the **Relays** card to add or edit relays, enable or disable them,
 and check their connection status. Set the station name, genre, description and website there too; relays
 inherit this metadata. Saving metadata reconnects enabled relays, but leaves direct stream
 listeners connected. Changing one relay reconnects that relay only.
@@ -93,7 +93,7 @@ What a relay does:
 - **It never slows down the stream.** Each relay sends from its own queue and threads, so a
   stalled server cannot hold up the mix or the other listeners.
 
-Settings, General settings, Broadcasting, lists each relay with its state, read as one sentence each: "connecting",
+Settings, Station settings, Broadcasting, lists each relay with its state, read as one sentence each: "connecting",
 "live", "not connected, trying again" with the last error, or "off in the configuration". The
 list is plain text and does not interrupt the screen reader when it changes. The log has one
 warning when a relay starts failing and a line when it is live again. `autodj doctor` checks

@@ -1,5 +1,5 @@
 import { createEditorDialog, showEditorError } from "./editor-dialog.js";
-// Settings > Schedule: timed events (scheduler.py on the server).
+// Settings > Station settings > Schedule: timed events (scheduler.py on the server).
 //
 // The server lists the actions and their settings, so an action that a
 // later feature registers appears here without changes to this file.  The

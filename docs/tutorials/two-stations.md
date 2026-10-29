@@ -23,7 +23,7 @@ the existing AutoDJ address. A running stream station consumes extra CPU and
 memory even while idle; you will stop it after the exercise. This is a short
 workflow check, not a capacity test for your computer.
 
-Use the station ID `practice-two`. Open **Settings**, **Stations** and confirm
+Use the station ID `practice-two`. Open **Settings**, **Station settings**, **Stations** and confirm
 that neither this ID nor the name Practice Two already exists. If either does,
 stop here and inspect that existing station before choosing a different
 practice exercise. Do not overwrite it, remove its folder, or stop it just to
@@ -60,7 +60,7 @@ marker waiting for your later comparison.
 
 ## Create Practice Two while it is off air
 
-1. Open **Settings**, **Stations**, and find **New station**.
+1. Open **Settings**, **Station settings**, **Stations**, and find **New station**.
 2. Leave **Start from** set to **AutoDJ defaults**.
 3. Enter `Practice Two` in **Name** and `practice-two` in **Station ID**.
 4. Leave **Start with the server** unchecked.
@@ -120,7 +120,7 @@ production rotation. Saving or activating here must not replace Practice's wheel
 
 ## Start and compare the stations
 
-1. In **Settings**, **Stations**, check **Playback output** is **Radio stream**
+1. In **Settings**, **Station settings**, **Stations**, check **Playback output** is **Radio stream**
    for Practice Two. Leave **Also play the radio stream on the server sound card**
    unchecked. Press **Save changes** in the Stations tab if you changed either control.
 2. In **Stations on this server**, press **Start Practice Two**. Its visible

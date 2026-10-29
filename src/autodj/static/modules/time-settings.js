@@ -1,4 +1,4 @@
-// General settings: station time zone and output in Stations; shared time
+// Station settings: station time zone and output in Stations; shared time
 // format in Server (#282, #286).
 // Loads each setting when its owning Settings tab is shown.
 import { requestJson } from "./api-client.js";

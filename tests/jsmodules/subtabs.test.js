@@ -32,11 +32,36 @@ describe("tabForKey", () => {
 });
 
 describe("Settings subtabs markup", () => {
-  it("keeps settings in category tabs with their editing target above the tabs", () => {
+  it("keeps all four headed settings tab groups visible with the profile target below them", () => {
     installIndex();
     const section = byId("panel-settings");
     expect(section.querySelector(":scope > h2").textContent).toBe("Settings");
-    const tabs = [...byId("settings-tabs").querySelectorAll('[role="tab"]')];
+    const outer = byId("settings-tabs");
+    expect(outer.hasAttribute("role")).toBe(false);
+    expect(outer.querySelector(":scope > #settings-profile-heading").textContent).toBe("Profile settings");
+    expect(outer.querySelector(":scope > #settings-station-heading").textContent).toBe("Station settings");
+    expect(outer.querySelector(":scope > #settings-server-heading").textContent).toBe("Server settings");
+    expect(outer.querySelector(":scope > #settings-browser-heading").textContent).toBe("Browser settings");
+    const profileList = outer.querySelector('[role="tablist"][aria-labelledby="settings-profile-heading"]');
+    const stationList = outer.querySelector('[role="tablist"][aria-labelledby="settings-station-heading"]');
+    const serverList = outer.querySelector('[role="tablist"][aria-labelledby="settings-server-heading"]');
+    const browserList = outer.querySelector('[role="tablist"][aria-labelledby="settings-browser-heading"]');
+    expect(profileList).not.toBeNull();
+    expect(stationList).not.toBeNull();
+    expect(serverList).not.toBeNull();
+    expect(browserList).not.toBeNull();
+    for (const list of [profileList, stationList, serverList, browserList]) expect(list.hidden).toBe(false);
+    expect(profileList.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    expect(stationList.querySelectorAll('[role="tab"]')).toHaveLength(3);
+    expect(serverList.querySelectorAll('[role="tab"]')).toHaveLength(1);
+    expect(browserList.querySelectorAll('[role="tab"]')).toHaveLength(1);
+    expect(profileList.compareDocumentPosition(stationList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(stationList.compareDocumentPosition(serverList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(serverList.compareDocumentPosition(browserList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const targetRow = byId("settings-profile").closest(".profile-target-row");
+    expect(browserList.compareDocumentPosition(targetRow) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(targetRow.compareDocumentPosition(byId("spanel-mixing")) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const tabs = [...outer.querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "Mixing", "Song picking", "Sound", "Announcements", "Profiles",
       "Stations", "Broadcasting", "Schedule", "Server", "Preferences",
@@ -52,9 +77,6 @@ describe("Settings subtabs markup", () => {
     for (const control of section.querySelectorAll("input, select, textarea")) {
       if (control.id === "settings-profile") {
         expect(section.querySelector('label[for="settings-profile"]').textContent).toBe("Profile to edit");
-        expect(panels.some((panel) => panel.contains(control))).toBe(false);
-      } else if (control.type === "radio" && control.name === "settings-section") {
-        expect(section.querySelector("#settings-section").contains(control)).toBe(true);
         expect(panels.some((panel) => panel.contains(control))).toBe(false);
       } else {
         expect(panels.some((panel) => panel.contains(control)), control.id).toBe(true);
@@ -85,13 +107,14 @@ describe("initSubtabs", () => {
     return { ui: initSubtabs(byId("settings-tabs"), { storage }), storage };
   }
 
-  it("starts on the first tab and moves with the arrow keys, Home and End", () => {
+  it("starts on the first tab and keeps arrow, Home and End navigation within each group", () => {
     const { ui } = setup();
     const first = byId("stab-mixing");
     expect(ui.selected).toBe("mixing");
     expect(first.getAttribute("aria-selected")).toBe("true");
     expect(first.tabIndex).toBe(0);
     expect(byId("spanel-mixing").hidden).toBe(false);
+    expect(byId("settings-profile").closest(".profile-target-row").hidden).toBe(false);
     expect(byId("spanel-picking").hidden).toBe(true);
 
     first.focus();
@@ -102,30 +125,31 @@ describe("initSubtabs", () => {
     expect(byId("spanel-picking").hidden).toBe(false);
     expect(byId("spanel-mixing").hidden).toBe(true);
 
-    // Public player settings keep Stream available outside stream mode.
     press(document.activeElement, "End");
     expect(document.activeElement).toBe(byId("stab-access"));
-    press(document.activeElement, "ArrowLeft");
-    expect(document.activeElement).toBe(byId("stab-announcements"));
-    press(document.activeElement, "ArrowLeft");
-    expect(document.activeElement).toBe(byId("stab-sound"));
-    byId("settings-section").querySelector('[value="general"]').click();
-    expect(ui.selected).toBe("stations");
-    expect(document.activeElement).toBe(byId("stab-sound"));
+    press(document.activeElement, "ArrowRight");
+    expect(document.activeElement).toBe(byId("stab-mixing"));
+    expect(ui.selected).toBe("mixing");
+    byId("stab-stations").focus();
     press(byId("stab-stations"), "ArrowRight");
     expect(document.activeElement).toBe(byId("stab-stream"));
+    expect(byId("settings-profile").closest(".profile-target-row").hidden).toBe(true);
     press(document.activeElement, "End");
-    expect(document.activeElement).toBe(byId("stab-display"));
-    press(document.activeElement, "ArrowLeft");
-    expect(document.activeElement).toBe(byId("stab-server"));
-    press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-schedule"));
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-stream"));
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-stations"));
+    press(document.activeElement, "ArrowLeft");
+    expect(document.activeElement).toBe(byId("stab-schedule"));
+    byId("stab-server").focus();
+    press(document.activeElement, "End");
+    expect(document.activeElement).toBe(byId("stab-server"));
+    press(document.activeElement, "ArrowLeft");
+    expect(document.activeElement).toBe(byId("stab-server"));
+    byId("stab-display").focus();
     press(document.activeElement, "Home");
-    expect(document.activeElement).toBe(byId("stab-stations"));
+    expect(document.activeElement).toBe(byId("stab-display"));
   });
 
   it("moves focus to the panel heading on click, as the section tabs do", () => {
@@ -154,7 +178,6 @@ describe("initSubtabs", () => {
 
   it("shows Stream only when asked and leaves it when it goes", () => {
     const { ui } = setup();
-    byId("settings-section").querySelector('[value="general"]').click();
     ui.setTabHidden("stream", false);
     byId("stab-stream").click();
     expect(byId("spanel-stream").hidden).toBe(false);

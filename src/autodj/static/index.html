@@ -726,27 +726,34 @@
 
   <!-- Shared polite status region for Settings saves and failures. -->
   <div id="settings-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
-  <fieldset id="settings-section">
-    <legend>Settings section</legend>
-    <label><input type="radio" name="settings-section" value="profile" checked> Profile settings</label>
-    <label><input type="radio" name="settings-section" value="general"> General settings</label>
-  </fieldset>
-  <div class="settings-row profile-target-row">
-    <label for="settings-profile">Profile to edit</label>
-    <select id="settings-profile"><option value="">Station defaults</option></select>
-  </div>
-
-  <div role="tablist" class="subtabs" id="settings-tabs" aria-label="Settings groups" aria-orientation="horizontal">
+  <div id="settings-tabs">
+  <h3 id="settings-profile-heading">Profile settings</h3>
+  <div role="tablist" class="subtabs" aria-labelledby="settings-profile-heading" aria-orientation="horizontal">
     <button type="button" role="tab" id="stab-mixing" data-settings-kind="profile" data-subview="mixing" data-panel="spanel-mixing" aria-selected="false" tabindex="-1">Mixing</button>
     <button type="button" role="tab" id="stab-picking" data-settings-kind="profile" data-subview="picking" data-panel="spanel-picking" aria-selected="false" tabindex="-1">Song picking</button>
     <button type="button" role="tab" id="stab-sound" data-settings-kind="profile" data-subview="sound" data-panel="spanel-sound" aria-selected="false" tabindex="-1">Sound</button>
     <button type="button" role="tab" id="stab-announcements" data-settings-kind="profile" data-subview="announcements" data-panel="spanel-announcements" aria-selected="false" tabindex="-1">Announcements</button>
     <button type="button" role="tab" id="stab-access" data-settings-kind="profile" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles</button>
-    <button type="button" role="tab" id="stab-stations" data-settings-kind="general" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1" hidden>Stations</button>
-    <button type="button" role="tab" id="stab-stream" data-settings-kind="general" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Broadcasting</button>
-    <button type="button" role="tab" id="stab-schedule" data-settings-kind="general" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1" hidden>Schedule</button>
-    <button type="button" role="tab" id="stab-server" data-settings-kind="general" data-subview="server" data-panel="spanel-server" aria-selected="false" tabindex="-1" aria-describedby="shared-context" hidden>Server</button>
-    <button type="button" role="tab" id="stab-display" data-settings-kind="general" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1" hidden>Preferences</button>
+  </div>
+  <h3 id="settings-station-heading">Station settings</h3>
+  <div role="tablist" class="subtabs" aria-labelledby="settings-station-heading" aria-orientation="horizontal">
+    <button type="button" role="tab" id="stab-stations" data-settings-kind="station" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1">Stations</button>
+    <button type="button" role="tab" id="stab-stream" data-settings-kind="station" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1">Broadcasting</button>
+    <button type="button" role="tab" id="stab-schedule" data-settings-kind="station" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
+  </div>
+  <h3 id="settings-server-heading">Server settings</h3>
+  <div role="tablist" class="subtabs" aria-labelledby="settings-server-heading" aria-orientation="horizontal">
+    <button type="button" role="tab" id="stab-server" data-settings-kind="server" data-subview="server" data-panel="spanel-server" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Server</button>
+  </div>
+  <h3 id="settings-browser-heading">Browser settings</h3>
+  <div role="tablist" class="subtabs" aria-labelledby="settings-browser-heading" aria-orientation="horizontal">
+    <button type="button" role="tab" id="stab-display" data-settings-kind="browser" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Preferences</button>
+  </div>
+  </div>
+
+  <div class="settings-row profile-target-row">
+    <label for="settings-profile">Profile to edit</label>
+    <select id="settings-profile"><option value="">Station defaults</option></select>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-mixing" data-settings-kind="profile" aria-labelledby="stab-mixing" hidden>
@@ -1794,7 +1801,7 @@
          waiting times stay in config.toml.  #brk-reason is plain text,
          not live: it says why breaks cannot be taken now, if they cannot. -->
     <p class="card-desc">
-      DJ breaks, news and weather from an announcer program, and the voice tracks you record in the Voice tracks tab.  A break joins the song change after the next song.  An announcer program needs an announcer token from Settings, General settings, Server.
+      DJ breaks, news and weather from an announcer program, and the voice tracks you record in the Voice tracks tab.  A break joins the song change after the next song.  An announcer program needs an announcer token from Settings, Server settings, Server.
     </p>
     <div id="brk-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <p id="brk-reason" hidden></p>
@@ -1853,7 +1860,7 @@
   <div class="card" role="tabpanel" id="spanel-access" data-settings-kind="profile" aria-labelledby="stab-access" hidden>
     <h3>Profiles</h3>
     <p class="card-desc">
-      Profiles inherit station defaults. Saving the active profile applies your changes; use Apply to switch profiles.
+      Profiles inherit station defaults. Use Save changes for edits and Activate to switch profiles.
     </p>
     <div id="profiles-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <fieldset>
@@ -1866,7 +1873,7 @@
       <p>Choose a profile in Profile to edit to change its saved overrides. New profiles inherit station defaults.</p>
     </fieldset>
     <h4 id="profile-list-heading">Saved profiles</h4>
-    <button type="button" id="profile-apply-defaults">Apply station defaults</button>
+    <button type="button" id="profile-apply-defaults">Activate station defaults</button>
     <ul id="profile-list" aria-labelledby="profile-list-heading"></ul>
     <div class="settings-row">
       <label for="profile-clock">Clockwheel</label>
@@ -1877,7 +1884,7 @@
 
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-stations" data-settings-kind="general" aria-labelledby="stab-stations" hidden>
+  <div class="card" role="tabpanel" id="spanel-stations" data-settings-kind="station" aria-labelledby="stab-stations" hidden>
     <h3>Stations</h3>
     <p class="card-desc">
       Every station on this server shares the music library, song analysis, song cue points and Stereo Tool preset files. Each has its own settings, queue, history, schedule, carts and stream.
@@ -1998,16 +2005,45 @@
       <p id="station-create-done-text"></p>
       <button type="button" id="station-create-switch">Switch to the new station</button>
     </div>
+    <fieldset>
+      <legend>Station display</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="pb-show-lyrics">
+        <label for="pb-show-lyrics">Show lyrics</label>
+      </div>
+      <span class="setting-desc" id="pb-show-lyrics-desc">
+        Display timed (LRC) or plain lyrics in the Lyrics card.
+      </span>
+      <div class="settings-row">
+        <label for="key-notation">Key notation</label>
+        <select id="key-notation">
+          <option value="camelot">Camelot (8A or 8B)</option>
+          <option value="musical">Musical (C, A minor, F sharp minor)</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="key-notation-desc">
+        Show keys as Camelot positions (8A, 8B) or musical names (C, A minor). The key wheel always uses Camelot positions.
+      </span>
+      <div class="settings-row" data-show-when="key-notation=musical">
+        <label for="key-prefer-flats">Use flats</label>
+        <input type="checkbox" id="key-prefer-flats">
+      </div>
+      <span class="setting-desc" id="key-prefer-flats-desc" data-show-when="key-notation=musical">
+        Show flats such as D flat instead of sharps such as C sharp.
+      </span>
+    </fieldset>
+
+    <fieldset>
+      <legend>Browser playback</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="pb-prefetch" checked>
+        <label for="pb-prefetch">Load the next song early</label>
+      </div>
+      <span class="setting-desc" id="pb-prefetch-desc">Loads the next track early to reduce gaps.</span>
+    </fieldset>
   </div>
 
-  <!-- Live DJ (#48): DJ accounts for BUTT, Mixxx or another Icecast
-       source program, where they connect, and the talkover settings.
-       live-settings.js shows the tab while the station can go live.
-       Passwords are write-only.  Results go to #settings-status; a
-       refused save shows its words under the form, linked to its field. -->
-  </div>
-
-  <div class="card" role="tabpanel" id="spanel-stream" data-settings-kind="general" aria-labelledby="stab-stream" hidden>
+  <div class="card" role="tabpanel" id="spanel-stream" data-settings-kind="station" aria-labelledby="stab-stream" hidden>
     <h3>Broadcasting</h3>
     <form id="public-page-form" novalidate>
       <fieldset>
@@ -2230,7 +2266,7 @@
         <p class="stream-detail" id="np-loopback-note" hidden>These links only work on this computer. Open AutoDJ using its network address (see the start-up message) to copy links other devices can reach.</p>
         <!-- In DMCA mode, nowplaying-settings.js shows both notes and leaves
              show-next focusable with aria-disabled and its reason linked. -->
-        <p class="stream-detail" id="dmca-status" hidden>DMCA mode is on. Change it in Settings, General settings, Broadcasting.</p>
+        <p class="stream-detail" id="dmca-status" hidden>DMCA mode is on. Change it in Settings, Station settings, Broadcasting.</p>
         <div class="settings-check">
           <input type="checkbox" id="np-show-next" aria-describedby="np-show-next-desc">
           <label for="np-show-next">Show the next song publicly</label>
@@ -2238,7 +2274,7 @@
         <span class="setting-desc" id="np-show-next-desc">
           Add the upcoming song to the now-playing feed. Off by default, because some webcasting licences, such as the US statutory licence, do not allow announcing songs in advance.
         </span>
-        <span class="setting-desc" id="np-show-next-dmca" hidden>Not available: DMCA mode hides the next song publicly. Turn it off in Settings, General settings, Broadcasting to use this.</span>
+        <span class="setting-desc" id="np-show-next-dmca" hidden>Not available: DMCA mode hides the next song publicly. Turn it off in Settings, Station settings, Broadcasting to use this.</span>
         <p class="stream-detail" id="np-webhooks-intro">Track-change webhooks</p>
         <ul class="stream-detail" id="np-webhooks-list" aria-labelledby="np-webhooks-intro" hidden></ul>
         <p class="stream-detail" id="np-webhooks-empty" hidden></p>
@@ -2426,7 +2462,7 @@
     </section>
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-schedule" data-settings-kind="general" aria-labelledby="stab-schedule" hidden>
+  <div class="card" role="tabpanel" id="spanel-schedule" data-settings-kind="station" aria-labelledby="stab-schedule" hidden>
     <h3>Schedule</h3>
     <!-- scheduler-panel.js fills this panel when it is seen, and again when
          the server says the schedule changed or an event ran.  The lists
@@ -2562,7 +2598,7 @@
     <ul id="schedule-runs" aria-labelledby="schedule-runs-heading"></ul>
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-server" data-settings-kind="general" aria-labelledby="stab-server" hidden>
+  <div class="card" role="tabpanel" id="spanel-server" data-settings-kind="server" aria-labelledby="stab-server" hidden>
     <h3>Server</h3>
     <fieldset id="advanced-length-group">
       <legend>Similarity analysis</legend>
@@ -2804,7 +2840,7 @@
     </section>
   </div>
 
-  <div class="card" role="tabpanel" id="spanel-display" data-settings-kind="general" aria-labelledby="stab-display" hidden>
+  <div class="card" role="tabpanel" id="spanel-display" data-settings-kind="browser" aria-labelledby="stab-display" hidden>
     <h3>Preferences</h3>
     <!-- Kept in this browser only (modules/theme.js); applied before first
          paint by modules/theme-init.js.  No status message on change: the
@@ -2828,33 +2864,7 @@
       </span>
     </fieldset>
 
-    <fieldset>
-      <legend>Station display</legend>
-      <div class="settings-check">
-        <input type="checkbox" id="pb-show-lyrics">
-        <label for="pb-show-lyrics">Show lyrics</label>
-      </div>
-      <span class="setting-desc" id="pb-show-lyrics-desc">
-        Display timed (LRC) or plain lyrics in the Lyrics card.
-      </span>
-      <div class="settings-row">
-        <label for="key-notation">Key notation</label>
-        <select id="key-notation">
-          <option value="camelot">Camelot (8A or 8B)</option>
-          <option value="musical">Musical (C, A minor, F sharp minor)</option>
-        </select>
-      </div>
-      <span class="setting-desc" id="key-notation-desc">
-        Show keys as Camelot positions (8A, 8B) or musical names (C, A minor). The key wheel always uses Camelot positions.
-      </span>
-      <div class="settings-row" data-show-when="key-notation=musical">
-        <label for="key-prefer-flats">Use flats</label>
-        <input type="checkbox" id="key-prefer-flats">
-      </div>
-      <span class="setting-desc" id="key-prefer-flats-desc" data-show-when="key-notation=musical">
-        Show flats such as D flat instead of sharps such as C sharp.
-      </span>
-    </fieldset>
+
 
     <fieldset>
       <legend>Announcements</legend>
@@ -2905,11 +2915,7 @@
       </div>
       <span class="setting-desc" id="preview-device-desc">Audio device for private previews.</span>
       <p class="setting-desc" id="preview-device-note" hidden></p>
-      <div class="settings-check">
-        <input type="checkbox" id="pb-prefetch" checked>
-        <label for="pb-prefetch">Load the next song early</label>
-      </div>
-      <span class="setting-desc" id="pb-prefetch-desc">Loads the next track early to reduce gaps.</span>
+
 
     </fieldset>
   </div>

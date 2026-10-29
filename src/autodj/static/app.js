@@ -886,6 +886,7 @@ function applyState(s, { announceTrack = true } = {}) {
   if (s.settings) {
     applySavedSettings({ ...s.settings, discovery_enabled: s.discovery_enabled });
   }
+  if (Object.hasOwn(s, "active_profile")) profileControls?.updateActive(s.active_profile);
 
   // Last, so Play / Pause already has its enabled state for this push.
   if (losesFocus) (btnPause.disabled ? btnSkip : btnPause).focus();
@@ -894,6 +895,7 @@ function applyState(s, { announceTrack = true } = {}) {
 function applySavedSettings(settings) {
   applySettingsDrafts(settings);
   if (!settings) return;
+  if (Object.hasOwn(settings, "active_profile")) profileControls?.updateActive(settings.active_profile);
   if (stationOffAir) {
     streamSettings.apply({ settings });
     nowPlayingSettings.apply({ settings });
@@ -1730,7 +1732,7 @@ const stationSwitcher = installStationSwitcher({
   onChoose: (slug) => switchStation(slug),
 });
 
-// Settings > Stations (#233): the list and New station.  A created station
+// Settings > Station settings > Stations (#233): the list and New station.  A created station
 // joins the list at once; Switch to it puts focus on the Station button.
 const stationCreator = installStationCreator({
   onCreated: () => refreshStationList(),
@@ -1892,7 +1894,10 @@ function scheduleOffAirCheck() {
     await refreshStationList();
     if (station !== currentStation()) return;
     if (isOnAir(stationEntry())) void loadStation({ announce: false });
-    else scheduleOffAirCheck();
+    else {
+      if (!document.getElementById("panel-settings").hidden) void profileControls?.refresh();
+      scheduleOffAirCheck();
+    }
   }, 10000);
 }
 

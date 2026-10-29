@@ -408,6 +408,7 @@ async def _broadcast_state_once(
     recording_status: Callable[[], dict[str, object]] | None = None,
     station_list: Callable[[], list[dict[str, Any]]] | None = None,
     live_state: Callable[[], dict[str, Any]] | None = None,
+    active_profile: Callable[[], str | None] | None = None,
 ) -> None:
     """Push the player state to every WebSocket client, if any are connected.
 
@@ -432,6 +433,8 @@ async def _broadcast_state_once(
             state["stations"] = station_list()
         if live_state is not None:
             state.update(live_state())
+        if active_profile is not None:
+            state["active_profile"] = active_profile()
         payload = json.dumps(state)
         await _broadcast_and_prune(clients, clients_lock, payload)
     except Exception as exc:
@@ -2889,6 +2892,9 @@ def _connection_limit(cfg: Any) -> int:
 
 def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, Any, None]]:
     """The loop that pushes *station*'s state to its WebSocket clients once a second."""
+    from autodj.profile_settings import profile_settings
+
+    profiles = profile_settings(station)
 
     async def broadcast() -> None:  # pragma: no cover — long-running task
         failures = _BroadcastFailureLog()
@@ -2913,6 +2919,7 @@ def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, A
                 recorder.status if recorder is not None else None,
                 station.station_list,
                 station.live_state,
+                lambda: profiles.active,
             )
 
     return broadcast

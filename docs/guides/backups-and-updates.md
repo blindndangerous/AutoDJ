@@ -31,7 +31,7 @@ Only add `--force` when deliberately replacing known destination data after pres
 
 ## Check for updates and restart
 
-**Settings**, **General settings**, **Server**, **Updates** shows the version AutoDJ runs, its update channel and the latest version on that channel. **Stable** follows releases (tags such as `v0.21.0`); **Development** follows the newest code on `master`. **Automatic** follows what the installation runs: a release tag is Stable, a checkout of `master` is Development, and a published container image follows the tag it was published as (`stable` or `development`). Choose **Check now** to ask again; AutoDJ otherwise reuses an answer for six hours.
+**Settings**, **Server settings**, **Server**, **Updates** shows the version AutoDJ runs, its update channel and the latest version on that channel. **Stable** follows releases (tags such as `v0.21.0`); **Development** follows the newest code on `master`. **Automatic** follows what the installation runs: a release tag is Stable, a checkout of `master` is Development, and a published container image follows the tag it was published as (`stable` or `development`). Choose **Check now** to ask again; AutoDJ otherwise reuses an answer for six hours.
 
 A source checkout asks its `origin` remote with `git ls-remote`, which changes nothing in the checkout. Other installations ask GitHub. If the computer is offline, the page says it could not check; AutoDJ keeps working. Turn off **Check for updates** for an offline or private installation: AutoDJ then never asks. `autodj check-update` gives the same answer in a terminal, and `autodj doctor` reports it as its `updates` check; `autodj doctor --offline` skips it.
 
@@ -49,7 +49,7 @@ Otherwise the page says to restart AutoDJ the way you started it. AutoDJ exits w
 
 ## Update from the page
 
-**Update AutoDJ** appears in **Settings**, **General settings**, **Server**, **Updates** while an update is available, when AutoDJ is a source checkout started with `./autodj serve` (Linux and macOS) or `.\autodj.cmd serve` (Windows). A container cannot update from the page yet.
+**Update AutoDJ** appears in **Settings**, **Server settings**, **Server**, **Updates** while an update is available, when AutoDJ is a source checkout started with `./autodj serve` (Linux and macOS) or `.\autodj.cmd serve` (Windows). A container cannot update from the page yet.
 
 1. Read the release notes the page links.
 2. Choose **Update AutoDJ**. The confirmation says every station's stream goes off the air while AutoDJ updates, usually for a few minutes. Choose **Update**.

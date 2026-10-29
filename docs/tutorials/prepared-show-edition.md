@@ -18,7 +18,7 @@ for private previews, and check **Settings**, **Sound**, **Preview output
 device**. If the browser falls back to its default device, arrange that default
 before recording. No speech provider or near-air voice-track slot is needed.
 
-In **Settings**, **Stations**, select the practice station. If its row offers
+In **Settings**, **Station settings**, **Stations**, select the practice station. If its row offers
 **Stop**, press it, confirm **Stop station**, and wait until it offers **Start**.
 Leave the station stopped throughout this lesson. Preparation and review do not
 require a particular station playback mode. Later broadcast playback requires

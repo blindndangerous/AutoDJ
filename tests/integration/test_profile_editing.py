@@ -29,6 +29,31 @@ def patch_profile(
 
 
 @pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_active_profile_identity_is_present_without_a_profile_query_and_is_station_owned(
+    rig: Any,
+) -> None:
+    client, *_ = rig
+
+    assert client.get(f"{OWL}/settings").json()["active_profile"] is None
+    assert "profile" not in client.get(f"{OWL}/settings").json()
+    assert client.get("/api/settings").json()["active_profile"] is None
+
+    created = client.post(f"{OWL}/profiles", json={"name": "Night"})
+    assert created.status_code == 200, created.text
+    applied = client.post(f"{OWL}/profiles/Night/apply")
+    assert applied.status_code == 200, applied.text
+    started = client.post(f"{OWL}/start")
+    assert started.status_code == 200, started.text
+
+    settings = client.get(f"{OWL}/settings").json()
+    assert settings["active_profile"] == "Night"
+    assert "profile" not in settings
+    assert client.get(f"{OWL}/settings", params={"profile": ""}).json()["active_profile"] == "Night"
+    assert client.get(f"{OWL}/status").json()["active_profile"] == "Night"
+    assert client.get("/api/settings").json()["active_profile"] is None
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
 @pytest.mark.parametrize("target", ["", "Evening"])
 def test_partial_time_check_profile_draft_can_be_saved(rig: Any, target: str) -> None:
     client, *_ = rig
@@ -133,8 +158,8 @@ def test_profile_defaults_editing_apply_reset_and_station_isolation(
     assert nightowl.cfg.playback.beat_sync_fx is False
     assert nightowl.cfg.playback.fade_in_seconds == 0
 
-    # A saved-default edit leaves an active profile alone; its next Apply
-    # resolves against the new defaults because crossfade is inherited.
+    # A saved-default edit immediately updates inherited active values while
+    # preserving the profile's explicit playback overrides and active identity.
     active_defaults = settings_view(client, "")
     later_crossfade = 5.25
     changed_defaults = patch_profile(
@@ -145,7 +170,8 @@ def test_profile_defaults_editing_apply_reset_and_station_isolation(
     )
     assert changed_defaults.status_code == 200, changed_defaults.text
     assert client.get(f"{OWL}/profiles").json()["active"] == "Evening"
-    assert nightowl.cfg.playback.crossfade_seconds == default_crossfade
+    assert nightowl.cfg.playback.crossfade_seconds == later_crossfade
+    assert nightowl.cfg.playback.beat_sync_fx is False
     reapplied = client.post(f"{OWL}/profiles/Evening/apply")
     assert reapplied.status_code == 200, reapplied.text
     assert nightowl.cfg.playback.crossfade_seconds == later_crossfade

@@ -1,6 +1,6 @@
 import { settingsHaveChanges, confirmSettingsNavigation } from "./settings-drafts.js";
-// Settings subtabs: a second tablist inside the Settings view, one panel
-// per group of settings, so a new user meets one short group at a time.
+// Settings subtabs: labeled tablists inside Settings, sharing one
+// visible panel. All groups remain available while editing.
 //
 // Keys and selection follow the section tabs (tablist.js): arrows, Home
 // and End move and select, and clicking a tab moves focus to its panel's
@@ -8,7 +8,7 @@ import { settingsHaveChanges, confirmSettingsNavigation } from "./settings-draft
 // carry no aria-controls (see index.html).  Each tab names its panel in
 // data-panel instead.  The selected tab is remembered in this browser.
 //
-// Panels that load on demand (Profiles and access) need to know when
+// Panels that load on demand (Profiles, for example) need to know when
 // they are seen, as they did as <details> cards.  So each panel's `open`
 // says whether it is seen now -- its tab is selected and the Settings
 // view is showing -- and a "toggle" event fires on it when that changes.
@@ -17,8 +17,6 @@ import { markSelected, tabForKey } from "./tablist.js";
 import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
 
 const STORAGE_KEY = "autodj.settingsSubtab";
-const CATEGORY_KEY = "autodj.settingsCategory";
-const categoryStorageKey = (kind) => `${STORAGE_KEY}.${kind}`;
 const OLD_TABS = { transitions: "mixing", djmix: "mixing", liners: "announcements", "time-checks": "announcements", breaks: "announcements", live: "stream", workers: "server", updates: "server" };
 
 function readStored(storage) {
@@ -42,19 +40,24 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
   const panels = new Map(tabs.map((tab) => [tab, doc.getElementById(tab.dataset.panel)]));
   const view = tablist.closest("section");
   const settings = tablist.closest("#panel-settings");
-  const categoryRadios = [...(settings?.querySelectorAll('#settings-section input[type="radio"]') || [])];
+  const tablists = tablist.matches('[role="tablist"]') ? [tablist] : [...tablist.querySelectorAll('[role="tablist"]')];
   const innerSections = [...(settings?.querySelectorAll("[data-settings-section]") || [])];
   const profileTargets = [...(settings?.querySelectorAll(".profile-target-row") || [])];
-  // Markup starts the General tabs hidden; category visibility is applied
-  // below. This set tracks only explicit runtime hiding via setTabHidden.
-  const runtimeHidden = new Set();
   let selected = null;
-  let category = "profile";
   let pending = false;
 
-  function visibleTabs(kind = category) {
-    return tabs.filter((tab) => !runtimeHidden.has(tab.dataset.subview) &&
-      (!tab.dataset.settingsKind || tab.dataset.settingsKind === kind));
+  function visibleTabs(list = tablist) {
+    return tabs.filter((tab) => !tab.hidden && list.contains(tab));
+  }
+
+  function markTabs() {
+    markSelected(tabs, selected);
+    // Every group stays reachable with Tab, even when another group's
+    // panel is selected. Arrow keys move within the focused tablist.
+    for (const list of tablists) {
+      const visible = visibleTabs(list);
+      if (!visible.includes(selected) && visible.length) visible[0].tabIndex = 0;
+    }
   }
 
   function notify() {
@@ -76,7 +79,6 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
 
   function select(tab, { focusPanel = false, remember = true, confirmed = false, focusTab = false } = {}) {
     if (!confirmed && selected && selected !== tab && settingsHaveChanges(doc)) {
-      for (const radio of categoryRadios) radio.checked = radio.value === category;
       if (!pending) {
         pending = true;
         void confirmSettingsNavigation(doc).then((allowed) => {
@@ -87,20 +89,13 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
       return;
     }
     selected = tab;
-    category = tab.dataset.settingsKind || category;
-    for (const each of tabs) {
-      if (each.dataset.settingsKind) each.hidden = runtimeHidden.has(each.dataset.subview) || each.dataset.settingsKind !== category;
-    }
-    for (const radio of categoryRadios) radio.checked = radio.value === category;
-    markSelected(tabs, tab);
+    markTabs();
     for (const [each, panel] of panels) {
       if (panel) panel.hidden = each !== tab;
     }
-    for (const row of profileTargets) row.hidden = category !== "profile";
+    for (const row of profileTargets) row.hidden = Boolean(tab.dataset.settingsKind) && tab.dataset.settingsKind !== "profile";
     if (remember) {
       writeStored(storage, tab.dataset.subview);
-      writeStorage(storage, categoryStorageKey(category), tab.dataset.subview);
-      writeStorage(storage, CATEGORY_KEY, category);
     }
     notify();
     if (focusPanel) focusHeading(panels.get(tab));
@@ -110,24 +105,13 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
   for (const tab of tabs) {
     tab.addEventListener("click", () => select(tab, { focusPanel: true }));
     tab.addEventListener("keydown", (event) => {
-      const next = tabForKey(visibleTabs(), tab, event.key);
+      const next = tabForKey(visibleTabs(tab.closest('[role="tablist"]') || tablist), tab, event.key);
       if (!next) return;
       event.preventDefault();
       // Select first, then focus, so focus lands on a selected tab.
       select(next, { focusTab: true });
     });
   }
-
-  for (const radio of categoryRadios) radio.addEventListener("change", () => {
-    if (!radio.checked) return;
-    const nextKind = radio.value;
-    const remembered = readStorage(storage, categoryStorageKey(nextKind)) || readStored(storage);
-    const rememberedTab = tabs.find((tab) => tab.dataset.settingsKind === nextKind &&
-      (tab.dataset.subview === remembered || OLD_TABS[remembered] === tab.dataset.subview) &&
-      !runtimeHidden.has(tab.dataset.subview));
-    const next = rememberedTab || visibleTabs(nextKind)[0];
-    if (next) select(next);
-  });
 
   // The section router shows and hides the Settings view by its hidden
   // attribute, so panels hear about that too.
@@ -136,15 +120,11 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
     new Observer(notify).observe(view, { attributes: true, attributeFilter: ["hidden"] });
   }
 
-  const legacySelection = readStored(storage);
-  const savedCategory = readStorage(storage, CATEGORY_KEY) ||
-    tabs.find((tab) => tab.dataset.subview === legacySelection || OLD_TABS[legacySelection] === tab.dataset.subview)
-      ?.dataset.settingsKind || "profile";
-  const remembered = readStorage(storage, categoryStorageKey(savedCategory)) || legacySelection;
-  const stored = tabs.find((tab) => tab.dataset.settingsKind === savedCategory &&
+  const remembered = readStored(storage);
+  const stored = tabs.find((tab) =>
     (tab.dataset.subview === remembered || OLD_TABS[remembered] === tab.dataset.subview) &&
-    !runtimeHidden.has(tab.dataset.subview));
-  const defaultTab = visibleTabs(savedCategory)[0] || tabs[0];
+    !tab.hidden);
+  const defaultTab = visibleTabs()[0] || tabs[0];
   select(stored || defaultTab, { remember: false });
 
   return {
@@ -152,13 +132,11 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
     // mode).  Hiding the selected tab selects the first one left.
     setTabHidden(name, hidden) {
       const tab = tabs.find((each) => each.dataset.subview === name);
-      if (!tab || runtimeHidden.has(name) === hidden) return;
-      if (hidden) runtimeHidden.add(name);
-      else runtimeHidden.delete(name);
-      tab.hidden = hidden || (tab.dataset.settingsKind && tab.dataset.settingsKind !== category);
+      if (!tab || tab.hidden === hidden) return;
+      tab.hidden = hidden;
       if (hidden && tab === selected) {
-        select(visibleTabs()[0] || tabs.find((each) => !each.hidden) || tabs[0], { remember: false });
-      }
+        select(visibleTabs(tab.closest('[role="tablist"]') || tablist)[0] || visibleTabs()[0] || tabs[0], { remember: false });
+      } else markTabs();
     },
     // Put focus on the selected tab, for when the control that had it
     // has just gone away.

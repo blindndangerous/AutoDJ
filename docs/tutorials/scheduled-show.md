@@ -66,7 +66,7 @@ before proceeding. Do not schedule an empty or broken list.
 
 ## Choose a time in the station's time zone
 
-1. Open **Settings**, **Schedule**. Read the time zone displayed above
+1. Open **Settings**, **Station settings**, **Schedule**. Read the time zone displayed above
    **Next events**.
 2. Check the current date and time in that zone using your computer's clock.
    If it differs from the computer's local zone, use that zone's time for the
@@ -88,7 +88,7 @@ If the chosen time has already passed, choose a new future time. Do not change
 the system clock to make an event happen.
 
 If the station time zone itself is wrong, stop here and correct it under
-**Settings**, **Stations**, **Time for the selected station**. Save the time
+**Settings**, **Station settings**, **Stations**, **Time for the selected station**. Save the time
 setting, then stop and restart AutoDJ with your original launch command so the
 scheduler uses the new zone. Return and recheck **Next events** before
 proceeding; see the [schedule guide](../guides/schedule.md).

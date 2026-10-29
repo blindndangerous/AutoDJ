@@ -571,12 +571,14 @@ def _station_settings_values(
 
 
 def _profile_document(station: Any, settings: dict, profile: str | None) -> dict:
+    from autodj.profile_settings import profile_settings
+
+    settings["active_profile"] = profile_settings(station).active
     if profile is not None:
-        from autodj.profile_settings import PROFILE_GROUPS, profile_settings
+        from autodj.profile_settings import PROFILE_GROUPS
 
         settings["profile"] = profile
         settings["profile_groups"] = sorted(PROFILE_GROUPS)
-        settings["active_profile"] = profile_settings(station).active
     return settings
 
 
@@ -1930,8 +1932,11 @@ def install_station_routes(router: StationRouter) -> None:
     @router.get("/status")
     async def api_status(station: StationDep) -> JSONResponse:
         """Return the current player state snapshot."""
+        from autodj.profile_settings import profile_settings
+
         state = await asyncio.to_thread(station.bridge.get_state)
         state.update(station.live_state())
+        state["active_profile"] = profile_settings(station).active
         if station.recorder is not None:
             state["recording"] = station.recorder.status()
         return JSONResponse(state)

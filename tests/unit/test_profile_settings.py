@@ -102,7 +102,7 @@ def test_saving_active_profile_applies_it_and_inactive_profile_does_not(tmp_path
     assert manager.resolve("A")["playback"]["crossfade_seconds"] == 9.0
 
 
-def test_default_save_applies_only_when_default_target_is_active(tmp_path):
+def test_default_save_updates_active_profile_inheritance_and_preserves_overrides(tmp_path):
     station = _station(tmp_path)
     manager = ProfileSettings(station)
     _defaults(manager)
@@ -116,8 +116,66 @@ def test_default_save_applies_only_when_default_target_is_active(tmp_path):
     manager.apply("Night")
     manager.save("", {"playback": {"crossfade_seconds": 5.0}})
     assert manager.active == "Night"
-    assert station.cfg.playback.crossfade_seconds == 4.0
+    assert station.cfg.playback.crossfade_seconds == 5.0
     assert manager.defaults()["playback"]["crossfade_seconds"] == 5.0
+
+    manager.save("Night", {"playback": {"beat_sync_fx": False}})
+    manager.save("", {"playback": {"beat_sync_fx": True, "crossfade_seconds": 6.0}})
+    assert manager.active == "Night"
+    assert station.cfg.playback.crossfade_seconds == 6.0
+    assert station.cfg.playback.beat_sync_fx is False
+
+
+def test_default_save_does_not_reselect_unchanged_active_clock(tmp_path):
+    station = _station(tmp_path)
+    clock_selection = Mock()
+    station.ledger = SimpleNamespace(
+        get_setting=lambda _key, default: default,
+        select_clock=clock_selection,
+    )
+    ClockwheelStore(station.paths.clockwheels).save(
+        {
+            "version": 1,
+            "name": "Morning",
+            "steps": [{"type": "track", "source": "folder1", "path": "song.flac"}],
+            "resync_minutes": [0],
+        }
+    )
+    manager = ProfileSettings(station)
+    _defaults(manager)
+    manager.create(ProfileSnapshot(name="Clocked", settings={"clock": {"name": "Morning"}}))
+    manager.apply("Clocked")
+    clock_selection.reset_mock()
+
+    manager.save("", {"playback": {"crossfade_seconds": 6.0}})
+
+    assert manager.active == "Clocked"
+    assert station.cfg.playback.crossfade_seconds == 6.0
+    clock_selection.assert_not_called()
+
+
+def test_invalid_effective_active_profile_prevents_default_persistence(tmp_path, monkeypatch):
+    manager = ProfileSettings(_station(tmp_path))
+    _defaults(manager)
+    manager.create(ProfileSnapshot(name="Night", settings={"playback": {"beat_sync_fx": False}}))
+    manager.apply("Night")
+    defaults_before = manager.defaults_path.read_bytes()
+    validate = manager.validate
+
+    def reject_active_combination(values):
+        validate(values)
+        playback = values.get("playback", {})
+        if playback.get("crossfade_seconds") == 5.0 and playback.get("beat_sync_fx") is False:
+            raise ValueError("unsupported active combination")
+
+    monkeypatch.setattr(manager, "validate", reject_active_combination)
+
+    with pytest.raises(ValueError, match="unsupported active combination"):
+        manager.save("", {"playback": {"crossfade_seconds": 5.0}})
+
+    assert manager.defaults_path.read_bytes() == defaults_before
+    assert manager.station.cfg.playback.crossfade_seconds == 3.0
+    assert manager.active == "Night"
 
 
 def test_active_playback_save_does_not_reselect_unchanged_clock(tmp_path):

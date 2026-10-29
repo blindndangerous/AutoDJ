@@ -18,15 +18,15 @@ const state = {
 beforeEach(() => { groups.length = 0; installIndexMarkup(); });
 
 describe("public station settings", () => {
-  it("places Broadcasting in General settings and labels every control with short help", () => {
-    expect(document.getElementById("stab-stream").dataset.settingsKind).toBe("general");
+  it("places Broadcasting in Station settings and labels every control with short help", () => {
+    expect(document.getElementById("stab-stream").dataset.settingsKind).toBe("station");
     expect(document.getElementById("stab-stream").textContent).toBe("Broadcasting");
     for (const id of ["dmca", "page", "embed", "origins"]) {
       expect(document.querySelector(`label[for="public-${id}"]`)?.textContent.trim()).toBeTruthy();
       const help = document.getElementById(get(id).getAttribute("aria-describedby"));
       expect(help?.textContent.trim()).toBeTruthy();
     }
-    expect(document.getElementById("np-show-next-dmca").textContent).toMatch(/General settings, Broadcasting/);
+    expect(document.getElementById("np-show-next-dmca").textContent).toMatch(/Station settings, Broadcasting/);
     expect(document.getElementById("np-show-next-dmca").textContent).not.toMatch(/config\.toml/);
   });
 

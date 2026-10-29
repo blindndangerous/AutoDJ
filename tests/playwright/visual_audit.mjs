@@ -1814,7 +1814,7 @@ async function eachTarget(page, measure) {
       }
       continue;
     }
-    for (const kind of ["profile", "general"]) {
+    for (const kind of ["profile", "station", "server", "browser"]) {
       const ids = await page.$$eval("#settings-tabs [role='tab']",
         (tabs, wanted) => tabs.filter((tab) => tab.dataset.settingsKind === wanted).map((tab) => tab.id), kind);
       for (const id of ids) {
@@ -2382,15 +2382,7 @@ async function clickSubtabUnprompted(page, id) {
     if (found) throw new Error(`unexpected confirmation before ${id}: ${JSON.stringify(found, null, 1)}`, { cause });
     if (cause) throw cause;
   };
-  const kind = await page.locator(`#${id}`).getAttribute("data-settings-kind");
   await fail(null);
-  if (kind) {
-    const radio = page.locator(`#settings-section input[name="settings-section"][value="${kind}"]`);
-    if (!await radio.isChecked()) {
-      await radio.click({ timeout: 10000 }).catch(fail);
-      await fail(null);
-    }
-  }
   await page.locator(`#${id}`).click({ timeout: 10000 }).catch(fail);
   await fail(null);
 }

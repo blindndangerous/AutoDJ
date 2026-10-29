@@ -28,7 +28,7 @@ open paired page says "Cart 3, Station ID, playing" when a cart starts and "... 
 
 With focus on the cart wall, keys 1 to 9, 0, minus and equals play carts 1 to 12 on the page
 shown, and Page Up and Page Down change the page. The keys do nothing in text fields and
-dropdowns, and the **Enable keyboard shortcuts** checkbox (Settings, General settings, Preferences) turns
+dropdowns, and the **Enable keyboard shortcuts** checkbox (Settings, Browser settings, Preferences) turns
 them off. With NVDA, switch to focus mode first (NVDA+Space).
 
 Carts play through the voice liner path. In server audio and stream mode the server mixes them
@@ -39,9 +39,9 @@ The server keeps the wall in `carts.json` in the station's folder and the upload
 `carts/` folder. The file is versioned; one that cannot be read is moved aside as
 `carts.json.bad-<id>` and an empty wall loads. Backups include the wall and the uploads. A saved
 profile can override the name of the cart page shown. Saving applies that changed group when
-the edited profile is still active; an inactive profile is only saved. **Apply** resolves all
-eligible groups for the selected profile. A profile that refers to a renamed page cannot be
-applied.
+the edited profile is still active; an inactive profile is only saved. **Activate** in the Profiles
+list resolves all eligible groups for the selected profile. A profile that refers to a renamed
+page cannot be activated.
 
 A cart can also have play dates; see [Liner and cart play dates](#liner-and-cart-play-dates).
 

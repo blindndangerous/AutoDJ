@@ -7,7 +7,7 @@ Look up canonical station configuration, public and paired routes, lifecycle sta
 ## Configuration
 
 Every station has `<index_dir>/stations/<slug>/station.json`, including `stations/default/`.
-Use Settings > Stations to create or duplicate a station and set whether it starts with the
+Use Settings > Station settings > Stations to create or duplicate a station and set whether it starts with the
 server. The slug uses lower-case letters, digits and inner hyphens, up to 32 characters.
 A server supports the default station and up to eight additional stations.
 
@@ -40,7 +40,7 @@ nested `station` section holds output, time zone, upload size and log label, for
 }
 ```
 
-Settings > Stations edits these options for the selected station, including while it is stopped.
+Settings > Station settings > Stations edits these options for the selected station, including while it is stopped.
 Output can be `browser`, `server` (sound card), or `stream`. In stream mode, `server_audio_too`
 also sends audio to the sound card. Stations may play on the same sound card simultaneously.
 Output and timezone changes take effect on that station's next start; upload size and log label
@@ -198,7 +198,7 @@ installation's Python environment; this imports modules without starting the ser
 
 A log line from a station starts with its slug, such as `[nightowl] Stream station tick failed`
 or `[default] Stream station tick failed`. A station with a log label (`station.log_label`, or
-**Log label** in Settings, Stations) shows the label instead, such as `[nor] Stream station tick
+**Log label** in Settings, Station settings, Stations) shows the label instead, such as `[nor] Stream station tick
 failed`. A label change applies to the next line logged, without a restart.
 
 AutoDJ refuses a label that another station uses or that is another station's ID, ignoring case.

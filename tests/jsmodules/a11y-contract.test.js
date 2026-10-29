@@ -1962,6 +1962,18 @@ describe("static accessibility contracts", () => {
 
   it("gives the Stream settings labelled controls and a silent count", () => {
     installDocument();
+    const profileTabs = document.querySelector('[role="tablist"][aria-labelledby="settings-profile-heading"]');
+    const stationTabs = document.querySelector('[role="tablist"][aria-labelledby="settings-station-heading"]');
+    const serverTabs = document.querySelector('[role="tablist"][aria-labelledby="settings-server-heading"]');
+    const browserTabs = document.querySelector('[role="tablist"][aria-labelledby="settings-browser-heading"]');
+    expect(profileTabs.hidden).toBe(false);
+    expect(stationTabs.hidden).toBe(false);
+    expect(serverTabs.hidden).toBe(false);
+    expect(browserTabs.hidden).toBe(false);
+    expect(profileTabs.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    expect(stationTabs.querySelectorAll('[role="tab"]')).toHaveLength(3);
+    expect(serverTabs.querySelectorAll('[role="tab"]')).toHaveLength(1);
+    expect(browserTabs.querySelectorAll('[role="tab"]')).toHaveLength(1);
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)
       ?.textContent.replace(/\s+/g, " ").trim();
     const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
@@ -1979,7 +1991,7 @@ describe("static accessibility contracts", () => {
     expect(panelHeading.textContent).toBe("Broadcasting");
     expect(panelHeading.nextElementSibling.id).toBe("public-page-form");
     expect(fieldset.previousElementSibling.id).toBe("public-page-form");
-    expect(document.querySelector("#stab-stream").hidden).toBe(true);
+    expect(document.querySelector("#stab-stream").hidden).toBe(false);
     expect([...fieldset.querySelectorAll("h4")].map((heading) => heading.textContent.trim()))
       .toEqual(["Relays", "More formats", "Now-playing feed", "Listeners", "Bans",
         "Listener statistics"]);

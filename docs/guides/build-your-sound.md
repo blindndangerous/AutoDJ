@@ -45,7 +45,7 @@ If you already have a SAM Broadcaster clockwheel, **.PAL file to import** can cr
 
 In **Settings**, **Profile settings**, **Mixing**, **Transitions**, choose **Transition mode**. The default uses detected intros and outros. **Crossfade seconds** sets a fixed overlap where the mode uses one; 0 makes a cut in fixed mode. **EQ-ducked crossfade** reduces overlapping bass. In the **DJ mixing** section of Mixing, turn on **Beatmatch** or **Phrase align** when songs have trustworthy BPM and beat grids. **Harmonic mixing** is in **Song picking** and needs known keys. Songs without that data still play; the affected transition falls back to simpler timing.
 
-In **Settings**, **Profile settings**, **Sound**, choose **Output processing** for loudness. **Off** leaves levels alone. **ReplayGain** uses available loudness data. **Smooth** levels songs in AutoDJ. **Stereo Tool** requires its separate plugin library and terms; download it in **Settings**, **General settings**, **Server**. Use **Music speed (%)** only if you want a station-wide speed change.
+In **Settings**, **Profile settings**, **Sound**, choose **Output processing** for loudness. **Off** leaves levels alone. **ReplayGain** uses available loudness data. **Smooth** levels songs in AutoDJ. **Stereo Tool** requires its separate plugin library and terms; download it in **Settings**, **Server settings**, **Server**. Use **Music speed (%)** only if you want a station-wide speed change.
 
 The separate **Time checks** and **Breaks** panels control spoken time and DJ breaks. [Settings reference](../settings-reference.md) lists their defaults and limits.
 

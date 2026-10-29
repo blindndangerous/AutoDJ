@@ -5154,6 +5154,32 @@ class TestBroadcastStateOnce:
             assert "works again" in caplog.text
         sent.assert_awaited_once()
 
+    def test_active_profile_identity_is_included_in_each_state_push(
+        self, bridge, monkeypatch
+    ) -> None:
+        from autodj.server import _broadcast_state_once, _BroadcastFailureLog
+
+        payloads = []
+
+        async def capture(_clients, _lock, payload):
+            payloads.append(json.loads(payload))
+
+        monkeypatch.setattr("autodj.server._broadcast_and_prune", capture)
+        active = ["Night"]
+        for value in ("Night", "Day"):
+            active[0] = value
+            asyncio.run(
+                _broadcast_state_once(
+                    bridge,
+                    {object()},
+                    asyncio.Lock(),
+                    _BroadcastFailureLog(),
+                    active_profile=lambda: active[0],
+                )
+            )
+
+        assert [payload["active_profile"] for payload in payloads] == ["Night", "Day"]
+
     def test_a_new_kind_of_failure_gets_its_own_traceback(self, bridge, caplog) -> None:
         import logging
 

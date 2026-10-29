@@ -2207,7 +2207,6 @@ describe("app request behavior", () => {
     });
     document.querySelector("#tab-settings").click();
     await vi.waitFor(() => expect(document.querySelector("#panel-settings").hidden).toBe(false));
-    document.querySelector('#settings-section input[value="general"]').click();
     document.querySelector("#stab-stream").click();
     await vi.waitFor(() => expect(document.querySelector("#spanel-live").open).toBe(true));
     expect(document.querySelector("#talk-desk").hidden).toBe(false);

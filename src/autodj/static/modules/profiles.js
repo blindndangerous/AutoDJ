@@ -1,7 +1,7 @@
-// Settings > Profiles: create and edit saved overrides, apply profiles,
+// Settings > Profiles: create and edit saved overrides, activate profiles,
 // and reset or delete them.
 //
-// The list loads when the Profiles and access subtab is shown.  Every result is said
+// The list loads when the Profiles subtab is shown. Every result is said
 // once through #profiles-status.  Focus stays on the control that was
 // pressed, except after Delete, where that row is gone and focus moves to
 // the neighbouring row (or the name field when the list is empty).
@@ -60,7 +60,7 @@ export function installProfiles(els) {
     }
     reconcileRows(list, names, (name) => name, (name) => {
       const activeLabel = active === name ? " (active)" : "";
-      const apply = rowButton(doc, "Apply", `Apply profile ${name}`, () => void applyProfile(name));
+      const apply = rowButton(doc, "Activate", `Activate profile ${name}`, () => void applyProfile(name));
       const remove = rowButton(doc, "Delete", `Delete profile ${name}`,
         (button) => void deleteProfile(name, button));
       const reset = rowButton(doc, "Reset", `Reset profile ${name} to defaults`,
@@ -72,11 +72,28 @@ export function installProfiles(els) {
       if (label) label.textContent = `${name}${active === name ? " (active)" : ""}`;
       const apply = row.querySelector("button");
       if (apply) {
-        apply.textContent = "Apply";
-        apply.setAttribute("aria-label", `Apply profile ${name}`);
+        apply.textContent = "Activate";
+        apply.setAttribute("aria-label", `Activate profile ${name}`);
       }
     }, { fallback: nameInput, onFocusLost: ({ target }) => say(`The saved profiles list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "profile name"}.`) });
     listNavigation.refresh();
+  }
+
+  function updateActive(name) {
+    active = name || null;
+    const select = els.profileSelect;
+    if (select) {
+      // Another browser may create and activate a profile before this list
+      // refreshes. Add its name without changing the editing selection.
+      if (active && ![...select.options].some((option) => option.value === active)) {
+        select.add(choice(active, active));
+      }
+      for (const option of select.options) {
+        const label = `${option.value || "Station defaults"}${(option.value || null) === active ? " (active)" : ""}`;
+        if (option.textContent !== label) option.textContent = label;
+      }
+    }
+    render();
   }
 
   async function load() {
@@ -87,7 +104,7 @@ export function installProfiles(els) {
       names = Array.isArray(body.profiles) ? body.profiles : [];
       active = body.active ?? null;
       if (els.applyDefaultsButton) {
-        els.applyDefaultsButton.textContent = "Apply station defaults";
+        els.applyDefaultsButton.textContent = "Activate station defaults";
       }
       clockwheels = body.clockwheels || [];
       cartPages = body.cart_pages || [];
@@ -95,11 +112,13 @@ export function installProfiles(els) {
       updateChoices(els.cartSelect, cartPages, null);
       if (els.profileSelect) {
         const selected = els.profileSelect.value;
-        els.profileSelect.replaceChildren(choice("Station defaults", ""));
-        for (const profile of names) els.profileSelect.add(choice(profile, profile));
+        const wanted = ["", ...names];
+        if (JSON.stringify([...els.profileSelect.options].map((option) => option.value)) !== JSON.stringify(wanted)) {
+          els.profileSelect.replaceChildren(...wanted.map((profile) => choice(profile || "Station defaults", profile)));
+        }
         els.profileSelect.value = names.includes(selected) ? selected : "";
       }
-      render();
+      updateActive(active);
       return true;
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return false;
@@ -150,7 +169,7 @@ export function installProfiles(els) {
   async function resetProfile(name) {
     const confirmed = await confirmAction(doc, {
       title: `Reset profile ${name}?`,
-      message: "This removes the profile's saved overrides. The settings on air stay as they are until you apply the profile.",
+      message: "This removes the profile's saved overrides. The settings on air stay as they are until you activate the profile.",
       confirmLabel: "Reset profile",
     });
     if (!confirmed) return;
@@ -175,10 +194,10 @@ export function installProfiles(els) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
       await load();
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      say(`Applied profile ${name}.`);
+      say(`Activated profile ${name}.`);
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      say(`Could not apply profile ${name}: ${errorValue.message}`, "error");
+      say(`Could not activate profile ${name}: ${errorValue.message}`, "error");
     }
   }
 
@@ -189,9 +208,9 @@ export function installProfiles(els) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
       await load();
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      say("Applied station defaults.");
+      say("Activated station defaults.");
     } catch (errorValue) {
-      if (isAuthenticatedRequestCurrent(epoch)) say(`Could not apply station defaults: ${errorValue.message}`, "error");
+      if (isAuthenticatedRequestCurrent(epoch)) say(`Could not activate station defaults: ${errorValue.message}`, "error");
     }
   }
 
@@ -270,5 +289,5 @@ export function installProfiles(els) {
     write: (value) => { if ("page" in value) showChoice(cart, value.page); },
   });
   // After a station switch (#70): the open list shows the new station's.
-  return { refresh: load };
+  return { refresh: load, updateActive };
 }

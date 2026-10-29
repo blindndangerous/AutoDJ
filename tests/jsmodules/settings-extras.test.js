@@ -234,7 +234,7 @@ describe("profiles", () => {
         <select id="profile"><option value="">Station defaults</option></select>
         <select id="clock"><option value="">Use station default</option></select>
         <select id="cart"><option value="">Use station default</option></select>
-        <button id="apply-defaults">Apply station defaults</button>
+        <button id="apply-defaults">Activate station defaults</button>
         <ul id="list"></ul><p id="status"></p></details>${CONFIRM}`;
     vi.stubGlobal("fetch", fetchImpl);
     const $ = (id) => document.getElementById(id);
@@ -244,11 +244,11 @@ describe("profiles", () => {
       clockSelect: $("clock"), cartSelect: $("cart"),
       applyDefaultsButton: $("apply-defaults"),
     };
-    installProfiles(els);
+    const controls = installProfiles(els);
     const answer = confirmDialog();
     els.card.open = true;
     els.card.dispatchEvent(new Event("toggle"));
-    return { els, answer };
+    return { els, answer, controls };
   }
 
   it("creates an empty profile and offers clock and cart references", async () => {
@@ -274,8 +274,46 @@ describe("profiles", () => {
     const { els } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.applyDefaultsButton.disabled).toBe(false));
     els.applyDefaultsButton.click();
-    await vi.waitFor(() => expect(els.status.textContent).toBe("Applied station defaults."));
+    await vi.waitFor(() => expect(els.status.textContent).toBe("Activated station defaults."));
     expect(fetchImpl.mock.calls.some(([url, init]) => url === "/api/profiles/apply-defaults" && init?.method === "POST")).toBe(true);
+  });
+
+  it("moves the active marker without changing the profile editing target", async () => {
+    const fetchImpl = vi.fn(() => json({ profiles: ["Early", "Late"], active: "Early" }));
+    const { els, controls } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.profileSelect.querySelector('option[value="Late"]')).not.toBeNull());
+
+    const defaultsOption = els.profileSelect.querySelector('option[value=""]');
+    const earlyOption = els.profileSelect.querySelector('option[value="Early"]');
+    const lateOption = els.profileSelect.querySelector('option[value="Late"]');
+    els.profileSelect.value = "Early";
+    els.profileSelect.focus();
+    const changes = vi.fn();
+    els.profileSelect.addEventListener("change", changes);
+
+    controls.updateActive("Late");
+    expect(earlyOption.textContent).toBe("Early");
+    expect(lateOption.textContent).toBe("Late (active)");
+    expect(els.profileSelect.value).toBe("Early");
+    expect(document.activeElement).toBe(els.profileSelect);
+    expect(els.profileSelect.querySelector('option[value=""]')).toBe(defaultsOption);
+    expect(els.profileSelect.querySelector('option[value="Early"]')).toBe(earlyOption);
+    expect(els.profileSelect.querySelector('option[value="Late"]')).toBe(lateOption);
+
+    controls.updateActive(null);
+    expect(defaultsOption.textContent).toBe("Station defaults (active)");
+    expect(els.profileSelect.value).toBe("Early");
+    expect(document.activeElement).toBe(els.profileSelect);
+
+    controls.updateActive("External profile");
+    const externalOption = els.profileSelect.querySelector('option[value="External profile"]');
+    expect(externalOption.textContent).toBe("External profile (active)");
+    expect(els.profileSelect.querySelector('option[value=""]')).toBe(defaultsOption);
+    expect(els.profileSelect.querySelector('option[value="Early"]')).toBe(earlyOption);
+    expect(els.profileSelect.querySelector('option[value="Late"]')).toBe(lateOption);
+    expect(els.profileSelect.value).toBe("Early");
+    expect(document.activeElement).toBe(els.profileSelect);
+    expect(changes).not.toHaveBeenCalled();
   });
 
   // ADR-0018-03
@@ -287,13 +325,13 @@ describe("profiles", () => {
     const row = els.list.querySelector("li");
     const apply = row.querySelector("button");
     expect(row.querySelector(".profile-name").textContent).toBe("Late (active)");
-    expect(apply.textContent).toBe("Apply");
-    expect(apply.getAttribute("aria-label")).toBe("Apply profile Late");
+    expect(apply.textContent).toBe("Activate");
+    expect(apply.getAttribute("aria-label")).toBe("Activate profile Late");
     expect(apply.disabled).toBe(false);
 
     apply.click();
 
-    await vi.waitFor(() => expect(els.status.textContent).toBe("Applied profile Late."));
+    await vi.waitFor(() => expect(els.status.textContent).toBe("Activated profile Late."));
     expect(fetchImpl.mock.calls.some(([url, init]) =>
       url === "/api/profiles/Late/apply" && init?.method === "POST")).toBe(true);
   });
@@ -307,10 +345,10 @@ describe("profiles", () => {
     const { els, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
     expect(els.list.querySelectorAll("button[tabindex='0']")).toHaveLength(1);
-    const firstApply = els.list.querySelector('[aria-label="Apply profile Early"]');
+    const firstApply = els.list.querySelector('[aria-label="Activate profile Early"]');
     firstApply.focus();
     firstApply.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Apply profile Late");
+    expect(document.activeElement.getAttribute("aria-label")).toBe("Activate profile Late");
 
     els.list.querySelector('[aria-label="Delete profile Early"]').click();
     await answer("confirm");
@@ -357,7 +395,7 @@ describe("profiles", () => {
     const fetchImpl = vi.fn(() => json({ profiles: ["Early", "Late"] }));
     const { els } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
-    const apply = els.list.querySelector('[aria-label="Apply profile Early"]');
+    const apply = els.list.querySelector('[aria-label="Activate profile Early"]');
     const rows = [...els.list.children];
     const mutations = [];
     const observer = new window.MutationObserver((records) => mutations.push(...records));
@@ -367,7 +405,7 @@ describe("profiles", () => {
     await vi.waitFor(() => expect(fetchImpl.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect([...els.list.children]).toEqual(rows);
-    expect(els.list.querySelector('[aria-label="Apply profile Early"]')).toBe(apply);
+    expect(els.list.querySelector('[aria-label="Activate profile Early"]')).toBe(apply);
     expect([...mutations, ...observer.takeRecords()]).toEqual([]);
     observer.disconnect();
   });
@@ -418,13 +456,13 @@ describe("profiles", () => {
       : json({ profiles: ["Late"] })));
     const { els } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("button")).toHaveLength(3));
-    const apply = els.list.querySelector('[aria-label="Apply profile Late"]');
+    const apply = els.list.querySelector('[aria-label="Activate profile Late"]');
     els.nameInput.focus();
 
     apply.click();
 
     await vi.waitFor(() => expect(els.status.textContent).toBe(
-      "Could not apply profile Late: Profile Late uses a preset that does not exist",
+      "Could not activate profile Late: Profile Late uses a preset that does not exist",
     ));
     expect(document.activeElement).toBe(els.nameInput);
   });

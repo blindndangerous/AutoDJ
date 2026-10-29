@@ -9,9 +9,9 @@ promise that a particular song starts at a particular minute.
 ## The station's clock
 
 Schedule times use the selected station's time zone. The zone shown in
-**Settings**, **Schedule** is more useful than assuming the browser and station
+**Settings**, **Station settings**, **Schedule** is more useful than assuming the browser and station
 share a clock. **Time zone**, under **Time for the selected station** in
-**Settings**, **Stations**, changes scheduling from the station's next start.
+**Settings**, **Station settings**, **Stations**, changes scheduling from the station's next start.
 **Time format for all stations** changes how times look, not when events run.
 
 Daylight-saving changes need interpretation: a skipped event time runs at the

@@ -18,7 +18,7 @@ A paired browser controls every station and can pair more browsers. Pair only
 trusted operators; there are no separate station-operator roles. Listening alone
 does not grant control.
 
-1. In **Settings, General settings, Server**, find **Browser access** and choose
+1. In **Settings, Server settings, Server**, find **Browser access** and choose
    **Show pairing code**. Enter the short-lived, single-use code on the new
    browser's pairing page; confirm its name appears in the device list.
 2. Use **Rename** for recognizable device names. Choose **Revoke** on a lost or
@@ -44,7 +44,7 @@ for one lost browser. Do not share the signing token.
 
 ## Worker and announcer tokens
 
-1. Open **Settings, General settings, Server, Analysis workers**, under **Machine tokens**. Create a named
+1. Open **Settings, Server settings, Server, Analysis workers**, under **Machine tokens**. Create a named
    token for its intended use and copy it immediately; it is shown only once.
    Analysis workers can claim songs, fetch claimed audio and submit analysis.
    Announcer tokens are bound to a station and its break operations. Neither
@@ -71,7 +71,7 @@ checks. See [workers](../operations.md#using-a-gpu-machine) and
 
 ## Station and provider credentials
 
-- **Live DJ:** in **Settings, General settings, Broadcasting**, set a new password for the selected
+- **Live DJ:** in **Settings, Station settings, Broadcasting**, set a new password for the selected
   station's account. Leaving it blank preserves the old password; it cannot be
   read back. Removing a DJ takes that DJ off air immediately. For suspected
   compromise, remove the account first, then recreate it with a new password.

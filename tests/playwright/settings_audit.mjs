@@ -21,17 +21,75 @@ async function audit(name, launcher) {
     assert.equal(await page.evaluate(() => localStorage.getItem("autodj.announceTrackChanges")), "all");
     assert.equal(await page.evaluate(() => localStorage.getItem("autodj.announceTrackChangesEverywhere")), null);
     await page.locator("#tab-settings").click();
-    await page.locator('#settings-section input[name="settings-section"][value="general"]').click();
     await page.locator("#stab-display").click();
     await page.reload({ waitUntil: "networkidle" });
     assert.equal(await page.locator("#announce-track-changes").inputValue(), "all");
+
+    // A running station updates the picker’s active marker over its live
+    // connection without changing the profile being edited or its draft.
+    const profileListUrl = `${BASE}/api/profiles`;
+    const originalProfilesResponse = await page.request.get(profileListUrl);
+    assert.equal(originalProfilesResponse.status(), 200, await originalProfilesResponse.text());
+    const originalActive = (await originalProfilesResponse.json()).active ?? null;
+    const markerSuffix = `${name}-${Date.now().toString(36)}`;
+    const markerA = `Audit marker A ${markerSuffix}`;
+    const markerB = `Audit marker B ${markerSuffix}`;
+    for (const profileName of [markerA, markerB]) {
+      const created = await page.request.post(profileListUrl, {
+        headers: { Origin: ORIGIN }, data: { name: profileName },
+      });
+      assert.equal(created.status(), 200, await created.text());
+    }
+    const activate = (profileName) => page.request.post(
+      `${profileListUrl}/${encodeURIComponent(profileName)}/apply`, { headers: { Origin: ORIGIN } },
+    );
+    const activatedA = await activate(markerA);
+    assert.equal(activatedA.status(), 200, await activatedA.text());
+
+    await page.locator("#tab-settings").click();
+    await page.locator("#stab-access").click();
+    await page.waitForFunction((profileName) => [...document.querySelector("#settings-profile").options]
+      .some((option) => option.value === profileName), markerA);
+    const markerSettings = page.waitForResponse((response) => {
+      if (!response.url().includes("/api/settings?")) return false;
+      return new URL(response.url()).searchParams.get("profile") === markerA;
+    });
+    await page.locator("#settings-profile").selectOption(markerA);
+    await page.locator("#stab-mixing").click();
+    assert.equal((await markerSettings).status(), 200);
+    const crossfade = page.locator("#pb-crossfade");
+    const savedCrossfade = await crossfade.inputValue();
+    const editedCrossfade = savedCrossfade === "3" ? "4" : "3";
+    await crossfade.fill(editedCrossfade);
+
+    const activatedB = await activate(markerB);
+    assert.equal(activatedB.status(), 200, await activatedB.text());
+    await page.waitForFunction((profileName) => [...document.querySelector("#settings-profile").options]
+      .some((option) => option.value === profileName && option.textContent === `${profileName} (active)`), markerB);
+    assert.equal(await page.locator("#settings-profile").inputValue(), markerA);
+    assert.equal(await crossfade.inputValue(), editedCrossfade);
+    await page.locator("#spanel-mixing [data-settings-discard]").click();
+    await page.waitForFunction((value) => document.getElementById("pb-crossfade").value === value,
+      savedCrossfade);
+
+    const restoredActive = originalActive
+      ? await activate(originalActive)
+      : await page.request.post(`${profileListUrl}/apply-defaults`, { headers: { Origin: ORIGIN } });
+    assert.equal(restoredActive.status(), 200, await restoredActive.text());
+    await page.waitForFunction((profileName) => {
+      const select = document.getElementById("settings-profile");
+      const activeLabel = profileName || "Station defaults";
+      return [...select.options].some((option) => option.value === (profileName || "")
+        && option.textContent === `${activeLabel} (active)`);
+    }, originalActive);
+    assert.equal(await page.locator("#settings-profile").inputValue(), markerA);
+
     const slug = `audit-${name}-${Date.now().toString(36)}`;
     const created = await page.request.post(`${BASE}/api/stations`, {
       headers: { Origin: ORIGIN }, data: { slug, name: slug, autostart: false },
     });
     assert.equal(created.status(), 201, await created.text());
     await page.goto(`${BASE}/?station=${slug}#settings`, { waitUntil: "networkidle" });
-    await page.locator('#settings-section input[name="settings-section"][value="profile"]').click();
     const endpoint = `${BASE}/api/stations/${slug}`;
     const runtimeSettings = async () => (await (await page.request.get(`${endpoint}/settings`)).json());
     const editingSettings = async (profile = "") => (await (await page.request.get(
@@ -101,7 +159,7 @@ async function audit(name, launcher) {
     await page.locator("#stab-access").click();
     const profileApply = page.waitForResponse((response) => response.url() === `${endpoint}/profiles/${encodeURIComponent(profileName)}/apply`
       && response.request().method() === "POST");
-    await page.getByRole("button", { name: `Apply profile ${profileName}` }).click();
+    await page.getByRole("button", { name: `Activate profile ${profileName}` }).click();
     assert.equal((await profileApply).status(), 200);
     assert.equal((await runtimeSettings()).values.playback.music_speed_percent, 6);
     await page.locator("#stab-sound").click();
@@ -124,12 +182,12 @@ async function audit(name, launcher) {
     await page.locator("#stab-access").click();
     const profileReapply = page.waitForResponse((response) => response.url() === `${endpoint}/profiles/${encodeURIComponent(profileName)}/apply`
       && response.request().method() === "POST");
-    await page.getByRole("button", { name: `Apply profile ${profileName}` }).click();
+    await page.getByRole("button", { name: `Activate profile ${profileName}` }).click();
     assert.equal((await profileReapply).status(), 200);
     await page.locator("#settings-profile").selectOption("");
     await page.locator("#stab-sound").click();
     await speed.fill("3");
-    await page.locator('#settings-section input[name="settings-section"][value="general"]').click();
+    await page.locator("#stab-server").click();
     // The dialog's close event returns focus to its opener a task later, so
     // wait for it before focusing Discard.
     const closed = page.evaluate(() => new Promise((resolve) => {
@@ -163,7 +221,6 @@ async function audit(name, launcher) {
     await panel.locator("[data-settings-discard]").click();
     await page.waitForFunction(() => document.getElementById("pb-music-speed-number").value === "5");
 
-    await page.locator('#settings-section input[name="settings-section"][value="general"]').click();
     await page.locator("#stab-stream").click();
     await page.locator("#stream-relay-settings > summary").click();
     await page.locator("#stream-relay-add").click();
@@ -209,7 +266,7 @@ async function audit(name, launcher) {
       assert.equal(await migrationPage.evaluate(() => localStorage.getItem("autodj.announceTrackChangesEverywhere")), null);
       await migration.close();
     }
-    return { stoppedStation: slug, draftSaveDiscard: true, saveFocusAndStatus: true, conflict: true, spacedRelay: true, migration: true, errors };
+    return { activeProfileMarker: true, stoppedStation: slug, draftSaveDiscard: true, saveFocusAndStatus: true, conflict: true, spacedRelay: true, migration: true, errors };
   } finally {
     await browser.close();
   }

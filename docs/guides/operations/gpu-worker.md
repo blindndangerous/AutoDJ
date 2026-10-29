@@ -22,7 +22,7 @@ A rescan can reuse a matching cache; changed file identity invalidates it, while
 remains until replacement analysis is saved. A feature-version change causes the cache to be
 recomputed. The worker scan-analysis protocol version is bumped for the shared result. Tracks
 longer than 15 minutes use the first and last five minutes for audio features.
-The **Similarity maximum song length** setting under **Settings**, **General settings**, **Server** controls which
+The **Similarity maximum song length** setting under **Settings**, **Server settings**, **Server** controls which
 tracks also receive a MuQ vector; longer tracks still get Audio analysis.
 
 While a worker is connected, the server pauses its own analysis so the two never analyse the same
@@ -183,7 +183,7 @@ it with `--ca-cert`.
 To skip copying a token, pair the worker instead: see [Pair the worker](#pair-the-worker) in
 step 4. The token below still works the same way.
 
-On any paired browser, open Settings, General settings, Server, Analysis workers. Under Machine tokens, type a name for the
+On any paired browser, open Settings, Server settings, Server, Analysis workers. Under Machine tokens, type a name for the
 computer, such as Studio PC, leave Token use at Analysis worker, and choose Create token. The
 token appears once, in a read-only field with a Copy token
 button; copy it now, because it is never shown again. Choose Done to hide it. If it is lost,
@@ -289,7 +289,7 @@ for six hours, and a song whose file changed on the server since the last scan f
 a Rescan that reads the song's new file clears either hold at once. Pending scan measurements
 instead receive the local recovery attempt described above.
 
-Settings, General settings, Server, Analysis workers shows each worker (connected or not, its graphics card, when it was
+Settings, Server settings, Server, Analysis workers shows each worker (connected or not, its graphics card, when it was
 last seen, songs analysed and failed, and songs per hour), how many songs are waiting, and whether
 the server's own analysis is paused. Revoking a token stops its worker at its next request.
 
@@ -297,7 +297,7 @@ the server's own analysis is paused. Revoking a token stops its worker at its ne
 
 Pairing gives a worker its own token without copying the token by hand.
 
-1. On any paired browser, open Settings, General settings, Server, Analysis workers. Under Worker pairing, optionally type a
+1. On any paired browser, open Settings, Server settings, Server, Analysis workers. Under Worker pairing, optionally type a
    Worker name, then choose Pair a worker. With no name, the token takes the worker computer's own
    host name.
 2. The page shows an 8-digit pairing code and the command to run, with Copy code and Copy command
@@ -317,14 +317,14 @@ can read it. Later runs with the same `--server` address use the saved token, so
 `--token` and `AUTODJ_WORKER_TOKEN`; `--pair` refuses to run when either is given.
 
 To remove the token, delete that file, or its entry for the server, and revoke the token in
-Settings, General settings, Server, Analysis workers. Pair with one server at a time: two `--pair` runs at once can lose one
+Settings, Server settings, Server, Analysis workers. Pair with one server at a time: two `--pair` runs at once can lose one
 of the saved tokens. Wrong codes have the same limits as browser pairing: after ten wrong
 codes from one computer, that computer must wait until the code expires; after fifty wrong codes in
 all, the code stops working and you need a new one.
 
 ## Manage a worker from the server
 
-Each worker row in Settings, General settings, Server, Analysis workers has its own settings and a Save button:
+Each worker row in Settings, Server settings, Server, Analysis workers has its own settings and a Save button:
 
 - **Paused**: the server hands the worker no songs. A worker of this release stops claiming,
   finishes the song in hand and gives the rest of its batch back. It keeps sending heartbeats, so
@@ -354,7 +354,7 @@ come only from the worker's own command line.
 
 ## When the server refuses a worker
 
-When the server refuses a worker, Settings, General settings, Server, Analysis workers lists it under Refused workers with
+When the server refuses a worker, Settings, Server settings, Server, Analysis workers lists it under Refused workers with
 when it happened and what to do, until that worker next connects successfully or you choose
 Dismiss. The server keeps only the latest refusal for each token.
 

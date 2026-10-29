@@ -30,43 +30,39 @@ it("keeps the Settings subtab after a failed save and moves only after approval"
   await vi.waitFor(() => expect(document.getElementById("spanel-sound").hidden).toBe(false));
 });
 
-it("guards category changes, restores the radio on refusal, and remembers tabs per category", async () => {
+it("guards direct cross-group tab changes and remembers the last selected tab", async () => {
   guard.dirty.mockReturnValue(true);
   guard.confirm.mockResolvedValue(false);
   const { initSubtabs } = await import("../../src/autodj/static/modules/subtabs.js");
   const storage = { values: new Map(), getItem(key) { return this.values.get(key) ?? null; }, setItem(key, value) { this.values.set(key, value); } };
   const ui = initSubtabs(document.getElementById("settings-tabs"), { storage });
-  const radios = document.querySelectorAll('#settings-section input[name="settings-section"]');
-  radios[1].click();
+  document.getElementById("stab-server").click();
   await vi.waitFor(() => expect(guard.confirm).toHaveBeenCalledTimes(1));
-  expect(radios[0].checked).toBe(true);
   expect(ui.selected).toBe("mixing");
   expect(document.getElementById("spanel-mixing").hidden).toBe(false);
 
   guard.confirm.mockResolvedValue(true);
-  radios[1].click();
-  await vi.waitFor(() => expect(ui.selected).toBe("stations"));
-  expect(radios[1].checked).toBe(true);
+  document.getElementById("stab-server").click();
+  await vi.waitFor(() => expect(ui.selected).toBe("server"));
   expect([...document.querySelectorAll('#panel-settings > [role="tabpanel"]')].filter((panel) => !panel.hidden)).toHaveLength(1);
   guard.dirty.mockReturnValue(false);
   document.getElementById("stab-announcements").click();
-  document.getElementById("stab-server").click();
-  radios[0].click();
   expect(ui.selected).toBe("announcements");
-  radios[1].click();
+  document.getElementById("stab-server").click();
   expect(ui.selected).toBe("server");
+  document.getElementById("stab-display").click();
+  expect(ui.selected).toBe("display");
 });
 
 it.each([
-  ["liners", "announcements", "profile"],
-  ["updates", "server", "general"],
-])("maps old tab %s to %s in %s settings", async (legacy, tab, category) => {
+  ["liners", "announcements"],
+  ["updates", "server"],
+])("maps old tab %s to %s settings", async (legacy, tab) => {
   const { initSubtabs } = await import("../../src/autodj/static/modules/subtabs.js");
   const ui = initSubtabs(document.getElementById("settings-tabs"), {
     storage: { getItem: (key) => key === "autodj.settingsSubtab" ? legacy : null, setItem() {} },
   });
   expect(ui.selected).toBe(tab);
-  expect(document.querySelector(`#settings-section [value="${category}"]`).checked).toBe(true);
 });
 
 it("keeps Settings after refused navigation and allows an approved tab change", async () => {

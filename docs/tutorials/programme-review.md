@@ -15,7 +15,7 @@ needed for these two songs.
 
 Check that both files are available on the AutoDJ computer and FFmpeg is
 installed. The [installation guide](../guides/install.md) covers setup. Select
-the practice station. In **Settings**, **Stations**, press **Stop** on its row,
+the practice station. In **Settings**, **Station settings**, **Stations**, press **Stop** on its row,
 confirm **Stop station**, and wait until the row offers **Start**. If it already
 offers Start, leave it stopped. Saved-show review works without station playout
 or a near-air voice-track slot.
