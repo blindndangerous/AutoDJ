@@ -38,7 +38,7 @@ const SONG_CHANGE_DELAY_MS = 2000;
 const FRESH_MS = 20000;
 
 // Said after the summary while the server is still working out the rest.
-export function fillingNote(view) {
+function fillingNote(view) {
   return view?.filling ? " Still working out the rest of the preview." : "";
 }
 

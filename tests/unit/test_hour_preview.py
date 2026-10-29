@@ -2377,6 +2377,8 @@ def test_a_preview_stops_filling_when_something_new_is_fixed(tmp_path: Path, mon
     finally:
         assert previews.shutdown(5.0)
 
+    # Nobody asks again: once the keep ends, the worker still lets the dry run go.
+    monkeypatch.setattr(hour_preview, "FILL_IDLE_SECONDS", 0.0)
     kept = HourPreviews(keep=0.3, budget=0.1, fill_slice=0.1)
     try:
         assert kept.submit(source, 30).result(timeout=30)["filling"]

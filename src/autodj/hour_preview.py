@@ -3277,21 +3277,23 @@ class HourPreviews:
     def _next_fill(self) -> tuple[_Key | None, float | None]:
         """The filling preview due for a slice, or how long to wait for one (``None``: none).
 
-        Called with the lock held.  A preview no longer kept stops filling;
+        Called with the lock held.  A preview no longer kept stops filling,
+        and the worker wakes for that, so its copy of the player is let go;
         one the page has stopped asking for waits until it asks again.
         """
         now = time.monotonic()
         wait: float | None = None
         for key, filling in list(self._filling.items()):
             kept = self._kept.get(key)
-            if kept is None or kept[1] != filling.signature or now - kept[0] >= self._keep:
+            left = kept[0] + self._keep - now if kept is not None else 0.0
+            if kept is None or kept[1] != filling.signature or left <= 0:
                 self._stop_filling(key, filling)
                 continue
-            if now - filling.asked >= FILL_IDLE_SECONDS:
-                continue
-            if filling.due <= now:
-                return key, None
-            wait = filling.due - now if wait is None else min(wait, filling.due - now)
+            if now - filling.asked < FILL_IDLE_SECONDS:
+                if filling.due <= now:
+                    return key, None
+                left = min(left, filling.due - now)
+            wait = left if wait is None else min(wait, left)
         return None, wait
 
     def _stop_filling(self, key: _Key, filling: _Filling) -> None:

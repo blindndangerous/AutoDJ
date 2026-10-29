@@ -393,11 +393,13 @@ def condition_paths(
     return found_paths or set()
 
 
-# The Beets values of the last large pools matched: the entries and the
-# Beets mapping, by identity, and each entry's values in pool order.
-# Replaced whole, never changed in place, so any thread may read it.
+# The Beets values of the last large pool matched: the entries and the
+# Beets mapping, by identity, and each entry's values in pool order.  Only
+# one is kept: an older library snapshot and its Beets values are let go as
+# soon as a pick matches the new ones.  Replaced whole, never changed in
+# place, so any thread may read it.
 _BEETS_ROWS: tuple[tuple[Sequence[Any], Mapping[str, Any], tuple[Any, ...]], ...] = ()
-_BEETS_ROWS_KEPT = 2
+_BEETS_ROWS_KEPT = 1
 # A pool smaller than this is looked up again rather than kept.
 _BEETS_ROWS_MIN = 1024
 
