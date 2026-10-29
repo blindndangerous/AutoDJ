@@ -674,6 +674,88 @@ def test_the_dry_run_stops_at_its_limits(tmp_path: Path, monkeypatch) -> None:
     assert "time limit" in timed["stopped"]
 
 
+def _matching_station(root: Path) -> Any:
+    """Power, then a conditions step over Gold; most of the history is old plays."""
+    power = [song(n, f"Power {n}") for n in range(6)]
+    gold = [song(100 + n, f"Gold {n}", title=f"Gold song {n % 30}") for n in range(60)]
+    source = make_station(
+        root,
+        [*power, *gold],
+        liners=[liner(1), liner(2)],
+        categories=[{"id": "power", "name": "Power", "members": power}],
+        clockwheels=[
+            {
+                "name": "Main",
+                "resync_minutes": [],
+                "steps": [
+                    liner_step(),
+                    category_step("power"),
+                    {
+                        "type": "music",
+                        "selection": "least_recent",
+                        "enforce_rules": True,
+                        "conditions": [
+                            {"field": "artist", "operator": "contains", "value": "Gold"}
+                        ],
+                    },
+                ],
+            }
+        ],
+        active_clock="Main",
+        playback={"pick_mode": "clock", "repeat_rules": {"versions_as_one_song": True}},
+    )
+    source.ledger.played = {f"/music/old/{n:06d}.flac": NOW - 600 - n for n in range(3000)}
+    _playing(source, gold[0], NOW - 50)
+    return source
+
+
+def test_a_preview_starts_from_what_the_station_worked_out(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0009-12: no pass over the whole library or history for each pick."""
+    from autodj import clockwheel, repeat_rules
+
+    counts = dict.fromkeys(("conditions", "keys", "paths"), 0)
+
+    def counting(name: str, original: Any) -> Any:
+        def counted(*args: Any, **kwargs: Any) -> Any:
+            counts[name] += 1
+            return original(*args, **kwargs)
+
+        return counted
+
+    monkeypatch.setattr(
+        clockwheel, "condition_paths", counting("conditions", clockwheel.condition_paths)
+    )
+    monkeypatch.setattr(repeat_rules, "title_key", counting("keys", repeat_rules.title_key))
+    monkeypatch.setattr(clockwheel, "_normalized", counting("paths", clockwheel._normalized))
+    cold = _matching_station(tmp_path / "cold")
+    assert cold.player._state.rules.versions_as_one_song
+    first = build_preview(cold, 60, now=NOW)
+    # The station's own player is left as it was.
+    assert getattr(cold.player, "_clock_condition_cache", None) is None
+    assert cold.player._key_cache is None
+    assert counts["conditions"] >= 1 and counts["keys"] >= 60
+    played = len(cold.ledger.played)
+    # The history is normalized once, not once for each of the songs picked.
+    assert counts["paths"] < 4 * played
+
+    warm = _matching_station(tmp_path / "warm")
+    player = warm.player
+    context = player._pick_context(at=NOW)
+    for cursor in range(3):  # As a station on the air has: every step picked once.
+        player._clock_pick(context, cursor)
+    live_steps = dict(player._clock_condition_cache._paths)
+    live_keys = len(player._key_cache[1]._keys)
+    counts.update(dict.fromkeys(counts, 0))
+    again = build_preview(warm, 60, now=NOW)
+    assert counts["conditions"] == 0 and counts["keys"] == 0
+    assert counts["paths"] < 4 * played
+    assert player._clock_condition_cache._paths == live_steps
+    assert len(player._key_cache[1]._keys) == live_keys
+    # What the station had worked out picks the same songs.
+    assert len([item for item in first["items"] if item["kind"] == "song"]) > 8
+    assert again["items"] == first["items"]
+
+
 def test_a_scheduled_change_of_picking_reaches_the_prediction(tmp_path: Path) -> None:
     switch = _event(
         "Gold only",
