@@ -717,7 +717,8 @@ def test_a_bad_related_artists_file_does_not_stop_the_player(
         "Related artists are off until the file is fixed and repeat settings are saved."
     )
     assert str(path) not in player.related_artists_problem
-    assert str(path) in caplog.text
+    assert player.related_artists_problem == player._settings.related_artists_problem
+    assert str(path) not in caplog.text
     assert player._state.rules.related.links == {}
 
 

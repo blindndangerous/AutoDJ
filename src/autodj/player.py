@@ -95,7 +95,6 @@ from autodj.repeat_rules import (
     ArtistSplitter,
     PlayRecord,
     RelatedArtists,
-    RelatedTracks,
     RepeatFilter,
     RepeatRules,
     SongVersions,
@@ -832,6 +831,16 @@ class Player:
         server_audio_too: In stream mode, also play the mix on the sound card.
     """
 
+    @property
+    def related_artists_problem(self) -> str | None:
+        """Compatibility view of the station settings' related-file status."""
+        return self._settings.related_artists_problem
+
+    @property
+    def related_tracks_problem(self) -> str | None:
+        """Compatibility view of the station settings' related-file status."""
+        return self._settings.related_tracks_problem
+
     # The track rendered just before the render cursor's track: the bus is
     # starting it while the worker picks what follows the cursor's track.
     _pending_previous: IndexEntry | None = None
@@ -1107,34 +1116,29 @@ class Player:
             library_size,
             player=self,
         )
-        from autodj.related_artist_file import (
-            load_configured_related_artists,
-            load_configured_related_tracks,
-            unused_related_artists_message,
-        )
+        from autodj.related_artist_file import load_related_file
 
-        try:
-            self._related_artists = (
-                load_configured_related_artists(cfg.index.library_dir)
-                if cfg.playback.repeat_rules.use_related_artists
-                else RelatedArtists()
+        rules = cfg.playback.repeat_rules
+        self._related_artists, self._settings.related_artists_problem = load_related_file(
+            cfg.index.library_dir,
+            "artists",
+            enabled=rules.use_related_artists,
+            restoring=True,
+        )
+        if self._settings.related_artists_problem:
+            logger.warning(
+                "Related artists file was not used: %s", self._settings.related_artists_problem
             )
-            self.related_artists_problem = None
-        except (OSError, ValueError) as exc:
-            self._related_artists = RelatedArtists()
-            self.related_artists_problem = unused_related_artists_message(exc)
-            logger.warning("Related artists file was not used: %s", exc)
-        try:
-            self._related_tracks = (
-                load_configured_related_tracks(cfg.index.library_dir)
-                if cfg.playback.repeat_rules.use_related_tracks
-                else RelatedTracks()
+        self._related_tracks, self._settings.related_tracks_problem = load_related_file(
+            cfg.index.library_dir,
+            "tracks",
+            enabled=rules.use_related_tracks,
+            restoring=True,
+        )
+        if self._settings.related_tracks_problem:
+            logger.warning(
+                "Related tracks file was not used: %s", self._settings.related_tracks_problem
             )
-            self.related_tracks_problem = None
-        except (OSError, ValueError) as exc:
-            self._related_tracks = RelatedTracks()
-            self.related_tracks_problem = unused_related_artists_message(exc, "tracks")
-            logger.warning("Related tracks file was not used: %s", exc)
         # (library entries, their keys), rebuilt when the library changes;
         # see _track_keys.  Its own lock: the build can take a while on a
         # large library, and _pick_lock must never make a track start wait.

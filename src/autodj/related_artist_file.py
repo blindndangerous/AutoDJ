@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.resources
 import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 if TYPE_CHECKING:
     from autodj.repeat_rules import RelatedArtists, RelatedTracks
@@ -38,6 +38,56 @@ def unused_related_artists_message(exc: OSError | ValueError, kind: str = "artis
         f"{invalid_related_artists_message(exc, kind)} Related {kind} are off until the file "
         "is fixed and repeat settings are saved."
     )
+
+
+@overload
+def load_related_file(
+    library_dir: Path | None,
+    kind: Literal["artists"],
+    *,
+    enabled: bool,
+    restoring: bool,
+) -> tuple[RelatedArtists, str | None]: ...
+
+
+@overload
+def load_related_file(
+    library_dir: Path | None,
+    kind: Literal["tracks"],
+    *,
+    enabled: bool,
+    restoring: bool,
+) -> tuple[RelatedTracks, str | None]: ...
+
+
+def load_related_file(
+    library_dir: Path | None,
+    kind: Literal["artists", "tracks"],
+    *,
+    enabled: bool,
+    restoring: bool,
+) -> tuple[RelatedArtists | RelatedTracks, str | None]:
+    """Load one related file with shared disabled, startup, and save behavior.
+
+    Interactive settings saves are strict and expose only a sanitized error;
+    startup and saved-state restoration continue with an empty relation set.
+    """
+    from autodj.repeat_rules import RelatedArtists, RelatedTracks
+
+    empty = RelatedArtists if kind == "artists" else RelatedTracks
+    if not enabled:
+        return empty(), None
+    try:
+        related = (
+            load_configured_related_artists(library_dir)
+            if kind == "artists"
+            else load_configured_related_tracks(library_dir)
+        )
+        return related, None
+    except (OSError, ValueError) as exc:
+        if not restoring:
+            raise ValueError(invalid_related_artists_message(exc, kind)) from exc
+        return empty(), unused_related_artists_message(exc, kind)
 
 
 def _ensure_file(library_dir: Path, name: str) -> Path:
