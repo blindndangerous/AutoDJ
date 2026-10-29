@@ -221,3 +221,17 @@ it("adds Browse to the folder path and track step fields of the page", async () 
   expect($("source-folder-path").nextElementSibling.getAttribute("aria-label")).toBe("Browse for folder path");
   expect($("clock-step-path").nextElementSibling.getAttribute("aria-label")).toBe("Browse for track");
 });
+
+it("closes cleanly when Cancel is pressed while a folder is still loading", async () => {
+  document.body.innerHTML = '<label for="folder">Folder path</label><input id="folder" type="text">';
+  const input = $("folder");
+  let finish;
+  const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+  const button = addBrowseButton(input, { source: serverFolderSource({ request }), label: "folder path" });
+  button.focus(); button.click(); await settle();
+  $("path-picker-cancel").click();
+  finish(SERVER[""]);
+  await settle();
+  expect($("path-picker-dialog").open).toBe(false);
+  expect(document.activeElement).toBe(button);
+});

@@ -146,7 +146,7 @@ function buildPicker(doc) {
       showError(message);
       say(message, "error");
     } finally {
-      if (mine === state.loads) list.removeAttribute("aria-busy");
+      if (mine === state?.loads) list.removeAttribute("aria-busy");
     }
   }
 
