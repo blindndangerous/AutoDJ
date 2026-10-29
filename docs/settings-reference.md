@@ -95,7 +95,9 @@ events. These changes do not rewrite saved profiles. **Activate** reloads a
 profile's saved settings. Edits to defaults or the selected profile's JSON made
 while AutoDJ is stopped take effect at startup. If a saved profile cannot be
 loaded or validated, Profiles shows the problem and the station keeps its last
-saved settings.
+saved settings. If applying the profile fails, some settings may already have
+changed. Saving repairs keeps the saved selection; use **Activate** to finish
+recovery and clear the warning.
 
 Renaming a cart page or clockwheel updates references in saved defaults and
 profiles. Deleting a clockwheel clears those references; deleting a voice pack

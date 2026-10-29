@@ -296,7 +296,9 @@ class ProfileSettings:
                         "Settings were saved, but could not be fully applied. "
                         f"Some settings may already be active: {exc}"
                     ) from exc
-            if not name or self.active == name:
+            # A failed restore leaves active unset. Saving is not an instruction
+            # to replace the saved selection; explicit Activate finishes recovery.
+            if self.problem is None and (not name or self.active == name):
                 self._remember_selection(self.resolve(self.active or ""))
             return values
 
@@ -451,6 +453,7 @@ class ProfileSettings:
         # Validate the entire saved selection before touching the last saved
         # station state. Invalid JSON or missing resources must not lock its
         # editors out of the repair path.
+        applying = False
         try:
             if not self.selection_path.exists():
                 if not self.defaults_path.exists():
@@ -475,9 +478,18 @@ class ProfileSettings:
                 self.problem = None
                 return
             # Applying writes each group's store, which may fail like the reads.
+            applying = True
             self.apply(name)
         except (OSError, ValueError) as exc:
-            self.problem = f"Could not restore the saved profile: {exc}. Using the last saved station settings."
+            effect = (
+                "Some settings may already be active."
+                if applying
+                else "Using the last saved station settings."
+            )
+            self.problem = (
+                f"Could not restore the saved profile: {exc}. {effect} "
+                "Activate a profile or Station defaults to finish recovery."
+            )
             logger.warning("%s", self.problem)
 
 

@@ -187,3 +187,43 @@ def test_restore_reports_an_apply_failure_instead_of_blocking_the_start(
     assert "disk full" in manager.problem
     assert manager.active is None
     assert not manager.selection_path.exists()
+    assert "Some settings may already be active" in manager.problem
+    assert "Using the last saved station settings" not in manager.problem
+    if failure == "selection":
+        assert station.cfg.playback.crossfade_seconds == 7.0
+
+
+@pytest.mark.parametrize("selection", ['{"profile": "Missing"}', '{"profile":'])
+def test_saving_defaults_after_failed_restore_preserves_selection_until_activation(
+    tmp_path, selection
+):
+    manager = ProfileSettings(_station(tmp_path))
+    _defaults(manager)
+    manager.selection_path.write_text(selection, encoding="utf-8")
+    manager.restore()
+    assert manager.problem is not None
+    before = manager.selection_path.read_bytes()
+
+    manager.save("", {"playback": {"crossfade_seconds": 6.0}})
+
+    assert manager.selection_path.read_bytes() == before
+    assert manager.station.cfg.playback.crossfade_seconds == 6.0
+    assert "Activate" in manager.problem
+    manager.apply("")
+    assert manager.problem is None
+    assert json.loads(manager.selection_path.read_text(encoding="utf-8"))["profile"] is None
+
+
+def test_repaired_defaults_finish_recovery_when_activated(tmp_path):
+    manager = ProfileSettings(_station(tmp_path))
+    _defaults(manager, crossfade=None)
+    manager._write(manager.selection_path, {"profile": None})
+    manager.restore()
+    assert manager.problem is not None
+
+    manager.save("", {"playback": {"crossfade_seconds": 6.0}})
+
+    assert "Activate" in manager.problem
+    manager.apply("")
+    assert manager.problem is None
+    assert manager.station.cfg.playback.crossfade_seconds == 6.0
