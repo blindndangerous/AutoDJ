@@ -29,6 +29,27 @@ def patch_profile(
 
 
 @pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+@pytest.mark.parametrize("target", ["", "Evening"])
+def test_partial_time_check_profile_draft_can_be_saved(rig: Any, target: str) -> None:
+    client, *_ = rig
+    station = client.app.state.stations.editable("nightowl")
+    active_before = station.time_checks.settings.model_dump()
+    if target:
+        assert client.post(f"{OWL}/profiles", json={"name": target}).status_code == 200
+    view = settings_view(client, target)
+    enabled = not view["values"]["time_checks"]["enabled"]
+
+    response = patch_profile(client, view, target, {"time_checks": {"enabled": enabled}})
+
+    assert response.status_code == 200, response.text
+    assert settings_view(client, target)["values"]["time_checks"] == {
+        **view["values"]["time_checks"],
+        "enabled": enabled,
+    }
+    assert station.time_checks.settings.model_dump() == active_before
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
 def test_profile_defaults_editing_apply_reset_and_station_isolation(
     rig: Any,
 ) -> None:

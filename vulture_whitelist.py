@@ -57,3 +57,5 @@ _.update_checker
 _.worker_manage_v1
 # The app's worker pairing state; the pairing tests move its clock.
 _.worker_pairing
+# Legacy ProfileSnapshot field read by getattr in profile_settings.legacy_groups.
+_.cart_page

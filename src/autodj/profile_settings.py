@@ -197,6 +197,9 @@ class ProfileSettings:
             BreakSettingsBody.model_validate(values["breaks"])
         if "time_checks" in values:
             checks = SettingsBody.model_validate(values["time_checks"])
+            for pack in checks.enabled_packs:
+                if pack not in self.station.time_checks.packs:
+                    raise ValueError(f"No voice pack named {pack}")
             if problem := self.station.time_checks.check_choices(checks):
                 raise ValueError(problem)
         if "clock" in values:
@@ -221,9 +224,8 @@ class ProfileSettings:
 
     def save(self, name: str, changes: dict) -> dict:
         with self.lock:
-            # Validate the patch as well as its resolved values so an invalid group
-            # cannot disappear when computing the difference from defaults.
-            self.validate(changes)
+            # Partial groups need their saved values before schema validation.
+            # Validate before computing overrides so invalid groups cannot disappear.
             values = merge_values(self.resolve(name), changes)
             self.validate(values)
             defaults = self.defaults()
@@ -241,7 +243,6 @@ class ProfileSettings:
             if any(existing.casefold() == name.casefold() for existing in self.store.list_names()):
                 raise ValueError(f"A profile named {name!r} already exists")
             groups = legacy_groups(snapshot)
-            self.validate(groups)
             self.validate(merge_values(self.defaults(), groups))
             self.store.save(ProfileSnapshot(name=name, settings=groups))
 

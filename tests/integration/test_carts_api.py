@@ -395,19 +395,31 @@ def test_backwards_cart_dates_name_their_field(app_client: TestClient) -> None:
 
 def test_a_profile_shows_its_cart_page(app_client: TestClient) -> None:
     assert app_client.put("/api/carts/pages/2/name", json={"name": "Breakfast"}).status_code == 200
-    assert app_client.put("/api/carts/active-page/2").status_code == 200
-    assert app_client.post("/api/profiles", json={"name": "Morning"}).status_code == 200
-    app_client.put("/api/carts/active-page/1")
+    assert app_client.put("/api/carts/active-page/1").status_code == 200
+    created = app_client.post("/api/profiles", json={"name": "Morning"})
+    assert created.status_code == 200, created.text
+    view = app_client.get("/api/settings", params={"profile": "Morning"})
+    assert view.status_code == 200, view.text
+    saved = app_client.patch(
+        "/api/settings",
+        json={
+            "revision": view.json()["revision"],
+            "profile": "Morning",
+            "changes": {"cart": {"page": "Breakfast"}},
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["settings"]["values"]["cart"] == {"page": "Breakfast"}
     applied = app_client.post("/api/profiles/Morning/apply")
     assert applied.status_code == 200, applied.text
-    assert "cart_page" in applied.json()["applied"]
+    assert "cart" in applied.json()["applied"]
     assert app_client.get("/api/carts").json()["wall"]["active_page"] == 2
 
     app_client.put("/api/carts/active-page/1")
     app_client.put("/api/carts/pages/2/name", json={"name": "Drive"})
     refused = app_client.post("/api/profiles/Morning/apply")
     assert refused.status_code == 400
-    assert "cart page 'Breakfast'" in refused.json()["detail"]
+    assert "Cart page 'Breakfast' does not exist" in refused.json()["detail"]
     assert app_client.get("/api/carts").json()["wall"]["active_page"] == 1
 
 

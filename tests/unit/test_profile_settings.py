@@ -18,7 +18,7 @@ from autodj.config import (
     ModelConfig,
     PlaybackConfig,
 )
-from autodj.profile_settings import ProfileSettings
+from autodj.profile_settings import ProfileSettings, legacy_groups
 from autodj.profiles import ProfileSnapshot
 from autodj.station_settings import StationSettings
 from autodj.stations import StationPaths
@@ -235,7 +235,7 @@ def test_invalid_profile_is_rejected_before_profile_or_defaults_are_written(tmp_
     active_before = station.cfg.playback.crossfade_seconds
 
     with pytest.raises(ValueError):
-        manager.save("Broken", {"playback": {"post_queue_seed": "invalid"}})
+        manager.save("", {"playback": {"post_queue_seed": "invalid"}})
 
     assert manager.store.list_names() == []
     assert manager.defaults_path.read_bytes() == defaults_before
@@ -278,6 +278,63 @@ def test_restart_applies_saved_defaults_before_any_profile_has_been_selected(tmp
     restored.restore()
     assert restored.active is None
     assert restarted.cfg.playback.crossfade_seconds == 4.0
+
+
+def test_legacy_cart_page_is_preserved_as_an_override():
+    assert legacy_groups(ProfileSnapshot(name="Legacy", cart_page="Evening")) == {
+        "cart": {"page": "Evening"}
+    }
+
+
+@pytest.mark.parametrize("target", ["", "Evening"])
+def test_partial_time_check_edits_merge_with_saved_target(tmp_path, target):
+    manager = ProfileSettings(_station(tmp_path))
+    _defaults(manager)
+    checks = TimeCheckSettings(
+        enabled=True, hour_format="12", rule="off", enabled_packs=[], pack_order="rotate"
+    ).model_dump()
+    manager._write(manager.defaults_path, {**manager.defaults(), "time_checks": checks})
+    if target:
+        manager.create(
+            ProfileSnapshot(name=target, settings={"time_checks": {"hour_format": "24"}})
+        )
+
+    saved = manager.save(target, {"time_checks": {"enabled": False}})
+
+    assert saved["time_checks"] == {
+        **checks,
+        "enabled": False,
+        "hour_format": "24" if target else "12",
+    }
+    assert manager.resolve(target) == saved
+    if target:
+        assert manager.store.load(target).settings == {
+            "time_checks": {"enabled": False, "hour_format": "24"}
+        }
+
+
+def test_missing_time_check_pack_prevents_any_profile_application(tmp_path):
+    station = _station(tmp_path)
+    station.time_checks.packs = {}
+    manager = ProfileSettings(station)
+    _defaults(manager)
+    checks = TimeCheckSettings(
+        enabled=True, hour_format="12", rule="off", enabled_packs=["Missing"], pack_order="rotate"
+    ).model_dump()
+    # Bypass interactive validation to represent an offline JSON edit.
+    manager.store.save(
+        ProfileSnapshot(
+            name="Offline", settings={"playback": {"crossfade_seconds": 9.0}, "time_checks": checks}
+        )
+    )
+    before = station.cfg.playback.crossfade_seconds
+
+    with pytest.raises(ValueError, match="No voice pack named Missing"):
+        manager.apply("Offline")
+
+    assert station.cfg.playback.crossfade_seconds == before
+    assert manager.active is None
+    assert not manager.selection_path.exists()
 
 
 @pytest.mark.parametrize(

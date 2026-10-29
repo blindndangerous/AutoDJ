@@ -1638,10 +1638,15 @@ def install_station_routes(router: StationRouter) -> None:
             if core_changes:
                 from autodj.station_settings import StationSettings
 
+                # Live edits report file problems on their actual settings owner.
+                # Profile drafts must not change the active station's diagnostics.
+                validator = (
+                    StationSettings(station.cfg)
+                    if body.profile is not None
+                    else getattr(station.bridge, "settings", station.bridge)
+                )
                 try:
-                    await asyncio.to_thread(
-                        StationSettings(station.cfg).validate_settings_patch, core_changes
-                    )
+                    await asyncio.to_thread(validator.validate_settings_patch, core_changes)
                 except (OSError, ValueError) as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
             profile_changes: dict[str, Any] = {}

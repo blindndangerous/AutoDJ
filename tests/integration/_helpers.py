@@ -22,10 +22,13 @@ from unittest.mock import MagicMock, PropertyMock
 
 from autodj.config import (
     BreaksConfig,
+    DjMixConfig,
     DmcaConfig,
     NowPlayingConfig,
+    PlaybackConfig,
     PlayerPageConfig,
     RecordingConfig,
+    ReplayGainConfig,
     RequestsConfig,
     ServerConfig,
     StationConfig,
@@ -145,14 +148,9 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.webhooks = ()
     cfg.transitions.effect = "none"
     cfg.transitions.wet_mix = 1.0
-    cfg.djmix.harmonic_mode = "off"
-    cfg.djmix.beatmatch = False
-    cfg.djmix.drop_mix = False
-    cfg.djmix.key_shift = False
-    cfg.djmix.phrase_align = False
-    cfg.djmix.outro_intro_align = False
-    cfg.djmix.filter_sweep = False
-    cfg.djmix.vocal_guard = True
+    # Resolved profiles validate every field; unset MagicMock numbers are invalid.
+    cfg.djmix = DjMixConfig()
+    cfg.playback = PlaybackConfig()
     cfg.playback.crossfade_seconds = 3.0
     cfg.playback.pick_mode = "similarity"
     cfg.playback.loudness_processing = None
@@ -187,7 +185,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     # create_app derives the paired-device registry from index_dir. Tests that
     # assert on pairing state inject their own DeviceRegistry instead.
     cfg.index.index_dir = NO_INDEX_DIR
-    cfg.replaygain.enabled = False
+    cfg.replaygain = ReplayGainConfig()
     cfg.presets = {}
     player._cfg = cfg
     from autodj.station_settings import StationSettings
