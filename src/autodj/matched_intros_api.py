@@ -38,7 +38,6 @@ from typing import TYPE_CHECKING, Any, Literal
 from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from autodj.breaks import BreakCues, new_id, speech_cues, valid_id
 from autodj.breaks_api import (
@@ -63,6 +62,7 @@ from autodj.matched_intros import (
     rules_text,
 )
 from autodj.station_routes import SavedStationDep, StationRouter, audio_mime
+from autodj.upload_forms import read_single_file_form
 
 if TYPE_CHECKING:
     from autodj.stations import StationRuntime
@@ -354,31 +354,6 @@ def _intro_cues(path: Path, max_seconds: float) -> BreakCues:
         raise HTTPException(status_code=422, detail=f"That intro is unusable: {exc}") from exc
 
 
-async def _read_form(request: Request) -> tuple[dict[str, str], StarletteUploadFile]:
-    """Parse the multipart body: one file and a few short fields.
-
-    Raises:
-        HTTPException: 422 for a missing file or a body that is not a form
-            of one file.
-    """
-    try:
-        form = await request.form(max_files=1, max_fields=16, max_part_size=4096)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=422, detail="Send the intro as multipart/form-data"
-        ) from exc
-    upload = form.get("file")
-    values = {key: value for key, value in form.multi_items() if key != "file"}
-    if not isinstance(upload, StarletteUploadFile) or any(
-        not isinstance(value, str) for value in values.values()
-    ):
-        await form.close()
-        raise HTTPException(status_code=422, detail="Send one audio file as the field file")
-    return {key: str(value) for key, value in values.items()}, upload
-
-
 def install_matched_intros(router: StationRouter) -> None:
     """Add the matched intros routes; each acts on the station its URL names."""
     # One decode at a time across the server, shared with breaks and ad spots.
@@ -596,7 +571,7 @@ def install_matched_intros(router: StationRouter) -> None:
             size = min(cap, int(declared))
         loop = asyncio.get_running_loop()
         deadline = loop.time() + BODY_DEADLINE_SECONDS + size / MIN_BODY_BYTES_PER_SECOND
-        values, upload = await _within(deadline, _read_form(request))
+        values, upload = await _within(deadline, read_single_file_form(request, "intro"))
         intro_id = new_id()
         path: Path | None = None
         saved = False
