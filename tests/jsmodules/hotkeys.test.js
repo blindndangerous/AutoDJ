@@ -344,21 +344,36 @@ describe("page shortcut scope", () => {
     window.dispatchEvent(new KeyboardEvent("keyup", { key: "?" }));
   });
 
-  it("puts focus back on the opener when Escape closes the help", () => {
+  // #631: show() and aria-modal, not showModal(), so NVDA keeps its place on
+  // the page; Escape closes it with focus straight back on the opener.
+  it("opens the help with show() and aria-modal, and Escape puts focus straight back on the opener", () => {
     const modal = document.querySelector("#hotkey-help-modal");
     const helpButton = document.querySelector("#btn-shortcuts");
+    const closeButton = document.querySelector("#btn-shortcuts-close");
     modal.close();
+    modal.showModal.mockClear();
+    const show = vi.spyOn(modal, "show");
     helpButton.focus();
     keyEvent(document.activeElement, "?", { shiftKey: true });
     window.dispatchEvent(new KeyboardEvent("keyup", { key: "?" }));
-    expect(document.activeElement).toBe(document.querySelector("#btn-shortcuts-close"));
+    expect(show).toHaveBeenCalledOnce();
+    expect(modal.showModal).not.toHaveBeenCalled();
+    expect(modal.getAttribute("aria-modal")).toBe("true");
+    expect(document.activeElement).toBe(closeButton);
+    // Tab stays on Close, the list's one control.
+    expect(keyEvent(closeButton, "Tab").defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(closeButton);
 
-    // Escape: the browser fires cancel, closes the dialog, then fires close.
-    modal.dispatchEvent(new Event("cancel"));
-    expect(modal.contains(document.activeElement)).toBe(false);
-    modal.removeAttribute("open");
-    modal.dispatchEvent(new Event("close"));
+    const left = [];
+    const record = (event) => left.push(event.relatedTarget?.id || "body");
+    closeButton.addEventListener("blur", record);
+    const escape = keyEvent(closeButton, "Escape");
+    closeButton.removeEventListener("blur", record);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(modal.open).toBe(false);
     expect(document.activeElement).toBe(helpButton);
+    expect(left).toEqual(["btn-shortcuts"]);
+    show.mockRestore();
   });
 
   it("speaks how the hour lands on Shift+H, from any tab", () => {

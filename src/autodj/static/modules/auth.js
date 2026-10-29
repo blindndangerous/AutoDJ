@@ -2,6 +2,7 @@ import {
   AuthenticationRequiredError,
   requestJson,
 } from "./api-client.js";
+import { closeDialog, openDialog } from "./dialog-guard.js";
 import { NBSP } from "./live-region.js";
 
 let latestAuthState = {};
@@ -132,7 +133,7 @@ export function initAuthDialog({
       await announceError(failureMessage);
       return false;
     }
-    if (dialog.open) dialog.close();
+    if (dialog.open) closeDialog(dialog);
     onSuccess();
     return true;
   }
@@ -157,7 +158,10 @@ export function initAuthDialog({
     }
     reasonText.textContent = reason;
     reasonText.hidden = !reason;
-    if (!dialog.open) dialog.showModal();
+    // Opened with show() and aria-modal, not showModal(), so NVDA keeps its
+    // place on the page (#631, see dialog-guard.js).  Tab and Shift+Tab go
+    // round the fields and Pair browser; Escape stays in the code field.
+    if (!dialog.open) openDialog(dialog, { home: token });
     if (!pendingSubmit) setBusy(false);
     token.focus();
   }
@@ -165,21 +169,6 @@ export function initAuthDialog({
   dialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     token.focus();
-  });
-  dialog.addEventListener("keydown", (event) => {
-    if (event.key !== "Tab") return;
-    const focusable = [token, deviceName, submitButton].filter(
-      (element) => !element.disabled,
-    );
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
   });
   form.addEventListener("submit", (event) => {
     event.preventDefault();

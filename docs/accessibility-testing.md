@@ -67,6 +67,45 @@ versions, and whether a person listened, as for any sample. The record of the
 first check is in
 [ADR 0011](adr/0011-verify-accessibility-with-browser-and-speech-evidence.md#amendment-2026-10-28-the-confirmation-opens-without-showmodal).
 
+## Other dialogs with NVDA
+
+Every other dialog the page opens works the same way, through
+`modules/dialog-guard.js`
+([#631](https://github.com/blindndangerous/AutoDJ/issues/631)): `show()` and
+`aria-modal="true"`, a backdrop, Tab and Shift+Tab kept in the dialog, Escape
+firing its cancel event, the button that changes nothing last, and focus going
+straight back to the control that opened it. A dialog opened from another, such
+as Browse… in an editor or the discard question over an editor, sits above it,
+and only the top one keeps the keys. Check each with NVDA in browse mode, in
+Chrome and Firefox:
+
+- **Browse…**: in **Library tools**, **Music folders and Voice liner folders**,
+  press Browse… after **Folder path**. Select this folder comes before Cancel.
+  Enter straight after NVDA reads the dialog must not choose a folder or change
+  the field. Escape and Cancel return to Browse…. Also try Browse… on a
+  clockwheel's track step and on a folder condition, where it opens over an
+  editor.
+- **Track info, unsaved changes**: in **Track info**, change a cue point, then
+  press Track info on another song in **Queue & Search**. The buttons are
+  Save, Discard and Keep editing, in that order. Escape keeps
+  editing and returns to the control that asked.
+- **Rename a paired device**: in **Settings**, **Profiles and access**,
+  **Browser access**, press Rename on a device. Save comes before Cancel.
+  Escape and Cancel return to Rename; a save returns to it too.
+- **Editors**: Add event in **Settings**, **Schedule**; Add spot and Add ad
+  break in **Ads**; Add category, a clockwheel's New step, and Add intro rule in
+  **Library tools**. Escape on an unchanged editor returns to the button that
+  opened it; on a changed one it asks before discarding.
+- **Keyboard shortcuts**: press `?` or the **Keyboard shortcuts** button. Tab
+  stays on Close; Escape, Close or `?` return to where focus was.
+- **Pairing**: open the page in a browser that is not paired. Tab goes round
+  the two fields and Pair browser; Escape does not close it.
+
+For each, closing must read the control focus returns to, never "Skip to main
+content" or another line from the top of the page. NVDA reads that control
+twice, as for a confirmation. Record the results under `ADR-0011-09` in
+[ADR 0011](adr/0011-verify-accessibility-with-browser-and-speech-evidence.md).
+
 ## Disposable SSO browser audit
 
 `npm run audit:sso` is a separate manual audit, outside `audit:ci`. It checks

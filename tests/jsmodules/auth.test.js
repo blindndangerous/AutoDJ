@@ -31,7 +31,7 @@ function installDialogMarkup() {
       aria-atomic="true"></p>
   </dialog>`;
   const dialog = document.querySelector("#auth-dialog");
-  dialog.showModal = vi.fn(() => dialog.setAttribute("open", ""));
+  dialog.show = vi.fn(() => dialog.setAttribute("open", ""));
   return {
     dialog,
     deviceName: document.querySelector("#auth-device-name"),
@@ -118,7 +118,8 @@ describe("initAuthDialog", () => {
     expect(sessionStorageSet).not.toHaveBeenCalled();
   });
 
-  it("prevents native cancellation and guards repeated modal display", () => {
+  // #631: show() and aria-modal, not showModal(), so NVDA keeps its place.
+  it("opens once with show() and aria-modal, and neither cancel nor Escape closes it", () => {
     const els = installDialogMarkup();
     const auth = initAuthDialog({ document, fetchImpl: vi.fn() });
 
@@ -127,8 +128,16 @@ describe("initAuthDialog", () => {
     const cancelEvent = new Event("cancel", { cancelable: true });
     els.dialog.dispatchEvent(cancelEvent);
 
-    expect(els.dialog.showModal).toHaveBeenCalledOnce();
+    expect(els.dialog.show).toHaveBeenCalledOnce();
+    expect(els.dialog.getAttribute("aria-modal")).toBe("true");
     expect(cancelEvent.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(els.token);
+
+    els.deviceName.focus();
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    els.deviceName.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(els.dialog.open).toBe(true);
     expect(document.activeElement).toBe(els.token);
   });
 
@@ -644,7 +653,7 @@ describe("app startup integration", () => {
       .forEach((element) => element.remove());
     document.body.replaceChildren(template.content.cloneNode(true));
     const dialog = document.querySelector("#auth-dialog");
-    dialog.showModal = vi.fn(() => dialog.setAttribute("open", ""));
+    dialog.show = vi.fn(() => dialog.setAttribute("open", ""));
 
     const installLibraryJobs = vi.fn();
     const installLiners = vi.fn();
@@ -727,7 +736,7 @@ describe("app startup integration", () => {
     vi.stubGlobal("WebSocket", WebSocketImpl);
 
     await import("../../src/autodj/static/app.js");
-    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(installHotkeys).toHaveBeenCalledOnce());
 
     expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
@@ -762,7 +771,7 @@ describe("app startup integration", () => {
       .forEach((element) => element.remove());
     document.body.replaceChildren(template.content.cloneNode(true));
     const dialog = document.querySelector("#auth-dialog");
-    dialog.showModal = vi.fn(() => dialog.setAttribute("open", ""));
+    dialog.show = vi.fn(() => dialog.setAttribute("open", ""));
 
     let linerDeps;
     const installLiners = vi.fn((_els, deps) => {
@@ -1024,7 +1033,7 @@ describe("SSO authentication state", () => {
     auth.show("Session expired");
     auth.show("Session expired again");
     expect(onSignIn).toHaveBeenCalledOnce();
-    expect(els.dialog.showModal).not.toHaveBeenCalled();
+    expect(els.dialog.show).not.toHaveBeenCalled();
   });
 
   it("returns an authenticated SSO browser to sign-in once after a redirect", async () => {
@@ -1052,7 +1061,7 @@ describe("SSO authentication state", () => {
     expect(onSignIn).toHaveBeenCalledOnce();
     expect(onError).not.toHaveBeenCalled();
     expect(startAuthenticatedApp).not.toHaveBeenCalled();
-    expect(els.dialog.showModal).not.toHaveBeenCalled();
+    expect(els.dialog.show).not.toHaveBeenCalled();
     const reconnect = vi.fn();
     const onUnreachable = vi.fn();
     expect(await authModule.reconnectWebSocketAfterClose({

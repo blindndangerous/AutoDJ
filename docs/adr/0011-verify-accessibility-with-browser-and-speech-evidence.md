@@ -57,6 +57,7 @@ assistive-technology expectations change.
   [contribution checks](../../CONTRIBUTING.md), and [release evidence](../accessibility-samples/0.21.0.md).
 - [Live regions](../../src/autodj/static/modules/live-region.js),
   [dialogs](../../src/autodj/static/modules/confirm-dialog.js),
+  [the dialog guard](../../src/autodj/static/modules/dialog-guard.js),
   [hotkeys](../../src/autodj/static/modules/hotkeys.js), and [HTML](../../src/autodj/static/index.html).
 - [Development tooling](../../package.json) and [CI](../../.github/workflows/ci.yml).
 
@@ -80,6 +81,8 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0011-05` | A confirmed action that names another control moves focus straight to it from the dialog's button, never through the opener or the page body. | automated | `tests/jsmodules/confirm-dialog.test.js::moves focus to the action's target, not the opener, after a confirm` |
 | `ADR-0011-06` | The shared confirmation opens with `show()`, not `showModal()`, unless another modal dialog is open; it is marked `aria-modal`, its form has `role="none"`, Cancel is its last button and the one the browser focuses as it opens (`autofocus`), and while it is open a backdrop takes clicks, Tab and Shift+Tab stay in it, focus sent to the page returns to Cancel, and a click, press, Enter, Space, submission or typed input aimed at the page does not reach it. | automated | `tests/jsmodules/confirm-dialog.test.js::opens with show(), aria-modal, the form out of the tree, Cancel last and the backdrop shown`, `tests/jsmodules/confirm-dialog.test.js::keeps Tab, Shift+Tab and focus in the dialog, and the backdrop does nothing`, `tests/jsmodules/confirm-dialog.test.js::stops a page control activated while it is open, as a screen reader may` |
 | `ADR-0011-07` | With NVDA in browse mode, Enter on a newly opened confirmation cancels it, and closing it reads the control focus returns to, not the top of the page. | manual | Open and close a confirmation such as Restart AutoDJ in Settings, Updates with NVDA in Chrome and Firefox; record the revision, versions, flows, speech, and whether a person listened. |
+| `ADR-0011-08` | Every other dialog the page opens (editors, Browse…, Track info's unsaved changes, device Rename, the keyboard shortcuts list, pairing) opens the same way through `modules/dialog-guard.js`: `show()` and `aria-modal`, not `showModal()`, unless a modal dialog is open; a backdrop takes clicks; Tab and Shift+Tab go round the top dialog's controls; focus or a press aimed at the page, or at a dialog under it, does not reach it; Escape fires the dialog's cancel event; its safe button is last; and closing moves focus straight to the opener or the action's target, never through the page body. | automated | `tests/jsmodules/dialog-guard.test.js::opens with show() and aria-modal, with the backdrop shown until it closes`, `tests/jsmodules/dialog-guard.test.js::keeps Tab, Shift+Tab and focus in the dialog, past controls Tab cannot reach`, `tests/jsmodules/dialog-guard.test.js::stops a page control activated while it is open, as a screen reader may`, `tests/jsmodules/dialog-guard.test.js::fires cancel on Escape and closes with focus straight back on the opener`, `tests/jsmodules/dialog-guard.test.js::moves focus straight to a target, the opener inert while the dialog closes`, `tests/jsmodules/dialog-guard.test.js::stacks a dialog opened from another: only the top one guards`, `tests/jsmodules/path-picker.test.js::opens with show() and aria-modal, Cancel last, and keeps Tab and Escape in the dialog` |
+| `ADR-0011-09` | With NVDA in browse mode, Enter on a newly opened Browse… dialog does not choose the folder, and closing each dialog in `ADR-0011-08` reads the control focus returns to, not the top of the page. | manual | Open and close each dialog listed in docs/accessibility-testing.md with NVDA in Chrome and Firefox; record the revision, versions, flows, speech, and whether a person listened. |
 
 ## Amendment 2026-10-27: dialog focus never rests on the page body
 
@@ -126,6 +129,20 @@ whenever focus moves into another browse-mode document, so the page
 cannot avoid this double read. An agent read NVDA's speech; no person
 listened.
 
+## Amendment 2026-10-29: every dialog opens without showModal()
+
+The other dialogs still opened with `showModal()`, so NVDA read "Skip to
+main content" as they closed, and in the Browse… dialog, where Select this
+folder came last, Enter after NVDA read the dialog could choose the folder
+([#631](https://github.com/blindndangerous/AutoDJ/issues/631)). The
+confirmation's guard moved to `modules/dialog-guard.js`, which the editors,
+Browse…, Track info's unsaved changes, device Rename, the keyboard
+shortcuts list and pairing now share (`ADR-0011-08`). Dialogs opened from
+one another stack, and only the top one guards, so a confirmation over an
+editor now opens with `show()` as well. Browse… and device Rename put
+Cancel last. None of these dialogs lets go of focus before it closes any
+more. `ADR-0011-09` is the NVDA check; it has no recorded evidence yet.
+
 ## Verification
 
 Run the following checks for affected changes and record results and platform
@@ -134,7 +151,8 @@ record's Proposed status.
 
 - [ ] Verify announcement behavior with [live-region tests](../../tests/jsmodules/live-region.test.js).
 - [ ] Verify dialog/focus and keyboard behavior with
-  [dialog tests](../../tests/jsmodules/confirm-dialog.test.js) and
+  [dialog tests](../../tests/jsmodules/confirm-dialog.test.js),
+  [dialog guard tests](../../tests/jsmodules/dialog-guard.test.js) and
   [hotkey tests](../../tests/jsmodules/hotkeys.test.js).
 - [ ] Run the applicable [browser visual audit](../../tests/playwright/visual_audit.mjs)
   on a running server according to the accessibility guide.

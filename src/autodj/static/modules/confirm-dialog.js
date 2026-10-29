@@ -1,3 +1,4 @@
+import { openDialog, otherModalOpen } from "./dialog-guard.js";
 import {
   dialogReturnPlace, dialogStatusLine, focusAfterDialog, focusSteadyPlace, releaseDialogFocus,
 } from "./dom-helpers.js";
@@ -21,18 +22,9 @@ import { sayIfStillPending } from "./live-region.js";
 // accessibility tree and NVDA returns to where it was.  It is not made
 // inert or aria-hidden either, which would hide it from NVDA again, so a
 // screen reader can still read the page behind the dialog.  While the
-// dialog is open, nothing on the page can be used:
-//   - a backdrop over the page takes pointer presses and does nothing;
-//   - Tab and Shift+Tab go round the dialog's buttons;
-//   - focus that moves to the page comes back to Cancel;
-//   - click, auxclick, pointerdown, mousedown, Enter and Space, submit and
-//     typed input aimed at the page are stopped before the page sees them,
-//     and focus goes back to Cancel.  This covers a screen reader that
-//     ignores aria-modal and activates a page control (TalkBack, Narrator),
-//     and Enter on a link found with find in page.  Input events a script
-//     sends the page itself still reach it.
-// Keyboard shortcuts already stand down while a dialog is open
-// (hotkeys.js).  Opened over another modal dialog, whose page is inert, it
+// dialog is open, nothing on the page can be used, and stray focus comes
+// back to Cancel (dialog-guard.js, shared with the other dialogs since
+// #631).  Opened over another modal dialog, whose page is inert, it
 // opens with showModal() and lets go of focus before it closes, as other
 // modal dialogs do (#385).
 //
@@ -63,22 +55,6 @@ import { sayIfStillPending } from "./live-region.js";
 // aria-busy, and an action still running after a moment says *pendingText*
 // ("Removing…") in the dialog's own status line, where a screen reader
 // reading the dialog finds it (#384).
-
-// The shade over the page while the confirmation is open.
-function backdropFor(doc) {
-  let backdrop = doc.getElementById("confirm-backdrop");
-  if (!backdrop) {
-    backdrop = doc.createElement("div");
-    backdrop.id = "confirm-backdrop";
-    backdrop.hidden = true;
-    doc.body.append(backdrop);
-  }
-  return backdrop;
-}
-
-// What a press, key or submission aimed at the page sends while the
-// confirmation is open.
-const PAGE_EVENTS = ["click", "auxclick", "pointerdown", "mousedown", "keydown", "submit", "input"];
 
 // Each confirmation dialog's current opening, and the focus checks waiting
 // for its close events.  An opening is answered at the moment of its own
@@ -114,21 +90,6 @@ function dialogState(dialog) {
     });
   }
   return state;
-}
-
-// Whether a modal dialog other than *dialog* is open.  The page behind it
-// is inert, so the confirmation must open in the top layer above it.
-function otherModalOpen(doc, dialog) {
-  for (const other of doc.querySelectorAll("dialog[open]")) {
-    if (other === dialog) continue;
-    try {
-      if (other.matches(":modal")) return true;
-    } catch (_) {
-      // A browser without :modal; an open dialog is then taken as modal.
-      return true;
-    }
-  }
-  return false;
 }
 
 // station: the action changes one station (#70).  While the server has
@@ -175,7 +136,7 @@ function ask(doc, {
   // Where focus goes if the opener is gone when the dialog closes.
   const place = dialogReturnPlace(opener);
   const modal = otherModalOpen(doc, dialog);
-  const backdrop = modal ? null : backdropFor(doc);
+  let release = () => {};
   return new Promise((resolve) => {
     const opening = { settled: false, pending: false, closeCame: false, settle, detach, closedElsewhere };
     state.current = opening;
@@ -185,73 +146,6 @@ function ask(doc, {
       [alternate, "click", chooseAlternate],
       [dialog, "cancel", escape],
     ];
-    if (!modal) {
-      listeners.push(
-        [doc, "keydown", keys, true],
-        [doc, "focusin", keepFocusIn],
-        [backdrop, "mousedown", stayPut],
-        [backdrop, "click", stayPut],
-        ...PAGE_EVENTS.map((type) => [doc, type, keepPageOut, true]),
-      );
-    }
-    // Whether the dialog keeps the page out of reach: it is open and in the
-    // page, and no modal dialog has opened over it.  A dialog taken out of
-    // the page fires no close event, so it is answered No and let go of.
-    function guarding() {
-      if (!dialog.isConnected) {
-        settle("cancel");
-        return false;
-      }
-      return dialog.open && !otherModalOpen(doc, dialog);
-    }
-    // A press, key or submission aimed at the page while the dialog is
-    // open never reaches it; focus goes back to Cancel.
-    function keepPageOut(event) {
-      if (!guarding()) return;
-      const target = event.target;
-      if (target === backdrop || (target?.nodeType && dialog.contains(target))) return;
-      if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return;
-      if (event.type === "input" && !event.isTrusted) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      cancelButton?.focus();
-    }
-    // Tab and Shift+Tab go round the dialog's buttons, from the page body
-    // too (where a click on the dialog's text leaves focus), and Escape
-    // cancels: what a modal dialog does.  A modal dialog opened over it,
-    // such as sign in, has the keys to itself.
-    function keys(event) {
-      if (!guarding()) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        if (!opening.pending) finish("cancel", null);
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const stops = [...dialog.querySelectorAll("button:not([disabled])")];
-      if (!stops.length) return;
-      const first = stops[0];
-      const last = stops[stops.length - 1];
-      const inside = dialog.contains(doc.activeElement);
-      if (event.shiftKey && (!inside || doc.activeElement === first)) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (!inside || doc.activeElement === last)) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-    // Focus that leaves the open dialog for the page comes back to Cancel.
-    function keepFocusIn(event) {
-      if (!guarding() || dialog.contains(event.target)) return;
-      cancelButton?.focus();
-    }
-    // A press on the backdrop neither acts nor takes focus from the dialog.
-    function stayPut(event) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
     // Back on the opener, or somewhere steady near it; never the page body.
     // Focus already there, put back by the browser, stays: letting go of it
     // to take it again would rest it on the page body (#602).  Over another
@@ -281,13 +175,13 @@ function ask(doc, {
       for (const [target, type, listener, capture] of listeners) {
         target?.removeEventListener(type, listener, capture);
       }
+      release();
     }
     // Answered: its listeners go, then the promise resolves.  Once only.
     function settle(answer) {
       if (opening.settled) return;
       opening.settled = true;
       detach();
-      if (backdrop && showing()) backdrop.hidden = true;
       resolve(as(answer));
     }
     // Closed by the page or the browser, not by this opening's own action.
@@ -374,18 +268,18 @@ function ask(doc, {
     for (const [target, type, listener, capture] of listeners) {
       target?.addEventListener(type, listener, capture);
     }
-    dialog.setAttribute("aria-modal", "true");
     dialog.querySelector("form")?.setAttribute("role", "none");
     cancelButton?.parentElement?.append(cancelButton);
     // The browser focuses Cancel itself as the dialog opens, not the first
     // button, the confirm one, which a screen reader would read first.
     cancelButton?.setAttribute("autofocus", "");
-    if (modal) {
-      dialog.showModal();
-    } else {
-      backdrop.hidden = false;
-      dialog.show();
-    }
+    // Escape cancels, held while the action runs.  A dialog taken out of
+    // the page fires no close event, so it is answered No and let go of.
+    ({ release } = openDialog(dialog, {
+      home: cancelButton,
+      onEscape: () => { if (!opening.pending) finish("cancel", null); },
+      onGone: () => settle("cancel"),
+    }));
     cancelButton?.focus();
   });
 }

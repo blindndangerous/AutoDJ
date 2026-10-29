@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { chooseAction, confirmAction } from "../../src/autodj/static/modules/confirm-dialog.js";
+import { closeDialog, openDialog } from "../../src/autodj/static/modules/dialog-guard.js";
 
 // The shared confirmation as a browser runs it.  show() and showModal()
 // note the focused control; close() drops the open attribute, then puts
@@ -269,7 +270,7 @@ describe("confirmAction without showModal (#602, #627)", () => {
     expect([...dialog.querySelectorAll("button")].map((button) => button.id))
       .toEqual(["confirm-accept", "confirm-cancel"]);
     expect(document.activeElement.id).toBe("confirm-cancel");
-    const backdrop = document.getElementById("confirm-backdrop");
+    const backdrop = document.getElementById("dialog-backdrop");
     expect(backdrop.hidden).toBe(false);
     document.getElementById("confirm-cancel").click();
     await answer;
@@ -294,7 +295,7 @@ describe("confirmAction without showModal (#602, #627)", () => {
     // Focus sent to the page comes back to Cancel.
     opener.focus();
     expect(document.activeElement).toBe(cancelButton);
-    const backdrop = document.getElementById("confirm-backdrop");
+    const backdrop = document.getElementById("dialog-backdrop");
     for (const type of ["mousedown", "click"]) {
       const event = new Event(type, { bubbles: true, cancelable: true });
       backdrop.dispatchEvent(event);
@@ -317,7 +318,7 @@ describe("confirmAction without showModal (#602, #627)", () => {
     document.body.append(editor);
     const answer = ask();
     expect(opened).toEqual(["showModal"]);
-    expect(document.getElementById("confirm-backdrop")).toBeNull();
+    expect(document.getElementById("dialog-backdrop")).toBeNull();
     // Escape is the browser's cancel event here; the confirmation answers
     // Cancel and closes the dialog itself.
     const escape = new Event("cancel", { cancelable: true });
@@ -325,6 +326,26 @@ describe("confirmAction without showModal (#602, #627)", () => {
     expect(escape.defaultPrevented).toBe(true);
     expect(dialog.hasAttribute("open")).toBe(false);
     expect(await answer).toBe(false);
+  });
+
+  // #631: an editor opened with show() is not modal, so the confirmation
+  // over it opens with show() too and stacks above it.
+  it("opens with show() over an editor that dialog-guard.js opened, and guards above it", async () => {
+    const { dialog, opened } = mount();
+    const editor = document.createElement("dialog");
+    editor.innerHTML = "<input id=\"editor-field\">";
+    document.body.append(editor);
+    openDialog(editor, { home: editor.querySelector("input") });
+    const answer = ask();
+    expect(opened).toEqual(["show"]);
+    expect(Number(dialog.style.zIndex)).toBeGreaterThan(Number(editor.style.zIndex));
+    // The editor under it is page to the confirmation.
+    document.getElementById("editor-field").focus();
+    expect(document.activeElement.id).toBe("confirm-cancel");
+    press("Escape");
+    expect(await answer).toBe(false);
+    expect(editor.hasAttribute("open")).toBe(true);
+    closeDialog(editor);
   });
 
   it("leaves the keys to a modal dialog opened over it", async () => {
@@ -458,7 +479,7 @@ describe("confirmAction without showModal (#602, #627)", () => {
       await new Promise((resolve) => { setTimeout(resolve, 10); });
       expect(answered).toBe(false);
       expect(dialog.hasAttribute("open")).toBe(true);
-      expect(document.getElementById("confirm-backdrop").hidden).toBe(false);
+      expect(document.getElementById("dialog-backdrop").hidden).toBe(false);
       expect(document.activeElement.id).toBe("confirm-cancel");
       document.getElementById("confirm-cancel").click();
       expect(await next).toBe(second === "confirmAction" ? false : null);
@@ -523,7 +544,7 @@ describe("confirmAction without showModal (#602, #627)", () => {
     expect(answers).toEqual([true, false, "alternate", true]);
     expect(ran).toEqual([4]);
     expect(dialog.hasAttribute("open")).toBe(false);
-    expect(document.getElementById("confirm-backdrop").hidden).toBe(true);
+    expect(document.getElementById("dialog-backdrop").hidden).toBe(true);
     expect(document.activeElement).toBe(opener);
     // Nothing any of them added is left: the page works, and the hidden
     // dialog's buttons answer no one.
@@ -695,7 +716,7 @@ describe("confirmAction without showModal (#602, #627)", () => {
     dialog.remove();
     page.click();
     expect(await answer).toBe(false);
-    expect(document.getElementById("confirm-backdrop").hidden).toBe(true);
+    expect(document.getElementById("dialog-backdrop").hidden).toBe(true);
     expect(pressed).toBe(1);
   });
 

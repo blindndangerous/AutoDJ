@@ -579,6 +579,9 @@ describe("clockwheel editor", () => {
     key(rowCell(1, "move-down"), "Home");
     key(document.activeElement, "Enter");
     expect(byId("clock-step-legend").textContent).toBe("Edit step 2");
+    // The page is out of reach while the step dialog is open (#631).
+    byId("clock-cancel-edit").click();
+    expect(byId("clock-step-dialog").open).toBe(false);
     // A disabled action's cell does nothing.
     rowCell(2, "move-down").focus();
     key(rowCell(2, "move-down"), "Enter");
@@ -645,7 +648,12 @@ describe("clockwheel editor", () => {
     await open(fakeServer());
     rowButton(2, "edit").click();
     byId("clock-step-path").value = "Unsaved/Path.flac";
+    // The open step dialog keeps the page out of reach (#631); the steps
+    // change under it here as a script would change them, past its guard.
+    const dialog = byId("clock-step-dialog");
+    dialog.removeAttribute("open");
     rowButton(0, "duplicate").click();
+    dialog.setAttribute("open", "");
     expect(byId("clock-step-legend").textContent).toBe("Edit step 4");
     expect(byId("clock-add-step").textContent).toBe("Update step 4");
     rowButton(3, "move-up").click();
@@ -951,6 +959,7 @@ describe("clockwheel editor", () => {
     rowButton(2, "edit").click();
     expect(byId("clock-step-day-5").checked).toBe(true);
     expect(byId("clock-step-hours-until").value).toBe("02:00");
+    byId("clock-cancel-edit").click();
     rowButton(0, "edit").click();
     expect(byId("clock-step-day-5").checked).toBe(false);
   });

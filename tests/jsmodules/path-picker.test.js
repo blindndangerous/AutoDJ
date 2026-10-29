@@ -105,6 +105,48 @@ it("leaves the field alone on Cancel and Escape and returns focus to Browse", as
   }
 });
 
+// #631: show() and aria-modal, not showModal(), so NVDA keeps its place on
+// the page; Cancel last, so Enter on the last button NVDA read cannot pick
+// the folder.
+// ADR-0011-08
+it("opens with show() and aria-modal, Cancel last, and keeps Tab and Escape in the dialog", async () => {
+  const { input, button } = serverField();
+  input.value = "typed";
+  // The dialog is built on first use.
+  button.click(); await settle();
+  $("path-picker-cancel").click();
+  const dialog = $("path-picker-dialog");
+  const shown = [];
+  dialog.show = ((show) => () => { shown.push("show"); show.call(dialog); })(dialog.show);
+  dialog.showModal = () => shown.push("showModal");
+  button.focus(); button.click(); await settle();
+  expect(shown).toEqual(["show"]);
+  expect(dialog.getAttribute("aria-modal")).toBe("true");
+  const actions = [...dialog.querySelectorAll(".dialog-actions button")].map((item) => item.id);
+  expect(actions).toEqual(["path-picker-select", "path-picker-cancel"]);
+  expect(document.getElementById("dialog-backdrop").hidden).toBe(false);
+  const key = (name, init = {}) => {
+    const event = new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init });
+    document.activeElement.dispatchEvent(event);
+    return event;
+  };
+  $("path-picker-cancel").focus();
+  expect(key("Tab").defaultPrevented).toBe(true);
+  expect(document.activeElement).toBe($("path-picker-up"));
+  expect(key("Tab", { shiftKey: true }).defaultPrevented).toBe(true);
+  expect(document.activeElement).toBe($("path-picker-cancel"));
+  // Focus sent to the page comes back to Cancel.
+  $("after").setAttribute("tabindex", "-1");
+  $("after").focus();
+  expect(document.activeElement).toBe($("path-picker-cancel"));
+  // Escape changes nothing and puts focus back on Browse.
+  expect(key("Escape").defaultPrevented).toBe(true);
+  expect(dialog.open).toBe(false);
+  expect(input.value).toBe("typed");
+  expect(document.activeElement).toBe(button);
+  expect(document.getElementById("dialog-backdrop").hidden).toBe(true);
+});
+
 it("shows and announces a folder that cannot be read", async () => {
   document.body.innerHTML = '<input id="folder">';
   const request = vi.fn(async (url) => {

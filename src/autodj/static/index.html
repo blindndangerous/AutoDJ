@@ -4175,7 +4175,7 @@
      Delete profile, Delete liner, Sign out, Revoke device, Make new
      link), and for queueing a song over a DMCA limit (Queue anyway).
      modules/confirm-dialog.js fills in the words and opens it with show()
-     over #confirm-backdrop; Cancel is last and gets focus (autofocus, so
+     over #dialog-backdrop; Cancel is last and gets focus (autofocus, so
      the browser does not focus the confirm button first).  The form has
      role="none", so it is not read as a form landmark. -->
 <dialog id="confirm-dialog" aria-labelledby="confirm-title"
@@ -4189,12 +4189,13 @@
     </div>
   </form>
 </dialog>
-<div id="confirm-backdrop" hidden></div>
+<div id="dialog-backdrop" hidden></div>
 
 <!-- Rename one paired device, opened from its Rename button in Settings,
-     Browser access.  modules/devices.js fills in the title and the name;
-     the error line lives inside the dialog because the page behind a modal
-     dialog is inert and its status region would not be heard. -->
+     Browser access.  modules/devices.js fills in the title and the name
+     and opens it with show() and aria-modal (modules/dialog-guard.js);
+     Cancel is last.  The error line lives inside the dialog, where a
+     screen reader reading the dialog finds it. -->
 <dialog id="device-rename-dialog" aria-labelledby="device-rename-title">
   <form id="device-rename-form" method="dialog" novalidate>
     <h1 id="device-rename-title">Rename device</h1>
@@ -4204,16 +4205,17 @@
     <p class="setting-desc" id="device-rename-desc">1 to 64 characters.</p>
     <p id="device-rename-error" role="status" aria-live="polite" aria-atomic="true"></p>
     <div class="dialog-actions">
-      <button type="button" id="device-rename-cancel">Cancel</button>
       <button type="submit" id="device-rename-save">Save</button>
+      <button type="button" id="device-rename-cancel">Cancel</button>
     </div>
   </form>
 </dialog>
 
 <!-- Hotkey help dialog — opened via "?" or the footer button, from any
-     tab.  <dialog>+showModal() gives native focus trap, ESC-to-close, and
-     focus-restore on close.  No role=dialog needed (native).  Lives at
-     body level, outside every [role="tabpanel"]: it used to sit inside
+     tab.  modules/hotkeys.js opens it with show() and aria-modal, not
+     showModal(); modules/dialog-guard.js keeps Tab in it, closes it on
+     Escape and returns focus on close.  No role=dialog needed (native).
+     Lives at body level, outside every [role="tabpanel"]: it used to sit inside
      #panel-now, so opening it from another tab opened it inside a
      `hidden` subtree — not rendered, and not in the accessibility tree,
      while showModal() still made the rest of the page inert. -->

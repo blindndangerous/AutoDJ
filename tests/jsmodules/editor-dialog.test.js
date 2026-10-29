@@ -6,6 +6,7 @@ import { installIndexMarkup } from "./helpers.js";
 const byId = (id) => document.getElementById(id);
 
 function modal(dialog) {
+  dialog.show = vi.fn(() => { dialog.open = true; });
   dialog.showModal = vi.fn(() => { dialog.open = true; });
   dialog.close = vi.fn(() => { dialog.open = false; dialog.dispatchEvent(new Event("close")); });
 }
@@ -129,13 +130,16 @@ describe("editor dialog controller", () => {
     expect(byId("day").getAttribute("aria-describedby")).toBe("error");
   });
 
-  it("opens a named native modal with the requested initial focus and returns to its opener", () => {
+  // #631: show() and aria-modal, not showModal(), so NVDA keeps its place.
+  it("opens a named dialog with show() and aria-modal, the requested initial focus, and returns to its opener", () => {
     document.body.innerHTML = '<main id="main-content" tabindex="-1"><button id="opener">Edit</button><button id="fallback">Add</button></main>';
     const opener = byId("opener");
     opener.focus();
     const editor = makeEditor("edit");
     editor.open(editor.value, opener);
-    expect(editor.dialog.showModal).toHaveBeenCalledOnce();
+    expect(editor.dialog.show).toHaveBeenCalledOnce();
+    expect(editor.dialog.showModal).not.toHaveBeenCalled();
+    expect(editor.dialog.getAttribute("aria-modal")).toBe("true");
     expect(editor.dialog.getAttribute("aria-labelledby")).toBe("edit-heading");
     expect(editor.dialog.open).toBe(true);
     expect(document.activeElement).toBe(editor.value);
@@ -229,6 +233,45 @@ describe("editor dialog controller", () => {
     await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
     expect(editor.dialog.open).toBe(false);
     expect(editor.onCancel).not.toHaveBeenCalled();
+  });
+
+  // #631: editors open with show(), so the guard keeps the keys in the top
+  // one; Escape closes it with focus straight back on its opener.
+  it("keeps Tab in the top editor and closes it on Escape, focus straight back on its opener", () => {
+    document.body.innerHTML = '<main id="main-content" tabindex="-1"><button id="opener">Edit parent</button><button id="fallback">Add</button></main>';
+    const key = (name, init = {}) => {
+      const event = new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init });
+      document.activeElement.dispatchEvent(event);
+      return event;
+    };
+    const opener = byId("opener");
+    opener.focus();
+    const parent = makeEditor("parent");
+    parent.open(parent.value, opener);
+    const nestedOpener = document.createElement("button");
+    nestedOpener.textContent = "Open nested editor";
+    parent.dialog.append(nestedOpener);
+    nestedOpener.focus();
+    const child = makeEditor("child");
+    child.open(child.value, nestedOpener);
+    expect(child.dialog.getAttribute("aria-modal")).toBe("true");
+    child.cancel.focus();
+    expect(key("Tab").defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(child.value);
+    // The parent under it is page to the child.
+    parent.value.focus();
+    expect(document.activeElement).toBe(child.value);
+    expect(key("Escape").defaultPrevented).toBe(true);
+    expect(child.dialog.open).toBe(false);
+    expect(parent.dialog.open).toBe(true);
+    expect(document.activeElement).toBe(nestedOpener);
+    // The parent guards again.
+    parent.value.focus();
+    expect(key("Tab", { shiftKey: true }).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(nestedOpener);
+    expect(key("Escape").defaultPrevented).toBe(true);
+    expect(parent.dialog.open).toBe(false);
+    expect(document.activeElement).toBe(opener);
   });
 
   it("keeps parent fields and focus when a nested editor closes on Escape", () => {
