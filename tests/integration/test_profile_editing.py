@@ -461,6 +461,30 @@ def test_deleting_pack_removes_it_from_saved_enabled_pack_references(rig):
 
 
 @pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_deleting_pack_refuses_when_a_saved_profile_is_corrupt(rig: Any) -> None:
+    client, *_ = rig
+    station = client.app.state.stations.editable("nightowl")
+    pack = station.time_checks.root / "ValidPack"
+    pack.mkdir(parents=True)
+    pack_file = pack / "hello.wav"
+    pack_bytes = b"pack audio stays intact"
+    pack_file.write_bytes(pack_bytes)
+    station.time_checks.rescan()
+    corrupt_profile = station.paths.profiles / "Broken.json"
+    corrupt_bytes = b"{ invalid profile json"
+    corrupt_profile.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_profile.write_bytes(corrupt_bytes)
+    response = client.delete(f"{OWL}/time-checks/packs/ValidPack")
+
+    assert response.status_code == 400, response.text
+    assert "Broken" in response.json()["detail"]
+    assert "invalid" in response.json()["detail"]
+    assert corrupt_profile.read_bytes() == corrupt_bytes
+    assert pack.is_dir()
+    assert pack_file.read_bytes() == pack_bytes
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
 def test_deleting_a_shared_pack_removes_it_from_every_station_that_finds_it(rig):
     client, *_ = rig
     stations = client.app.state.stations
