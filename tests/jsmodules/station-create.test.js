@@ -83,7 +83,7 @@ describe("station IDs and checks", () => {
   });
 });
 
-describe("Settings > Station settings > Stations", () => {
+describe("Settings > Station > Stations", () => {
   beforeEach(() => {
     document.body.replaceChildren();
   });

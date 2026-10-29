@@ -392,7 +392,7 @@ export function installPreparedEditions({
       const [date, time] = when.split("T");
       const selected = `${edition.previously_started ? "edition-confirmed" : "edition"}:${edition.id}`;
       await send("/api/schedule", "POST", { name: `${edition.name.slice(0, 80)} ${date} ${time}`, action: "show", params: { show: selected }, repeat: "once", date, time, timing: get("schedule-timing").value, enabled: true, wait_seconds: 0 });
-      if (current(ticket)) say("Edition scheduled. Review or change the event in Settings, Station settings, Schedule.");
+      if (current(ticket)) say("Edition scheduled. Review or change the event in Settings, Station, Schedule.");
     } catch (error) { fail(error, ticket, get("schedule-at")); }
   }
   function clear() {

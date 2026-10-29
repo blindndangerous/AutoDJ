@@ -42,7 +42,7 @@ Use Tab and Enter or Space for controls, and arrow keys in tab strips. The
 
 1. In **Queue & Search**, clear any remaining practice queue using **Clear queue**
    and its confirmation. This removes queued entries, not songs from the library.
-2. Open **Settings**, **Station settings**, **Stations**. Under **Output for the selected station**,
+2. Open **Settings**, **Station**, **Stations**. Under **Output for the selected station**,
    choose **Radio stream** in **Playback output**.
 3. Leave **Also play the radio stream on the server sound card** unchecked.
 4. Press **Save changes** in the Stations tab.
@@ -136,7 +136,7 @@ This leaves the server running and its stream address reachable; idle is not
 an access-control setting.
 
 Return to the first lesson's playback state: select **Browser** under
-**Settings**, **Station settings**, **Stations**, press **Save changes**, then stop and start
+**Settings**, **Station**, **Stations**, press **Save changes**, then stop and start
 that station using its row and **Stop station** confirmation. Pause browser
 playback and confirm its elapsed time stops.
 Restore your original startup command if LAN access was only for this lesson.

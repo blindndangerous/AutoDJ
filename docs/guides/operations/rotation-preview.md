@@ -48,7 +48,7 @@ lock, no migration, and the file itself is never written, though SQLite may crea
 read (damaged, not an AutoDJ library, or left half written) stops the command with a message. A
 categories or liner dates file it cannot read is skipped, never moved aside.
 
-In the web page: Settings > Profile settings > Song picking > **Test rotation**. Choose a span or a number of songs,
+In the web page: Settings > Profile > Song picking > **Test rotation**. Choose a span or a number of songs,
 optionally a start and a seed, and press **Test rotation**. The run works in the background; a
 progress bar and a line of text show how far it has got, **Cancel test** stops it with the results
 so far, and the end is announced once. The results appear under **Rotation test results** as
@@ -205,7 +205,7 @@ the prediction with an explanation. Unbooked voice tracks, live DJs and manual c
 unpredictable. A scheduled song-picking change affects the next eligible selection. With hour fitting on, predicted picks use the same fitting choice
 as live picks.
 
-To fit song changes near a fixed point, tick **Fit songs to the hour** in Settings > Profile settings > Song picking
+To fit song changes near a fixed point, tick **Fit songs to the hour** in Settings > Profile > Song picking
 (`hour_fit = true` under `[playback]` for the station). **Minutes before to start fitting**
 (`hour_fit_window_minutes`) defaults to 10 and accepts 1 to 30. The setting is off by default.
 The picker considers the next top of hour, clockwheel restart or hard schedule event within that

@@ -1,4 +1,4 @@
-// Settings > Station settings > Stations (#233): the stations on this server, and New station.
+// Settings > Station > Stations (#233): the stations on this server, and New station.
 //
 // The table and the Start from choice come from the station list the page
 // already keeps (stations.js), so they follow the switcher; render() is

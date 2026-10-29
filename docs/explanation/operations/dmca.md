@@ -11,7 +11,7 @@ of the US statutory webcasting licence (section 114, reported to
 SoundExchange). This is general information, not legal advice: you remain
 responsible for your licence and your reports.
 
-Turn it on with **DMCA mode** in **Settings**, **Station settings**, **Broadcasting**. The choice belongs to the selected station.
+Turn it on with **DMCA mode** in **Settings**, **Station**, **Broadcasting**. The choice belongs to the selected station.
 
 ## The limits
 
@@ -82,7 +82,7 @@ estimate.
 
 ## Public pages
 
-Turn DMCA mode on or off in Settings > Station settings > Broadcasting for the selected station. Saving it changes
+Turn DMCA mode on or off in Settings > Station > Broadcasting for the selected station. Saving it changes
 the next song pick and public feed immediately. From the moment it turns on, the limits count
 the last three hours of saved plays. Songs already picked or queued are not rechecked.
 The public now-playing feed (`/api/nowplaying`), the `/status` page and the

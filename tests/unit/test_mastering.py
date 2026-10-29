@@ -960,7 +960,7 @@ def test_a_missing_library_points_to_the_download_button_without_starting_a_host
         _wait_for(lambda: master.error is not None)
         assert master.error == (
             "Stereo Tool master unavailable: Stereo Tool is not installed. Download it in "
-            "Settings, Server settings, Server, with the Download Stereo Tool button."
+            "Settings, Global, Server, with the Download Stereo Tool button."
         )
         assert started == []
     finally:

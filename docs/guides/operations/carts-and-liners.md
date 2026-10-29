@@ -28,7 +28,7 @@ open paired page says "Cart 3, Station ID, playing" when a cart starts and "... 
 
 With focus on the cart wall, keys 1 to 9, 0, minus and equals play carts 1 to 12 on the page
 shown, and Page Up and Page Down change the page. The keys do nothing in text fields and
-dropdowns, and the **Enable keyboard shortcuts** checkbox (Settings, Browser settings, Preferences) turns
+dropdowns, and the **Enable keyboard shortcuts** checkbox (Settings, Global, Preferences) turns
 them off. With NVDA, switch to focus mode first (NVDA+Space).
 
 Carts play through the voice liner path. In server audio and stream mode the server mixes them

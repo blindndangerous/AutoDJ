@@ -26,7 +26,7 @@ describe("public station settings", () => {
       const help = document.getElementById(get(id).getAttribute("aria-describedby"));
       expect(help?.textContent.trim()).toBeTruthy();
     }
-    expect(document.getElementById("np-show-next-dmca").textContent).toMatch(/Station settings, Broadcasting/);
+    expect(document.getElementById("np-show-next-dmca").textContent).toMatch(/Station, Broadcasting/);
     expect(document.getElementById("np-show-next-dmca").textContent).not.toMatch(/config\.toml/);
   });
 

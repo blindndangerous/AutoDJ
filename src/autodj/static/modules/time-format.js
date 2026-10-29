@@ -1,6 +1,6 @@
 // How the page writes times of day: one place, so every panel agrees.
 // The server writes its own times (autodj/timefmt.py); both follow
-// Settings > Server settings > Server, Time format (#286), 24 hour unless set to 12.
+// Settings > Global > Server, Time format (#286), 24 hour unless set to 12.
 const TIME = { hour: "numeric", minute: "2-digit" };
 let hourCycle = "h23";
 

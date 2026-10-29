@@ -8,8 +8,8 @@ Install the supported plugin library, configure shared or station-specific licen
 
 AutoDJ cannot include Thimeo's Stereo Tool, and the container image does not either. Each install
 gets Thimeo's Stereo Tool plugin library (`libStereoTool`, the same one AzuraCast and Liquidsoap
-use) itself, from **Settings**, **Server settings**, **Server**, with no configuration file.
-Its processing mode and preset are set in **Settings**, **Profile settings**, **Sound**:
+use) itself, from **Settings**, **Global**, **Server**, with no configuration file.
+Its processing mode and preset are set in **Settings**, **Profile**, **Sound**:
 
 1. Read Thimeo's [terms and conditions](https://www.thimeo.com/terms-and-conditions/) and
    [licensing](https://www.thimeo.com/stereo-tool/licenses/) (both linked there), then tick
@@ -94,7 +94,7 @@ The page says so on those computers instead of offering the download.
 
 If a station is set to Stereo Tool and the library is not there, the station plays on with its
 limited bypass, and `/api/status` reports `playout.error` as "Stereo Tool master unavailable:
-Stereo Tool is not installed. Download it in Settings, Server settings, Server, with the Download Stereo Tool
+Stereo Tool is not installed. Download it in Settings, Global, Server, with the Download Stereo Tool
 button." It starts Stereo Tool by itself within a second of the download finishing. While
 Stereo Tool runs, `/api/status` reports what it said under `playout.stereotool`: its version, the
 delay its preset adds (`latency_ms`), and whether the licence covers the preset.
@@ -108,7 +108,7 @@ docker compose cp libStereoTool_intel64.so autodj:/index/tools/stereo-tool/libSt
 
 ### One licence or one per station
 
-The key saved from Settings, Server settings, Server is for every station. With more than one station, tick **For
+The key saved from Settings, Global, Server is for every station. With more than one station, tick **For
 this station only** before saving to give the station the page controls a key of its own; it uses
 that key instead. Thimeo requires a separate licence for each radio-processing instance; one key
 does not license several stations running at the same time. Check Thimeo's

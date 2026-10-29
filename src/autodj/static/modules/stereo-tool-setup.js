@@ -1,4 +1,4 @@
-// Settings > Server settings > Server > Stereo Tool library and licence: download Thimeo's
+// Settings > Global > Server > Stereo Tool library and licence: download Thimeo's
 // Stereo Tool plugin library onto the server and set its licence key.
 //
 // AutoDJ cannot include Stereo Tool, so Download Stereo Tool asks the

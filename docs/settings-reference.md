@@ -44,11 +44,11 @@ edits remain pending. Output-mode changes take effect after restarting the stati
 | Server | Shared analysis limits, time format, Stereo Tool installation and shared licence, browser access, workers and updates |
 | Preferences | Browser display, keyboard and audio-device preferences |
 
-Settings keeps four heading-labeled tab groups visible: **Profile settings**
-(five tabs), **Station settings** (Stations, Broadcasting and Schedule),
-**Server settings** (Server), and **Browser settings** (Preferences). Each
+Settings keeps three heading-labeled tab groups visible: **Profile**
+(five tabs), **Station** (Stations, Broadcasting and Schedule),
+and **Global** (Server and Preferences). Each
 tab opens its settings panel; arrow, Home and End navigation stays within its
-group. The **Profile to edit** selector follows all four groups and is hidden
+group. The **Profile to edit** selector follows all three groups and is hidden
 while a non-Profile tab is selected. Profile selection edits profile-aware
 controls in their tabs; it does not make server configuration or browser
 preferences profile overrides. Presentation, lyrics, key notation and prefetch
@@ -88,7 +88,7 @@ stores the edits without switching back. Saving **Station defaults** applies
 its edited groups to the current active selection: inherited values update,
 explicit profile overrides remain, and active identity does not change.
 
-To activate Station defaults, use **Activate station defaults** in **Profile settings**,
+To activate Station defaults, use **Activate station defaults** in **Profile**,
 **Profiles**. This action is independent of the **Profile to edit** selection. Each saved
 profile also has its own **Activate** action in the profile list; activation does
 not change which target the Settings form edits. The picker marks the active
@@ -254,10 +254,10 @@ Station section: `playback` in `station.json`.
 - `pick_temperature`. Values: number from 0 to 10. Default: 0.3. Controls the randomness among those close songs; has no effect when pick_top_k is 1. **Pick randomness**.
 - `hour_fit`. Values: true or false. Default: false. Prefers songs ending near the next fixed time. **Fit songs to the hour**.
 - `hour_fit_window_minutes`. Values: whole number from 1 to 30. Default: 10. Starts hour fitting this many minutes before the fixed time. **Minutes before to start fitting**.
-- `key_notation`. Values: `camelot` (Camelot (8A or 8B)) or `musical` (Musical (C, A minor, F sharp minor)). Default: `camelot`. Chooses how keys are shown. **Key notation** in Settings, **Browser settings**, **Preferences**.
-- `key_prefer_flats`. Values: true or false. Default: false. Uses flat names when musical key notation is selected. **Use flats** in Settings, **Browser settings**, **Preferences**.
-- `show_lyrics`. Values: true or false. Default: true. Shows the lyrics card when lyrics exist. **Show lyrics** in Settings, **Browser settings**, **Preferences**.
-- `prefetch_next_track`. Values: true or false. Default: true. Loads the next song early for browser playback. Server sound-card and stream playback do not use it: they always prepare the next song while the current one plays. **Load the next song early** in Settings, **Browser settings**, **Preferences**.
+- `key_notation`. Values: `camelot` (Camelot (8A or 8B)) or `musical` (Musical (C, A minor, F sharp minor)). Default: `camelot`. Chooses how keys are shown. **Key notation** in Settings, **Station**, **Stations**.
+- `key_prefer_flats`. Values: true or false. Default: false. Uses flat names when musical key notation is selected. **Use flats** in Settings, **Station**, **Stations**.
+- `show_lyrics`. Values: true or false. Default: true. Shows the lyrics card when lyrics exist. **Show lyrics** in Settings, **Station**, **Stations**.
+- `prefetch_next_track`. Values: true or false. Default: true. Loads the next song early for browser playback. Server sound-card and stream playback do not use it: they always prepare the next song while the current one plays. **Load the next song early** in Settings, **Station**, **Stations**.
 - `silence_trigger_crossfade`. Values: true or false. Default: true. Starts a browser crossfade when the ending song falls silent. **Crossfade when a song goes quiet**.
 - `audio_device`. Values: device number, name fragment, or blank. Default: blank. Selects server speaker output; blank uses the system default.
 - `import_external_cues`. Values: true or false. Default: true. Imports cue points stored by supported DJ tools when songs are analysed.
@@ -378,17 +378,17 @@ Station section: `requests` in `station.json`. **Take listener requests** and th
 
 ### Player page
 
-Station section: `player_page` in `station.json`. Set these controls in **Settings**, **Station settings**, **Broadcasting** for the selected station.
+Station section: `player_page` in `station.json`. Set these controls in **Settings**, **Station**, **Broadcasting** for the selected station.
 
-- `enabled`. Values: true or false. Default: false. Opens the public listening page. **Public player page** in **Settings**, **Station settings**, **Broadcasting**.
-- `embed`. Values: true or false. Default: false. Opens an embeddable public player. **Embeddable player** in **Settings**, **Station settings**, **Broadcasting**.
-- `embed_origins`. Values: up to 20 HTTP or HTTPS origins. Default: empty list. Lists the sites that may embed the player. **Allowed embed sites** in **Settings**, **Station settings**, **Broadcasting**.
+- `enabled`. Values: true or false. Default: false. Opens the public listening page. **Public player page** in **Settings**, **Station**, **Broadcasting**.
+- `embed`. Values: true or false. Default: false. Opens an embeddable public player. **Embeddable player** in **Settings**, **Station**, **Broadcasting**.
+- `embed_origins`. Values: up to 20 HTTP or HTTPS origins. Default: empty list. Lists the sites that may embed the player. **Allowed embed sites** in **Settings**, **Station**, **Broadcasting**.
 
 ### DMCA mode
 
-Station section: `dmca` in `station.json`. Set this switch in **Settings**, **Station settings**, **Broadcasting** for the selected station.
+Station section: `dmca` in `station.json`. Set this switch in **Settings**, **Station**, **Broadcasting** for the selected station.
 
-- `enabled`. Values: true or false. Default: false. When on, limits how often songs from one album, artist, or box set can play and hides the next song publicly. **DMCA mode** in **Settings**, **Station settings**, **Broadcasting**.
+- `enabled`. Values: true or false. Default: false. When on, limits how often songs from one album, artist, or box set can play and hides the next song publicly. **DMCA mode** in **Settings**, **Station**, **Broadcasting**.
 
 ### Breaks
 
@@ -442,7 +442,7 @@ In **Settings**, **Song picking**, each Tracks value counts intervening songs an
 
 ### Relays
 
-Each entry in the station's private `relays.json` names one relay. Names use 1 to 32 letters, digits, internal spaces, hyphens, or underscores; they cannot start or end with a space. Change relays in **Settings**, **Station settings**, **Broadcasting**, **Relays**. Old TOML relay tables are migrated once at startup, then ignored.
+Each entry in the station's private `relays.json` names one relay. Names use 1 to 32 letters, digits, internal spaces, hyphens, or underscores; they cannot start or end with a space. Change relays in **Settings**, **Station**, **Broadcasting**, **Relays**. Old TOML relay tables are migrated once at startup, then ignored.
 
 - `type`. Values: `icecast` (Icecast), `shoutcast1` (Shoutcast 1), or `shoutcast2` (Shoutcast 2). Default: required in `relays.json`; the form starts with Icecast. Chooses the host server protocol. **Server type**.
 - `host`. Values: host name or IP address without a scheme or port. Default: required. Names the relay server. **Host**.
@@ -463,17 +463,17 @@ These values are saved for the selected station or browser rather than in the co
 
 - **Volume** in **Now Playing**: 0 to 100 percent; default 100. Changes playback loudness.
 - **EQ**, **Low**, **Mid**, and **High** in **Now Playing**: each 0 to 2 times normal level; default 1. Changes bass, middle, or treble; **Reset EQ** returns all three to 1.
-- **Audio output device** in **Settings**, **Browser settings**, **Preferences**: system default or an available browser output device; default system default. Sends browser playback to that device.
-- **Preview output device** in **Settings**, **Browser settings**, **Preferences**: system default or an available browser output device; default system default. Sends Track info and Voice tracks previews to that device.
-- **Stereo Tool licence key** in **Settings**, **Server settings**, **Server**: valid key or blank; default blank. Unlocks licensed Stereo Tool features. **For this station only**: on or off; default off. When on, saves this station's key in its private `secrets.json`; otherwise it is shared by stations without their own key.
+- **Audio output device** in **Settings**, **Global**, **Preferences**: system default or an available browser output device; default system default. Sends browser playback to that device.
+- **Preview output device** in **Settings**, **Global**, **Preferences**: system default or an available browser output device; default system default. Sends Track info and Voice tracks previews to that device.
+- **Stereo Tool licence key** in **Settings**, **Global**, **Server**: valid key or blank; default blank. Unlocks licensed Stereo Tool features. **For this station only**: on or off; default off. When on, saves this station's key in its private `secrets.json`; otherwise it is shared by stations without their own key.
 - **Automatic rescan every** in **Library tools**: **Hours** 0 to 168 and **Minutes** 0 to 59; default 0 and 0 (off). Runs **Rescan** after the last scan ends; the shortest enabled interval is 5 minutes.
 - **Add subfolders** for a registered music folder: on or off; default on. Includes nested folders in import. **Perform advanced analysis**: on or off; default on. Runs sound matching analysis for music in that folder.
 - **Find beats and song structure** in **Library tools**: on or off; default on. Finds beat grids and song sections during basic analysis.
 - **Longest song, in minutes** under **Advanced analysis length** in **Library tools**: 0 or a positive number; default 15. Longer songs get basic analysis only; 0 runs advanced analysis on every length.
 - **Music fade drop (dB)** under **Music fades** in **Library tools**: 1–30 dB; default 10. Sets the relative drop for new music Segue suggestions. Saved cues stay unchanged. See [cue rescans and fade detection](guides/operations/library.md#rescan-cue-points-in-track-info).
-- **Display name** in **Settings**, **Station settings**, **Broadcasting**: printable name up to 80 characters; default blank. Shows the DJ name to listeners and in History while live.
-- **Time format for all stations** in **Settings**, **Server settings**, **Server**: 24 hour or 12 hour; default 24 hour. Changes time display for every station.
-- **Theme** in **Settings**, **Browser settings**, **Preferences**: System, Light, or Dark; default System. Changes this browser's colors.
+- **Display name** in **Settings**, **Station**, **Broadcasting**: printable name up to 80 characters; default blank. Shows the DJ name to listeners and in History while live.
+- **Time format for all stations** in **Settings**, **Global**, **Server**: 24 hour or 12 hour; default 24 hour. Changes time display for every station.
+- **Theme** in **Settings**, **Global**, **Preferences**: System, Light, or Dark; default System. Changes this browser's colors.
 - **Announce track changes**: On every tab, Only on Now Playing, or Off; default Only on Now Playing. Controls spoken song changes in this browser.
 - **Enable keyboard shortcuts**: on or off; default on. Lets keys control playback outside text fields.
 - **Bracket keys seek the song on air**: on or off; default off. Lets bracket shortcuts move the live song.
@@ -485,7 +485,7 @@ These values are saved for the selected station or browser rather than in the co
 - **Return time (seconds)**: 0.1 to 10; default 0.5. Raises the music after browser talkover. **Duck amount (dB)**: 0 to 30; default 12. Lowers music while someone talks.
 - **Record broadcast** in **Broadcasting**: on or off; default off. Saves the server mix as MP3 files.
 - **Station name**, **Quality**, and other stream page controls map to the `stream` entries above.
-- **Check for updates** in **Settings**, **Server settings**, **Server**: on or off; default on. When off, AutoDJ never asks GitHub or the git remote about updates. **Update channel**: Automatic, Stable or Development; default Automatic, which follows what the installation runs (a release tag is Stable, `master` is Development). Saved for every station in `shared/updates.json`. Stable on a checkout of `master` waits for the next release that includes it. See [Check for updates and restart](guides/backups-and-updates.md#check-for-updates-and-restart) and [Move from Development to Stable](guides/backups-and-updates.md#move-from-development-to-stable).
+- **Check for updates** in **Settings**, **Global**, **Server**: on or off; default on. When off, AutoDJ never asks GitHub or the git remote about updates. **Update channel**: Automatic, Stable or Development; default Automatic, which follows what the installation runs (a release tag is Stable, `master` is Development). Saved for every station in `shared/updates.json`. Stable on a checkout of `master` waits for the next release that includes it. See [Check for updates and restart](guides/backups-and-updates.md#check-for-updates-and-restart) and [Move from Development to Stable](guides/backups-and-updates.md#move-from-development-to-stable).
 
 ### Transition effect choices
 

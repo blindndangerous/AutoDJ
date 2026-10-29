@@ -21,7 +21,7 @@ pair. Streaming queue edits that affect associated speech offer keep, discard, o
 ## Turning breaks on
 
 Breaks need saved-point playback (Transition mode: Use saved segue points, or Clockwheel) and are
-off by default. Turn them on for each station that takes them in **Settings, Profile settings, Announcements, Breaks**: tick
+off by default. Turn them on for each station that takes them in **Settings, Profile, Announcements, Breaks**: tick
 **Accept announcer uploads** and save with the Announcements tab's shared Save changes bar. They work from then on, with
 no restart. The same tab sets **Where a DJ break goes** (`dj_placement`), **Shortest intro to talk
 up** (`min_intro_seconds`) and **Music under a break** (`duck_db`; leave it blank to use the voice
@@ -32,9 +32,9 @@ Turning breaks off drops announcer uploads still waiting for their song change; 
 mixed into the next song change still plays. Manual voice tracks and the ad schedule's spots stay
 booked. From then on the announcer's `GET context` answers
 `"accepting": false` with the reason "Breaks are off for this station: turn them on in
-Settings, Profile settings, Announcements, Breaks", and an upload is refused with 409 and the same words.
+Settings, Profile, Announcements, Breaks", and an upload is refused with 409 and the same words.
 
-The station definition holds these startup values. Settings > Profile settings > Announcements > Breaks changes them for the
+The station definition holds these startup values. Settings > Profile > Announcements > Breaks changes them for the
 selected station:
 
 ```json
@@ -85,7 +85,7 @@ as a voice liner.
 ## The token
 
 An announcer token can read one station's coming songs and send that station breaks, and nothing
-else. It works for one station only. In Settings, Server settings, Server, Analysis workers, Machine tokens, type a name,
+else. It works for one station only. In Settings, Global, Server, Analysis workers, Machine tokens, type a name,
 choose Token use: Announcer, choose the Station, and choose Create
 token. Copy the token when it appears; it is never shown again. From the command line:
 
@@ -142,7 +142,7 @@ The monitor never books a take or joins the station output.
    **Record** again to stop. **Alt+R** starts and stops recording from anywhere in the tab without
    moving focus, which suits a screen reader user who wants to stay on another control.
 2. Choose **Listen back** to hear the take, on the Preview output device when one is chosen in
-   Settings, Browser settings, Preferences (headphones, say). **Record** again replaces it; **Discard recording**
+   Settings, Global, Preferences (headphones, say). **Record** again replaces it; **Discard recording**
    throws it away.
 3. Leave **Placement** at **Fit over outro and intro** to use the ending song's usable
    Outro and the next song's instrumental Intro. Speech uses its detected Start and Segue;

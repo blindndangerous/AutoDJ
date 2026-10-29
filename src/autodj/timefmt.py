@@ -1,6 +1,6 @@
 """How the server writes times of day and lengths on screen: one place, so every page agrees.
 
-Times are 24 hour ("15:04") unless Settings > Server settings > Server sets 12 hour (#286).
+Times are 24 hour ("15:04") unless Settings > Global > Server sets 12 hour (#286).
 Pages format times in the browser with ``static/modules/time-format.js``;
 log files keep their own timestamps.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, time
 
-#: Settings > Server settings > Server, Time format: ``"24"`` or ``"12"``.
+#: Settings > Global > Server, Time format: ``"24"`` or ``"12"``.
 time_format = "24"
 
 

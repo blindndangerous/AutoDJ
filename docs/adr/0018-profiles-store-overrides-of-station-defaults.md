@@ -49,7 +49,7 @@ settings and legacy `null` values inherit from the station's saved defaults.
 Migration must not infer override values from the settings that happen to be on
 air.
 
-Manual activation uses **Activate** actions in Settings, **Profile settings**,
+Manual activation uses **Activate** actions in Settings, **Profile**,
 **Profiles**, for a saved profile or Station defaults. The **Profile to edit**
 combobox selects a draft target only; it does not activate a profile. It marks
 the active profile with **(active)** and updates that marker when activation
@@ -104,24 +104,24 @@ and partial-failure response behavior remains an implementation criterion.
 
 ## Dated amendment — 2026-10-29: Settings tab groups
 
-Settings presents four always-visible, heading-labelled tab groups. One
-selected tab across the groups controls the visible settings panel. Profile
-settings has five tabs: Mixing (transitions and DJ mixing), Song picking, Sound
+Settings presents three always-visible, heading-labelled tab groups: Profile,
+Station and Global. One selected tab across the groups controls the visible
+settings panel. Profile
+has five tabs: Mixing (transitions and DJ mixing), Song picking, Sound
 (profile processing), Announcements (liners, time checks and breaks), and
-Profiles. Station settings has Stations, Broadcasting (stream, Live DJ and
-DMCA), and Schedule. Server settings has Server (analysis limits, shared time
+Profiles. Station has Stations, Broadcasting (stream, Live DJ and
+DMCA), and Schedule. Global has Server (analysis limits, shared time
 format, Stereo Tool installation and shared licence, browser access, workers
-and updates). Browser settings has Preferences (display, keyboard and audio
-device controls). Station display, lyrics, key notation and prefetch controls
-are in Stations.
+and updates) and Preferences (browser display, keyboard and audio
+device controls). The tabs keep their server and browser owners. Station
+display, lyrics, key notation and prefetch controls are in Stations.
 
 The **Profile to edit** selector applies only to profile-aware controls. Browser
 preferences remain outside profile storage; key notation, lyrics and prefetch
 settings remain station-owned exclusions even though they are presented in
-Stations. Browser preferences remain outside profile storage. The Profile to
-edit selector follows all four tab groups and is shown only while a Profile
-settings tab is selected. A Settings tab has one
-Save/Discard bar for its draft. Record forms,
+Stations. The Profile to edit selector follows all three tab groups and is shown
+only while a Profile tab is selected. A Settings tab has one Save/Discard bar
+for its draft. Record forms,
 uploads, credentials, pairing and operational actions keep their existing
 individual actions. This layout clarification does not change the proposal's
 Proposed status or add a profile override contract.

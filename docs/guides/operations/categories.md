@@ -107,7 +107,7 @@ The playlists are optional when beets is on the same machine: a category from th
 2. In **Clockwheels**, create **Throwback** with the steps: voice liner from your station ID
    folder, music from category Remembering the 2000s, music from category Remembering the 2000s,
    voice liner, music from category Remembering the 2000s, then save it.
-3. In **Settings**, **Station settings**, **Schedule**, add an event at 20:00 on Saturdays that changes song picking to
+3. In **Settings**, **Station**, **Schedule**, add an event at 20:00 on Saturdays that changes song picking to
    **Throwback**, and one at 21:00 that changes it back to your usual clockwheel.
 
 For a narrower hour, add terms: `original_year:2000..2009 genre:rock ^genre:christmas`.

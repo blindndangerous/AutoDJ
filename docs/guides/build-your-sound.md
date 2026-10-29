@@ -4,7 +4,7 @@ Choose how AutoDJ selects music, then shape the transitions. You can use similar
 
 ## Choose how songs are picked
 
-1. Open **Settings**, choose **Profile settings**, then **Song picking**.
+1. Open **Settings**, choose **Profile**, then **Song picking**.
 2. Set **Pick mode**:
    - **Similarity (default)** follows the sound of the current song. It needs advanced analysis for the songs it picks.
    - **Random walk (uniform random)** draws from eligible songs without following their sound.
@@ -35,7 +35,7 @@ A clockwheel repeats an ordered list of steps. Each step can choose from a categ
 1. Enter a **Name** and create the clockwheel.
 2. Add a **Music matching conditions** step, then add a **Category** condition to choose its pool.
 3. For a category step, set **Choose** to **Least recently played** or **At random**. Turn on **Follow the repeat rules** unless the step must play a specific song.
-4. Save the clockwheel and activate it. Set **Pick mode** to **Clockwheel** in **Settings**, **Profile settings**, **Song picking**.
+4. Save the clockwheel and activate it. Set **Pick mode** to **Clockwheel** in **Settings**, **Profile**, **Song picking**.
 
 Use **Restart at these minutes past each hour** to realign a clockwheel at fixed points. **Fit songs to the hour** in **Song picking** can choose a song that ends close to the next restart or scheduled event. A step with no eligible songs is skipped, so check category counts and time restrictions if the rotation sounds incomplete.
 
@@ -43,9 +43,9 @@ If you already have a SAM Broadcaster clockwheel, **.PAL file to import** can cr
 
 ## Set the transitions
 
-In **Settings**, **Profile settings**, **Mixing**, **Transitions**, choose **Transition mode**. The default uses detected intros and outros. **Crossfade seconds** sets a fixed overlap where the mode uses one; 0 makes a cut in fixed mode. **EQ-ducked crossfade** reduces overlapping bass. In the **DJ mixing** section of Mixing, turn on **Beatmatch** or **Phrase align** when songs have trustworthy BPM and beat grids. **Harmonic mixing** is in **Song picking** and needs known keys. Songs without that data still play; the affected transition falls back to simpler timing.
+In **Settings**, **Profile**, **Mixing**, **Transitions**, choose **Transition mode**. The default uses detected intros and outros. **Crossfade seconds** sets a fixed overlap where the mode uses one; 0 makes a cut in fixed mode. **EQ-ducked crossfade** reduces overlapping bass. In the **DJ mixing** section of Mixing, turn on **Beatmatch** or **Phrase align** when songs have trustworthy BPM and beat grids. **Harmonic mixing** is in **Song picking** and needs known keys. Songs without that data still play; the affected transition falls back to simpler timing.
 
-In **Settings**, **Profile settings**, **Sound**, choose **Output processing** for loudness. **Off** leaves levels alone. **ReplayGain** uses available loudness data. **Smooth** levels songs in AutoDJ. **Stereo Tool** requires its separate plugin library and terms; download it in **Settings**, **Server settings**, **Server**. Use **Music speed (%)** only if you want a station-wide speed change.
+In **Settings**, **Profile**, **Sound**, choose **Output processing** for loudness. **Off** leaves levels alone. **ReplayGain** uses available loudness data. **Smooth** levels songs in AutoDJ. **Stereo Tool** requires its separate plugin library and terms; download it in **Settings**, **Global**, **Server**. Use **Music speed (%)** only if you want a station-wide speed change.
 
 The separate **Time checks** and **Breaks** panels control spoken time and DJ breaks. [Settings reference](../settings-reference.md) lists their defaults and limits.
 

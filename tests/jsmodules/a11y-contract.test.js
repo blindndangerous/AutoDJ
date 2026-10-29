@@ -1964,16 +1964,13 @@ describe("static accessibility contracts", () => {
     installDocument();
     const profileTabs = document.querySelector('[role="tablist"][aria-labelledby="settings-profile-heading"]');
     const stationTabs = document.querySelector('[role="tablist"][aria-labelledby="settings-station-heading"]');
-    const serverTabs = document.querySelector('[role="tablist"][aria-labelledby="settings-server-heading"]');
-    const browserTabs = document.querySelector('[role="tablist"][aria-labelledby="settings-browser-heading"]');
+    const globalTabs = document.querySelector('[role="tablist"][aria-labelledby="settings-global-heading"]');
     expect(profileTabs.hidden).toBe(false);
     expect(stationTabs.hidden).toBe(false);
-    expect(serverTabs.hidden).toBe(false);
-    expect(browserTabs.hidden).toBe(false);
+    expect(globalTabs.hidden).toBe(false);
     expect(profileTabs.querySelectorAll('[role="tab"]')).toHaveLength(5);
     expect(stationTabs.querySelectorAll('[role="tab"]')).toHaveLength(3);
-    expect(serverTabs.querySelectorAll('[role="tab"]')).toHaveLength(1);
-    expect(browserTabs.querySelectorAll('[role="tab"]')).toHaveLength(1);
+    expect(globalTabs.querySelectorAll('[role="tab"]')).toHaveLength(2);
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)
       ?.textContent.replace(/\s+/g, " ").trim();
     const describedBy = (element) => (element.getAttribute("aria-describedby") || "")

@@ -11,7 +11,7 @@ can talk over the music from the browser. Both need that station's stream output
 server mixes what goes on the air. The `serve --stream` option can override the default station's
 saved output for that run.
 
-**Adding DJs.** In **Settings > Station settings > Broadcasting**, add each DJ with a username, the name
+**Adding DJs.** In **Settings > Station > Broadcasting**, add each DJ with a username, the name
 listeners see (for example "DJ Alice") and a password of 12 to 256 characters. Passwords are
 never shown again; editing a DJ with the password left blank keeps the saved one. Each station
 has its own DJs, kept in that station's `live_djs.json` as scrypt hashes, written atomically and,
@@ -102,7 +102,7 @@ window or tab, switch station or sign out. Alt+M is not turned off by the Settin
 switch, which covers single-key shortcuts. While you talk, the
 music (or the live DJ) is lowered by the **Duck amount** (12 dB to start with) within 40 ms,
 and when you release it comes back up over the **Return time** (half a second to start with);
-set both in **Settings > Station settings > Broadcasting**, per station. One person talks at a time on each
+set both in **Settings > Station > Broadcasting**, per station. One person talks at a time on each
 station; while someone else talks, Talk shows as unavailable. When the server has no sign-in
 (pairing is off), anyone who can open the page can talk on the air and change the Live DJ
 settings, as with every other control on the page. Talkover needs a secure page (HTTPS, or

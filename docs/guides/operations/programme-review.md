@@ -38,7 +38,7 @@ For a guided first run, follow [Listen to and export a shortened programme revie
    Read its date in this browser's locale and time zone, effective range and
    complete/incomplete status. Use the native
    **Private programme review** audio controls to listen. Audio never starts
-   automatically. **Settings**, **Browser settings**, **Preferences**, **Preview output device** selects
+   automatically. **Settings**, **Global**, **Preferences**, **Preview output device** selects
    the same private device used by other previews; browser/device fallback advice
    remains applicable.
 8. Use **Previous item**, **Next item**, or an item button to seek without starting

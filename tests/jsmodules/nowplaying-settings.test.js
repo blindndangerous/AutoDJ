@@ -187,7 +187,7 @@ describe("now-playing settings", () => {
       dmca_enabled: true, nowplaying_show_next: true,
     } } });
     expect(status.hidden).toBe(false);
-    expect(status.textContent).toBe("DMCA mode is on. Change it in Settings, Station settings, Broadcasting.");
+    expect(status.textContent).toBe("DMCA mode is on. Change it in Settings, Station, Broadcasting.");
     expect(status.getAttribute("role")).toBeNull();
     expect(box.getAttribute("aria-disabled")).toBe("true");
     expect(box.disabled).toBe(false);

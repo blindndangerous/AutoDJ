@@ -727,7 +727,7 @@
   <!-- Shared polite status region for Settings saves and failures. -->
   <div id="settings-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
   <div id="settings-tabs">
-  <h3 id="settings-profile-heading">Profile settings</h3>
+  <h3 id="settings-profile-heading">Profile</h3>
   <div role="tablist" class="subtabs" aria-labelledby="settings-profile-heading" aria-orientation="horizontal">
     <button type="button" role="tab" id="stab-mixing" data-settings-kind="profile" data-subview="mixing" data-panel="spanel-mixing" aria-selected="false" tabindex="-1">Mixing</button>
     <button type="button" role="tab" id="stab-picking" data-settings-kind="profile" data-subview="picking" data-panel="spanel-picking" aria-selected="false" tabindex="-1">Song picking</button>
@@ -735,18 +735,15 @@
     <button type="button" role="tab" id="stab-announcements" data-settings-kind="profile" data-subview="announcements" data-panel="spanel-announcements" aria-selected="false" tabindex="-1">Announcements</button>
     <button type="button" role="tab" id="stab-access" data-settings-kind="profile" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles</button>
   </div>
-  <h3 id="settings-station-heading">Station settings</h3>
+  <h3 id="settings-station-heading">Station</h3>
   <div role="tablist" class="subtabs" aria-labelledby="settings-station-heading" aria-orientation="horizontal">
     <button type="button" role="tab" id="stab-stations" data-settings-kind="station" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1">Stations</button>
     <button type="button" role="tab" id="stab-stream" data-settings-kind="station" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1">Broadcasting</button>
     <button type="button" role="tab" id="stab-schedule" data-settings-kind="station" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
   </div>
-  <h3 id="settings-server-heading">Server settings</h3>
-  <div role="tablist" class="subtabs" aria-labelledby="settings-server-heading" aria-orientation="horizontal">
+  <h3 id="settings-global-heading">Global</h3>
+  <div role="tablist" class="subtabs" aria-labelledby="settings-global-heading" aria-orientation="horizontal">
     <button type="button" role="tab" id="stab-server" data-settings-kind="server" data-subview="server" data-panel="spanel-server" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Server</button>
-  </div>
-  <h3 id="settings-browser-heading">Browser settings</h3>
-  <div role="tablist" class="subtabs" aria-labelledby="settings-browser-heading" aria-orientation="horizontal">
     <button type="button" role="tab" id="stab-display" data-settings-kind="browser" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Preferences</button>
   </div>
   </div>
@@ -1801,7 +1798,7 @@
          waiting times stay in config.toml.  #brk-reason is plain text,
          not live: it says why breaks cannot be taken now, if they cannot. -->
     <p class="card-desc">
-      DJ breaks, news and weather from an announcer program, and the voice tracks you record in the Voice tracks tab.  A break joins the song change after the next song.  An announcer program needs an announcer token from Settings, Server settings, Server.
+      DJ breaks, news and weather from an announcer program, and the voice tracks you record in the Voice tracks tab.  A break joins the song change after the next song.  An announcer program needs an announcer token from Settings, Global, Server.
     </p>
     <div id="brk-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <p id="brk-reason" hidden></p>
@@ -2266,7 +2263,7 @@
         <p class="stream-detail" id="np-loopback-note" hidden>These links only work on this computer. Open AutoDJ using its network address (see the start-up message) to copy links other devices can reach.</p>
         <!-- In DMCA mode, nowplaying-settings.js shows both notes and leaves
              show-next focusable with aria-disabled and its reason linked. -->
-        <p class="stream-detail" id="dmca-status" hidden>DMCA mode is on. Change it in Settings, Station settings, Broadcasting.</p>
+        <p class="stream-detail" id="dmca-status" hidden>DMCA mode is on. Change it in Settings, Station, Broadcasting.</p>
         <div class="settings-check">
           <input type="checkbox" id="np-show-next" aria-describedby="np-show-next-desc">
           <label for="np-show-next">Show the next song publicly</label>
@@ -2274,7 +2271,7 @@
         <span class="setting-desc" id="np-show-next-desc">
           Add the upcoming song to the now-playing feed. Off by default, because some webcasting licences, such as the US statutory licence, do not allow announcing songs in advance.
         </span>
-        <span class="setting-desc" id="np-show-next-dmca" hidden>Not available: DMCA mode hides the next song publicly. Turn it off in Settings, Station settings, Broadcasting to use this.</span>
+        <span class="setting-desc" id="np-show-next-dmca" hidden>Not available: DMCA mode hides the next song publicly. Turn it off in Settings, Station, Broadcasting to use this.</span>
         <p class="stream-detail" id="np-webhooks-intro">Track-change webhooks</p>
         <ul class="stream-detail" id="np-webhooks-list" aria-labelledby="np-webhooks-intro" hidden></ul>
         <p class="stream-detail" id="np-webhooks-empty" hidden></p>
