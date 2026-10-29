@@ -146,7 +146,7 @@ export function installProfiles(els) {
     const exists = names.some((other) => other.toLowerCase() === name.toLowerCase());
     if (exists) {
       nameInput.setAttribute("aria-invalid", "true");
-      say(`Profile ${name} already exists. Choose it in Profile to edit to change its overrides.`, "error");
+      say(`Profile ${name} already exists. Choose it in Profile to edit to change its settings.`, "error");
       return;
     }
     const epoch = captureAuthenticatedRequestEpoch();
