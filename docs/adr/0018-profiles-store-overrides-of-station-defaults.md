@@ -84,6 +84,12 @@ Profiles and logged before any profile settings are applied; the station keeps
 its last saved state so the operator can repair it. Failures while actually
 applying validated settings retain the existing partial-failure reporting.
 
+Recovery clarification, 2026-10-29 ([#681](https://github.com/blindndangerous/AutoDJ/issues/681)):
+while a restore problem remains, saving edits preserves the saved selection.
+Explicit activation records the chosen selection and clears the problem.
+Startup distinguishes a validation failure that retained previous settings from
+an application failure that may have changed earlier groups.
+
 Explicit resource renames update saved references. Confirmed deletion clears
 clockwheel references, removes deleted voice packs from saved selections, and
 replaces deleted Stereo Tool preset references with the included preset.
