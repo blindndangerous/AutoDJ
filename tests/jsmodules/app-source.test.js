@@ -4733,3 +4733,47 @@ describe("several stations: the first station (#70 review)", () => {
     await vi.waitFor(() => expect(storage.values.get("autodj.station")).toBe("nightowl"));
   });
 });
+
+
+describe("repeat snapshots in the app", () => {
+  it("accepts unversioned live repeat rules while preserving unsaved edits", async () => {
+    const rules = (tracks) => ({ artist: { tracks, minutes: 0 } });
+    const { webSocket } = await setupApp({
+      initialState: { settings: { djmix: {}, transition: {}, playback: { repeat_rules: rules(7) } } },
+      onRequest: () => jsonResponse({}),
+    });
+    const input = document.getElementById("repeat-artist-tracks");
+    expect(input.value).toBe("7");
+    const push = (tracks) => webSocket.onmessage({ data: JSON.stringify({
+      settings: { djmix: {}, transition: {}, playback: { repeat_rules: rules(tracks) } }, queue: [],
+    }) });
+    push(9);
+    expect(input.value).toBe("9");
+    input.value = "12";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    push(10);
+    expect(input.value).toBe("12");
+  });
+
+  it("uses the versioned repeat snapshot without accepting the flat copy again", async () => {
+    const { webSocket } = await setupApp({
+      initialState: { settings: {
+        djmix: {}, transition: {}, revision: "versioned", profile: "",
+        values: { playback: { repeat_rules: { artist: { tracks: 7, minutes: 0 } } } },
+        playback: { repeat_rules: { artist: { tracks: 99, minutes: 0 } } },
+      } },
+      onRequest: () => jsonResponse({}),
+    });
+    expect(document.getElementById("repeat-artist-tracks").value).toBe("7");
+
+    // Live snapshots and another profile's replies cannot replace this edit target.
+    for (const target of [{}, { profile: "Evening" }]) {
+      webSocket.onmessage({ data: JSON.stringify({ settings: {
+        djmix: {}, transition: {}, revision: "later", ...target,
+        values: { playback: { repeat_rules: { artist: { tracks: 11, minutes: 0 } } } },
+        playback: { repeat_rules: { artist: { tracks: 99, minutes: 0 } } },
+      }, queue: [] }) });
+      expect(document.getElementById("repeat-artist-tracks").value).toBe("7");
+    }
+  });
+});

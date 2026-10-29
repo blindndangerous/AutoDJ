@@ -238,6 +238,19 @@ describe("Repeats markup", () => {
 });
 
 describe("repeat settings", () => {
+  it("can update file status without accepting the settings snapshot twice", () => {
+    const { els } = setup();
+    type(els.artistTracks, "7");
+    const accept = vi.spyOn(els.draft, "accept");
+    applyRepeatSettings({ playback: {
+      repeat_rules: fullRules,
+      related_artists_problem: "The related artists file is not valid.",
+    } }, els, { acceptDraft: false });
+    expect(accept).not.toHaveBeenCalled();
+    expect(els.artistTracks.value).toBe("7");
+    expect(els.fileStatus.textContent).toBe("The related artists file is not valid.");
+    expect(els.save.getAttribute("aria-disabled")).toBe("false");
+  });
   it("loads the shared settings snapshot and saves only changed repeat fields", async () => {
     const { els, requests } = setup();
     expect(els.trackTracks.value).toBe("50");

@@ -905,7 +905,9 @@ function applySavedSettings(settings) {
       && _mixEls.stereoPreset?.value === settings.playback.stereotool_preset) {
     _stereoToolPresets?.setActive(settings.playback.stereotool_preset);
   }
-  applyRepeatSettings(settings, _repeatEls);
+  applyRepeatSettings(settings, _repeatEls, {
+    acceptDraft: !(settings.values && settings.revision),
+  });
 }
 
 function renderMute(isMuted) {

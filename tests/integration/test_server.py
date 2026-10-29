@@ -1020,6 +1020,21 @@ class TestRepeatSettings:
         assert bridge.get_settings()["playback"]["related_artists_problem"].startswith(
             "The related artists file is not valid"
         )
+        assert (
+            bridge.settings.related_artists_problem
+            == bridge.get_settings()["playback"]["related_artists_problem"]
+        )
+
+        path.write_text('[related]\n"Alpha" = ["Beta"]\n', encoding="utf-8")
+        assert patch_station_settings(client, {"playback": payload}).status_code == 200
+        assert bridge.settings.related_artists_problem is None
+        assert bridge.player._related_artists.related_to("alpha") == {"beta"}
+
+        path.write_text("[related\n", encoding="utf-8")
+        payload["repeat_rules"]["use_related_artists"] = False
+        assert patch_station_settings(client, {"playback": payload}).status_code == 200
+        assert bridge.settings.related_artists_problem is None
+        assert bridge.player._related_artists.links == {}
 
     def test_related_tracks_load_on_save_with_their_own_limits(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
@@ -1069,8 +1084,18 @@ class TestRepeatSettings:
         assert bridge.get_settings()["playback"]["related_tracks_problem"] == (
             "The related tracks file is not valid."
         )
+        assert (
+            bridge.settings.related_tracks_problem
+            == bridge.get_settings()["playback"]["related_tracks_problem"]
+        )
+
+        path.write_text('[related]\n"Alpha - One" = ["Beta - Two"]\n', encoding="utf-8")
+        assert patch_station_settings(client, {"playback": payload}).status_code == 200
+        assert bridge.settings.related_tracks_problem is None
+        assert bridge.player._related_tracks.related_to(("beta", "two")) == {("alpha", "one")}
 
         # Turned off, the broken file is not read and the save goes through.
+        path.write_text("[related\n", encoding="utf-8")
         payload["repeat_rules"]["use_related_tracks"] = False
         assert patch_station_settings(client, {"playback": payload}).status_code == 200
         assert not bridge.player._state.rules.related_tracks.links

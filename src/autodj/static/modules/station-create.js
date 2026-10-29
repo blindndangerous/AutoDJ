@@ -25,6 +25,7 @@ import { announceStatus } from "./live-region.js";
 import { isOnAir, knownStations } from "./stations.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { tableRow } from "./table-row.js";
+import { placeRows } from "./dom-helpers.js";
 
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const NAME_MAX = 80;
@@ -267,15 +268,27 @@ export function installStationCreator({
   }
 
   function renderList(all) {
+    const previousRows = [...list.children];
+    const active = doc.activeElement;
+    const focusedRow = active.closest?.("tr");
+    const focusedIndex = previousRows.indexOf(focusedRow);
+    const focusedColumn = focusedRow ? [...focusedRow.children].indexOf(active.closest("td")) : -1;
     const rows = all.map((station) => {
-      const row = list.querySelector(`[data-station="${station.slug}"]`) || stationRow(station);
+      const row = previousRows.find((item) => item.dataset.station === station.slug) || stationRow(station);
       fillRow(row, station);
       return row;
     });
-    for (const child of [...list.children]) if (!rows.includes(child)) child.remove();
-    rows.forEach((row, index) => {
-      if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
-    });
+    if (focusedIndex >= 0 && !rows.includes(focusedRow) && rows.length) {
+      const replacement = rows[Math.min(focusedIndex, rows.length - 1)];
+      const cell = replacement.children[Math.min(Math.max(focusedColumn, 0), replacement.children.length - 1)];
+      const control = [...cell.querySelectorAll("input, select")].find((item) => !item.disabled);
+      (control || cell).focus();
+    } else if (focusedIndex >= 0 && !rows.length) {
+      const heading = get("stations-list-heading");
+      heading.tabIndex = -1;
+      heading.focus();
+    }
+    placeRows(list, rows);
     navigation.refresh();
   }
 

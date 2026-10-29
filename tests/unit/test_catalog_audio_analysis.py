@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import pytest
 
@@ -82,6 +84,45 @@ def test_liner_policy_wins_and_invalid_audio_result_is_rejected(tmp_path):
         assert catalog.get_audio_analysis(path) is None
     finally:
         catalog.close()
+
+
+def test_partial_source_updates_merge_inside_catalog_and_keep_analysis(tmp_path):
+    root = tmp_path / "music"
+    root.mkdir()
+    path = tmp_path / "library.db"
+    first, second = LibraryCatalog(path), LibraryCatalog(path)
+    try:
+        source = first.add_source(root, recursive=False, analysis="audio")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            updates = [
+                pool.submit(first.update_source, source["id"], recursive=True),
+                pool.submit(second.update_source, source["id"], analysis="basic"),
+            ]
+            assert all(update.result() for update in updates)
+        saved = first.sources()[0]
+        assert saved["recursive"] is True
+        assert saved["analysis"] == "basic"
+    finally:
+        first.close()
+        second.close()
+
+
+@pytest.mark.parametrize("analysis", ["basic", "audio"])
+def test_recursion_only_update_preserves_stored_analysis_even_if_legacy_flag_differs(
+    tmp_path, analysis
+):
+    root = tmp_path / "music"
+    root.mkdir()
+    with LibraryCatalog(tmp_path / "library.db") as catalog:
+        source = catalog.add_source(root, analysis=analysis)
+        # Characterize inconsistent legacy data: the normalized flag says
+        # Similarity, but a recursion-only edit must preserve the saved mode.
+        catalog._db().execute("UPDATE catalog_sources SET advanced=1 WHERE id=?", (source["id"],))
+        catalog._db().commit()
+        assert catalog.update_source(source["id"], recursive=False)
+        saved = catalog.sources()[0]
+        assert saved["recursive"] is False
+        assert saved["analysis"] == analysis
 
 
 def test_audio_estimates_preserve_manual_tags_and_existing_source_bpm(tmp_path):

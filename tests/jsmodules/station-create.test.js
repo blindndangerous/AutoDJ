@@ -142,6 +142,36 @@ describe("Settings > Stations", () => {
     expect(row.children[3].querySelector('[role="group"]').hidden).toBe(true);
   });
 
+  it("reorders rows around focus while retaining an autostart draft and table navigation", () => {
+    const { refresh } = setup({ request: vi.fn(), stations: [AUTODJ, OWL] });
+    const list = byId("stations-list");
+    const owl = list.children[1];
+    const box = owl.children[3].querySelector("input");
+    box.checked = true;
+    box.dispatchEvent(new window.Event("change"));
+    box.focus();
+
+    refresh([OWL, { ...AUTODJ, title: "Changed song" }]);
+
+    expect(list.children[0]).toBe(owl);
+    expect(document.activeElement).toBe(box);
+    expect(box.checked).toBe(true);
+    expect(owl.children[3].querySelector("button").hidden).toBe(false);
+    box.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement).toBe(list.children[1].children[3]);
+  });
+
+  it("recovers focus to the same column when the focused station row disappears", () => {
+    const { refresh } = setup({ request: vi.fn(), stations: [AUTODJ, OWL] });
+    const list = byId("stations-list");
+    const box = list.children[1].children[3].querySelector("input");
+    box.focus();
+
+    refresh([AUTODJ]);
+
+    expect(document.activeElement).toBe(list.children[0].children[3]);
+  });
+
   it("retains a failed row edit and ignores a reply from an old login", async () => {
     let finish;
     const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));

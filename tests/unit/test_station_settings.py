@@ -9,6 +9,7 @@ import pytest
 
 from autodj.settings_bodies import PlaybackSettingsBody
 from autodj.station_settings import StationSettings
+from tests._layout import point_index
 from tests.unit.test_runtime_state import _make_player
 
 
@@ -57,6 +58,33 @@ def test_offline_settings_use_running_setter_validation(tmp_path) -> None:
         settings.set_transition("not-an-effect")
     with pytest.raises(ValueError):
         settings.set_playback_settings(PlaybackSettingsBody(post_queue_seed="invalid"))
+
+
+def test_stopped_related_artist_settings_recover_and_disable(tmp_path) -> None:
+    settings = StationSettings(_make_player()._cfg, paths=SimpleNamespace(state_dir=tmp_path))
+    point_index(settings.cfg.index, tmp_path / "index")
+    path = settings.cfg.index.library_dir / "related-artists.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[related\n", encoding="utf-8")
+    enabled = PlaybackSettingsBody(repeat_rules={"use_related_artists": True})
+
+    with pytest.raises(ValueError, match="related artists file is not valid"):
+        settings.set_playback_settings(enabled)
+    assert settings.get_settings()["playback"]["related_artists_problem"] == (
+        "The related artists file is not valid: line 1."
+    )
+
+    path.write_text('[related]\n"Alpha" = ["Beta"]\n', encoding="utf-8")
+    settings.set_playback_settings(enabled)
+    assert settings.related_artists_problem is None
+    assert settings._related_artists.related_to("alpha") == {"beta"}
+
+    path.write_text("[related\n", encoding="utf-8")
+    settings.set_playback_settings(
+        PlaybackSettingsBody(repeat_rules={"use_related_artists": False})
+    )
+    assert settings.related_artists_problem is None
+    assert settings._related_artists.links == {}
 
 
 def test_pick_mode_is_the_only_shuffle_state(tmp_path) -> None:

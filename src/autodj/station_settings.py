@@ -125,10 +125,8 @@ class StationSettings:
 
         names = sorted(set(BUILTIN_PRESETS) | set(cfg.presets))
         library_dir = cfg.index.library_dir
-        related_problem = getattr(
-            self.player, "related_artists_problem", self.related_artists_problem
-        )
-        tracks_problem = getattr(self.player, "related_tracks_problem", self.related_tracks_problem)
+        related_problem = self.related_artists_problem
+        tracks_problem = self.related_tracks_problem
         return {
             "preset": self._preset.name if self._preset else None,
             "available_presets": names,
@@ -466,53 +464,39 @@ class StationSettings:
     def _read_related_artists(self, body: PlaybackSettingsBody, *, restoring: bool) -> Any:
         if body.repeat_rules is None:
             return None
-        from autodj.related_artist_file import (
-            invalid_related_artists_message,
-            load_configured_related_artists,
-            unused_related_artists_message,
-        )
-        from autodj.repeat_rules import RelatedArtists
+        from autodj.related_artist_file import load_related_file
 
-        related = RelatedArtists()
-        problem = None
-        if body.repeat_rules.use_related_artists:
-            try:
-                related = load_configured_related_artists(self.cfg.index.library_dir)
-            except (OSError, ValueError) as exc:
-                if not restoring:
-                    message = invalid_related_artists_message(exc)
-                    self.related_artists_problem = message
-                    if self.player is not None:
-                        self.player.related_artists_problem = message
-                    raise ValueError(message) from exc
-                problem = unused_related_artists_message(exc)
-                logger.warning("Related artists file was not used: %s", exc)
+        try:
+            related, problem = load_related_file(
+                self.cfg.index.library_dir,
+                "artists",
+                enabled=body.repeat_rules.use_related_artists,
+                restoring=restoring,
+            )
+        except ValueError as exc:
+            self.related_artists_problem = str(exc)
+            raise
+        if problem:
+            logger.warning("Related artists file was not used: %s", problem)
         return related, problem
 
     def _read_related_tracks(self, body: PlaybackSettingsBody, *, restoring: bool) -> Any:
         if body.repeat_rules is None:
             return None
-        from autodj.related_artist_file import (
-            invalid_related_artists_message,
-            load_configured_related_tracks,
-            unused_related_artists_message,
-        )
-        from autodj.repeat_rules import RelatedTracks
+        from autodj.related_artist_file import load_related_file
 
-        related = RelatedTracks()
-        problem = None
-        if body.repeat_rules.use_related_tracks:
-            try:
-                related = load_configured_related_tracks(self.cfg.index.library_dir)
-            except (OSError, ValueError) as exc:
-                if not restoring:
-                    message = invalid_related_artists_message(exc, "tracks")
-                    self.related_tracks_problem = message
-                    if self.player is not None:
-                        self.player.related_tracks_problem = message
-                    raise ValueError(message) from exc
-                problem = unused_related_artists_message(exc, "tracks")
-                logger.warning("Related tracks file was not used: %s", exc)
+        try:
+            related, problem = load_related_file(
+                self.cfg.index.library_dir,
+                "tracks",
+                enabled=body.repeat_rules.use_related_tracks,
+                restoring=restoring,
+            )
+        except ValueError as exc:
+            self.related_tracks_problem = str(exc)
+            raise
+        if problem:
+            logger.warning("Related tracks file was not used: %s", problem)
         return related, problem
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
