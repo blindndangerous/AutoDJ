@@ -1,8 +1,8 @@
 // Music and liner source folders plus the saved song-points editor.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
+import { closeDialog, openDialog } from "./dialog-guard.js";
 import {
   dialogReturnPlace, dialogStatusLine, fmtTrack, focusAfterDialog, focusSteadyPlace, placeRows,
-  releaseDialogFocus,
 } from "./dom-helpers.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
@@ -780,6 +780,14 @@ export function installLibraryFolders({ document: doc = document, request = requ
     error.textContent = "";
     dialog.returnValue = "";
     savedBeforeSwitch = "";
+    // Opened with show() and aria-modal (#631, see dialog-guard.js), Keep
+    // editing last.  Every answer puts focus straight back on the control
+    // that asked: a switch keeps focus there while the other track loads,
+    // rather than on the page, until the track's heading takes it.
+    function closeTo(value) {
+      const opener = returnFocus === doc.body ? null : returnFocus;
+      closeDialog(dialog, { opener, place: dialogReturnPlace(opener), value });
+    }
     return new Promise((resolve) => {
       // While Save runs, no button is turned off: NVDA said the focused Save
       // "unavailable" (#332).  pending refuses a second press, and aria-busy
@@ -797,11 +805,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
           const saved = (savedFields === fieldSnapshot() || await savePoints(error, said))
             && (!tags.dirty() || await tags.save(error, said));
           if (!saved) return;
-          // The page behind the dialog is inert, so the result said there
-          // was never heard; it is said once the other track has opened.
+          // The result is said once the other track has opened, not as
+          // the dialog closes and focus moves.
           savedBeforeSwitch = said.join(" ");
-          releaseDialogFocus(dialog);
-          dialog.close("save");
+          closeTo("save");
         } finally {
           stopPending();
           progress.textContent = "";
@@ -812,19 +819,16 @@ export function installLibraryFolders({ document: doc = document, request = requ
       function reject() {
         if (saving || pending) return;
         doc.getElementById("points-preview")?.pause();
-        releaseDialogFocus(dialog);
-        dialog.close("discard");
+        closeTo("discard");
       }
-      // Keep editing and Escape put focus back once the dialog has closed
-      // (#385).
       function stay() {
         if (saving || pending) return;
-        releaseDialogFocus(dialog);
-        dialog.close("keep");
+        closeTo("keep");
       }
+      // Escape keeps editing, held while Save runs.
       function cancel(event) {
-        if (saving || pending) event.preventDefault();
-        else releaseDialogFocus(dialog);
+        event.preventDefault();
+        stay();
       }
       function closed() {
         save.removeEventListener("click", accept);
@@ -832,19 +836,14 @@ export function installLibraryFolders({ document: doc = document, request = requ
         keep?.removeEventListener("click", stay);
         dialog.removeEventListener("cancel", cancel);
         dialog.removeEventListener("close", closed);
-        const switching = dialog.returnValue === "save" || dialog.returnValue === "discard";
-        // Back on the control that asked, once the dialog has closed (#385).
-        // A switch keeps focus there while the other track loads, rather
-        // than on the page, until the track's heading takes it.
-        if (!focusAfterDialog(returnFocus)) focusSteadyPlace(doc, dialogReturnPlace(returnFocus));
-        resolve(switching);
+        resolve(dialog.returnValue === "save" || dialog.returnValue === "discard");
       }
       save.addEventListener("click", accept);
       discard.addEventListener("click", reject);
       keep?.addEventListener("click", stay);
       dialog.addEventListener("cancel", cancel);
       dialog.addEventListener("close", closed);
-      dialog.showModal();
+      openDialog(dialog, { home: keep || save });
       save.focus();
     });
   }

@@ -371,8 +371,8 @@ describe("browser access", () => {
       <dialog id="device-rename-dialog"><form id="device-rename-form">
         <h2 id="device-rename-title"></h2><input id="device-rename-name">
         <p id="device-rename-error" role="status"></p>
-        <button type="button" id="device-rename-cancel">Cancel</button>
-        <button type="submit" id="device-rename-save">Save</button></form></dialog>`;
+        <button type="submit" id="device-rename-save">Save</button>
+        <button type="button" id="device-rename-cancel">Cancel</button></form></dialog>`;
     vi.stubGlobal("fetch", fetchImpl);
     const $ = (id) => document.getElementById(id);
     const onSignedOut = vi.fn();
@@ -386,7 +386,7 @@ describe("browser access", () => {
     // the element that had it when the dialog opened.
     const rename = $("device-rename-dialog");
     let opener = null;
-    rename.showModal = vi.fn(() => {
+    rename.show = vi.fn(() => {
       opener = document.activeElement;
       rename.setAttribute("open", "");
     });
@@ -456,6 +456,38 @@ describe("browser access", () => {
     expect(els.list.querySelector("li").textContent).toMatch(/^Hall speaker\. {2}Paired /);
     const patch = fetchImpl.mock.calls.find(([, init = {}]) => init.method === "PATCH");
     expect(JSON.parse(patch[1].body)).toEqual({ name: "Hall speaker" });
+  });
+
+  // #631: show() and aria-modal, not showModal(), so NVDA keeps its place on
+  // the page; Cancel last; Escape puts focus straight back on Rename.
+  it("opens Rename with show() and aria-modal, Cancel last, and Escape returns focus straight to Rename", async () => {
+    const fetchImpl = vi.fn(() => json({ pairing: true, devices }));
+    const { els } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    const dialog = document.getElementById("device-rename-dialog");
+    const button = els.list.querySelector('[aria-label="Rename Phone"]');
+    button.focus();
+    button.click();
+    expect(dialog.show).toHaveBeenCalledOnce();
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect([...dialog.querySelectorAll("button")].map((item) => item.id))
+      .toEqual(["device-rename-save", "device-rename-cancel"]);
+    const cancel = document.getElementById("device-rename-cancel");
+    const key = (target, name, init = {}) => {
+      const event = new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init });
+      target.dispatchEvent(event);
+      return event;
+    };
+    cancel.focus();
+    expect(key(cancel, "Tab").defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(document.getElementById("device-rename-name"));
+    const left = [];
+    document.activeElement.addEventListener("blur", (event) => left.push(event.relatedTarget?.getAttribute("aria-label") || "body"));
+    expect(key(document.activeElement, "Escape").defaultPrevented).toBe(true);
+    expect(dialog.hasAttribute("open")).toBe(false);
+    expect(document.activeElement).toBe(button);
+    expect(left).toEqual(["Rename Phone"]);
+    expect(fetchImpl.mock.calls.some(([, init = {}]) => init.method === "PATCH")).toBe(false);
   });
 
   it("keeps paired-device controls on an unchanged refresh and provides list navigation", async () => {

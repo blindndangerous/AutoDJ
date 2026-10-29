@@ -129,7 +129,7 @@ function installDocument() {
     .forEach((element) => element.remove());
   document.body.replaceChildren(template.content.cloneNode(true));
   const dialog = document.querySelector("#auth-dialog");
-  dialog.showModal = vi.fn(() => dialog.setAttribute("open", ""));
+  dialog.show = vi.fn(() => dialog.setAttribute("open", ""));
   return dialog;
 }
 
@@ -1022,7 +1022,7 @@ describe("app request behavior", () => {
 
     webSocket.onclose({ code: 1006, wasClean: false });
     document.querySelector("#btn-pause").click();
-    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledOnce());
     await vi.advanceTimersByTimeAsync(3000);
 
     expect(authStatusCalls).toBe(1);
@@ -1053,7 +1053,7 @@ describe("app request behavior", () => {
     await vi.advanceTimersByTimeAsync(3000);
     expect(authStatusCalls).toBe(2);
     document.querySelector("#btn-pause").click();
-    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledOnce());
     rejectProbe(new Error("transient probe failed"));
     await vi.advanceTimersByTimeAsync(0);
 
@@ -1153,11 +1153,11 @@ describe("app request behavior", () => {
     expect(resetTransitionCaches).not.toHaveBeenCalled();
     expect(loadCoverArt).not.toHaveBeenCalledWith(null);
     expect(nowPlaying.textContent).toContain("Track 5");
-    expect(dialog.showModal).not.toHaveBeenCalled();
+    expect(dialog.show).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(3000);
     await vi.waitFor(() => expect(WebSocketImpl).toHaveBeenCalledTimes(2));
-    expect(dialog.showModal).not.toHaveBeenCalled();
+    expect(dialog.show).not.toHaveBeenCalled();
   });
 
   it("owns first-click unlock until it settles and restores Pause", async () => {
@@ -2838,7 +2838,7 @@ describe("app request behavior", () => {
     expect(document.querySelector("#progress-fill").style.width).toBe("50.0%");
 
     document.querySelector("#btn-pause").click();
-    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledOnce());
     expect(stopAllDecks).toHaveBeenCalledOnce();
     expect(source.stop).toHaveBeenCalledOnce();
     expect(resetTrackCaches).toHaveBeenCalledOnce();
@@ -2885,7 +2885,7 @@ describe("app request behavior", () => {
     document.querySelector("#btn-shuffle").click();
     await vi.waitFor(() => expect(resolveShuffle).toEqual(expect.any(Function)));
     document.querySelector("#btn-pause").click();
-    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledOnce());
     resolveShuffle(jsonResponse({
       browser_playback: false,
       current_track: { path: "late.mp3", title: "Late secret" },
@@ -3254,7 +3254,7 @@ describe("stream mode", () => {
     webSocket.onclose({ code: 1006, wasClean: false });
     expect(listen.getAttribute("aria-pressed")).toBe("true");
     await vi.advanceTimersByTimeAsync(3000);
-    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledOnce());
 
     expect(listen.getAttribute("aria-pressed")).toBe("false");
     expect(audio.getAttribute("src")).toBeNull();
@@ -3934,7 +3934,7 @@ describe("browser robustness", () => {
     webSocket.onclose({ code: 1006, wasClean: false });
     expect(stopAllDecks).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(3000);
-    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledOnce());
     expect(stopAllDecks).toHaveBeenCalledOnce();
   });
 

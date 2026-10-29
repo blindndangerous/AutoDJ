@@ -2387,7 +2387,7 @@ describe("static accessibility contracts", () => {
     // Opened with show(), it tells assistive technology it is modal itself,
     // and its backdrop keeps the page out of reach (#602).
     expect(dialog.getAttribute("aria-modal")).toBe("true");
-    const backdrop = document.getElementById("confirm-backdrop");
+    const backdrop = document.getElementById("dialog-backdrop");
     expect(backdrop.hidden).toBe(true);
     expect(backdrop.childElementCount).toBe(0);
     const form = dialog.querySelector("form");
@@ -2403,6 +2403,20 @@ describe("static accessibility contracts", () => {
         ["confirm-cancel", "submit", "cancel"],
       ]);
     expect(buttons[1].textContent.trim()).toBe("Cancel");
+  });
+
+  // #631: each dialog opens with show() and aria-modal, and NVDA's reading
+  // of it leaves its browse-mode cursor on the last button, where Enter
+  // acts, so the button that changes nothing comes last.
+  it("puts each dialog's safe button last", () => {
+    installDocument();
+    const lastButton = (element) => [...element.querySelectorAll("button")].at(-1)?.id;
+    expect(lastButton(document.getElementById("device-rename-dialog"))).toBe("device-rename-cancel");
+    expect(lastButton(document.getElementById("track-info-dialog"))).toBe("track-info-keep");
+    expect(lastButton(document.getElementById("clock-step-dialog"))).toBe("clock-cancel-edit");
+    for (const id of ["schedule-cancel", "categories-cancel", "intro-rules-cancel", "ads-spot-cancel", "ads-break-cancel"]) {
+      expect(lastButton(document.getElementById(id).closest("form")), id).toBe(id);
+    }
   });
 
   it("names every static dialog with its own level-one heading", () => {
@@ -2456,8 +2470,8 @@ describe("static accessibility contracts", () => {
   it("never nests a dialog inside a tab panel", () => {
     // A <dialog> inside a `[role="tabpanel"]` that is `hidden` on every
     // other tab is not rendered and is invisible to the accessibility
-    // tree, yet dialog.showModal() still makes the rest of the page
-    // inert -- a screen-reader user opening it from another tab is left
+    // tree, yet a modal dialog still keeps the rest of the page out of
+    // reach -- a screen-reader user opening it from another tab is left
     // with nothing to read.  Every dialog must live outside all panels.
     installDocument();
     const dialogs = [...document.querySelectorAll("dialog")];

@@ -793,11 +793,11 @@ async function updatesConfirmShape(page, name) {
     };
   });
   const expected = { ariaModal: "true", modal: false, formRole: "none",
-    buttons: "confirm-accept,confirm-cancel", coveredBy: "confirm-backdrop" };
+    buttons: "confirm-accept,confirm-cancel", coveredBy: "dialog-backdrop" };
   if (JSON.stringify(shape) !== JSON.stringify(expected)) {
     throw new Error(`${name}'s confirmation is not as expected: ${JSON.stringify(shape)}`);
   }
-  await page.locator("#confirm-backdrop").click({ position: { x: 5, y: 5 } });
+  await page.locator("#dialog-backdrop").click({ position: { x: 5, y: 5 } });
   await page.locator("#confirm-cancel").focus();
   const stops = [];
   for (const key of ["Tab", "Tab", "Shift+Tab"]) {
@@ -898,15 +898,23 @@ async function openHourFit(page, visit) {
 
 // Schedule: a hard event's Wait up to seconds refused in the browser, the
 // field marked invalid and focused, the error shown and linked.  Nothing
-// is saved; Cancel and Discard close the modal.
+// is saved; Cancel and Discard close the editor.  The editor opens with
+// show() and aria-modal, not showModal() (#631), with the backdrop over
+// the page.
 async function inspectEditorModal(page, formId, visit, target) {
   const dialog = page.locator(`#${formId}-dialog`);
   await dialog.waitFor({ state: "visible" });
   const name = await dialog.evaluate((element) => {
     const heading = document.getElementById(element.getAttribute("aria-labelledby"));
-    return { open: element.open, modal: element.matches(":modal"), labelled: Boolean(heading && element.contains(heading) && heading.textContent.trim()) };
+    return {
+      open: element.open, modal: element.matches(":modal"), ariaModal: element.getAttribute("aria-modal"),
+      backdrop: document.getElementById("dialog-backdrop")?.hidden === false,
+      labelled: Boolean(heading && element.contains(heading) && heading.textContent.trim()),
+    };
   });
-  if (!name.open || !name.modal || !name.labelled) throw new Error(`${formId} is not an accessible native modal`);
+  if (!name.open || name.modal || name.ariaModal !== "true" || !name.backdrop || !name.labelled) {
+    throw new Error(`${formId} is not an accessible dialog kept modal without showModal(): ${JSON.stringify(name)}`);
+  }
   const viewport = page.viewportSize() || { width: 1280, height: 800 };
   await page.setViewportSize({ width: 320, height: 640 });
   await settle(page);
@@ -2340,11 +2348,14 @@ async function recordConfirmOpeners(page) {
   if (confirmOpenerPages.has(page)) return;
   confirmOpenerPages.add(page);
   await page.addInitScript(() => {
-    const show = window.HTMLDialogElement.prototype.showModal;
-    window.HTMLDialogElement.prototype.showModal = function showModal(...args) {
-      if (this.id === "confirm-dialog") window.__autodjConfirmOpenedFrom = new Error("confirm opened").stack;
-      return show.apply(this, args);
-    };
+    // show() since #630; showModal() over another modal dialog.
+    for (const method of ["show", "showModal"]) {
+      const open = window.HTMLDialogElement.prototype[method];
+      window.HTMLDialogElement.prototype[method] = function noteOpener(...args) {
+        if (this.id === "confirm-dialog") window.__autodjConfirmOpenedFrom = new Error("confirm opened").stack;
+        return open.apply(this, args);
+      };
+    }
   });
 }
 

@@ -2131,24 +2131,26 @@
   max-width: 32rem;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
-/* The confirmation opens with show(), not showModal() (#602, #627, see
-   modules/confirm-dialog.js): placed over the page as a modal dialog is,
-   with its own backdrop taking clicks.  Over another modal dialog it opens
-   with showModal() and the ::backdrop below. */
-#confirm-dialog {
+/* Dialogs open with show() and aria-modal, not showModal() (#602, #627,
+   #631, see modules/dialog-guard.js): placed over the page as a modal
+   dialog is, with a backdrop taking clicks.  dialog-guard.js raises each
+   dialog opened from another above it, and the backdrop just under the
+   top one.  Over a modal dialog one opens with showModal() and the
+   ::backdrop below. */
+dialog[aria-modal="true"] {
   position: fixed;
   inset: 0;
   max-height: calc(100vh - 2rem);
   overflow: auto;
   z-index: 10001;
 }
-#confirm-backdrop {
+#dialog-backdrop {
   position: fixed;
   inset: 0;
   z-index: 10000;
   background: rgba(0, 0, 0, 0.55);
 }
-#confirm-backdrop[hidden] { display: none; }
+#dialog-backdrop[hidden] { display: none; }
 #hotkey-help-modal::backdrop,
 #confirm-dialog::backdrop,
 #device-rename-dialog::backdrop,

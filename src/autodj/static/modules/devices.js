@@ -28,7 +28,8 @@ import {
 } from "./api-client.js";
 import { authenticationState } from "./auth.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { fmtTime, focusAfterDialog, nextRowControl, reconcileRows, releaseDialogFocus, rowButton } from "./dom-helpers.js";
+import { closeDialog, openDialog } from "./dialog-guard.js";
+import { fmtTime, nextRowControl, reconcileRows, rowButton } from "./dom-helpers.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
 import { announceStatus } from "./live-region.js";
 
@@ -275,11 +276,12 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
     if (result) say(...result);
   }
 
-  // A native modal dialog with one labelled field.  Save keeps the dialog
-  // open until the server answers: a refusal is said inside the dialog
-  // (the page behind it is inert) and focus stays in the field.  After a
-  // save the row's words change in place, the dialog closes onto the same
-  // Rename button that opened it, and the new name is said once.
+  // A dialog with one labelled field, opened with show() and aria-modal
+  // (#631, see dialog-guard.js); Cancel is its last button.  Save keeps the
+  // dialog open until the server answers: a refusal is said inside the
+  // dialog and focus stays in the field.  After a save the row's words
+  // change in place, the dialog closes onto the same Rename button that
+  // opened it, focus going straight there, and the new name is said once.
   function renameDevice(row) {
     const dialog = doc.getElementById("device-rename-dialog");
     const form = doc.getElementById("device-rename-form");
@@ -295,6 +297,10 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
     error.textContent = "";
     let pending = false;
     let saved = null;
+    // Back on the Rename button, or on Refresh when its row is gone.
+    const closeTo = (value) => closeDialog(dialog, {
+      opener: row.rename, target: row.rename.isConnected ? null : refresh, value,
+    });
 
     const showError = (message) => {
       input.setAttribute("aria-invalid", "true");
@@ -325,7 +331,7 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
       } catch (errorValue) {
         pending = false;
         if (!isAuthenticatedRequestCurrent(epoch)) {
-          dialog.close("cancel");
+          closeTo("cancel");
           return;
         }
         showError(errorValue.status === 422
@@ -333,17 +339,16 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
         return;
       }
       pending = false;
-      releaseDialogFocus(dialog);
-      dialog.close("save");
+      closeTo("save");
     }
     function cancelClick() {
       if (pending) return;
-      releaseDialogFocus(dialog);
-      dialog.close("cancel");
+      closeTo("cancel");
     }
+    // Escape: held while Save runs.
     function holdWhilePending(event) {
-      if (pending) event.preventDefault();
-      else releaseDialogFocus(dialog);
+      event.preventDefault();
+      cancelClick();
     }
     function closed() {
       form.removeEventListener("submit", submit);
@@ -351,15 +356,13 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
       dialog.removeEventListener("cancel", holdWhilePending);
       dialog.removeEventListener("close", closed);
       error.textContent = "";
-      // Focus goes back once the dialog has closed (#385).
-      focusAfterDialog(row.rename.isConnected ? row.rename : refresh);
       if (saved !== null) say(`Renamed to ${saved}.`);
     }
     form.addEventListener("submit", submit);
     cancel.addEventListener("click", cancelClick);
     dialog.addEventListener("cancel", holdWhilePending);
     dialog.addEventListener("close", closed);
-    dialog.showModal();
+    openDialog(dialog, { home: input });
     input.focus();
     input.select();
   }

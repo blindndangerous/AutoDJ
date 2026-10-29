@@ -75,9 +75,9 @@ import { registerSettingsGroup } from "./settings-drafts.js";
 // localStorage and defaults to on; storage that is blocked or throws
 // simply means "on" and an unsaved choice.
 
+import { closeDialog, openDialog } from "./dialog-guard.js";
 import {
-  dialogReturnPlace, fmtTime, focusAfterDialog, focusSteadyPlace, isTypingTarget,
-  releaseDialogFocus, srSpeak,
+  dialogReturnPlace, fmtTime, isTypingTarget, srSpeak,
 } from "./dom-helpers.js";
 import { defaultStorage, readStorage } from "./safe-storage.js";
 
@@ -136,30 +136,29 @@ function _queueSummary(queue) {
 }
 
 // Where focus goes back to when the shortcut list closes: the control that
-// opened it, or somewhere steady near it.  The list lets go of focus before
-// it closes, so the browser has nothing to put back; put back by the
-// browser, focus was not reported and NVDA read the skip link instead.
+// opened it, or somewhere steady near it.  The list opens with show() and
+// aria-modal, not showModal(), so NVDA keeps its place on the page and does
+// not read the skip link as it closes (#631, see dialog-guard.js); focus
+// goes straight back from the list's Close button.
 let _shortcutsOpener = null;
 let _shortcutsPlace = null;
-let _shortcutsReturnPending = false;
 
-function _returnShortcutsFocus(modal) {
-  if (!_shortcutsReturnPending) return;
-  _shortcutsReturnPending = false;
+function _closeShortcuts(modal) {
   const opener = _shortcutsOpener;
   const place = _shortcutsPlace;
   _shortcutsOpener = null;
   _shortcutsPlace = null;
-  if (!focusAfterDialog(opener)) focusSteadyPlace(modal.ownerDocument, place);
+  closeDialog(modal, { opener, place });
 }
 
-// Escape closes the list natively: let go of focus as it starts to close,
-// and return it once it has.
+// Escape is the cancel event the open list fires.
 function _wireShortcutsModal(modal) {
   if (modal.dataset.focusReturn) return;
   modal.dataset.focusReturn = "on";
-  modal.addEventListener("cancel", () => releaseDialogFocus(modal));
-  modal.addEventListener("close", () => _returnShortcutsFocus(modal));
+  modal.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    if (modal.open) _closeShortcuts(modal);
+  });
 }
 
 export function toggleShortcutsModal() {
@@ -167,17 +166,14 @@ export function toggleShortcutsModal() {
   if (!modal) return false;
   _wireShortcutsModal(modal);
   if (modal.open) {
-    releaseDialogFocus(modal);
-    modal.close();
-    _returnShortcutsFocus(modal);
+    _closeShortcuts(modal);
   } else {
     const active = document.activeElement;
     _shortcutsOpener = active && active !== document.body ? active : null;
     _shortcutsPlace = dialogReturnPlace(_shortcutsOpener);
-    _shortcutsReturnPending = true;
-    modal.showModal();
-    // Focus the Close button explicitly -- browsers vary on default focus.
     const closeBtn = document.getElementById("btn-shortcuts-close");
+    openDialog(modal, { home: closeBtn });
+    // Focus the Close button explicitly -- browsers vary on default focus.
     if (closeBtn) {
       try { closeBtn.focus(); } catch (_) {}
     }
@@ -294,9 +290,9 @@ export function installHotkeys({
     if (isTypingTarget(el)) return;
     // While a dialog shows (the shortcut list, a confirmation such as
     // Clear queue or Delete liner, sign in) no shortcut acts on the page:
-    // the page is inert behind a modal one, and the confirmation, opened
-    // with show(), keeps it out of reach itself.  Only ? works, to close
-    // the shortcut list.
+    // a dialog opened with show() keeps the page out of reach itself
+    // (dialog-guard.js), and the page is inert behind a modal one.  Only ?
+    // works, to close the shortcut list.
     const modal = document.getElementById("hotkey-help-modal");
     if (document.querySelector("dialog[open]")) {
       if (modal && modal.open && el && modal.contains(el)

@@ -10,17 +10,22 @@
 //   - libraryFolderSource: folders, and optionally audio files, inside one
 //     registered library folder, by relative path.
 //
-// One native modal <dialog> serves every button.  The folder list is one Tab
-// stop; the arrow keys move through it (action-list-navigation.js).  Enter on
-// a folder opens it, and focus lands on its first entry; Up one folder goes
-// back and lands on the folder just left.  Select this folder, or Enter on a
-// file, fills the field, which hears input and change like typing.  Cancel
-// and Escape change nothing.  Either way focus goes back to the Browse
-// button.  What happens inside is said in the dialog's own status line: the
-// page's regions are inert behind a modal dialog.
+// One <dialog> serves every button, opened with show() and aria-modal, not
+// showModal(), so NVDA keeps its place on the page (#631, see
+// dialog-guard.js); it stacks over an editor it is opened from.  Cancel is
+// its last button, so Enter on the last button NVDA read cannot choose the
+// folder.  The folder list is one Tab stop; the arrow keys move through it
+// (action-list-navigation.js).  Enter on a folder opens it, and focus lands
+// on its first entry; Up one folder goes back and lands on the folder just
+// left.  Select this folder, or Enter on a file, fills the field, which
+// hears input and change like typing.  Cancel and Escape change nothing.
+// Either way focus goes back to the Browse button.  What happens inside is
+// said in the dialog's own status line, where a screen reader reading the
+// dialog finds it.
 import { requestJson } from "./api-client.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
-import { dialogStatusLine, focusAfterDialog, releaseDialogFocus } from "./dom-helpers.js";
+import { closeDialog, openDialog } from "./dialog-guard.js";
+import { dialogStatusLine } from "./dom-helpers.js";
 import { announceStatus, clearAnnouncedStatus } from "./live-region.js";
 
 export function serverFolderSource({ request = requestJson } = {}) {
@@ -65,7 +70,7 @@ function buildPicker(doc) {
   const cancel = element(doc, "button", { type: "button", id: "path-picker-cancel", textContent: "Cancel" });
   const select = element(doc, "button", { type: "button", id: "path-picker-select", textContent: "Select this folder" });
   const actions = element(doc, "div", { className: "dialog-actions" });
-  actions.append(cancel, select);
+  actions.append(select, cancel);
   form.append(title, location, up, list, empty, error, actions);
   dialog.append(form);
   doc.body.append(dialog);
@@ -141,15 +146,16 @@ function buildPicker(doc) {
       showError(message);
       say(message, "error");
     } finally {
-      if (mine === state.loads) list.removeAttribute("aria-busy");
+      if (mine === state?.loads) list.removeAttribute("aria-busy");
     }
   }
 
   function close(value) {
     const done = state;
     state.loads += 1;
-    releaseDialogFocus(dialog);
-    if (dialog.open) dialog.close();
+    // Focus goes straight back to the Browse button, or to the field when
+    // the button is gone.
+    closeDialog(dialog, { opener: done.opener?.isConnected ? done.opener : done.input });
     clearAnnouncedStatus(status);
     list.replaceChildren();
     state = null;
@@ -159,7 +165,6 @@ function buildPicker(doc) {
       done.input.dispatchEvent(new Event("input", { bubbles: true }));
       done.input.dispatchEvent(new Event("change", { bubbles: true }));
     }
-    focusAfterDialog(done.opener) || focusAfterDialog(done.input);
   }
 
   list.addEventListener("click", (event) => {
@@ -193,7 +198,7 @@ function buildPicker(doc) {
       empty.hidden = true;
       showError("");
       clearAnnouncedStatus(status);
-      dialog.showModal();
+      openDialog(dialog, { home: cancel });
       cancel.focus();
       let start = input.value.trim();
       // A track's own folder, so a changed track starts beside the old one.

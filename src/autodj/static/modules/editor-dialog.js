@@ -1,6 +1,7 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { dialogStatusLine, focusAfterDialog, releaseDialogFocus, showFieldError } from "./dom-helpers.js";
+import { closeDialog, openDialog } from "./dialog-guard.js";
+import { dialogStatusLine, focusAfterDialog, showFieldError } from "./dom-helpers.js";
 import { announceStatus, clearAnnouncedStatus, sayIfStillPending } from "./live-region.js";
 
 const openEditors = new WeakMap();
@@ -10,7 +11,9 @@ const editorStatuses = new WeakMap();
 export const showEditorError = showFieldError;
 
 // Keep dialogs outside tab panels so hidden panels cannot hide an open editor
-// from assistive technology; native modality also supports nested editors.
+// from assistive technology.  An editor opens with show() and aria-modal,
+// not showModal(), so NVDA keeps its place on the page (#631, see
+// dialog-guard.js); editors and the dialogs opened from them stack.
 export function createEditorDialog({ form, heading, cancel, fallback, save, onCancel, dialog: existingDialog, submit }) {
   const doc = form.ownerDocument;
   const dialog = existingDialog || doc.createElement("dialog");
@@ -39,7 +42,10 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
       [...(control.files || [])].map((file) => [file.name, file.size, file.lastModified])]));
   const say = (message, tone = "info") => announceStatus(status, message, { force: true, tone });
 
-  function close() {
+  // *restore*: focus goes back to the opener, which the browser does as the
+  // dialog closes.  Otherwise the caller moves focus on in the same task,
+  // and the opener is held inert so the browser does not take it first.
+  function close({ restore = false } = {}) {
     const position = stack.indexOf(dialog);
     if (position !== -1) {
       for (const child of stack.slice(position + 1).reverse()) closeEditors.get(child)?.();
@@ -52,8 +58,7 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
       button.disabled = false;
       delete button.dataset.editorPending;
     });
-    releaseDialogFocus(dialog);
-    if (dialog.open) dialog.close();
+    closeDialog(dialog, restore ? { opener: opener?.isConnected ? opener : null } : { opener, handOff: true });
     const index = stack.indexOf(dialog);
     if (index !== -1) stack.splice(index, 1);
     form.hidden = true;
@@ -73,9 +78,9 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
       confirming = false;
       if (!discard || mine !== generation) return;
     }
-    close();
+    close({ restore: true });
     const returnTo = onCancel?.() || opener;
-    if (!focusAfterDialog(returnTo)) focusAfterDialog(fallback);
+    if (doc.activeElement !== returnTo && !focusAfterDialog(returnTo)) focusAfterDialog(fallback);
   }
   cancel.addEventListener("click", cancelEdit);
   dialog.addEventListener("cancel", cancelEdit);
@@ -123,7 +128,7 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
       form.hidden = false;
       original = snapshot();
       clearAnnouncedStatus(status);
-      dialog.showModal();
+      openDialog(dialog, { home: first });
       for (let index = stack.length - 1; index >= 0; index -= 1) {
         if (stack[index] === dialog || !stack[index].isConnected) stack.splice(index, 1);
       }

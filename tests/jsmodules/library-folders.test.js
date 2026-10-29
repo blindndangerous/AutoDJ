@@ -1045,6 +1045,44 @@ describe("clock folder and points controls", () => {
     expect(document.activeElement).toBe(opener);
   });
 
+  // #631: show() and aria-modal, not showModal(), so NVDA keeps its place on
+  // the page; Keep editing last; Escape keeps editing, focus straight back.
+  it("opens with show() and aria-modal, Keep editing last, and Escape keeps editing", async () => {
+    const request = trackRequest();
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    const dialog = document.getElementById("track-info-dialog");
+    const shown = [];
+    dialog.show = () => { shown.push("show"); dialog.open = true; };
+    const opener = document.createElement("button");
+    opener.textContent = "Track info for Two";
+    document.getElementById("panel-now").append(opener);
+    opener.focus();
+    const switching = controls.openEditor("M:/two.flac", "music", opener);
+    expect(shown).toEqual(["show"]);
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect([...dialog.querySelectorAll("button")].map((button) => button.id))
+      .toEqual(["track-info-save", "track-info-discard", "track-info-keep"]);
+    const key = (name, init = {}) => {
+      const event = new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init });
+      document.activeElement.dispatchEvent(event);
+      return event;
+    };
+    document.getElementById("track-info-keep").focus();
+    expect(key("Tab").defaultPrevented).toBe(true);
+    expect(document.activeElement.id).toBe("track-info-save");
+    expect(key("Tab", { shiftKey: true }).defaultPrevented).toBe(true);
+    expect(document.activeElement.id).toBe("track-info-keep");
+    expect(key("Escape").defaultPrevented).toBe(true);
+    await switching;
+    expect(dialog.open).toBe(false);
+    expect(dialog.returnValue).toBe("keep");
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-point="intro"]').value).toBe("0:10");
+    expect(document.activeElement).toBe(opener);
+  });
+
   it("holds Keep editing while a save is in flight", async () => {
     let finish;
     const request = vi.fn((url, options) => options?.method === "POST"
@@ -1071,7 +1109,9 @@ describe("clock folder and points controls", () => {
     expect(document.getElementById("track-info-dialog").returnValue).toBe("save");
   });
 
-  it("says Saving… in its own line, and lets go of focus before Save and Discard close it", async () => {
+  // #631: focus never rests on the page body; it goes straight from the
+  // dialog's button back to the control that asked.
+  it("says Saving… in its own line, and keeps focus in the dialog until Save and Discard close it", async () => {
     let finish;
     const request = vi.fn((url, options) => options?.method === "POST"
       ? new Promise((resolve) => { finish = resolve; })
@@ -1109,7 +1149,7 @@ describe("clock folder and points controls", () => {
     document.getElementById("track-info-discard").focus();
     document.getElementById("track-info-discard").click();
     await discarding;
-    expect(focusInDialogAtClose).toEqual([false, false]);
+    expect(focusInDialogAtClose).toEqual([true, true]);
   });
 
   it("leaves focus somewhere steady when a switch stops short", async () => {
