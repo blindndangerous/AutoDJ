@@ -85,6 +85,49 @@ class LinerDecodeError(Exception):
     """A liner file could not be decoded by either soundfile or ffmpeg."""
 
 
+def _decode_liner_data(
+    data: bytes,
+    name: str,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> np.ndarray:
+    """Decode liner bytes to stereo float32 at the mix-bus sample rate."""
+    try:
+        audio, sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=True)
+        audio = to_stereo(audio)
+        if int(sr) != SAMPLE_RATE:
+            import librosa
+
+            audio = librosa.resample(audio, orig_sr=int(sr), target_sr=SAMPLE_RATE, axis=0)
+        return to_stereo(audio)
+    except Exception:
+        result = runner(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                *SAFE_FFMPEG_INPUT,
+                "-i",
+                "pipe:0",
+                "-f",
+                "f32le",
+                "-ac",
+                "2",
+                "-ar",
+                str(SAMPLE_RATE),
+                "pipe:1",
+            ],
+            input=data,
+            capture_output=True,
+            check=False,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0 or not result.stdout or len(result.stdout) % 8:
+            raise LinerDecodeError(f"cannot decode liner {name!r}") from None
+        return np.frombuffer(result.stdout, dtype=np.float32).reshape(-1, 2).copy()
+
+
 def decode_liner(
     root: Path,
     name: str,
@@ -119,39 +162,7 @@ def decode_liner(
         data = opened.file.read()
     finally:
         opened.file.close()
-    try:
-        audio, sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=True)
-        audio = to_stereo(audio)
-        if int(sr) != SAMPLE_RATE:
-            import librosa
-
-            audio = librosa.resample(audio, orig_sr=int(sr), target_sr=SAMPLE_RATE, axis=0)
-        return to_stereo(audio)
-    except Exception:
-        result = runner(
-            [
-                "ffmpeg",
-                "-v",
-                "error",
-                *SAFE_FFMPEG_INPUT,
-                "-i",
-                "pipe:0",
-                "-f",
-                "f32le",
-                "-ac",
-                "2",
-                "-ar",
-                str(SAMPLE_RATE),
-                "pipe:1",
-            ],
-            input=data,
-            capture_output=True,
-            check=False,
-            timeout=30,
-        )
-        if result.returncode != 0 or not result.stdout:
-            raise LinerDecodeError(f"cannot decode liner {name!r}") from None
-        return np.frombuffer(result.stdout, dtype=np.float32).reshape(-1, 2).copy()
+    return _decode_liner_data(data, name, runner=runner)
 
 
 def decode_liner_path(
@@ -169,40 +180,7 @@ def decode_liner_path(
     if path.suffix.lower() not in {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}:
         raise LinerDecodeError(f"unsupported liner type: {path.name}")
     data = path.read_bytes()
-    try:
-        audio, sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=True)
-        audio = to_stereo(audio)
-        if int(sr) != SAMPLE_RATE:
-            import librosa
-
-            audio = librosa.resample(audio, orig_sr=int(sr), target_sr=SAMPLE_RATE, axis=0)
-        return to_stereo(audio)
-    except Exception:
-        result = runner(
-            [
-                "ffmpeg",
-                "-v",
-                "error",
-                *SAFE_FFMPEG_INPUT,
-                "-i",
-                "pipe:0",
-                "-f",
-                "f32le",
-                "-ac",
-                "2",
-                "-ar",
-                str(SAMPLE_RATE),
-                "pipe:1",
-            ],
-            input=data,
-            capture_output=True,
-            check=False,
-            timeout=30,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        if result.returncode != 0 or not result.stdout or len(result.stdout) % 8:
-            raise LinerDecodeError(f"cannot decode liner {path.name!r}") from None
-        return np.frombuffer(result.stdout, dtype=np.float32).reshape(-1, 2).copy()
+    return _decode_liner_data(data, path.name, runner=runner)
 
 
 class LinerScheduler:

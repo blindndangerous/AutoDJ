@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -13,7 +14,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from autodj.liner_scheduler import LinerDecodeError, LinerScheduler, decode_liner
+from autodj.liner_scheduler import LinerDecodeError, LinerScheduler, decode_liner, decode_liner_path
 
 
 def _cfg(**over):
@@ -58,6 +59,24 @@ def test_undecodable_liner_raises(tmp_path: Path) -> None:
     runner = MagicMock(return_value=SimpleNamespace(returncode=1, stdout=b"", stderr=b"bad"))
     with pytest.raises(LinerDecodeError):
         decode_liner(tmp_path, "x.m4a", runner=runner)
+
+
+@pytest.mark.parametrize("decode", [decode_liner, decode_liner_path])
+@pytest.mark.parametrize("pcm", [b"", b"misaligned"])
+def test_ffmpeg_fallback_rejects_misaligned_output_and_hides_windows(
+    tmp_path: Path, decode, pcm: bytes
+) -> None:
+    path = tmp_path / "x.m4a"
+    path.write_bytes(b"not really m4a")
+    runner = MagicMock(return_value=SimpleNamespace(returncode=0, stdout=pcm))
+
+    with pytest.raises(LinerDecodeError):
+        if decode is decode_liner:
+            decode(tmp_path, path.name, runner=runner)
+        else:
+            decode(path, runner=runner)
+
+    assert runner.call_args.kwargs["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def test_every_n_songs_fires_and_rotates_through_the_library(tmp_path: Path) -> None:
