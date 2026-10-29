@@ -1808,8 +1808,16 @@ class Player:
             )
         return clock, validate_clock(slots)
 
+    def _normalized_history(self, last_played: Mapping[str, Any]) -> Mapping[str, Any]:
+        """*last_played* by clockwheel-normalized path, for least recently played steps."""
+        from autodj.clockwheel import _normalized
+
+        return {
+            _normalized(path): stamp for path, stamp in last_played.items() if isinstance(path, str)
+        }
+
     def _clock_pick(self, context: _PickContext, cursor: int | None) -> Any:
-        from autodj.clockwheel import ClockPick, ConditionPaths, _normalized, pick_slot
+        from autodj.clockwheel import ClockPick, ConditionPaths, pick_slot
 
         fit = self._hour_fit_choice(context)
 
@@ -1838,11 +1846,7 @@ class Player:
         ledger = self._ledger
         last_played = ledger.last_played() if ledger is not None else {}
         normalized_history = (
-            {
-                _normalized(path): stamp
-                for path, stamp in last_played.items()
-                if isinstance(path, str)
-            }
+            self._normalized_history(last_played)
             if any(slot.selection == "least_recent" for slot in slots)
             else None
         )
@@ -5585,15 +5589,45 @@ class Player:
                 if cached is not None and cached[1].splitter.known == known:
                     cached = (entries, cached[1])
                 else:
-                    related = (
-                        getattr(self, "_related_artists", None) or RelatedArtists()
-                        if self._cfg.playback.repeat_rules.use_related_artists
-                        else RelatedArtists()
-                    )
-                    splitter = ArtistSplitter(known, related.single_acts)
+                    splitter = ArtistSplitter(known, self._key_related().single_acts)
                     cached = (entries, TrackKeyCache(splitter))
                 self._key_cache = cached
             return cached[1]
+
+    def _key_related(self) -> RelatedArtists:
+        """The related artists whose single acts the track keys never split."""
+        return (
+            getattr(self, "_related_artists", None) or RelatedArtists()
+            if self._cfg.playback.repeat_rules.use_related_artists
+            else RelatedArtists()
+        )
+
+    def share_pick_caches(self, live: Any) -> None:
+        """Start a dry run's player with what *live*, the station's, worked out from the library.
+
+        The track keys, the song versions, the songs that are not silent or
+        closed and the clockwheel's conditions steps take a whole pass over
+        a large library to work out, and are the same for both players.  A
+        preview that worked them out again could spend its time limit before
+        its first few picks.  Each is still checked against this player's
+        own library snapshot, slots and settings when it is next used, and
+        worked out again when they differ.  The keys and conditions caches
+        are copies, so nothing either player adds later reaches the other.
+        """
+        if not isinstance(live, Player):
+            return
+        keys = getattr(live, "_key_cache", None)
+        single_acts = ArtistSplitter((), self._key_related().single_acts).single_acts
+        if keys is not None and keys[1].splitter.single_acts == single_acts:
+            self._key_cache = (keys[0], keys[1].copy())
+        # A song's versions do not depend on the splitter; neither of these
+        # is changed once built, only replaced.
+        for name in ("_versions_cache", "_eligible_cache"):
+            if (cached := getattr(live, name, None)) is not None:
+                setattr(self, name, cached)
+        conditions = getattr(live, "_clock_condition_cache", None)
+        if conditions is not None:
+            self._clock_condition_cache = conditions.copy_for(getattr(self, "_clock_slots", ()))
 
     def _song_versions(self) -> SongVersions | None:
         """The library's songs with several versions, with Count versions as one song on.

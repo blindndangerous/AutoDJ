@@ -94,6 +94,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0009-09` | A category season or a schedule event's date range may repeat every year (month and day only, wrapping past New Year, 29 February read as 28 February in a common year), and a category season every week (the first and last dates' weekdays, from the first date on); a range that does not repeat keeps its fixed dates, `dates_repeat` is written only when the dates repeat, and the next run of a yearly event is next year's once this year's has passed. | automated | `tests/unit/test_date_repeat.py::test_a_yearly_range_runs_past_new_year_in_every_year`; `tests/unit/test_date_repeat.py::test_29_february_is_28_february_in_a_common_year`; `tests/unit/test_date_repeat.py::test_a_weekly_window_runs_from_its_first_date_and_may_wrap_past_sunday`; `tests/unit/test_date_repeat.py::test_a_weekly_range_with_one_date_is_that_weekday`; `tests/unit/test_date_repeat.py::test_what_is_wrong_with_a_range`; `tests/unit/test_scheduler_dates.py::test_a_yearly_range_runs_every_year_past_new_year`; `tests/unit/test_scheduler_dates.py::test_a_yearly_29_february_runs_on_28_february_in_common_years`; `tests/unit/test_scheduler_dates.py::test_next_events_show_next_years_run_once_this_years_has_passed`; `tests/unit/test_scheduler_dates.py::test_a_one_time_event_in_a_yearly_range`; `tests/unit/test_scheduler_dates.py::test_bad_yearly_dates_name_the_field`; `tests/unit/test_scheduler_dates.py::test_yearly_dates_are_saved_only_when_set_and_old_files_load`; `tests/unit/test_category_dates_step_hours.py::test_a_weekly_season_keeps_its_weekdays_from_its_first_date`; `tests/unit/test_category_dates_step_hours.py::test_a_yearly_season_runs_past_new_year_and_keeps_29_february`; `tests/unit/test_category_dates_step_hours.py::test_repeating_seasons_in_words`; `tests/unit/test_category_dates_step_hours.py::test_a_repeating_season_that_cannot_be_saved_names_its_field`; `tests/unit/test_category_dates_step_hours.py::test_a_repeating_season_is_saved_only_when_set`; `tests/jsmodules/categories-panel.test.js::repeats a season every week or every year, with help the date fields read too`; `tests/jsmodules/scheduler-panel.test.js::repeats an event's dates every year and shows next year's run in Next events` |
 | `ADR-0009-10` | A category build matches each Beets query against whole columns of the library, with the same songs and first-release fallback counts as matching each song. A new library snapshot works out only the songs added, changed or removed (a full build beyond 2% of the library, or when the categories, folders, Beets or a playlist file changed, or a result had an error); playlist categories are read again whenever songs changed, and on the hour only categories with relative dates are worked out again. Beets is read again only when its database changes; when songs are only added or removed, the values already read are counted against the new songs, unless their paths were matched from a guessed folder or no song would match. | automated | `tests/unit/test_categories.py::test_matching_whole_columns_gives_the_same_songs_as_matching_each_song`; `tests/unit/test_categories.py::test_a_changed_song_updates_the_categories_as_a_full_rebuild_would`; `tests/unit/test_categories.py::test_on_the_hour_only_categories_with_relative_dates_are_worked_out_again`; `tests/unit/test_categories.py::test_the_clockwheel_and_every_station_read_beets_once` |
 | `ADR-0009-11` | Random and LRP forecast picks retain eligible preferences for the same clockwheel occurrence, including a step temporarily omitted at a restart; later laps have separate choices and preview state remains isolated. | automated | `tests/unit/test_clock_preview_refresh.py::test_a_step_returns_with_its_song_after_the_hour_restart_omits_it`; `tests/unit/test_clock_preview_refresh.py::test_fixed_prefix_advancement_keeps_the_next_lap_distinct`; `tests/unit/test_clock_preview_memory.py::test_cycles_without_restarts_have_distinct_choices_and_follow_fixed_advancement` |
+| `ADR-0009-12` | A dry run starts from the clockwheel conditions, track keys, song versions and eligible songs the station's player has worked out, as copies checked against its own inputs; it normalizes its history once and keeps it as it plays, and picks the same songs as one that worked everything out itself. | automated | `tests/unit/test_hour_preview.py::test_a_preview_starts_from_what_the_station_worked_out`; `tests/unit/test_rotation_sim.py::test_a_dry_runs_kept_history_matches_one_built_again` |
 
 ## Verification
 
@@ -252,3 +253,29 @@ without remembered preferences retain their ordinary selection behavior. Contrac
 `ADR-0009-11` covers retention and occurrence identity; the existing isolation checks remain
 applicable. Live preview testing is still required under `ADR-0009-05`. This amendment does
 not change the record's Proposed status.
+
+## Amendment 2026-10-29: A dry run starts from the station's worked-out library
+
+On a station with 78,500 songs and a clockwheel on a low-power x86 server, the Hour preview
+stopped at its 4-second time limit after two predicted songs. Each dry run made a new player,
+so every cache the station's player keeps for the library started empty: the first pick of each
+conditions step matched the whole library again, the first picks split again the credits of
+every song they checked (with Count versions as one song, every song in the library), and every
+pick normalized the whole play history again.
+
+`_copy_player` now hands the copy what the station's player has worked out: the conditions
+steps (when the copy's slots equal the station's), the track keys (when the copy splits artists
+the same way), the song versions and the songs that are not silent or closed. Each is still
+checked against the copy's library snapshot, slots, categories, Beets values and hour at its next
+use and worked out again when they differ, as the station's own player does. The conditions and
+keys caches are copies, so neither player's later results reach the other, and nothing the station
+plays or draws changes. A step the station has not picked since the library last changed is
+still worked out by the copy. The dry run's ledger keeps the normalized history up to date as it
+plays instead of building it again for each pick; its contents and order match a mapping built
+again.
+
+In a benchmark at that shape (78,500 synthetic songs, 70% with plays, four categories and two
+conditions steps, on one desktop machine), a 60-minute preview fell from 2.2 to 2.9 seconds to
+1.1 to 1.4 seconds, and with Count versions as one song from 4.4 to 6.7 seconds to 1.4 to 2.0
+seconds; the picks were the same. These are measurements on one machine. The time limit is
+unchanged. Contract `ADR-0009-12` records this; the ADR remains Proposed.

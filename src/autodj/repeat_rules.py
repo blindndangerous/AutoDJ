@@ -67,6 +67,7 @@ wrong split holds back a few more tracks; it never lets one through.
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import re
@@ -904,6 +905,19 @@ class TrackKeyCache:
         )
         self._keys[track.path] = (artist, album, title, keys)
         return keys
+
+    def copy(self) -> TrackKeyCache:
+        """A cache of its own, with the same splitter, starting with the keys worked out so far.
+
+        A dry run starts from the live player's keys rather than splitting
+        every credit in the library again; keys either cache works out later
+        stay in that cache.
+        """
+        splitter = copy.copy(self.splitter)
+        splitter._cache = dict(self.splitter._cache)
+        twin = TrackKeyCache(splitter)
+        twin._keys = dict(self._keys)
+        return twin
 
 
 def _key_cache(keys: TrackKeyCache | ArtistSplitter | None) -> TrackKeyCache:

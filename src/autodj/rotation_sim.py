@@ -554,6 +554,10 @@ class _SimLedger:
         self._played: dict[str, float] = {
             path: stamp for path, stamp in played.items() if stamp <= start
         }
+        # normalized_played() and, for each of its paths, the last of
+        # _played's paths that normalizes to it, whose time it holds.
+        self._normalized: dict[str, float] | None = None
+        self._normalized_from: dict[str, str] = {}
 
     def setting_key(self, name: str) -> str:
         from autodj.station_ledger import setting_key
@@ -565,8 +569,33 @@ class _SimLedger:
         # rather than a copy per pick.
         return self._played
 
+    def normalized_played(self) -> dict[str, float]:
+        """:meth:`last_played` by clockwheel-normalized path, as a clockwheel pick builds it.
+
+        Built once and kept up to date as the dry run plays: building it for
+        every pick from most of a large library took about as long as the
+        rest of the pick.  The picks only read it.
+        """
+        if self._normalized is None:
+            from autodj.clockwheel import _normalized
+
+            paths = [path for path in self._played if isinstance(path, str)]
+            self._normalized_from = {_normalized(path): path for path in paths}
+            self._normalized = {_normalized(path): self._played[path] for path in paths}
+        return self._normalized
+
     def remember_play(self, path: str, timestamp: float | None = None) -> None:
-        self._played[self._normalize(path)] = float(timestamp or 0.0)
+        key = self._normalize(path)
+        new = key not in self._played
+        stamp = self._played[key] = float(timestamp or 0.0)
+        if self._normalized is not None:
+            from autodj.clockwheel import _normalized
+
+            normalized = _normalized(key)
+            # As a mapping built again would: the last path that normalizes alike wins.
+            if new or self._normalized_from.get(normalized) == key:
+                self._normalized[normalized] = stamp
+                self._normalized_from[normalized] = key
 
     def remember_setting(self, name: str, value: Any) -> None:
         """The dry run's clockwheel place is its own; nothing is saved."""
@@ -590,6 +619,13 @@ class _SimPlayer(Player):
 
     def _now(self) -> float:
         return self._sim_now
+
+    def _normalized_history(self, last_played: Mapping[str, Any]) -> Mapping[str, Any]:
+        """The dry run's ledger keeps this as it plays, rather than building it for every pick."""
+        ledger = self._ledger
+        if isinstance(ledger, _SimLedger) and last_played is ledger.last_played():
+            return ledger.normalized_played()
+        return super()._normalized_history(last_played)
 
     def _load_clockwheel(self, name: str) -> tuple[dict[str, Any], list[Any]]:
         override = self._clock_override
@@ -712,6 +748,7 @@ def _copy_player(
     else:
         player._clock = None
         player._clock_status = snapshot.clock_status or "No clockwheel is active"
+    player.share_pick_caches(source.player)
     return player
 
 

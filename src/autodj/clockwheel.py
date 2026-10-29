@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import functools
 import heapq
 import ntpath
@@ -424,6 +425,21 @@ class ConditionPaths:
             )
             and self._hour(now) == self._now
         )
+
+    def copy_for(self, slots: Sequence[ClockSlot]) -> ConditionPaths | None:
+        """A cache of its own for equal *slots*, starting with the steps worked out so far.
+
+        A dry run loads its own slots from the same clockwheel; this lets it
+        start from the live player's results instead of matching the whole
+        library again.  ``None`` when the slots differ.  Steps either cache
+        works out later stay in that cache.
+        """
+        if list(slots) != list(self._key[0]):
+            return None
+        twin = copy.copy(self)
+        twin._key = (slots, *self._key[1:])
+        twin._paths = dict(self._paths)
+        return twin
 
     def paths(self, index: int) -> frozenset[str]:
         """The paths step *index* matches, worked out the first time it is asked for."""

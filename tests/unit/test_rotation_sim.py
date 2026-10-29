@@ -1652,3 +1652,31 @@ def test_ads_on_with_no_break_due_leave_the_run_as_with_ads_off(tmp_path: Path) 
     assert not ads.wants_slots()
     source.ads = ads
     assert _without_timing(simulate(source, request)) == _without_timing(plain)
+
+
+def test_a_dry_runs_kept_history_matches_one_built_again() -> None:
+    """ADR-0009-12."""
+    from autodj.clockwheel import _normalized
+    from autodj.rotation_sim import _SimLedger
+    from tests.unit._rotation_station import FakeLedger
+
+    def built_again(ledger: _SimLedger) -> list[tuple[str, float]]:
+        played = ledger.last_played()
+        return list({_normalized(path): at for path, at in played.items()}.items())
+
+    # Two spellings of a.flac, and a play after the run starts that it does not know.
+    real = FakeLedger(
+        played={"/music/a.flac": 1.0, "/music/./a.flac": 2.0, "/music/b.flac": 3.0, "/x": 99.0}
+    )
+    ledger = _SimLedger(real, "default", 50.0)
+    assert list(ledger.normalized_played().items()) == built_again(ledger)
+    for path, at in (
+        ("/music/a.flac", 5.0),
+        ("/music/./a.flac", 6.0),
+        ("/music/c.flac", 7.0),
+        ("/music/b.flac", 8.0),
+        ("/music/c.flac", 9.0),
+    ):
+        ledger.remember_play(path, at)
+        assert list(ledger.normalized_played().items()) == built_again(ledger)
+    assert real.writes == 0
