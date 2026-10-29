@@ -1213,6 +1213,20 @@ def test_deleting_a_shared_preset_replaces_default_and_profile_references(rig: A
 
     assert client.post(f"{OWL}/stop").status_code == 200
 
+    # A station that is starting or stopping cannot have its references
+    # updated, so the preset stays until it has finished.
+    registry = client.app.state.stations
+
+    async def during_start() -> None:
+        async with registry._locks["nightowl"]:
+            refused = await asyncio.to_thread(client.delete, "/api/stereo-tool-presets/Owl.sts")
+            assert refused.status_code == 409, refused.text
+            assert "Night Owl Radio" in refused.json()["detail"]
+
+    asyncio.run(during_start())
+    values = client.get(f"{OWL}/settings", params={"profile": "Saved"}).json()["values"]
+    assert values["playback"]["stereotool_preset"] == "Owl.sts"
+
     removed = client.delete("/api/stereo-tool-presets/Owl.sts")
     assert removed.status_code == 200, removed.text
     for base in ("/api", OWL):

@@ -2255,7 +2255,15 @@ def create_app(
 
             with ExitStack() as references:
                 for slug in sorted(stations.slugs()):
-                    manager = profile_settings(stations.editable(slug))
+                    try:
+                        station = stations.editable(slug)
+                    except StationControlError as exc:
+                        # Its saved references cannot change now, and nothing
+                        # would update them later: refuse, deleting nothing.
+                        raise StationControlError(
+                            f"{stations.get(slug).name}: {exc}; try again in a moment"
+                        ) from exc
+                    manager = profile_settings(station)
                     references.enter_context(manager.changing_reference("preset", name, INCLUDED))
                 delete_preset(
                     cfg.index.shared_dir, name, active=[preset for _station, preset in in_use]
@@ -2267,6 +2275,8 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except StationControlError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except PresetInUseError as exc:
             users = [station for station, preset in in_use if preset == exc.args[0]]
             where = f" on {', '.join(users)}" if len(stations.slugs()) > 1 and users else ""
