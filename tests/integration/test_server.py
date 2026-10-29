@@ -1350,7 +1350,7 @@ class TestProfiles:
             "list_names",
             "load",
             "delete",
-            "open_liner_file",
+            "resolve_liner_path",
             "delete_liner_file",
         ):
             assert name in offloaded, name
