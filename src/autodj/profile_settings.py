@@ -180,6 +180,14 @@ class ProfileSettings:
             raise ValueError("Profile settings groups must be objects")
         if LOCAL_PLAYBACK & values.get("playback", {}).keys():
             raise ValueError("Display and prefetch settings belong to the station, not a profile")
+        # These patch setters treat null as "leave unchanged", which is not a
+        # valid resolved override: it would retain the previously active profile.
+        for group in ("playback", "djmix", "eq"):
+            for key, value in values.get(group, {}).items():
+                if value is None:
+                    raise ValueError(
+                        f"{group}.{key} cannot be null; remove the override to inherit defaults"
+                    )
         core = {key: value for key, value in values.items() if key in CORE_GROUPS}
         # Validate through the same settings owner without attaching an audio runtime.
         scratch = StationSettings(self.station.cfg)

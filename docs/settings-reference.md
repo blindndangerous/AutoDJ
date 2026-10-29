@@ -64,7 +64,9 @@ the saved default leaves it inherited, so a later default change takes effect
 the next time the profile is applied or AutoDJ starts. Explicit `false` and `0`
 are saved overrides. Existing partial profiles keep their non-null values as
 overrides; omitted settings and legacy `null` values inherit from station
-defaults. Saving or editing a profile, including the active one, does not
+defaults. In the new grouped format, `null` clears only settings that support
+clearing, such as a BPM limit or selected clockwheel. Remove an override to
+inherit its default; unsupported `null` values are rejected. Saving or editing a profile, including the active one, does not
 change on-air settings. Use **Apply** in **Settings**, **Profiles and access**,
 **Saved profiles** to activate it. Each Apply resolves the latest saved station
 defaults and the selected profile's overrides; playback already in progress

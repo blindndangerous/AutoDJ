@@ -278,3 +278,18 @@ def test_restart_applies_saved_defaults_before_any_profile_has_been_selected(tmp
     restored.restore()
     assert restored.active is None
     assert restarted.cfg.playback.crossfade_seconds == 4.0
+
+
+@pytest.mark.parametrize(
+    "group, field", [("playback", "crossfade_seconds"), ("djmix", "beatmatch"), ("eq", "enabled")]
+)
+def test_unsupported_json_null_does_not_retain_a_previous_profile_value(tmp_path, group, field):
+    manager = ProfileSettings(_station(tmp_path))
+    _defaults(manager)
+    manager.store.save(ProfileSnapshot(name="Invalid", settings={group: {field: None}}))
+    before = manager.station.cfg.playback.crossfade_seconds
+    with pytest.raises(ValueError, match="remove the override to inherit defaults"):
+        manager.apply("Invalid")
+    assert manager.station.cfg.playback.crossfade_seconds == before
+    assert manager.active is None
+    assert not manager.selection_path.exists()
