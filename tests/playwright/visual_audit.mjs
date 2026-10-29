@@ -495,11 +495,11 @@ async function openWorkerStates(page, visit) {
   await page.locator(`fieldset:has(#worker-${"a".repeat(32)}-batch) > button`).click();
   await page.locator(`#worker-${"a".repeat(32)}-batch[aria-invalid="true"]`).waitFor();
   await page.locator(`#worker-${"a".repeat(32)}-error`).waitFor({ state: "visible" });
-  await visit("settings/server/settings-error");
+  await visit("settings/workers/settings-error");
   await batch.fill(before);
   await page.locator("#pair-worker-create").click();
   await page.locator("#pair-worker-new").waitFor({ state: "visible" });
-  await visit("settings/server/pairing");
+  await visit("settings/workers/pairing");
   await page.locator("#pair-worker-done").click();
 }
 
@@ -848,7 +848,7 @@ async function openUpdatesConfirm(page, visit, id, name, words) {
   }
   const message = await page.locator("#confirm-message").textContent();
   if (!words.test(message || "")) throw new Error(`${name}'s confirmation says: ${message}`);
-  await visit(`settings/server/${name.toLowerCase().replace(" ", "-")}`);
+  await visit(`settings/updates/${name.toLowerCase().replace(" ", "-")}`);
   await updatesConfirmShape(page, name);
   await closeUpdatesConfirm(page, id, ["Escape"], `${name}: Escape`);
 }
@@ -1835,10 +1835,8 @@ async function eachTarget(page, measure) {
         if (id === "stab-announcements") await openPackDatesError(page, visit);
         if (id === "stab-stations") await openStationCreateError(page, visit);
         if (id === "stab-stream") await openLiveDjError(page, visit);
-        if (id === "stab-server") {
-          await openWorkerStates(page, visit);
-          await openRestartConfirm(page, visit);
-        }
+        if (id === "stab-workers") await openWorkerStates(page, visit);
+        if (id === "stab-updates") await openRestartConfirm(page, visit);
       }
     }
   }
@@ -2218,7 +2216,6 @@ function startOf(target) {
   const owner = {
     transitions: "mixing", djmix: "mixing", liners: "announcements",
     "time-checks": "announcements", breaks: "announcements", live: "stream",
-    workers: "server", updates: "server",
   }[sub] || sub;
   return view === "settings" && sub ? `#stab-${owner}` : `#tab-${view}`;
 }
@@ -2270,7 +2267,7 @@ async function auditTheme(browser, mode, out) {
         record("nonText", "busy button", await pendingButtonProblems(page));
       }
       if (target === "settings/display") record("toast", target, await toastProblems(page));
-      if (target === "settings/server") {
+      if (target === "settings/workers") {
         await chooseAnnouncer(page);
         record("axe", `${target} announcer`, await axeViolations(page));
         record("nonText", `${target} announcer`, await controlBoundaryProblems(page));
@@ -2630,7 +2627,7 @@ async function chooseAnnouncer(page, announcer = true) {
 async function tokenScopeProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
-  await clickSubtabUnprompted(page, "stab-server");
+  await clickSubtabUnprompted(page, "stab-workers");
   const scope = page.locator("#token-scope");
   await scope.waitFor({ state: "visible" });
   const problems = [];
@@ -3355,7 +3352,7 @@ export async function audit(name, launcher) {
     await eachTarget(phone, async (target) => {
       const overflow = await horizontalOverflow(phone);
       if (overflow) out.reflow320[target] = overflow;
-      if (target === "settings/server") {
+      if (target === "settings/workers") {
         await chooseAnnouncer(phone);
         const shown = await horizontalOverflow(phone);
         if (shown) out.reflow320[`${target} announcer`] = shown;
