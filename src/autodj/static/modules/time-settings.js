@@ -38,16 +38,31 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
     if (monitor.disabled) monitor.checked = false;
   });
 
-  function show(value) {
-    if (Array.isArray(value.timezones) && zone.options.length !== value.timezones.length) {
-      zone.replaceChildren(...value.timezones.map((name) => {
-        const option = doc.createElement("option");
-        option.value = name;
-        option.textContent = name.replaceAll("_", " ");
-        return option;
-      }));
+  function zoneOption(name) {
+    const option = doc.createElement("option");
+    option.value = name;
+    option.textContent = name.replaceAll("_", " ");
+    return option;
+  }
+
+  function showZones(names) {
+    if (!Array.isArray(names)) return;
+    const selected = zone.value;
+    if (names.length !== zone.options.length || names.some((name, index) => zone.options[index].value !== name)) {
+      zone.replaceChildren(...names.map(zoneOption));
+      if (selected && !names.includes(selected)) zone.add(zoneOption(selected));
+      zone.value = selected;
     }
-    if (value.timezone != null) zone.value = value.timezone;
+  }
+
+  function show(value) {
+    if (value.timezone != null) {
+      // The saved draft can arrive before the list of available zones.
+      if (![...zone.options].some((option) => option.value === value.timezone)) {
+        zone.add(zoneOption(value.timezone));
+      }
+      zone.value = value.timezone;
+    }
     if (value.time_format != null) {
       format.value = value.time_format;
       setTimeFormat(value.time_format);
@@ -76,7 +91,12 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
     if (panel === zonePanel || panel === formatPanel) {
       try {
         const value = await request(ENDPOINT);
-        if (panel === zonePanel) timeDraft.accept(value);
+        if (panel === zonePanel) {
+          // Choices are metadata: load them even when runtime values cannot
+          // overwrite the open Settings draft.
+          showZones(value.timezones);
+          timeDraft.accept(value);
+        }
         if (panel === formatPanel) formatDraft.accept(value);
       } catch { /* The fields keep their drafts; Save reports any problem. */ }
     }
