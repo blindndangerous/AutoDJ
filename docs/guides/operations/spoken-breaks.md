@@ -142,7 +142,7 @@ The monitor never books a take or joins the station output.
    **Record** again to stop. **Alt+R** starts and stops recording from anywhere in the tab without
    moving focus, which suits a screen reader user who wants to stay on another control.
 2. Choose **Listen back** to hear the take, on the Preview output device when one is chosen in
-   Settings, Global, Preferences (headphones, say). **Record** again replaces it; **Discard recording**
+   Settings, Global, Browser preferences (headphones, say). **Record** again replaces it; **Discard recording**
    throws it away.
 3. Leave **Placement** at **Fit over outro and intro** to use the ending song's usable
    Outro and the next song's instrumental Intro. Speech uses its detected Start and Segue;

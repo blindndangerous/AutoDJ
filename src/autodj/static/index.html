@@ -744,7 +744,7 @@
   <h3 id="settings-global-heading">Global</h3>
   <div role="tablist" class="subtabs" aria-labelledby="settings-global-heading" aria-orientation="horizontal">
     <button type="button" role="tab" id="stab-server" data-settings-kind="server" data-subview="server" data-panel="spanel-server" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Server</button>
-    <button type="button" role="tab" id="stab-display" data-settings-kind="browser" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Preferences</button>
+    <button type="button" role="tab" id="stab-display" data-settings-kind="browser" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Browser preferences</button>
   </div>
   </div>
 
@@ -2611,16 +2611,13 @@
       <p class="setting-desc" id="advanced-length-help">0 means no limit. Longer tracks still get audio analysis when selected.</p>
       <p class="field-error" id="advanced-length-error" hidden></p>
     </fieldset>
-    <fieldset>
-      <legend>Time display for all stations</legend>
-      <div class="settings-row">
-        <label for="time-format">Time format for all stations</label>
-        <select id="time-format">
-          <option value="24">24 hour (15:04)</option>
-          <option value="12">12 hour (3:04 PM)</option>
-        </select>
-      </div>
-    </fieldset>
+    <div class="settings-row">
+      <label for="time-format">Time format</label>
+      <select id="time-format">
+        <option value="24">24 hour (15:04)</option>
+        <option value="12">12 hour (3:04 PM)</option>
+      </select>
+    </div>
     <fieldset id="stereo-setup">
       <legend>Stereo Tool installation and licence</legend>
       <p class="setting-desc" id="stereo-install-status">Checking whether Stereo Tool is installed.</p>
@@ -2843,7 +2840,7 @@
   </div>
 
   <div class="card" role="tabpanel" id="spanel-display" data-settings-kind="browser" aria-labelledby="stab-display" hidden>
-    <h3>Preferences</h3>
+    <h3>Browser preferences</h3>
     <!-- Kept in this browser only (modules/theme.js); applied before first
          paint by modules/theme-init.js.  No status message on change: the
          checked radio button is the whole report. -->
@@ -2862,7 +2859,7 @@
         <label for="theme-dark">Dark</label>
       </div>
       <span class="setting-desc" id="theme-choice-desc">
-        System follows the light or dark setting of this device.  Saved in this browser only.
+        System follows the light or dark setting of this device.
       </span>
     </fieldset>
 
@@ -2872,13 +2869,12 @@
       <legend>Announcements</legend>
       <div class="settings-row">
         <label for="announce-track-changes">Announce track changes</label>
-        <select id="announce-track-changes" aria-describedby="announce-track-changes-desc">
+        <select id="announce-track-changes">
           <option value="all">On every tab</option>
           <option value="now">Only on Now Playing</option>
           <option value="off">Off</option>
         </select>
       </div>
-      <span class="setting-desc" id="announce-track-changes-desc">Saved in this browser only.</span>
     </fieldset>
 
     <fieldset>

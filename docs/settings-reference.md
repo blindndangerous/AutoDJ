@@ -42,11 +42,11 @@ edits remain pending. Output-mode changes take effect after restarting the stati
 | Broadcasting | Station stream formats, metadata, listener limits, retention, public player, DMCA mode, recording configuration and Live DJ talkover |
 | Schedule | Station schedule definitions and events |
 | Server | Shared analysis limits, time format, Stereo Tool installation and shared licence, browser access, workers and updates |
-| Preferences | Browser display, keyboard and audio-device preferences |
+| Browser preferences | Browser display, keyboard and audio-device preferences |
 
 Settings keeps three heading-labeled tab groups visible: **Profile**
 (four tabs), **Station** (Profiles, Stations, Broadcasting and Schedule),
-and **Global** (Server and Preferences). Each
+and **Global** (Server and Browser preferences). Each
 tab opens its settings panel; arrow, Home and End navigation stays within its
 group. The **Profile to edit** selector follows all three groups and is hidden
 while a non-Profile tab is selected. Profile selection edits profile-aware
@@ -465,8 +465,8 @@ These values are saved for the selected station or browser rather than in the co
 
 - **Volume** in **Now Playing**: 0 to 100 percent; default 100. Changes playback loudness.
 - **EQ**, **Low**, **Mid**, and **High** in **Now Playing**: each 0 to 2 times normal level; default 1. Changes bass, middle, or treble; **Reset EQ** returns all three to 1.
-- **Audio output device** in **Settings**, **Global**, **Preferences**: system default or an available browser output device; default system default. Sends browser playback to that device.
-- **Preview output device** in **Settings**, **Global**, **Preferences**: system default or an available browser output device; default system default. Sends Track info and Voice tracks previews to that device.
+- **Audio output device** in **Settings**, **Global**, **Browser preferences**: system default or an available browser output device; default system default. Sends browser playback to that device.
+- **Preview output device** in **Settings**, **Global**, **Browser preferences**: system default or an available browser output device; default system default. Sends Track info and Voice tracks previews to that device.
 - **Stereo Tool licence key** in **Settings**, **Global**, **Server**: valid key or blank; default blank. Unlocks licensed Stereo Tool features. **For this station only**: on or off; default off. When on, saves this station's key in its private `secrets.json`; otherwise it is shared by stations without their own key.
 - **Automatic rescan every** in **Library tools**: **Hours** 0 to 168 and **Minutes** 0 to 59; default 0 and 0 (off). Runs **Rescan** after the last scan ends; the shortest enabled interval is 5 minutes.
 - **Add subfolders** for a registered music folder: on or off; default on. Includes nested folders in import. **Perform advanced analysis**: on or off; default on. Runs sound matching analysis for music in that folder.
@@ -474,8 +474,8 @@ These values are saved for the selected station or browser rather than in the co
 - **Longest song, in minutes** under **Advanced analysis length** in **Library tools**: 0 or a positive number; default 15. Longer songs get basic analysis only; 0 runs advanced analysis on every length.
 - **Music fade drop (dB)** under **Music fades** in **Library tools**: 1–30 dB; default 10. Sets the relative drop for new music Segue suggestions. Saved cues stay unchanged. See [cue rescans and fade detection](guides/operations/library.md#rescan-cue-points-in-track-info).
 - **Display name** in **Settings**, **Station**, **Broadcasting**: printable name up to 80 characters; default blank. Shows the DJ name to listeners and in History while live.
-- **Time format for all stations** in **Settings**, **Global**, **Server**: 24 hour or 12 hour; default 24 hour. Changes time display for every station.
-- **Theme** in **Settings**, **Global**, **Preferences**: System, Light, or Dark; default System. Changes this browser's colors.
+- **Time format** in **Settings**, **Global**, **Server**: 24 hour or 12 hour; default 24 hour. Changes time display for every station.
+- **Theme** in **Settings**, **Global**, **Browser preferences**: System, Light, or Dark; default System. Changes this browser's colors.
 - **Announce track changes**: On every tab, Only on Now Playing, or Off; default Only on Now Playing. Controls spoken song changes in this browser.
 - **Enable keyboard shortcuts**: on or off; default on. Lets keys control playback outside text fields.
 - **Bracket keys seek the song on air**: on or off; default off. Lets bracket shortcuts move the live song.

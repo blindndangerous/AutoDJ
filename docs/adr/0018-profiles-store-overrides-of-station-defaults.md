@@ -112,7 +112,7 @@ has four tabs: Mixing (transitions and DJ mixing), Song picking, Sound
 Station has Profiles, Stations, Broadcasting (stream, Live DJ and
 DMCA), and Schedule. Global has Server (analysis limits, shared time
 format, Stereo Tool installation and shared licence, browser access, workers
-and updates) and Preferences (browser display, keyboard and audio
+and updates) and Browser preferences (browser display, keyboard and audio
 device controls). The tabs keep their server and browser owners. Station
 display, lyrics, key notation and prefetch controls are in Stations.
 Profiles manages profile creation, activation, reset and deletion. The selected

@@ -51,7 +51,7 @@ describe("Settings subtabs markup", () => {
     for (const list of [profileList, stationList, globalList]) expect(list.hidden).toBe(false);
     expect(profileList.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect(stationList.querySelectorAll('[role="tab"]')).toHaveLength(4);
-    expect([...globalList.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Server", "Preferences"]);
+    expect([...globalList.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Server", "Browser preferences"]);
     expect(profileList.compareDocumentPosition(stationList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(stationList.compareDocumentPosition(globalList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const targetRow = byId("settings-profile").closest(".profile-target-row");
@@ -60,7 +60,7 @@ describe("Settings subtabs markup", () => {
     const tabs = [...outer.querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "Mixing", "Song picking", "Sound", "Announcements", "Profiles",
-      "Stations", "Broadcasting", "Schedule", "Server", "Preferences",
+      "Stations", "Broadcasting", "Schedule", "Server", "Browser preferences",
     ]);
     for (const tab of tabs) {
       expect(tab.hasAttribute("aria-controls")).toBe(false);

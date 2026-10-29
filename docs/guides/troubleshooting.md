@@ -22,7 +22,7 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 ## Playback and sound
 
-**The browser is silent.** Start playback in **Now Playing**, check the browser tab's volume and the selected output device in **Settings**, **Global**, **Preferences**. A browser may require a click before it can play audio. If the server mixes the station, check the stream address in **Settings**, **Station**, **Broadcasting**.
+**The browser is silent.** Start playback in **Now Playing**, check the browser tab's volume and the selected output device in **Settings**, **Global**, **Browser preferences**. A browser may require a click before it can play audio. If the server mixes the station, check the stream address in **Settings**, **Station**, **Broadcasting**.
 
 **A transition sounds abrupt.** Check whether the songs have intro, outro, BPM, and beat grid data in **Track info**. The default transition can use detected points; without them, it uses a simpler handoff. Try **Transition mode** and **Crossfade seconds** in **Settings**, **Profile**, **Mixing**, **Transitions**. Disable **Beatmatch** for tracks whose tempo is unreliable.
 
