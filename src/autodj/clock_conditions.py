@@ -212,23 +212,51 @@ def condition_matcher(
     optionally, the wall-clock time a relative date condition is judged at
     (see :func:`relative_date_now`; the current time when not given).
     """
-    c = validate_metadata_condition(condition)
-    field, op, wanted = c["field"], c["operator"], c["value"]
-    name = c["name"] if field == "beets" else field
-    if field == "genre":
-        folded = wanted.casefold()
+    value_of, judge = condition_value_test(condition)
 
-        def genre_matches(
-            entry: Any, beets_item: Mapping[str, Any] | None = None, now: float | None = None
-        ) -> bool:
-            found = genres(_get(entry, "genre"))
+    def matches(
+        entry: Any, beets_item: Mapping[str, Any] | None = None, now: float | None = None
+    ) -> bool:
+        return judge(value_of(entry, beets_item), now)
+
+    return matches
+
+
+def condition_value_test(
+    condition: Mapping[str, Any],
+) -> tuple[Callable[[Any, Mapping[str, Any] | None], Any], Callable[[Any, float | None], bool]]:
+    """A nonfolder condition's test in two parts, for matching a whole library.
+
+    The first reads the one value the condition looks at from an entry and
+    its Beets values; the second judges that value at a time, as
+    :func:`condition_matcher` judges the entry.  Songs sharing a value are
+    judged alike, so a caller may judge each value once.  A genre condition
+    looks at every genre of a song: its value is the genre field and its
+    judge splits it.
+    """
+    c = validate_metadata_condition(condition)
+    if c["field"] == "genre":
+        folded = c["value"].casefold()
+        op = c["operator"]
+
+        def genre_test(raw: Any, now: float | None = None) -> bool:
+            found = genres(raw)
             return bool(found) and (
                 any(g.casefold() == folded for g in found)
                 if op == "is"
                 else all(g.casefold() != folded for g in found)
             )
 
-        return genre_matches
+        return (lambda entry, _beets_item: _get(entry, "genre")), genre_test
+    return _value_test(c)
+
+
+def _value_test(
+    c: Mapping[str, Any],
+) -> tuple[Callable[[Any, Mapping[str, Any] | None], Any], Callable[[Any, float | None], bool]]:
+    """The value reader and judge of a validated condition other than genre."""
+    field, op, wanted = c["field"], c["operator"], c["value"]
+    name = c["name"] if field == "beets" else field
     numeric = op in {"eq", "lt", "lte", "gt", "gte", "between", "not_eq", "outside"}
     no_zero = field in {"year", "bpm", "duration"} or (
         field == "beets" and name in {"year", "bpm", "length", "original_year"}
@@ -237,11 +265,9 @@ def condition_matcher(
     folded = wanted.casefold() if isinstance(wanted, str) else ""
     pattern = folded.replace("[", "[[]")
 
-    def matches(
-        entry: Any, beets_item: Mapping[str, Any] | None = None, now: float | None = None
-    ) -> bool:
+    def value_of(entry: Any, beets_item: Mapping[str, Any] | None = None) -> Any:
         if field == "beets":
-            raw = (
+            return (
                 None
                 if beets_item is None
                 else (
@@ -250,10 +276,11 @@ def condition_matcher(
                     else beets_item.get(name)
                 )
             )
-        elif field == "duration":
-            raw = _get(entry, "length")
-        else:
-            raw = _get(entry, field)
+        if field == "duration":
+            return _get(entry, "length")
+        return _get(entry, field)
+
+    def judge(raw: Any, now: float | None = None) -> bool:
         if raw is None or raw == "":
             return False
         if op == WITHIN_DAYS:
@@ -294,4 +321,4 @@ def condition_matcher(
         matched = fnmatchcase(raw.casefold(), pattern)
         return not matched if op == "not_matches" else matched
 
-    return matches
+    return value_of, judge

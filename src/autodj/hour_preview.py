@@ -47,7 +47,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -90,14 +90,30 @@ MAX_MINUTES = 180
 MAX_PREDICTED = 80
 #: The most queued items a preview lists.
 MAX_QUEUED = 100
-#: How long the dry run may work for one preview, in seconds; it then stops
-#: with what it has, and the preview says so.  A soft limit: it is checked
-#: before each pick, so one slow pick can run past it.
+#: How long the dry run may work for one preview before it answers, in
+#: seconds; it then stops with what it has, and the preview says so.  The
+#: Hour preview card's dry run goes on from there in the background instead
+#: (:data:`FILL_SECONDS`).  A soft limit: it is checked before each pick, so
+#: one slow pick can run past it.
 BUDGET_SECONDS = 4.0
+#: The most seconds the dry run of one Hour preview works in all, its first
+#: time limit included, when it goes on in the background (:class:`HourPreviews`).
+#: With the slices and pauses below it ends well within :data:`KEEP_SECONDS`.
+FILL_SECONDS = 20.0
+#: How long each later slice of that work may take, in seconds: a soft
+#: limit, checked before each pick.
+FILL_SLICE_SECONDS = 2.0
+#: The pause between slices, in seconds, so the audio and web threads keep
+#: the interpreter most of the time.
+FILL_PAUSE_SECONDS = 1.0
+#: A preview goes on only while the page asks for it this often, in seconds
+#: (the page asks every ``FILLING_REFRESH_MS`` while it is filling).
+FILL_IDLE_SECONDS = 15.0
 #: How long a preview is kept while what is fixed stays the same, in
 #: seconds: longer than the page's refresh (``REFRESH_MS`` in
 #: ``static/modules/hour-preview.js``), so an open card that finds nothing
-#: new fixed costs no dry run.
+#: new fixed costs no dry run.  It counts from the preview's first answer;
+#: a preview still filling goes on only while it is kept.
 KEEP_SECONDS = 45.0
 #: The most previews that may wait for the worker at once (each station and
 #: span waits once: later asks share its answer).
@@ -1444,16 +1460,97 @@ def predict(
     clockwheel place and random generator (seeded with *seed*): nothing on
     the air changes.
     """
-    with _quiet_logs():
-        songs = MAX_PREDICTED if limit is None else limit
-        return _predict(
+    prediction = _start_prediction(
+        source,
+        snapshot,
+        decided,
+        end,
+        seed=seed,
+        limit=limit,
+        ad_runs=ad_runs,
+        preferred_choices=preferred_choices,
+        clock_choices=clock_choices,
+        on_choice=on_choice,
+        capture_audio=capture_audio,
+        cancelled=cancelled,
+    )
+    prediction.run(budget)
+    return prediction.items, prediction.handoff, prediction.stopped
+
+
+class _Prediction:
+    """A dry run that stops at its time limit and can go on later from where it stopped.
+
+    It works in slices (:meth:`run`); between them the copy of the player
+    waits, with its own clock, history and random generator, just before
+    its next pick.  Going on gives the songs one longer run would have.
+    """
+
+    def __init__(
+        self, steps: Generator[tuple[list[Item], float], None, tuple[list[Item], float, str | None]]
+    ) -> None:
+        self._steps = steps
+        self.items: list[Item] = []
+        self.handoff = 0.0
+        #: Why it stopped short of the end, or ``None``; the time limit
+        #: while it can still go on.
+        self.stopped: str | None = None
+        self.done = False
+        #: The seconds all its slices have worked.
+        self.worked = 0.0
+
+    def run(self, budget: float) -> bool:
+        """Work on for about *budget* seconds, checked before each pick; whether it finished."""
+        if self.done:
+            return True
+        began = time.perf_counter()
+        try:
+            with _quiet_logs():
+                while True:
+                    self.items, self.handoff = next(self._steps)
+                    if time.perf_counter() - began > budget:
+                        self.stopped = "it reached its time limit"
+                        return False
+        except StopIteration as finished:
+            self.items, self.handoff, self.stopped = finished.value
+            self.done = True
+            return True
+        except BaseException:
+            self.done = True
+            raise
+        finally:
+            self.worked += time.perf_counter() - began
+
+    def close(self) -> None:
+        """Let go of the copy of the player; it will not go on."""
+        self.done = True
+        self._steps.close()
+
+
+def _start_prediction(
+    source: SimulationSource,
+    snapshot: PlayerSnapshot,
+    decided: Decided,
+    end: float,
+    *,
+    seed: int,
+    limit: int | None = None,
+    ad_runs: Sequence[Any] = (),
+    preferred_choices: dict[str, str] | None = None,
+    clock_choices: _ClockChoices | None = None,
+    on_choice: Callable[[str, str], None] | None = None,
+    capture_audio: bool = False,
+    cancelled: Callable[[], bool] | None = None,
+) -> _Prediction:
+    """:func:`predict`'s dry run, not started yet."""
+    return _Prediction(
+        _prediction(
             source,
             snapshot,
             decided,
             end,
             seed,
-            budget,
-            songs,
+            MAX_PREDICTED if limit is None else limit,
             preferred_choices or {},
             on_choice,
             ad_runs,
@@ -1461,6 +1558,7 @@ def predict(
             cancelled,
             clock_choices,
         )
+    )
 
 
 def _interrupt_at(source: SimulationSource, event: Any, at: float, handoff: float) -> float:
@@ -1594,13 +1692,12 @@ def _before_interrupt(source: SimulationSource, decided: Decided, end: float) ->
     return decided
 
 
-def _predict(
+def _prediction(
     source: SimulationSource,
     snapshot: PlayerSnapshot,
     decided: Decided,
     end: float,
     seed: int,
-    budget: float,
     limit: int,
     preferred_choices: dict[str, str],
     on_choice: Callable[[str, str], None] | None,
@@ -1608,8 +1705,13 @@ def _predict(
     capture_audio: bool = False,
     cancelled: Callable[[], bool] | None = None,
     clock_choices: _ClockChoices | None = None,
-) -> tuple[list[Item], float, str | None]:
-    began = time.perf_counter()
+) -> Generator[tuple[list[Item], float], None, tuple[list[Item], float, str | None]]:
+    """The dry run of :func:`predict`, step by step.
+
+    Before each pick it yields the items so far and when the next song
+    starts, where :class:`_Prediction` checks its time limit; it returns
+    the items, the handoff and why it stopped short of *end*.
+    """
     # Ad breaks not yet booked (#51), soonest first: each joins the first
     # predicted song change at or after its time.
     ads = deque(sorted(ad_runs, key=lambda run: run.at))
@@ -1697,9 +1799,8 @@ def _predict(
         if songs >= limit and not capture_audio:
             stopped = "it reached its limit of songs"
             break
-        if time.perf_counter() - began > budget:
-            stopped = "it reached its time limit"
-            break
+        # The time limit is checked here, before each pick (_Prediction.run).
+        yield found, handoff
         # A prepared pair uses the saved-cue mixer even when ordinary music
         # joins use another mode. Resolve this finite queued edge before
         # dispatching events, so its real segue is the scheduling boundary.
@@ -2497,10 +2598,14 @@ def build_preview(
     capture_audio: bool = False,
     on_items: Callable[[tuple[Item, ...]], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
+    keep_going: Callable[[PreviewFill], None] | None = None,
 ) -> dict[str, Any]:
     """The preview of *source*'s next *minutes*, as the page reads it (JSON shape).
 
     Blocking: it reads the player under its locks and runs the dry run.
+    When the dry run reaches its *budget* and *keep_going* is given, the
+    view says the rest is still being worked out, and *keep_going* gets
+    the :class:`PreviewFill` that can go on from the last pick.
     """
     minutes = check_minutes(minutes)
     zone = ZoneInfo(source.timezone)
@@ -2556,6 +2661,7 @@ def build_preview(
         "points": [],
         "counts": {"fixed": 0, "predicted": 0},
         "stopped": None,
+        "filling": None,
         "points_note": None,
         "notes": list(NOTES),
     }
@@ -2564,82 +2670,176 @@ def build_preview(
     snapshot = source.snapshot or snapshot_player(source.player)
     forecasts = _ad_forecasts(source, now, end)
     choices: list[tuple[str, str]] = []
-    predicted, ends, stopped = predict(
+    prediction = _start_prediction(
         source,
         snapshot,
         decided,
         end,
         seed=seed_for(decided.signature()),
-        budget=budget,
         ad_runs=forecasts,
         preferred_choices=preferred_choices,
         clock_choices=clock_choices,
         capture_audio=capture_audio,
         cancelled=cancelled,
         on_choice=(
-            (lambda key, path: choices.append((key, path))) if on_prediction is not None else None
+            (lambda key, path: choices.append((key, path)))
+            if on_prediction is not None or keep_going is not None
+            else None
         ),
     )
+    fill = PreviewFill(
+        source, decided, end, view, snapshot, forecasts, prediction, choices, describe
+    )
+    finished = fill.run(budget)
     if on_prediction is not None:
         on_prediction(tuple(choices))
-    timeline = sorted([*decided.items, *predicted], key=lambda item: item.starts)
-    if on_items is not None:
-        on_items(tuple(timeline))
-    songs = [item for item in timeline if item.kind == "song"]
-    # A skipped show song takes no time and opens no song change.
-    changes = song_changes([item for item in timeline if item.kind != "skipped"])
-    if not predicted and songs:
-        last = songs[-1]
-        ends = max(ends, last.starts + last.seconds)
-    shown = [item for item in timeline if item.starts < end]
-    live_mixing = bool(getattr(source.player, "live_mixing", False))
-    view["items"] = [_item_view(item, zone, live_mixing=live_mixing, now=now) for item in shown]
-    bridge_of = attached(source.player, "_request_bridge_of")
-    for item, row in zip(shown, view["items"], strict=True):
-        request = bridge_of.get(item.entry) if item.entry is not None else None
-        if request is not None:
-            row["bridge_to"] = request.display_name
-            row["status_text"] += f"; bridge to {request.display_name}"
-    view["counts"] = {
-        "fixed": sum(1 for item in shown if _is_fixed(item, live_mixing, now)),
-        "predicted": sum(1 for item in shown if not _is_fixed(item, live_mixing, now)),
-    }
-    clock = snapshot.clock or {}
-    clock_on = bool(clock.get("name")) and snapshot.cfg.playback.pick_mode == "clock"
-    points = fixed_points(
-        now,
-        end,
-        zone,
-        resync_minutes=clock.get("resync_minutes", ()) if clock_on else (),
-        events=source.events,
-        describe=describe,
-        hours=snapshot.cfg.playback.hour_fit is True,
-        action_interrupts=source.action_interrupts,
-    )
-    points.extend(
-        Point("event", run.at, run.label, "soft", run.detail)
-        for run in forecasts
-        if run.own_point and now < run.at <= end
-    )
-    points.sort(key=lambda point: (point.at, point.kind != "event"))
-    view["points_note"] = (
-        f"Only the first {MAX_POINTS} of {len(points)} fixed points are timed."
-        if len(points) > MAX_POINTS
-        else None
-    )
-    points = points[:MAX_POINTS]
-    landings = [land(point, changes, ends) for point in points]
-    view["points"] = [
-        _point_view(landing, zone, live_mixing=live_mixing, now=now) for landing in landings
-    ]
-    view["stopped"] = (
-        f"The prediction stopped early: {stopped}. The list ends at the last song it picked."
-        if stopped
-        else None
-    )
-    view["counts_text"] = _counts_text(view, zone, end)
-    view["summary"] = _summary(landings, zone)
-    return view
+    filling = not finished and keep_going is not None
+    result = fill.view(filling=filling, on_items=on_items)
+    if filling:
+        assert keep_going is not None
+        keep_going(fill)
+    return result
+
+
+class PreviewFill:
+    """A preview whose dry run stopped at its time limit and can go on from its last pick.
+
+    :class:`HourPreviews` works on it in short slices on its worker thread,
+    and each slice gives a longer view of the same forecast: the songs are
+    those one run without a time limit would have picked.
+    """
+
+    def __init__(
+        self,
+        source: SimulationSource,
+        decided: Decided,
+        end: float,
+        view: dict[str, Any],
+        snapshot: PlayerSnapshot,
+        forecasts: Sequence[Any],
+        prediction: _Prediction,
+        choices: list[tuple[str, str]],
+        describe: Callable[[Any], str] | None,
+    ) -> None:
+        self._source = source
+        self._decided = decided
+        self._end = end
+        self._view = view
+        self._snapshot = snapshot
+        self._forecasts = forecasts
+        self._prediction = prediction
+        #: The forecast's choices so far (:class:`HourPreviews` remembers them).
+        self.choices = choices
+        self._describe = describe
+
+    @property
+    def worked(self) -> float:
+        """The seconds its dry run has worked in all."""
+        return self._prediction.worked
+
+    @property
+    def done(self) -> bool:
+        """Whether its dry run has finished or stopped for good."""
+        return self._prediction.done
+
+    def run(self, budget: float) -> bool:
+        """Work on for about *budget* seconds; whether the dry run finished."""
+        return self._prediction.run(budget)
+
+    def close(self) -> None:
+        """Stop for good: the dry run's copy of the player is let go."""
+        self._prediction.close()
+
+    def fail(self, reason: str) -> None:
+        """Stop for good because of *reason*, which the view gives."""
+        self._prediction.stopped = reason
+        self._prediction.done = True
+
+    def view(
+        self,
+        *,
+        filling: bool = False,
+        on_items: Callable[[tuple[Item, ...]], None] | None = None,
+    ) -> dict[str, Any]:
+        """The preview so far, as the page reads it.
+
+        *filling* says the dry run goes on: the view then says the rest is
+        still being worked out rather than that the prediction stopped.
+        """
+        source, decided, end = self._source, self._decided, self._end
+        snapshot, forecasts = self._snapshot, self._forecasts
+        zone = ZoneInfo(source.timezone)
+        now = decided.now
+        view = copy.deepcopy(self._view)
+        predicted = list(self._prediction.items)
+        ends = self._prediction.handoff
+        stopped = self._prediction.stopped
+        timeline = sorted([*decided.items, *predicted], key=lambda item: item.starts)
+        if on_items is not None:
+            on_items(tuple(timeline))
+        songs = [item for item in timeline if item.kind == "song"]
+        # A skipped show song takes no time and opens no song change.
+        changes = song_changes([item for item in timeline if item.kind != "skipped"])
+        if not predicted and songs:
+            last = songs[-1]
+            ends = max(ends, last.starts + last.seconds)
+        shown = [item for item in timeline if item.starts < end]
+        live_mixing = bool(getattr(source.player, "live_mixing", False))
+        view["items"] = [_item_view(item, zone, live_mixing=live_mixing, now=now) for item in shown]
+        bridge_of = attached(source.player, "_request_bridge_of")
+        for item, row in zip(shown, view["items"], strict=True):
+            request = bridge_of.get(item.entry) if item.entry is not None else None
+            if request is not None:
+                row["bridge_to"] = request.display_name
+                row["status_text"] += f"; bridge to {request.display_name}"
+        view["counts"] = {
+            "fixed": sum(1 for item in shown if _is_fixed(item, live_mixing, now)),
+            "predicted": sum(1 for item in shown if not _is_fixed(item, live_mixing, now)),
+        }
+        clock = snapshot.clock or {}
+        clock_on = bool(clock.get("name")) and snapshot.cfg.playback.pick_mode == "clock"
+        points = fixed_points(
+            now,
+            end,
+            zone,
+            resync_minutes=clock.get("resync_minutes", ()) if clock_on else (),
+            events=source.events,
+            describe=self._describe,
+            hours=snapshot.cfg.playback.hour_fit is True,
+            action_interrupts=source.action_interrupts,
+        )
+        points.extend(
+            Point("event", run.at, run.label, "soft", run.detail)
+            for run in forecasts
+            if run.own_point and now < run.at <= end
+        )
+        points.sort(key=lambda point: (point.at, point.kind != "event"))
+        view["points_note"] = (
+            f"Only the first {MAX_POINTS} of {len(points)} fixed points are timed."
+            if len(points) > MAX_POINTS
+            else None
+        )
+        points = points[:MAX_POINTS]
+        landings = [land(point, changes, ends) for point in points]
+        view["points"] = [
+            _point_view(landing, zone, live_mixing=live_mixing, now=now) for landing in landings
+        ]
+        if filling:
+            view["stopped"] = None
+            view["filling"] = (
+                "Still working out the rest of the preview. "
+                f"So far the list runs to {clock_text(ends, zone)}."
+            )
+        else:
+            view["stopped"] = (
+                f"The prediction stopped early: {stopped}. "
+                "The list ends at the last song it picked."
+                if stopped
+                else None
+            )
+        view["counts_text"] = _counts_text(view, zone, end)
+        view["summary"] = _summary(landings, zone)
+        return view
 
 
 def _ad_forecasts(source: SimulationSource, now: float, end: float) -> list[Any]:
@@ -2932,6 +3132,22 @@ class _ClockChoices:
         self.paths = dict(list(current.items())[: 2 * MAX_PREDICTED])
 
 
+@dataclass
+class _Filling:
+    """A kept preview whose dry run goes on in the background, in slices."""
+
+    fill: PreviewFill
+    source: SimulationSource
+    minutes: int
+    desk: Any
+    signature: str
+    clock_choices: _ClockChoices
+    #: When the page last asked for it, and when its next slice may start
+    #: (:func:`time.monotonic`).
+    asked: float
+    due: float
+
+
 class HourPreviews:
     """The server's previews: one worker thread, and each station's latest preview per span.
 
@@ -2940,15 +3156,35 @@ class HourPreviews:
     finished one is reused for :data:`KEEP_SECONDS` while its timeline and
     picking inputs stay current. At most :data:`MAX_WAITING` previews wait for the worker; one
     more is refused with :class:`PreviewBusy`.
+
+    A dry run that reaches its time limit goes on from its last pick while
+    the preview is kept and the page keeps asking for it: the worker works
+    on it in slices of :data:`FILL_SLICE_SECONDS` with
+    :data:`FILL_PAUSE_SECONDS` between them, up to :data:`FILL_SECONDS` in
+    all, whenever no preview is waiting.  Each slice replaces the kept
+    preview with a longer one.  That work never waits in the queue, so it
+    neither counts toward :data:`MAX_WAITING` nor delays an ask.
     """
 
-    def __init__(self, *, keep: float = KEEP_SECONDS, waiting: int = MAX_WAITING) -> None:
+    def __init__(
+        self,
+        *,
+        keep: float = KEEP_SECONDS,
+        waiting: int = MAX_WAITING,
+        budget: float = BUDGET_SECONDS,
+        fill: float = FILL_SECONDS,
+        fill_slice: float = FILL_SLICE_SECONDS,
+    ) -> None:
         self._keep = keep
         self._limit = waiting
+        self._budget = budget
+        self._fill_limit = fill
+        self._fill_slice = fill_slice
         self._cond = threading.Condition()
         self._kept: dict[_Key, tuple[float, str, dict[str, Any]]] = {}
         self._choices: dict[_Key, dict[str, str]] = {}
         self._clock_choices: dict[_Key, _ClockChoices] = {}
+        self._filling: dict[_Key, _Filling] = {}
         self._asked: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
         self._forced: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
         self._waiting: deque[_Job] = deque()
@@ -2974,6 +3210,9 @@ class HourPreviews:
         with self._cond:
             if self._closing:
                 raise PreviewsClosed("The server is shutting down")
+            filling = self._filling.get(key)
+            if filling is not None:
+                filling.asked = time.monotonic()
             shared = self._forced.get(key) if force else self._asked.get(key)
             if shared is not None:
                 return shared
@@ -2993,14 +3232,27 @@ class HourPreviews:
         return future
 
     def _work(self) -> None:
-        """The worker: make the waiting previews one at a time until shutdown."""
+        """The worker: make the waiting previews one at a time until shutdown.
+
+        With none waiting, it works on a preview that is still filling.
+        """
         lower_thread_priority()
         while True:
+            fill_key: _Key | None = None
             with self._cond:
-                self._cond.wait_for(lambda: self._closing or bool(self._waiting))
-                if self._closing:
-                    return
-                job = self._waiting.popleft()
+                while True:
+                    if self._closing:
+                        return
+                    if self._waiting:
+                        job = self._waiting.popleft()
+                        break
+                    fill_key, wait = self._next_fill()
+                    if fill_key is not None:
+                        break
+                    self._cond.wait(wait)
+            if fill_key is not None:
+                self._fill(fill_key)
+                continue
             try:
                 if job.future.set_running_or_notify_cancel():
                     try:
@@ -3022,6 +3274,72 @@ class HourPreviews:
                     if self._forced.get(job.key) is job.future:
                         del self._forced[job.key]
 
+    def _next_fill(self) -> tuple[_Key | None, float | None]:
+        """The filling preview due for a slice, or how long to wait for one (``None``: none).
+
+        Called with the lock held.  A preview no longer kept stops filling,
+        and the worker wakes for that, so its copy of the player is let go;
+        one the page has stopped asking for waits until it asks again.
+        """
+        now = time.monotonic()
+        wait: float | None = None
+        for key, filling in list(self._filling.items()):
+            kept = self._kept.get(key)
+            left = kept[0] + self._keep - now if kept is not None else 0.0
+            if kept is None or kept[1] != filling.signature or left <= 0:
+                self._stop_filling(key, filling)
+                continue
+            if now - filling.asked < FILL_IDLE_SECONDS:
+                if filling.due <= now:
+                    return key, None
+                left = min(left, filling.due - now)
+            wait = left if wait is None else min(wait, left)
+        return None, wait
+
+    def _stop_filling(self, key: _Key, filling: _Filling) -> None:
+        """Stop *filling* for good (with the lock held); its choices stay for the next preview."""
+        if self._filling.get(key) is filling:
+            del self._filling[key]
+        filling.clock_choices.trim()
+        filling.fill.close()
+
+    def _fill(self, key: _Key) -> None:
+        """Work one slice on the filling preview of *key* and keep the longer view."""
+        with self._cond:
+            filling = self._filling.get(key)
+        if filling is None:
+            return
+        try:
+            # What is fixed may have moved on: the next ask then makes a new preview.
+            _decided, signature = self._signature(filling.source, filling.minutes, filling.desk)
+        except Exception:
+            logger.exception("Could not check the hour preview before going on with it")
+            signature = None
+        if signature != filling.signature:
+            with self._cond:
+                self._stop_filling(key, filling)
+            return
+        remaining = self._fill_limit - filling.fill.worked
+        try:
+            finished = remaining > 0 and filling.fill.run(min(self._fill_slice, remaining))
+        except Exception:
+            logger.exception("The hour preview could not go on")
+            filling.fill.fail("it could not go on")
+            finished = True
+        capped = not finished and filling.fill.worked >= self._fill_limit
+        view = filling.fill.view(filling=not (finished or capped))
+        with self._cond:
+            if self._filling.get(key) is not filling:
+                return  # A new preview took its place meanwhile.
+            kept = self._kept.get(key)
+            if kept is not None and kept[1] == filling.signature:
+                self._kept[key] = (kept[0], kept[1], view)
+            self._choices[key] = dict(filling.fill.choices)
+            if finished or capped:
+                self._stop_filling(key, filling)
+            else:
+                filling.due = time.monotonic() + FILL_PAUSE_SECONDS
+
     def shutdown(self, timeout: float) -> bool:
         """Take no more previews, cancel the waiting ones and join the worker.
 
@@ -3036,6 +3354,8 @@ class HourPreviews:
             self._waiting.clear()
             self._asked.clear()
             self._forced.clear()
+            # The worker may be in a slice: it lets the filling go when it stops.
+            self._filling.clear()
             thread = self._thread
             self._cond.notify_all()
         if thread is None:
@@ -3043,21 +3363,9 @@ class HourPreviews:
         thread.join(timeout)
         return not thread.is_alive()
 
-    def get(
-        self,
-        source: SimulationSource,
-        minutes: int,
-        *,
-        desk: Any = None,
-        describe: Callable[[Any], str] | None = None,
-        force: bool = False,
-    ) -> dict[str, Any]:
-        """The preview of *source*, kept for :data:`KEEP_SECONDS` while nothing new is fixed.
-
-        Blocking: the worker thread calls it.
-        """
+    def _signature(self, source: SimulationSource, minutes: int, desk: Any) -> tuple[Decided, str]:
+        """What is fixed on *source* now, and the signature a kept preview must match."""
         decided = read_station(source.player, desk, show=_on_air_show(source))
-        key = (source.station, minutes)
         player = source.player
         settings = tuple(
             (name, repr(getattr(player, name, None)))
@@ -3110,23 +3418,47 @@ class HourPreviews:
                 )
             ).encode("utf-8")
         ).hexdigest()
+        return decided, signature
+
+    def get(
+        self,
+        source: SimulationSource,
+        minutes: int,
+        *,
+        desk: Any = None,
+        describe: Callable[[Any], str] | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """The preview of *source*, kept for :data:`KEEP_SECONDS` while nothing new is fixed.
+
+        Blocking: the worker thread calls it.
+        """
+        decided, signature = self._signature(source, minutes, desk)
+        key = (source.station, minutes)
         with self._cond:
             kept = self._kept.get(key)
+            filling = self._filling.get(key)
+            if filling is not None:
+                filling.asked = time.monotonic()
+            if (
+                not force
+                and kept is not None
+                and kept[1] == signature
+                and time.monotonic() - kept[0] < self._keep
+            ):
+                return kept[2]
+            if filling is not None:
+                # A new preview takes its place.
+                self._stop_filling(key, filling)
             previous_choices = self._choices.get(key, {})
             previous_clock = self._clock_choices.get(key)
-        if (
-            not force
-            and kept is not None
-            and kept[1] == signature
-            and time.monotonic() - kept[0] < self._keep
-        ):
-            return kept[2]
         clock_choices = _ClockChoices.start(source, decided, previous_clock)
         choices: dict[str, str] = {}
 
         def remember_choices(picks: tuple[tuple[str, str], ...]) -> None:
             choices.update(picks)
 
+        started: list[PreviewFill] = []
         view = build_preview(
             source,
             minutes,
@@ -3135,13 +3467,34 @@ class HourPreviews:
             describe=describe,
             preferred_choices=previous_choices,
             clock_choices=clock_choices,
+            budget=self._budget,
             on_prediction=remember_choices,
+            keep_going=started.append if self._fill_limit > self._budget else None,
         )
         with self._cond:
-            self._kept[key] = (time.monotonic(), signature, view)
+            now = time.monotonic()
+            self._kept[key] = (now, signature, view)
             self._choices[key] = choices
-            clock_choices.trim()
             self._clock_choices[key] = clock_choices
+            if started and started[0].worked < self._fill_limit and not self._closing:
+                self._filling[key] = _Filling(
+                    started[0],
+                    source,
+                    minutes,
+                    desk,
+                    signature,
+                    clock_choices,
+                    asked=now,
+                    due=now + FILL_PAUSE_SECONDS,
+                )
+                self._cond.notify_all()
+            else:
+                clock_choices.trim()
+                for fill in started:
+                    # It will not go on after all: the view says where it stopped.
+                    fill.close()
+                    view = fill.view()
+                    self._kept[key] = (now, signature, view)
         return view
 
 

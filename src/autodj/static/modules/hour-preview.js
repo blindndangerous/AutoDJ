@@ -17,6 +17,12 @@
 // (speakSummary) says it from anywhere through the page's spoken status.
 // Times and lengths use the same numeric text for everyone. Fixed or
 // predicted is a word in the Status column of every row, not a colour.
+//
+// On a slow server the dry run can reach its time limit before the end of
+// the span.  The server then goes on from its last pick in the background
+// and the view says so (view.filling); the card asks again every few
+// seconds, quietly, and the new rows join the table in place.  When a
+// preview someone asked for finishes, that is said once.
 import { requestJson } from "./api-client.js";
 import { srSpeak } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
@@ -24,15 +30,23 @@ import { installTableNavigation } from "./table-navigation.js";
 
 const ENDPOINT = "/api/hour-preview";
 const REFRESH_MS = 30000;
+// While the server is still working out the rest of the preview.
+const FILLING_REFRESH_MS = 5000;
 // After a song change the station renders the next song; give it a moment.
 const SONG_CHANGE_DELAY_MS = 2000;
 // Shift+H reuses a preview this recent instead of asking again.
 const FRESH_MS = 20000;
 
+// Said after the summary while the server is still working out the rest.
+function fillingNote(view) {
+  return view?.filling ? " Still working out the rest of the preview." : "";
+}
+
 // The words Shift+H and Refresh preview say for *view*.
 export function spokenSummary(view) {
   if (!view) return "No hour preview yet.";
-  return view.reason || view.summary || "No hour preview yet.";
+  if (view.reason) return view.reason;
+  return `${view.summary || "No hour preview yet."}${fillingNote(view)}`;
 }
 
 export function rowCells(item) {
@@ -166,6 +180,8 @@ export function installHourPreview({
   let renderedRequest = 0;
   // The failure of a quiet refresh last said, so it is said once.
   let quietError = null;
+  // The user's ask whose preview is still filling: its end is said once.
+  let fillingAsk = null;
 
   const showing = () => card.open && !(nowPanel && nowPanel.hidden)
     && doc.visibilityState !== "hidden";
@@ -177,7 +193,7 @@ export function installHourPreview({
     // line holds only the counts.
     const text = view.reason || view.counts_text || view.summary || "";
     if (summary.textContent !== text) summary.textContent = text;
-    const stopText = view.stopped || "";
+    const stopText = view.stopped || view.filling || "";
     if (stopped.textContent !== stopText) stopped.textContent = stopText;
     stopped.hidden = !stopText;
     const items = view.items || [];
@@ -236,7 +252,19 @@ export function installHourPreview({
   async function quietRefresh(force = false) {
     try {
       const view = await load({ force, quiet: true });
-      if (view) quietError = null;
+      if (view) {
+        quietError = null;
+        if (fillingAsk !== null && !view.filling) {
+          // The preview someone asked for has finished filling in: say so once.
+          if (fillingAsk === latestUser) {
+            announceStatus(status, `Hour preview finished. ${view.stopped || spokenSummary(view)}`,
+              { force: true, dwellMs: 8000, mirror: false });
+          }
+          fillingAsk = null;
+        }
+        // Come back sooner while the server is still filling it in.
+        if (view.filling && card.open) schedule();
+      }
       return view;
     } catch (error) {
       const text = `The hour preview could not be loaded: ${error.message}`;
@@ -254,8 +282,8 @@ export function installHourPreview({
     timer = setTimer(async () => {
       timer = null;
       if (showing()) await quietRefresh();
-      if (card.open) schedule();
-    }, REFRESH_MS);
+      if (card.open && timer === null) schedule();
+    }, lastView?.filling ? FILLING_REFRESH_MS : REFRESH_MS);
   }
 
   function stop() {
@@ -263,6 +291,7 @@ export function installHourPreview({
     if (songTimer !== null) clearTimer(songTimer);
     timer = null;
     songTimer = null;
+    fillingAsk = null;
   }
 
   // Ask on the user's behalf and say the outcome once, even when it is the
@@ -279,6 +308,7 @@ export function installHourPreview({
     }
     if (view) {
       quietError = null;
+      fillingAsk = view.filling ? latestUser : null;
       announceStatus(status, `${lead} ${words(view)}`.trim(),
         { force: true, dwellMs: 8000, mirror: false });
     }
@@ -293,7 +323,10 @@ export function installHourPreview({
 
   // Show: a new span says only its counts, once it has loaded.
   function spanChanged() {
-    return askAndSay("", { words: (view) => view.reason || view.counts_text || spokenSummary(view) });
+    return askAndSay("", {
+      words: (view) => (view.reason
+        || (view.counts_text ? `${view.counts_text}${fillingNote(view)}` : spokenSummary(view))),
+    });
   }
 
   // Shift+H: a recent preview, or a fresh one, said through the page's

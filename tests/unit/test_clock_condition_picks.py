@@ -260,10 +260,10 @@ def test_a_second_pick_does_not_evaluate_conditions_again(monkeypatch):
     entries = (Track(r"C:\music\old.flac", year=1990), Track(r"C:\music\new.flac", year=2010))
     slots = [ClockSlot(conditions=(meta("year", "lt", 2000), meta("artist", "is", "Artist")))]
     built = []
-    real = clock_conditions.condition_matcher
+    real = clock_conditions.condition_value_test
     monkeypatch.setattr(
         clock_conditions,
-        "condition_matcher",
+        "condition_value_test",
         lambda condition: built.append(condition) or real(condition),
     )
     cache = ConditionPaths(slots, entries, (), None)
@@ -281,10 +281,10 @@ def test_match_all_stops_once_no_entry_can_pass(monkeypatch):
     from autodj import clock_conditions
 
     built = []
-    real = clock_conditions.condition_matcher
+    real = clock_conditions.condition_value_test
     monkeypatch.setattr(
         clock_conditions,
-        "condition_matcher",
+        "condition_value_test",
         lambda condition: built.append(condition) or real(condition),
     )
     slot = ClockSlot(conditions=(meta("artist", "is", "Nobody"), meta("year", "lt", 2000)))
@@ -321,3 +321,189 @@ def test_relative_date_steps_are_worked_out_again_each_hour():
     plain_slots = [plain]
     steady = ConditionPaths(plain_slots, entries, (), None, None, now)
     assert steady.current(plain_slots, entries, (), None, None, now + 30 * day)
+
+
+def _every_entry(slot, entries, beets=None, categories=None, now=None):
+    """What a conditions slot matches, testing each entry one by one (the reference)."""
+    from autodj.clock_conditions import condition_matcher
+    from autodj.clockwheel import _slot_entries
+
+    found = None
+    for condition in slot.conditions:
+        if condition["field"] == "folder":
+            matched = _slot_entries(
+                ClockSlot(folder=condition["folder"], recursive=condition["recursive"]), entries
+            )
+            if condition.get("operator") == "is_not":
+                inside = {entry.path for entry in matched}
+                matched = [entry for entry in entries if entry.path not in inside]
+        elif condition["field"] == "category":
+            members = (categories or {}).get(condition["category"])
+            matched = (
+                []
+                if members is None
+                else [
+                    entry
+                    for entry in entries
+                    if (entry.path in members[1]) == (condition.get("operator") != "is_not")
+                ]
+            )
+        else:
+            test = condition_matcher(condition)
+            matched = [
+                entry
+                for entry in entries
+                if test(
+                    entry,
+                    (beets or {}).get(normalize_path(entry.path))
+                    if condition["field"] == "beets"
+                    else None,
+                    now,
+                )
+            ]
+        paths = {entry.path for entry in matched}
+        if found is None:
+            found = paths
+        elif slot.match == "all":
+            found &= paths
+        else:
+            found |= paths
+    return found or set()
+
+
+def test_whole_pool_matching_gives_the_songs_testing_each_one_gives():
+    """ADR-0009-14: categories, Beets and metadata matched for the whole pool at once."""
+    from autodj.clockwheel import ConditionPaths, condition_paths
+
+    rng = Random(3)
+    now = 1_760_000_000
+    entries = tuple(
+        Track(
+            "C:\\music\\" + rng.choice(["rock", "pop", "jazz"]) + f"\\song{i}.flac",
+            artist=f"Artist {i % 7}",
+            genre=rng.choice(["Rock", "Pop; Live", "Jazz", ""]),
+            bpm=rng.choice([0, 96, 118, 120, 124, 150]),
+            year=rng.randint(1970, 2020),
+        )
+        for i in range(300)
+    )
+    values = [None, "", "3", "3.0", 3, 3.0, 4.5, "high", b"4", True, 0, ["3"]]
+    beets = {
+        normalize_path(entry.path): {
+            "radio_energy": rng.choice(values),
+            "radio_tier": rng.choice(["a", "A", "b", " ", None]),
+            "added": now - rng.randint(0, 60) * 86400,
+            "year": rng.choice([1999, 0, None]),
+            "original_year": rng.choice([1980, 0, None, "1975"]),
+        }
+        for entry in entries
+        if rng.random() < 0.8
+    }
+    categories = {
+        "a": ("A", frozenset(entry.path for entry in entries[::3])),
+        "b": ("B", frozenset(entry.path for entry in entries[::5])),
+        "empty": ("Empty", frozenset()),
+    }
+    energy = meta("beets", "gte", 3.0, name="radio_energy")
+    conditions = [
+        {"field": "category", "category": "a"},
+        {"field": "category", "category": "b", "operator": "is_not"},
+        {"field": "category", "category": "gone"},
+        {"field": "category", "category": "empty"},
+        energy,
+        meta("beets", "eq", 3.0, name="radio_energy"),
+        meta("beets", "is", "high", name="radio_energy"),
+        meta("beets", "contains", "a", name="radio_tier"),
+        meta("beets", "within_days", 30, name="added"),
+        meta("beets", "between", 1970, name="original_year", upper=1990),
+        meta("bpm", "between", 118, upper=124),
+        meta("year", "lt", 2000),
+        meta("genre", "is", "live"),
+        {"field": "folder", "folder": "C:\\music\\rock", "recursive": False},
+        {"field": "folder", "folder": "C:\\music\\pop", "recursive": False, "operator": "is_not"},
+    ]
+    slots = [
+        ClockSlot(conditions=tuple(rng.sample(conditions, rng.randint(1, 4))), match=match)
+        for match in ("all", "any")
+        for _ in range(40)
+    ]
+    slots += [ClockSlot(conditions=(energy,)), ClockSlot(conditions=(energy, conditions[0]))]
+    for at in (now, None):
+        cache = ConditionPaths(slots, entries, (), beets, categories, at)
+        for index, slot in enumerate(slots):
+            expected = _every_entry(slot, entries, beets, categories, at)
+            assert condition_paths(slot, entries, beets, categories, at) == expected
+            assert cache.paths(index) == expected
+    assert condition_paths(slots[-2], entries, None, categories) == set()
+
+
+def test_steps_that_share_a_condition_match_it_once(monkeypatch):
+    """ADR-0009-14."""
+    from autodj import clock_conditions
+    from autodj.clockwheel import ConditionPaths
+
+    built = []
+    real = clock_conditions.condition_value_test
+    monkeypatch.setattr(
+        clock_conditions,
+        "condition_value_test",
+        lambda condition: built.append(condition) or real(condition),
+    )
+    entries = tuple(Track(f"C:\\music\\song{i}.flac", bpm=110 + i) for i in range(20))
+    fast = meta("bpm", "gte", 120)
+    slow = meta("bpm", "lt", 125)
+    slots = [
+        ClockSlot(conditions=(fast,)),
+        ClockSlot(conditions=(fast, slow)),
+        ClockSlot(conditions=(slow, fast), match="any"),
+    ]
+    cache = ConditionPaths(slots, entries, (), None)
+    assert [len(cache.paths(index)) for index in range(3)] == [10, 5, 20]
+    assert built == [fast, slow]
+
+    # A dry run's copy starts from the conditions matched so far; what it
+    # matches later stays its own.
+    twin = cache.copy_for(list(slots))
+    assert twin is not None
+    old = meta("year", "lt", 2001)
+    assert twin._terms["music"].matched(old) == {entry.path for entry in entries}
+    assert built == [fast, slow, old]
+    assert len(twin._terms["music"]._found) == 3
+    assert len(cache._terms["music"]._found) == 2
+
+
+def test_beets_values_follow_new_songs_and_a_new_read_of_beets(monkeypatch):
+    """ADR-0009-14: a large pool's Beets values are looked up once per library and Beets read."""
+    from autodj import catalog, clockwheel
+    from autodj.clockwheel import ConditionPaths
+
+    looked = []
+    real = catalog.normalize_path
+    monkeypatch.setattr(catalog, "normalize_path", lambda path: looked.append(path) or real(path))
+    monkeypatch.setattr(clockwheel, "_BEETS_ROWS", ())
+    size = clockwheel._BEETS_ROWS_MIN
+    entries = tuple(Track(f"C:\\music\\song{i}.flac") for i in range(size))
+    high = meta("beets", "gte", 3.0, name="radio_energy")
+    low = meta("beets", "lt", 3.0, name="radio_energy")
+    slots = [ClockSlot(conditions=(high,)), ClockSlot(conditions=(low,))]
+    beets = {real(entry.path): {"radio_energy": 4.0} for entry in entries[: size // 2]}
+    assert len(ConditionPaths(slots, entries, (), beets).paths(0)) == size // 2
+    assert len(looked) == size
+    # Another step, another pick's cache, a dry run's copy: no lookups again.
+    again = ConditionPaths(slots, entries, (), beets)
+    assert len(again.paths(1)) == 0 and len(again.paths(0)) == size // 2
+    assert len(looked) == size
+
+    # Beets read again: the new values count.
+    reread = {real(entry.path): {"radio_energy": 1.0} for entry in entries}
+    assert len(ConditionPaths(slots, entries, (), reread).paths(1)) == size
+    assert len(looked) == 2 * size
+    # A song added: it is looked up with the rest.
+    added = (*entries, Track("C:\\music\\new.flac"))
+    reread[real(added[-1].path)] = {"radio_energy": 5.0}
+    assert ConditionPaths(slots, added, (), reread).paths(0) == {added[-1].path}
+    assert len(looked) == 3 * size + 1
+    # A small pool, such as the one song a rule checks, is not kept in its place.
+    ConditionPaths(slots, (Track("C:\\music\\single.flac"),), (), reread).paths(0)
+    assert ConditionPaths(slots, added, (), reread).paths(0) == {added[-1].path}
+    assert len(looked) == 3 * size + 2

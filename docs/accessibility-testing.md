@@ -598,8 +598,11 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   word-expanded alternatives, Fixed or Predicted said in the
   Status column; Refresh preview saying the summary once with focus staying on it; nothing said
   by the 30-second refresh or a song change, with the reading position kept; and Shift+H saying
-  the summary from another tab; a new span under Show said once with its summary; and a failed
-  automatic refresh said once, not on every retry.
+  the summary from another tab; a new span under Show said once with its summary; a failed
+  automatic refresh said once, not on every retry; and, on a server slow enough that the preview
+  fills in (or with `BUDGET_SECONDS` lowered in a development checkout), Refresh preview ending with "Still
+  working out the rest of the preview", the new rows joining without speech or a moved reading
+  position, and "Hour preview finished" said once.
 
 For that release, record the date, exact screen reader and browser versions, flows sampled, results, and defects found. Keep this record with the release evidence so readers can find any limits or unresolved defects.
 

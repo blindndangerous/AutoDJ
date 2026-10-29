@@ -387,3 +387,92 @@ def test_song_names_are_not_mistaken_for_version_notes(title: str) -> None:
 )
 def test_explicit_version_notes_still_share_a_song(note: str) -> None:
     assert song_key("Artist", f"Hold Me ({note})") == song_key("Artist", "Hold Me")
+
+
+def _oldest_first(entries, played, rng, *, allowed, versions, preferred_path=None):
+    """Least recently played as each entry's age is worked out one by one (the reference)."""
+    import heapq
+
+    from autodj.clockwheel import _normalized
+
+    song_played = versions.last_played(played) if versions else None
+    song_order: dict[str, int] = {}
+    if versions:
+        songs = list(dict.fromkeys(versions.song(entry.path) for entry in entries))
+        rng.shuffle(songs)
+        preferred = next(
+            (e for e in entries if preferred_path and _normalized(e.path) == preferred_path), None
+        )
+        if preferred is not None:
+            songs.remove(versions.song(preferred.path))
+            songs.insert(0, versions.song(preferred.path))
+        song_order = {song: index for index, song in enumerate(songs)}
+
+    def age(entry):
+        stamp = played(entry.path)
+        if song_played is None:
+            return (stamp is not None, stamp)
+        song = song_played(entry.path)
+        return (
+            song is not None,
+            song,
+            song_order[versions.song(entry.path)],
+            stamp is not None,
+            stamp,
+        )
+
+    ordered = list(entries)
+    rng.shuffle(ordered)
+    heap = [
+        (
+            *age(entry),
+            0 if preferred_path and _normalized(entry.path) == preferred_path else 1,
+            i,
+            entry,
+        )
+        for i, entry in enumerate(ordered)
+    ]
+    heapq.heapify(heap)
+    while heap:
+        entry = heapq.heappop(heap)[-1]
+        if allowed(entry):
+            return entry
+    return None
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_least_recent_ages_each_song_once_as_it_ages_each_version(seed: int) -> None:
+    """ADR-0009-14: the same choice as ageing each version of each song one by one."""
+    rng = random.Random(seed)
+    entries = [
+        SimpleNamespace(
+            path=f"/music/{n}.flac",
+            artist=f"Artist {rng.randrange(6)}",
+            album="Album",
+            title=f"Song {rng.randrange(25)}",
+        )
+        for n in range(60)
+    ]
+    versions = SongVersions(entries)
+    assert versions
+    history = {e.path: float(rng.randrange(8)) for e in entries if rng.random() < 0.6}
+    blocked = {e.path for e in entries if rng.random() < 0.3}
+    preferred = rng.choice([None, rng.choice(entries).path])
+    for counted in (versions, None, SongVersions(entries[:1])):
+        expected = _oldest_first(
+            entries,
+            history.get,
+            random.Random(seed),
+            allowed=lambda e: e.path not in blocked,
+            versions=counted,
+            preferred_path=preferred,
+        )
+        picked = least_recent(
+            entries,
+            history,
+            random.Random(seed),
+            allowed=lambda e: e.path not in blocked,
+            versions=counted,
+            preferred_path=preferred,
+        )
+        assert picked is expected

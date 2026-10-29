@@ -95,6 +95,8 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0009-10` | A category build matches each Beets query against whole columns of the library, with the same songs and first-release fallback counts as matching each song. A new library snapshot works out only the songs added, changed or removed (a full build beyond 2% of the library, or when the categories, folders, Beets or a playlist file changed, or a result had an error); playlist categories are read again whenever songs changed, and on the hour only categories with relative dates are worked out again. Beets is read again only when its database changes; when songs are only added or removed, the values already read are counted against the new songs, unless their paths were matched from a guessed folder or no song would match. | automated | `tests/unit/test_categories.py::test_matching_whole_columns_gives_the_same_songs_as_matching_each_song`; `tests/unit/test_categories.py::test_a_changed_song_updates_the_categories_as_a_full_rebuild_would`; `tests/unit/test_categories.py::test_on_the_hour_only_categories_with_relative_dates_are_worked_out_again`; `tests/unit/test_categories.py::test_the_clockwheel_and_every_station_read_beets_once` |
 | `ADR-0009-11` | Random and LRP forecast picks retain eligible preferences for the same clockwheel occurrence, including a step temporarily omitted at a restart; later laps have separate choices and preview state remains isolated. | automated | `tests/unit/test_clock_preview_refresh.py::test_a_step_returns_with_its_song_after_the_hour_restart_omits_it`; `tests/unit/test_clock_preview_refresh.py::test_fixed_prefix_advancement_keeps_the_next_lap_distinct`; `tests/unit/test_clock_preview_memory.py::test_cycles_without_restarts_have_distinct_choices_and_follow_fixed_advancement` |
 | `ADR-0009-12` | A dry run starts from the clockwheel conditions, track keys, song versions and eligible songs the station's player has worked out, as copies checked against its own inputs; it normalizes its history once and keeps it as it plays, and picks the same songs as one that worked everything out itself. | automated | `tests/unit/test_hour_preview.py::test_a_preview_starts_from_what_the_station_worked_out`; `tests/unit/test_rotation_sim.py::test_a_dry_runs_kept_history_matches_one_built_again` |
+| `ADR-0009-13` | An Hour preview whose dry run reaches its time limit says the rest is still being worked out, not that it stopped, and the server goes on from its last pick in bounded slices with pauses on its worker thread, behind any waiting ask and outside the waiting limit, only while the preview is kept and the page asks for it, up to a total work limit; each slice gives a longer view of the same songs one longer run picks, a new fixed song, a forced refresh or the end of the keep stops it, and once its work runs out it says the prediction stopped at its time limit. The page asks again sooner while it fills, adds the rows in place without speech, and says once when a preview someone asked for has finished. | automated | `tests/unit/test_hour_preview.py::test_a_preview_past_its_time_limit_fills_in_as_one_long_run_would`; `tests/unit/test_hour_preview.py::test_a_preview_that_cannot_fill_in_time_says_it_stopped`; `tests/unit/test_hour_preview.py::test_a_preview_stops_filling_when_something_new_is_fixed`; `tests/unit/test_hour_preview.py::test_filling_waits_for_the_page_and_never_holds_up_an_ask`; `tests/unit/test_hour_preview.py::test_filling_ends_within_the_keep_and_the_page_asks_often_enough`; `tests/jsmodules/hour-preview.test.js::says the rest is still coming, asks again sooner and adds the rows in place quietly`; `tests/jsmodules/hour-preview.test.js::says once when a preview someone asked for has filled in`; `tests/jsmodules/hour-preview.test.js::says nothing when a preview it only refreshed for itself fills in` |
+| `ADR-0009-14` | A conditions step matches each condition against the whole pool once, shared by the steps that have it, and gives the songs testing each entry gives; a large pool's Beets values are looked up again only for new entries or a new read of Beets, a Beets read with the same songs does not list them again, and least recently played ages each song once with the same choice. | automated | `tests/unit/test_clock_condition_picks.py::test_whole_pool_matching_gives_the_songs_testing_each_one_gives`; `tests/unit/test_clock_condition_picks.py::test_steps_that_share_a_condition_match_it_once`; `tests/unit/test_clock_condition_picks.py::test_beets_values_follow_new_songs_and_a_new_read_of_beets`; `tests/unit/test_clock_condition_data.py::test_a_read_with_the_same_songs_does_not_list_them_again`; `tests/unit/test_song_versions.py::test_least_recent_ages_each_song_once_as_it_ages_each_version` |
 
 ## Verification
 
@@ -280,3 +282,64 @@ conditions steps, pinned to 2 cores of one laptop CPU), a 60-minute preview fell
 seconds to 0.40 to 0.55 seconds; the previews were the same. These are measurements on one
 machine, not on the server where the limit was reached. The time limit is unchanged.
 Contract `ADR-0009-12` records this; the ADR remains Proposed.
+
+## Amendment 2026-10-29: Previews that fill in on a slow server
+
+After the amendment above, the same station's Hour preview, on a 4-core 2 GHz low-power x86
+server, still stopped at its 4-second time limit with 3 predicted songs: about 1.3 seconds per
+pick. The station has 78,500 songs, 17 Beets query categories and clockwheels of 10 to 25
+conditions steps that combine categories (some with "is not"), a Beets number and a BPM range.
+
+Two causes remained. A dry run only inherits the conditions steps the station's player has
+picked since the library or Beets last changed; Beets values change often, so most steps of a
+large clockwheel were worked out again by every preview. Each of those steps matched the whole
+library song by song: for each Beets condition it spelled every song's path as the catalog does
+and parsed its value again, and for each category condition it tested every song. Then every
+pick aged every song its step matched, versions included, and listed every song's path to read
+Beets.
+
+A conditions step now matches each condition once for the whole pool, and the steps that share a
+condition share its result: a category condition by set operations on the category's songs, a
+value condition by judging each distinct value once. A large pool's Beets values are looked up
+once per library snapshot and Beets read. A Beets read with the same songs no longer lists them.
+Least recently played ages each song once, in one pass. These answers are those of testing
+each entry, which tests compare on varied data (`ADR-0009-14`); the preview picks the same songs.
+
+That work is still proportional to the songs a step matches, so a slow enough server can still
+reach the time limit. The limit stays: it bounds how long the first answer waits. When it is
+reached, the Hour preview now goes on from its last pick instead of stopping:
+
+- The first answer lists what it has and says "Still working out the rest of the preview. So far
+  the list runs to" a time, instead of saying the prediction stopped early.
+- The worker thread, already below normal priority, keeps the dry run's copy of the player
+  waiting before its next pick and works on in slices of about 2 seconds with a 1-second pause
+  between them, so the audio and web threads keep the interpreter most of the time. Each pick
+  still sleeps 2 ms. A waiting preview always goes first; this work never waits in the queue, so
+  it neither counts toward the 8 waiting previews nor makes an ask busy.
+- It goes on only while the preview is kept (45 seconds from its first answer while nothing new
+  is fixed) and the page asked for it in the last 15 seconds, and for at most 20 seconds of work
+  in all. A new fixed song, a forced refresh or the end of the keep stops it; the next ask makes a
+  new preview, as before. If the work runs out first, the preview says the prediction stopped
+  early at its time limit.
+- Each slice replaces the kept preview with a longer one. The songs are those one run without a
+  time limit picks, because it is the same run: its clock, history, random generator and
+  remembered choices wait with it.
+- While a preview fills, the page asks again every 5 seconds instead of 30. New rows join the
+  table in place and nothing is said. After Refresh preview or a new span, the spoken summary ends
+  with "Still working out the rest of the preview", and "Hour preview finished" and the summary
+  are said once when it has. Shift+H says the note too.
+
+Going on at the next ask alone was considered: the page asks every 30 seconds and a preview is
+kept for 45, so a preview would get at most two slices before a new one started from scratch. A
+longer time limit was also considered: it delays the first answer and holds the worker, and the
+interpreter, for one long run. Contract `ADR-0009-13` records the filling behaviour.
+
+In a benchmark at that station's shape (80,000 synthetic songs, 70% with plays, 17 Beets query
+categories, an 18-step clockwheel of conditions steps, artist and title separation and Count
+versions as one song), the previews were the same before and after. Pinned to one core of one
+laptop CPU, a 60-minute preview fell from 0.071 to 0.034 seconds per pick. Limited to 7% of that
+core, where the unchanged code took 1.23 seconds per pick, about what the server took, the
+unchanged preview stopped at its time limit with 2 to 5 predicted songs; the new one answered
+after 4.1 seconds with 7 predicted songs and filled the whole hour, 15 songs, 14 seconds after it
+was first asked for. A 3-hour preview there ran out of its 20 seconds of work after 13 songs and
+said so. These are measurements on other machines, not on that server. The ADR remains Proposed.

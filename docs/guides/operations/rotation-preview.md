@@ -183,10 +183,20 @@ time zone, as the player does.
 
 The page asks the server only while the card is open. Each preview runs on one worker thread
 below normal priority, never on the web server's event loop and never on the audio threads. The
-dry run stops after 80 songs, or once it has worked about 4 seconds, and says so; the time limit
-is checked before each pick, so one slow pick can run a little past it. A preview is reused for
-45 seconds while nothing new is fixed, longer than the page's 30-second refresh, so an open card
-costs no dry run until a song changes. Several pages asking for the same station and span at once
+dry run stops after 80 songs, and says so. Its first answer comes after at most about 4 seconds of
+work; the time limit is checked before each pick, so one slow pick can run a little past it. On a
+slow server the list may end before the span does. The card then says "Still working out the rest
+of the preview. So far the list runs to 13:02.", and the server goes on from the last pick in the
+background: about 2 seconds of work at a time with a 1-second pause between, only when no other
+preview is waiting, and at most about 20 seconds in all. While that line shows, the card asks
+again every 5 seconds, adding the new rows in place and saying nothing. After **Refresh preview**
+or a new span, the spoken summary ends with "Still working out the rest of the preview", and
+"Hour preview finished." and the summary are said once when it is done. The predicted songs are
+those one longer run would pick. If the 20 seconds run out first, the card says the prediction
+stopped early at its time limit. A preview is reused for 45 seconds from its first answer while
+nothing new is fixed, longer than the page's 30-second refresh, so an open card costs no dry run
+until a song changes; one still filling goes on only during those 45 seconds and while a page
+keeps asking for it. Several pages asking for the same station and span at once
 share one preview, at most 8 different previews wait for the worker, and one more is answered
 with 503 and "try again in a few seconds". At shutdown the server waits for the worker; if it has
 not stopped, the server logs an error and leaves the library open rather than close it under the

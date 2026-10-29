@@ -448,4 +448,89 @@ describe("hour preview card", () => {
     expect(byId("hour-preview-table").hidden).toBe(true);
     expect(byId("hour-preview-summary").textContent).toBe("Open this card to see the hour ahead.");
   });
+
+  // ADR-0009-13
+  it("says the rest is still coming, asks again sooner and adds the rows in place quietly", async () => {
+    const filling = "Still working out the rest of the preview. So far the list runs to 12:15:50.";
+    const partial = view({ filling, items: view().items.slice(0, 2) });
+    const { request, timers } = harness([partial, view({ filling: null })]);
+    await open();
+    const stopped = byId("hour-preview-stopped");
+    expect(stopped.hidden).toBe(false);
+    expect(stopped.textContent).toBe(filling);
+    expect(byId("hour-preview-tbody").children).toHaveLength(2);
+    const rows = [...byId("hour-preview-tbody").children];
+    expect(timers.filter((timer) => !timer.cleared).at(-1).ms).toBe(5000);
+    await timers.filter((timer) => !timer.cleared).at(-1).fn();
+    await settle();
+    expect(request).toHaveBeenCalledTimes(2);
+    // The rows already shown stay; the new one joins them, and nothing is said.
+    const tbody = byId("hour-preview-tbody");
+    expect(tbody.children).toHaveLength(3);
+    expect([...tbody.children].slice(0, 2)).toEqual(rows);
+    expect(stopped.hidden).toBe(true);
+    expect(byId("hour-preview-status").textContent).toBe("");
+    expect(timers.filter((timer) => !timer.cleared).at(-1).ms).toBe(30000);
+  });
+
+  // ADR-0009-13
+  it("says once when a preview someone asked for has filled in", async () => {
+    vi.useFakeTimers();
+    try {
+      const filling = "Still working out the rest of the preview. So far the list runs to 12:15:50.";
+      const { timers } = harness([
+        view(),
+        view({ filling }),
+        view({ filling }),
+        view({ summary: "Filled." }),
+        view({ summary: "Filled." }),
+      ]);
+      await open();
+      byId("hour-preview-refresh").click();
+      await settle();
+      await vi.advanceTimersByTimeAsync(1);
+      const status = byId("hour-preview-status");
+      expect(status.textContent).toBe(
+        `Hour preview updated. ${view().summary} Still working out the rest of the preview.`,
+      );
+      status.textContent = "";
+      const next = () => timers.filter((timer) => !timer.cleared).at(-1);
+      expect(next().ms).toBe(5000);
+      // Still filling: nothing more is said.
+      await next().fn();
+      await settle();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(status.textContent).toBe("");
+      // Filled in: said once, then quiet again.
+      await next().fn();
+      await settle();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(status.textContent).toBe("Hour preview finished. Filled.");
+      status.textContent = "";
+      await next().fn();
+      await settle();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(status.textContent).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ADR-0009-13
+  it("says nothing when a preview it only refreshed for itself fills in", async () => {
+    vi.useFakeTimers();
+    try {
+      const filling = "Still working out the rest of the preview. So far the list runs to 12:15:50.";
+      const { timers, spoken, controls } = harness([view({ filling }), view()]);
+      await open();
+      await timers.filter((timer) => !timer.cleared).at(-1).fn();
+      await settle();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(byId("hour-preview-status").textContent).toBe("");
+      await controls.speakSummary();
+      expect(spoken).toEqual([view().summary]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

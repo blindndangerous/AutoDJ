@@ -119,3 +119,36 @@ def test_missing_library_is_human_readable_and_legacy_config_safe() -> None:
     _, items, error = BeetsConditions(SimpleNamespace()).snapshot(["mood"])
     assert items == {}
     assert error == "Configure a Beets database to use Beets field conditions."
+
+
+def test_a_read_with_the_same_songs_does_not_list_them_again(tmp_path: Path) -> None:
+    """ADR-0009-14: every clockwheel pick reads Beets; an unchanged library is not walked."""
+    looked = []
+
+    class Song:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        @property
+        def is_silent(self) -> bool:
+            looked.append(self.path)
+            return False
+
+    db = _db(tmp_path / "library.db")
+    entries = (Song(str(tmp_path / "music" / "Artist" / "Song.flac")),)
+    current = [entries]
+    data = BeetsConditions(_config(db, tmp_path / "music"), lambda: current[0])
+    _, first, _ = data.snapshot(["year"])
+    assert first and looked
+    looked.clear()
+    for _ in range(3):
+        assert data.snapshot(["year"])[1] is first
+    assert looked == []
+    # A field not read yet lists the songs to match them, once.
+    data.snapshot(["mood"])
+    assert len(looked) == 1
+    looked.clear()
+    # New songs are listed and matched again.
+    current[0] = (*entries, Song(str(tmp_path / "music" / "Artist" / "Other.flac")))
+    data.snapshot(["year"])
+    assert len(looked) == 2
