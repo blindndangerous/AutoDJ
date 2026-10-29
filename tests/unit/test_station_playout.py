@@ -1568,10 +1568,10 @@ def test_clock_conditions_are_worked_out_once_per_library_generation(station, mo
         ClockSlot(conditions=({"field": "year", "operator": "lt", "value": 2000},))
     ]
     built = []
-    real = clock_conditions.condition_matcher
+    real = clock_conditions.condition_value_test
     monkeypatch.setattr(
         clock_conditions,
-        "condition_matcher",
+        "condition_value_test",
         lambda condition: built.append(condition) or real(condition),
     )
     assert player._clock_pick(player._pick_context(), 0).entry is b
