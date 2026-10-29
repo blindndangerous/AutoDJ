@@ -92,6 +92,8 @@ def test_audio_estimates_preserve_manual_tags_and_existing_source_bpm(tmp_path):
     manual_path.write_bytes(b"manual audio")
     source_path = root / "source.flac"
     source_path.write_bytes(b"tagged audio")
+    measured_path = root / "measured.flac"
+    measured_path.write_bytes(b"measured audio")
     catalog = LibraryCatalog(tmp_path / "library.db")
     try:
         catalog.add_source(root)
@@ -113,5 +115,16 @@ def test_audio_estimates_preserve_manual_tags_and_existing_source_bpm(tmp_path):
         assert catalog.store_audio_analysis(source_path, source_size, source_fingerprint, result)
         source = catalog.record_for_path(source_path)
         assert (source["bpm"], source["key"]) == (99, 3)
+        measured_size, measured_fingerprint = _add(catalog, measured_path)
+        assert catalog.store_analysis(
+            measured_path,
+            measured_size,
+            measured_fingerprint,
+            {"energy": 0.1, "key": 2, "mode": 0, "bpm": 111, "tempo_confidence": 0.4},
+            np.zeros(FEATURE_DIM, dtype=np.float32),
+            audio_analysis=result,
+        )
+        measured = catalog.record_for_path(measured_path)
+        assert measured["bpm"] == 111
     finally:
         catalog.close()
