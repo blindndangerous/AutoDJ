@@ -86,6 +86,26 @@ def _user_tags(value: Any, fingerprint: str) -> list[str]:
     return sorted(name for name in _USER_TAGS if tags.get(name) == fingerprint)
 
 
+def _legacy_history_duration(row: Any) -> float | None:
+    """Return a legacy history row's normalized duration, or None if invalid."""
+    if not isinstance(row, dict):
+        return None
+    duration = LibraryCatalog._duration(row.get("duration"))
+    if (
+        not isinstance(row.get("title"), str)
+        or not isinstance(row.get("artist"), str)
+        or duration is None
+        or not LibraryCatalog._valid_played_at(row.get("played_at"))
+        or ("path" in row and not isinstance(row["path"], str))
+        or ("event_id" in row and (not isinstance(row["event_id"], str) or not row["event_id"]))
+        or ("station" in row and (not isinstance(row["station"], str) or not row["station"]))
+        or ("interrupted" in row and type(row["interrupted"]) is not bool)
+        or ("performances" in row and LibraryCatalog._count(row["performances"]) is None)
+    ):
+        return None
+    return duration
+
+
 _SCHEMA = """
     CREATE TABLE IF NOT EXISTS catalog_sources (
         id TEXT PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL,
@@ -539,27 +559,8 @@ class LibraryCatalog:
                 valid_rows = []
                 invalid = 0
                 for row in rows:
-                    if not isinstance(row, dict):
-                        invalid += 1
-                        continue
-                    duration = self._duration(row.get("duration"))
-                    if (
-                        not isinstance(row.get("title"), str)
-                        or not isinstance(row.get("artist"), str)
-                        or duration is None
-                        or not self._valid_played_at(row.get("played_at"))
-                        or ("path" in row and not isinstance(row["path"], str))
-                        or (
-                            "event_id" in row
-                            and (not isinstance(row["event_id"], str) or not row["event_id"])
-                        )
-                        or (
-                            "station" in row
-                            and (not isinstance(row["station"], str) or not row["station"])
-                        )
-                        or ("interrupted" in row and type(row["interrupted"]) is not bool)
-                        or ("performances" in row and self._count(row["performances"]) is None)
-                    ):
+                    duration = _legacy_history_duration(row)
+                    if duration is None:
                         invalid += 1
                         continue
                     valid_rows.append((row, duration))
