@@ -91,6 +91,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0012-07` | No-model servers accept compatible remote results with an existing model cache; missing cache requests are refused with recovery advice that does not promise no-model downloads. | automated | `tests/unit/test_worker_api.py::test_a_valid_result_goes_into_the_live_catalog`; `tests/unit/test_worker_api.py::test_a_server_without_the_model_cannot_check_results` |
 | `ADR-0012-08` | Similarity is offered only when local MuQ execution is available or a compatible worker can use installed model weights; a saved selection remains intact when unavailable. | automated | `tests/unit/test_audio_analysis_pipeline.py::test_similarity_choice_reflects_installed_capability`; `tests/jsmodules/library-folders.test.js::offers similarity only when available and preserves unavailable existing folders` |
 | `ADR-0012-09` | Setup synchronizes managed runtimes from the lock and selected backend on rerun; adopted external runtimes stay unchanged unless explicitly managed. | automated | `tests/unit/test_setup_flow.py::test_install_python_always_synchronizes_and_checks_runtime`; `tests/unit/test_setup_flow.py::test_explicit_existing_environment_is_adopted_without_package_install`; `tests/unit/test_setup_flow.py::test_manage_environment_updates_adopted_runtime_and_saves_managed_ownership` |
+| `ADR-0012-10` | Managed synchronization is exact: the final install removes packages that the lock, the backend wheel profile and an installed no-model sound-card output do not need. | automated | `tests/unit/test_setup_flow.py::test_managed_sync_removes_packages_the_lock_no_longer_lists`; `tests/unit/test_setup_flow.py::test_no_model_sync_keeps_installed_sound_card_output` |
 
 ## Amendment 2026-10-18: optional no-model serving runtime
 
@@ -160,6 +161,18 @@ operator supplies `--manage-environment`. That opt-in makes setup responsible fo
 and records managed ownership only after successful verification. Dry-run displays the target and
 commands without running them or writing setup files. This amendment preserves the existing
 hardware compatibility evidence limits and the ADR's Proposed status.
+
+## Amendment 2026-10-29: exact managed synchronization
+
+[Issue #626](https://github.com/blindndangerous/AutoDJ/issues/626) found that synchronization
+left packages a newer or older lock no longer lists, so the dependency check could fail on
+them, including during a web update's rollback. The final install of a setup-managed runtime
+is now exact: it removes packages that the exported lock requirements, the backend's pinned
+wheels and the project's selected extras do not need. Packages seeded with the environment,
+such as pip, are kept. This replaces the 2026-10-27 statement that existing optional packages
+are not removed, except that a no-model runtime that already has the sound-card output
+package keeps the `play` extra. Adopted external runtimes remain unchanged. This amendment
+preserves the ADR's Proposed status and evidence limits.
 
 ## Verification
 

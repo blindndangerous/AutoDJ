@@ -105,6 +105,14 @@ def python_version(root: Path) -> str:
     return version
 
 
+def _sound_card_installed(environment: Path) -> bool:
+    """Report whether an environment already has the play extra's sound-card package."""
+    return any(
+        any(environment.glob(f"{site}/sounddevice-*.dist-info"))
+        for site in ("Lib/site-packages", "lib/python*/site-packages")
+    )
+
+
 def install_commands(
     root: Path,
     environment: Path,
@@ -133,8 +141,11 @@ def install_commands(
         # Without it uv also prints the whole requirements file; errors still show.
         "--quiet",
     ]
-    if backend != "no-model":
-        export.extend(["--extra", "all"])
+    extra = "all" if backend != "no-model" else None
+    if backend == "no-model" and _sound_card_installed(environment):
+        extra = "play"
+    if extra:
+        export.extend(["--extra", extra])
     if platform_recipe and platform_recipe.get("packages"):
         export.extend(
             [
@@ -167,6 +178,7 @@ def install_commands(
                 "uv",
                 "pip",
                 "install",
+                "--exact",
                 "--python",
                 str(python_path(environment)),
                 "--constraint",
@@ -183,12 +195,13 @@ def install_commands(
                 "uv",
                 "pip",
                 "install",
+                "--exact",
                 "--python",
                 str(python_path(environment)),
                 "-r",
                 str(requirements),
                 "-e",
-                "." if backend == "no-model" else ".[all]",
+                f".[{extra}]" if extra else ".",
             ]
         )
     return commands
