@@ -136,20 +136,30 @@ class BeetsConditions:
                 str(music_dir) if music_dir is not None else None,
                 *self._fingerprint(db_path),
             )
-            paths = (
-                None
-                if entries is None
-                else [e.path for e in entries if not getattr(e, "is_silent", False)]
-            )
+            # The playable paths are listed only when the songs or the
+            # database changed, or a field is read: every clockwheel pick
+            # reads through here, and listing a large library's paths each
+            # time was most of what that cost.
+            listed: list[list[str] | None] = []
+
+            def playable() -> list[str] | None:
+                if not listed:
+                    listed.append(
+                        None
+                        if entries is None
+                        else [e.path for e in entries if not getattr(e, "is_silent", False)]
+                    )
+                return listed[0]
+
             if entries is not self._cached_entries:
                 self._cached_entries = entries
-                if paths != self._paths and not (
-                    key == self._key and self._rematch(paths, db_path, music_dir)
+                if playable() != self._paths and not (
+                    key == self._key and self._rematch(playable(), db_path, music_dir)
                 ):
                     self._key = None  # Other songs: match the paths again.
             if key != self._key:
                 self._key = key
-                self._paths = paths
+                self._paths = playable()
                 self._reset()
 
             requested = self._valid(fields)
@@ -170,7 +180,7 @@ class BeetsConditions:
                     if entries is None:
                         fresh, check = source.items(missing), None
                     else:
-                        fresh, check = source.checked_items(missing, paths or [])
+                        fresh, check = source.checked_items(missing, playable() or [])
                     if self._items:
                         merged = {path: dict(values) for path, values in self._items.items()}
                         for path, values in fresh.items():
