@@ -33,6 +33,7 @@ import subprocess  # nosec B404 -- operator-configured argv, never a shell
 import tempfile
 import threading
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -1354,8 +1355,6 @@ def install_time_checks(router: StationRouter) -> None:
         checks = station.time_checks
         registry = request.app.state.stations
         own_slug = request.path_params.get("slug", DEFAULT_SLUG)
-        from contextlib import ExitStack
-
         from autodj.profile_settings import profile_settings
 
         def users() -> list[Any]:
