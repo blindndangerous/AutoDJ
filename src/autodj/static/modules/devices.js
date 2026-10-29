@@ -1,3 +1,4 @@
+import { copyByCommand } from "./clipboard.js";
 // Settings > Browser access: native pairing or SSO-owned browser names.
 // SSO forgetting removes a name without revoking the provider session.
 // Native: "Sign out this browser", the paired devices
@@ -66,26 +67,6 @@ export function shownCode(code) {
 
 export function spokenCode(code) {
   return `${[...code.slice(0, 4)].join(" ")}, ${[...code.slice(4)].join(" ")}`;
-}
-
-// Plain http is not a secure context, so it has no clipboard API; the
-// older copy command still works there through a one-off copy listener.
-export function copyByCommand(text, doc = globalThis.document) {
-  let wrote = false;
-  const onCopy = (event) => {
-    if (!event.clipboardData) return;
-    event.clipboardData.setData("text/plain", text);
-    event.preventDefault();
-    wrote = true;
-  };
-  doc.addEventListener("copy", onCopy);
-  try {
-    return typeof doc.execCommand === "function" && doc.execCommand("copy") === true && wrote;
-  } catch (_) {
-    return false;
-  } finally {
-    doc.removeEventListener("copy", onCopy);
-  }
 }
 
 export function installAccess(els, { onSignedOut, getAuthState = authenticationState }) {

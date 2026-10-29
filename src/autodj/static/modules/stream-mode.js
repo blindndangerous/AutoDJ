@@ -1,3 +1,4 @@
+import { copyByCommand } from "./clipboard.js";
 // Stream mode: the server mixes and streams MP3, so this page is a remote
 // that can also listen through one plain <audio> element.  The browser
 // mixing engine (decks, worklets, prefetch) is never started here.
@@ -587,32 +588,11 @@ export function createStreamSettings({
     retryIfMissing({ throttle: true });
   }
 
-  // Plain http is not a secure context, so it has no clipboard API.  The
-  // older copy command still works there; a one-off copy listener hands
-  // it the address, so nothing needs selecting and focus stays put.
-  function copyByCommand() {
-    let wrote = false;
-    const onCopy = (event) => {
-      if (!event.clipboardData) return;
-      event.clipboardData.setData("text/plain", url.value);
-      event.preventDefault();
-      wrote = true;
-    };
-    doc.addEventListener("copy", onCopy);
-    try {
-      return typeof doc.execCommand === "function" && doc.execCommand("copy") === true && wrote;
-    } catch (_) {
-      return false;
-    } finally {
-      doc.removeEventListener("copy", onCopy);
-    }
-  }
-
   copy.addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(url.value);
     } catch (_err) {
-      if (!copyByCommand()) {
+      if (!copyByCommand(url.value, doc)) {
         // Focus moves to the selected address, ready for Ctrl+C.
         url.focus();
         url.select();

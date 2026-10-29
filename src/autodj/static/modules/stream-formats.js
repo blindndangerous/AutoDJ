@@ -1,3 +1,4 @@
+import { copyByCommand } from "./clipboard.js";
 // Settings > Stream > More formats (#50): the AAC and Opus streams'
 // quality, and the address of every format that is on.
 //
@@ -34,22 +35,7 @@ async function copyText(doc, text) {
     await navigator.clipboard.writeText(text);
     return true;
   } catch (_) {
-    // Plain http has no clipboard API; the older copy command still works.
-    let wrote = false;
-    const onCopy = (event) => {
-      if (!event.clipboardData) return;
-      event.clipboardData.setData("text/plain", text);
-      event.preventDefault();
-      wrote = true;
-    };
-    doc.addEventListener("copy", onCopy);
-    try {
-      return typeof doc.execCommand === "function" && doc.execCommand("copy") === true && wrote;
-    } catch (_err) {
-      return false;
-    } finally {
-      doc.removeEventListener("copy", onCopy);
-    }
+    return copyByCommand(text, doc);
   }
 }
 
