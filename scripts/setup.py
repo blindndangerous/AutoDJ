@@ -493,7 +493,6 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     )
     print("Start AutoDJ with:")
     print(".\\autodj.cmd serve" if os.name == "nt" else "./autodj serve")
-    print("Manage music folders from the Library page in AutoDJ.")
     if args.serve:
         run([str(python), "-m", "autodj", "serve"], root, env)
     return 0

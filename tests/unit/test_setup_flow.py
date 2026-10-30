@@ -432,7 +432,6 @@ def test_explicit_existing_environment_is_adopted_without_package_install(
     generated = tomllib.loads((root / "config.toml").read_text(encoding="utf-8"))
     assert "music_dir" not in generated["library"]
     output = capsys.readouterr().out
-    assert "Manage music folders" in output
     assert "without changing its packages" in " ".join(output.split())
     setup_modules.setup.ensure_ffmpeg.assert_called_once_with(auto_install=True)
     selection = setup_modules.support.read_json(root / setup_modules.support.STATE)
