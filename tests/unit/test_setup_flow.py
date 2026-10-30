@@ -752,8 +752,9 @@ def test_cpu_and_no_model_package_exports(
         assert "--prune" in export
         assert "-e" in commands[-1] and ".[all]" in commands[-1]
     else:
-        assert "--extra" not in export and "--prune" not in export
-        assert commands[-1][-2:] == ["-e", "."]
+        assert export[export.index("--extra") + 1] == "play"
+        assert "--prune" not in export
+        assert commands[-1][-2:] == ["-e", ".[play]"]
         monkeypatch.setattr(setup_modules.support, "run", Mock())
         setup_modules.support.install_python(root, root / ".uv/setup-no-model", backend, "Linux")
         assert (root / ".uv").is_dir()
@@ -864,14 +865,18 @@ def test_exact_sync_retains_device_extra_and_removes_obsolete_package(
     assert "obsolete" not in installed
 
 
-def test_no_model_sync_keeps_installed_sound_card_output(setup_modules, tmp_path: Path) -> None:
-    """ADR-0012-10: an exact no-model sync keeps sound-card packages already installed."""
+@pytest.mark.parametrize("installed", [False, True])
+def test_no_model_sync_keeps_installed_sound_card_output(
+    setup_modules, tmp_path: Path, installed
+) -> None:
+    """ADR-0012-10: an exact no-model sync includes sound-card support on fresh and existing installs."""
     root, _ = _project(tmp_path)
     environment = root / ".uv/setup-no-model"
     site = environment / (
         "Lib/site-packages" if sys.platform == "win32" else "lib/python3.14/site-packages"
     )
-    (site / "sounddevice-0.5.3.dist-info").mkdir(parents=True)
+    if installed:
+        (site / "sounddevice-0.5.3.dist-info").mkdir(parents=True)
 
     commands = setup_modules.support.install_commands(root, environment, "no-model", "Linux")
     export = next(command for command in commands if command[1] == "export")
@@ -1057,7 +1062,7 @@ def test_no_model_setup_saves_runtime_without_torch_probe(
     commands = setup_modules.support.install_commands(
         root, Path(state["environment"]), "no-model", "Linux"
     )
-    assert commands[-1][-2:] == ["-e", "."]
+    assert commands[-1][-2:] == ["-e", ".[play]"]
     assert all("torch" not in str(command) for command in commands)
     assert setup_modules.support.runtime_environment(root, "no-model")["AUTODJ_NO_MODEL"] == "1"
 

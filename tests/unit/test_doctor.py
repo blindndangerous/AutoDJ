@@ -1458,3 +1458,34 @@ def test_doctor_and_check_update_say_when_development_waits_for_a_release(
     lines = updates.describe_check(installation, waiting)
     assert waiting.message in lines
     assert not any(line.startswith("Make a backup") for line in lines)
+
+
+@pytest.mark.parametrize(
+    "output,monitor,required",
+    [
+        ("browser", False, False),
+        ("stream", False, False),
+        ("server", False, True),
+        ("stream", True, True),
+    ],
+)
+@pytest.mark.parametrize("installed", [False, True])
+def test_speaker_dependency_follows_station_output(
+    tmp_path, monkeypatch, output, monitor, required, installed
+):
+    cfg = _config(tmp_path)
+    cfg.station.output = output
+    cfg.station.server_audio_too = monitor
+    monkeypatch.setattr(
+        doctor, "_module_available", lambda name: name != "sounddevice" or installed
+    )
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: "ffmpeg")
+    assert doctor._dependency_check().status is doctor.CheckStatus.PASS
+    checks = doctor._speaker_checks(cfg)
+    if required:
+        assert len(checks) == 1
+        assert checks[0].status is (
+            doctor.CheckStatus.PASS if installed else doctor.CheckStatus.WARN
+        )
+    else:
+        assert checks == []

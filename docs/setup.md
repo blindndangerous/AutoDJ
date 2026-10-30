@@ -80,9 +80,9 @@ On Windows use `.\autodj.cmd` in place of `./autodj`. The saved selection is
 Transformers packages or model weights are installed. CPU audio processing still
 uses NumPy, librosa and FFmpeg; no-model does not mean dependency-free. Set
 `UV_NO_CACHE=1` during setup to avoid retaining a second installer cache.
-Fresh no-model setup omits sound-card output packages. Browser playback and
-server streaming are included; server sound-card output needs the `play` extra
-and platform audio support. Existing sound-card packages are not removed.
+Setup includes browser playback, streaming and sound-card output packages with
+or without MuQ. Choosing No uses the `play` extra; choosing Yes uses `all`.
+Sound-card output still needs platform audio support and is enabled per station.
 
 Basic scanning, shared Audio analysis and previously saved vectors remain usable.
 `autodj index` imports playable songs and reports pending Similarity work without

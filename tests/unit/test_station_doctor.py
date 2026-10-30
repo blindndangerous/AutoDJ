@@ -447,3 +447,18 @@ def test_doctor_never_rolls_back_unasked_outside_a_terminal(tmp_path: Path) -> N
     assert "run `autodj doctor` in a terminal" in result.output
     assert not state.exists()
     assert result.exit_code == 1
+
+
+def test_speaker_warning_belongs_to_station_using_sound_card(tmp_path, monkeypatch):
+    from autodj import doctor
+
+    cfg = _config(
+        tmp_path, '\n[stations.nightowl.station]\noutput = "stream"\nserver_audio_too = true\n'
+    )
+    cfg.station.output = "browser"
+    monkeypatch.setattr(doctor, "_module_available", lambda name: name != "sounddevice")
+    report = run_doctor(cfg, check_updates=False)
+    warnings = [check for check in report.checks if check.name == "server-speakers"]
+    assert len(warnings) == 1
+    assert warnings[0].station == "nightowl"
+    assert warnings[0].status is CheckStatus.WARN
