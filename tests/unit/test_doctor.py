@@ -265,6 +265,65 @@ def test_music_path_check_uses_registered_roots_when_catalog_exists(tmp_path: Pa
     assert [Path(path) for path in check.detail["registered"]] == [registered]
 
 
+def test_configuration_describes_catalog_storage_and_legacy_purposes(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    cfg.config_path.write_text('[library]\nmusic_dir = "old-music"\n', encoding="utf-8")
+    roots = [tmp_path / "first", tmp_path / "second"]
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
+        for root in roots:
+            root.mkdir()
+            catalog.add_source(root)
+    before = _tree_snapshot(tmp_path)
+
+    report = DoctorReport((doctor._configuration_check(cfg), doctor._music_paths_check(cfg)))
+    payload = json.loads(report.to_json())
+    effective = payload["checks"][0]["detail"]
+    assert effective["library_dir"] == str(cfg.index.library_dir)
+    assert effective["catalog_path"] == str(cfg.index.library_dir / "library.db")
+    assert effective["dj_meta_path"] == str(cfg.index.library_dir / "dj_meta.db")
+    assert "music_dir" not in effective
+    legacy = effective["legacy_music_dir"]
+    assert legacy["path"] == str(cfg.library.music_dir)
+    for purpose in ("Beets", "playlist", "cue", "request", "migration"):
+        assert purpose in legacy["purpose"]
+    assert "remove" in legacy["cleanup"]
+    registered = payload["checks"][1]["detail"]["registered"]
+    assert {Path(path) for path in registered} == set(roots)
+    for rendered in (render_text(report), report.to_json()):
+        rendered = " ".join(rendered.split())
+        assert "registered catalog folders" in rendered
+        assert "legacy_music_dir" in rendered
+        assert "catalog_path" in rendered
+    assert before == _tree_snapshot(tmp_path)
+
+
+@pytest.mark.parametrize("catalog_exists", [False, True])
+@pytest.mark.parametrize("legacy_root", [False, True])
+def test_empty_catalog_guidance_does_not_use_legacy_root(
+    tmp_path: Path, catalog_exists: bool, legacy_root: bool
+) -> None:
+    cfg = _config(tmp_path)
+    (cfg.library.music_dir / "outside.flac").write_bytes(b"audio")
+    if not legacy_root:
+        cfg.library.music_dir = None
+    if catalog_exists:
+        with LibraryCatalog(cfg.index.library_dir / "library.db"):
+            pass
+    before = _tree_snapshot(tmp_path)
+
+    report = DoctorReport((doctor._configuration_check(cfg), doctor._music_paths_check(cfg)))
+
+    assert report.exit_code == 0
+    effective = report.to_dict()["checks"][0]["detail"]
+    assert ("legacy_music_dir" in effective) is legacy_root
+    for rendered in (render_text(report), report.to_json()):
+        rendered = " ".join(rendered.split())
+        assert "no music folders registered" in rendered
+        assert "Add music folders in Library" in rendered
+        assert "registered catalog folders" in rendered
+    assert before == _tree_snapshot(tmp_path)
+
+
 def test_music_path_check_reports_missing_registered_root(tmp_path: Path) -> None:
     from autodj.catalog import LibraryCatalog
 
@@ -833,17 +892,19 @@ def test_configuration_detail_is_structured_and_redacted(tmp_path: Path) -> None
     check = doctor._configuration_check(cfg)
 
     assert check.name == "configuration"
-    assert check.detail == {
+    expected = {
         "sources": list(cfg.config_sources),
         "host": cfg.server.host,
         "port": cfg.server.port,
         "lan": False,
-        "music_dir": str(cfg.library.music_dir),
         "index_dir": str(cfg.index.index_dir),
         "model_dir": str(cfg.index.model_dir),
         "access_token": "<redacted>",
         "huggingface_token": "<redacted>",
     }
+    assert {key: check.detail[key] for key in expected} == expected
+    assert cfg.server.access_token not in DoctorReport((check,)).to_json()
+    assert cfg.huggingface.token not in DoctorReport((check,)).to_json()
     assert cfg.server.access_token not in check.summary
     assert cfg.huggingface.token not in check.summary
 

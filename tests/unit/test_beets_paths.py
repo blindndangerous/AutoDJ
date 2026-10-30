@@ -360,6 +360,25 @@ def test_doctor_has_no_beets_paths_check_without_a_beets_database(tmp_path):
     assert doctor._beets_paths_check(cfg) == []
 
 
+def test_doctor_labels_the_configured_beets_relative_path_base(tmp_path):
+    music = tmp_path / "music"
+    music.mkdir()
+    cfg = category_config(tmp_path, make_beets(tmp_path / "library.db", RELATIVE), music)
+    make_catalog(cfg, [*library_under(music), str(tmp_path / "other" / "song.flac")])
+
+    [check] = doctor._beets_paths_check(cfg)
+
+    assert check.status is CheckStatus.PASS
+    assert check.detail["matched"] == 3
+    assert check.detail["library_songs"] == 4
+    assert check.detail["music_dir"] == str(music)
+    report = doctor.DoctorReport((check,))
+    for rendered in (doctor.render_text(report), report.to_json()):
+        rendered = " ".join(rendered.split())
+        assert "Base for relative Beets paths" in rendered
+        assert "does not register music folders" in rendered
+
+
 def test_clockwheel_beets_conditions_use_the_found_folder(tmp_path):
     from autodj.catalog import normalize_path
     from autodj.clock_condition_data import BeetsConditions

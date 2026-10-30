@@ -88,9 +88,10 @@ current catalog: Analyse backfills CPU intro/outro and beat data without MuQ, En
 beets metadata without re-embedding, and Stats prints the detailed catalog report. Analyse covers
 all registered folders. New DJ-meta cache entries use full track paths; existing
 relative cache entries remain readable with the old `music_dir` setting. That setting does not
-limit which registered folders can be analysed. It is optional and kept only to resolve older
-relative cache or beets paths (see [Beets paths and `music_dir`](categories.md#beets-paths-and-music_dir));
-leave it out of new setups. For a legacy index import, pass
+limit which registered folders can be analysed. It also supports relative Beets and playlist paths,
+DJ cue exports and legacy listener-request folder exclusions. New setups normally leave it unset;
+review these uses before [cleaning up an existing setting](catalog-migration.md#clean-up-an-existing-configuration).
+For a legacy index import, pass
 `migrate-index --music-dir PATH` instead. Current-library settings/history upgrades need no root.
 
 The Library panel's **Remove missing tracks** action is

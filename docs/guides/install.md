@@ -162,8 +162,9 @@ Some things to know:
 - To use a [beets](https://beets.io/) library, set `AUTODJ_BEETS_PATH` to the folder that holds
   beets' `library.db`, and set `beets_db = "/beets/library.db"` in the `[library]` section of
   `config.local.toml`. Beets' stored music paths must match the folder AutoDJ sees, `/music`
-  in Docker. AutoDJ reports a mismatch. For relative paths, it suggests and uses a registered
-  folder when `music_dir` is unset or missing and only one folder matches.
+  in the default Docker mount. For relative paths, set `music_dir = "/music"` as the Beets base.
+  This does not register music: add `/music` in Library. Categories and clock conditions can
+  infer a missing base in limited cases; see [Beets paths](operations/categories.md#beets-paths-and-music_dir).
 - Stereo Tool is not in the image. Download it from Settings, Global, Server; it is saved in the index
   folder.
 - To get a new pairing code later, run
