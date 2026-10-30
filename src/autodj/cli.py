@@ -533,6 +533,12 @@ def cmd_doctor(
 
     if as_json and fix:
         raise click.UsageError("--json is read-only; run repairs separately with --fix.")
+    if not as_json:
+        from autodj import __version__
+        from autodj.terminal_text import format_text
+
+        click.echo(f"Welcome to AutoDJ {__version__} Doctor.")
+        click.echo(format_text("Checking your AutoDJ configuration and installation."))
     offer_repairs = not as_json and (sys.stdin.isatty() if fix is None else fix)
     # With --station only that station's own repairs run: nothing server-wide.
     server_repairs = offer_repairs and station is None

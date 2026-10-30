@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from autodj.cli import cli
 from autodj.config import AutoDJConfig, load_config, move_station_tables
 from autodj.doctor import CheckStatus, DoctorCheck, DoctorReport, render_text, run_doctor
+from autodj.terminal_text import format_text
 
 STATION_CHECKS = [
     "station-folder",
@@ -317,7 +318,30 @@ def test_cli_json_is_read_only_and_names_the_station(tmp_path: Path) -> None:
     assert {"station": "nightowl", "name": "station-folder"}.items() <= next(
         item for item in data["checks"] if item.get("station")
     ).items()
+    assert "Welcome to AutoDJ" not in result.output
     assert not _owl(cfg).exists()
+
+
+def test_cli_welcomes_before_checking_in_human_output(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    report = DoctorReport((DoctorCheck("example", CheckStatus.PASS, "healthy"),))
+    with (
+        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
+        patch("autodj.doctor.run_doctor", return_value=report),
+    ):
+        result = CliRunner().invoke(cli, ["doctor", "--no-fix"])
+
+    assert result.exit_code == 0
+    assert result.output.startswith("Welcome to AutoDJ ")
+    assert result.output.index("Checking your AutoDJ") < result.output.index("[PASS] example")
+
+
+def test_format_text_wraps_words_without_breaking_paths_or_explicit_lines() -> None:
+    text = "Run this command at C:\\some\\long\\path\nThen check the result"
+
+    assert format_text(text, width=17, subsequent_indent="  ") == (
+        "Run this command\n  at\n  C:\\some\\long\\path\nThen check the\n  result"
+    )
 
 
 @pytest.mark.parametrize(("answer", "made"), [("n\n", False), ("y\n", True)])
@@ -423,3 +447,18 @@ def test_doctor_never_rolls_back_unasked_outside_a_terminal(tmp_path: Path) -> N
     assert "run `autodj doctor` in a terminal" in result.output
     assert not state.exists()
     assert result.exit_code == 1
+
+
+def test_speaker_warning_belongs_to_station_using_sound_card(tmp_path, monkeypatch):
+    from autodj import doctor
+
+    cfg = _config(
+        tmp_path, '\n[stations.nightowl.station]\noutput = "stream"\nserver_audio_too = true\n'
+    )
+    cfg.station.output = "browser"
+    monkeypatch.setattr(doctor, "_module_available", lambda name: name != "sounddevice")
+    report = run_doctor(cfg, check_updates=False)
+    warnings = [check for check in report.checks if check.name == "server-speakers"]
+    assert len(warnings) == 1
+    assert warnings[0].station == "nightowl"
+    assert warnings[0].status is CheckStatus.WARN

@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from setup_activity import ensure_idle, updater_owner
 from setup_hardware import detect_hardware, probe_runtime
 from setup_support import (
     ROOT,
@@ -32,6 +33,8 @@ from setup_support import (
 )
 
 from autodj.host_tools import ensure_ffmpeg
+from autodj.terminal_text import format_text
+from autodj.version import _project_version
 
 #: Setup's read-only Doctor run gives up after this long.
 DOCTOR_TIMEOUT_SECONDS = 600
@@ -45,6 +48,24 @@ def ask(prompt: str, default: str) -> str:
 def confirm(prompt: str) -> bool:
     """Optional expensive actions always default to no."""
     return ask(prompt + " (y/n)", "n").lower() in {"y", "yes"}
+
+
+def print_wrapped(
+    message: str,
+    *,
+    initial_indent: str = "",
+    subsequent_indent: str = "",
+    file=None,
+) -> None:
+    """Print plain prose within the current terminal width."""
+    print(
+        format_text(
+            message,
+            initial_indent=initial_indent,
+            subsequent_indent=subsequent_indent,
+        ),
+        file=file,
+    )
 
 
 def prerequisites() -> list[str]:
@@ -111,10 +132,19 @@ def parser() -> argparse.ArgumentParser:
     """Describe the first-run flow and unattended options."""
     result = argparse.ArgumentParser(description="Set up AutoDJ locally, outside Docker.")
     result.add_argument("--backend", choices=("auto", "cpu", "nvidia", "amd"), default="auto")
-    result.add_argument(
+    model = result.add_mutually_exclusive_group()
+    model.add_argument(
+        "--model",
+        choices=("ask", "yes", "no"),
+        default="ask",
+        help="Enable and download MuQ Similarity analysis (yes/no); ask by default.",
+    )
+    model.add_argument(
         "--no-model",
-        action="store_true",
-        help="Install playback and serving without the music-model dependencies.",
+        dest="model",
+        action="store_const",
+        const="no",
+        help="Alias for --model no.",
     )
     result.add_argument(
         "--port", type=port_number, help="Local web port for a new configuration (8080)."
@@ -132,15 +162,16 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--yes",
         action="store_true",
-        help="Accept the setup plan; optional import/server actions still require their flags.",
+        help="Accept the setup plan without prompting; specify --model yes or --model no.",
     )
     result.add_argument(
         "--dry-run", action="store_true", help="Show the plan without installing or writing files."
     )
     result.add_argument(
-        "--test-import",
-        action="store_true",
-        help="Import up to three tracks; may download model weights.",
+        "--verbose", action="store_true", help="Show full package installation commands."
+    )
+    model.add_argument(
+        "--test-import", dest="model", action="store_const", const="yes", help=argparse.SUPPRESS
     )
     result.add_argument(
         "--serve",
@@ -162,7 +193,7 @@ def configure(args: argparse.Namespace, root: Path, interactive: bool) -> int:
                 "Configuration already exists. Edit config.toml or config.local.toml to change its port."
             )
         print("Keeping existing config.toml and any config.local.toml overrides.")
-        return 8080
+        return setup_values(root)["port"]
     if (root / "config.local.toml").exists():
         raise ValueError(
             "config.local.toml exists without config.toml. Create the base configuration before running setup."
@@ -175,25 +206,80 @@ def configure(args: argparse.Namespace, root: Path, interactive: bool) -> int:
     return port
 
 
+def setup_values(root: Path) -> dict:
+    """Read only bootstrap paths and port, before application packages exist."""
+    sections: dict = {}
+    for name in ("config.toml", "config.local.toml"):
+        path = root / name
+        if path.is_file():
+            with path.open("rb") as stream:
+                for section, values in tomllib.load(stream).items():
+                    if section in {"server", "index", "model"} and isinstance(values, dict):
+                        sections.setdefault(section, {}).update(values)
+    server, index, model = (sections.get(name, {}) for name in ("server", "index", "model"))
+
+    def folder(value: str) -> Path:
+        return (root / Path(value).expanduser()).resolve()
+
+    return {
+        "port": port_number(str(os.environ.get("AUTODJ_PORT", server.get("port", 8080)))),
+        "index_dir": folder(os.environ.get("AUTODJ_INDEX_DIR", index.get("index_dir", "index"))),
+        "model_dir": folder(os.environ.get("AUTODJ_MODEL_DIR", index.get("model_dir", "models"))),
+        "manual_path": folder(model["manual_path"]) if model.get("manual_path") else None,
+    }
+
+
+def choose_model(args: argparse.Namespace, interactive: bool) -> bool:
+    """Ask once; unattended callers must explicitly choose whether to use MuQ."""
+    if args.model != "ask":
+        return args.model == "yes"
+    if args.dry_run:
+        print_wrapped("Preview only: choose --model yes or --model no when applying setup.")
+        return True
+    if not interactive:
+        raise ValueError("Choose --model yes or --model no for unattended setup.")
+    print_wrapped(
+        "MuQ helps AutoDJ find songs that sound alike; Yes downloads the model (about 1.3 GB "
+        "for the standard model, reusing existing files) and supporting software, while No "
+        "keeps playback, clockwheels and beat/key/cue "
+        "analysis without local Similarity analysis."
+    )
+    return confirm("Enable MuQ Similarity analysis?")
+
+
 def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     """Collect a plan, then install and verify it before saving the selection."""
     interactive = sys.stdin.isatty() and not args.yes and not args.dry_run
+    print_wrapped(f"Welcome to AutoDJ {_project_version(root / 'pyproject.toml')} setup.")
+    print_wrapped("First, I'll check your computer and show you what needs to be installed.")
     hardware = detect_hardware()
-    print(f"System: {hardware.system} ({hardware.machine})")
-    print("Graphics: " + (", ".join(hardware.gpus) or "not identified"))
-    print(hardware.reason)
+    print_wrapped("Graphics: " + (", ".join(hardware.gpus) or "not identified"))
+    if args.verbose or args.dry_run:
+        print_wrapped(f"System: {hardware.system} ({hardware.machine})")
+        print_wrapped(hardware.reason)
     previous = read_json(root / STATE)
     if "environment" in previous and not isinstance(previous["environment"], str):
         raise ValueError(
             "Invalid saved environment path in .uv/setup.json. Fix or remove that selection and rerun setup."
         )
-    if args.no_model and (args.backend not in {"auto", "cpu"} or args.test_import):
-        raise ValueError("--no-model cannot be combined with GPU setup or --test-import.")
-    backend = "no-model" if args.no_model else args.backend
+    values = setup_values(root)
+    # Updates refresh the saved runtime; they do not consent to a new model download.
+    updater_pid = updater_owner(root) if args.yes and args.model == "ask" else None
+    updating = updater_pid is not None
+    if updating:
+        if previous.get("backend") not in {"cpu", "nvidia", "amd", "no-model"}:
+            raise ValueError("No verified runtime to update; run setup interactively first.")
+        use_model = previous["backend"] != "no-model"
+    else:
+        use_model = choose_model(args, interactive)
+    if not use_model and args.backend not in {"auto", "cpu"}:
+        raise ValueError("--model no (--no-model) cannot be combined with GPU setup.")
+    backend = args.backend if use_model else "no-model"
     if backend == "auto":
-        backend = previous.get("backend", hardware.recommendation)
-    if backend == "no-model" and args.test_import:
-        raise ValueError("--no-model cannot be combined with --test-import.")
+        saved_backend = previous.get("backend")
+        backend = (
+            saved_backend if saved_backend in {"cpu", "nvidia", "amd"} else hardware.recommendation
+        )
     if not isinstance(backend, str) or backend not in {"cpu", "nvidia", "amd", "no-model"}:
         raise ValueError("Choose cpu, nvidia, or amd.")
     reuse = args.environment is not None or (
@@ -228,37 +314,68 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
         raise ValueError(f"No Python interpreter in {environment}.")
     port = configure(args, root, interactive)
     issues = prerequisites()
-    print(f"\nProcessing: {backend}\nEnvironment: {environment}")
+    plan = {
+        "cpu": "Use CPU processing.",
+        "nvidia": "Use NVIDIA graphics processing.",
+        "amd": "Use AMD graphics processing.",
+        "no-model": "Install playback without local model analysis.",
+    }[backend]
+    print("\nSetup plan:")
+    print_wrapped(plan, initial_indent="  ")
+    print("  Environment:")
+    print("    " + str(environment))
     print(f"Web address: http://localhost:{port}")
+    print_wrapped(f"Library storage: {values['index_dir']}")
+    if use_model:
+        print_wrapped(f"Model files: {values['manual_path'] or values['model_dir']}")
     notice = profiles(root)[backend].get("notice")
-    if notice:
-        print(notice)
+    if notice and (args.verbose or args.dry_run):
+        print_wrapped(notice, initial_indent="  ")
     if external:
-        print(
+        print_wrapped(
             "Setup will verify this externally managed environment without changing its packages."
         )
     else:
-        for command in install_commands(
+        commands = install_commands(
             root,
             environment,
             backend,
             hardware.system,
             hardware.machine,
             getattr(hardware, "amd_arch", None),
-        ):
-            print("Install: " + subprocess.list2cmdline(command))
+        )
+        if args.dry_run or args.verbose:
+            for command in commands:
+                print("Install: " + subprocess.list2cmdline(command))
+        else:
+            print_wrapped(
+                "AutoDJ will install the runtime packages. Add --verbose to see the commands.",
+                initial_indent="  ",
+            )
         if backend != "no-model":
-            print("Installing PyTorch and audio dependencies can download several GB.")
-    print(
-        "After installation, setup will verify the runtime and run AutoDJ doctor to check for problems."
+            print_wrapped("The download may be several GB.")
+    print_wrapped(
+        "Setup will verify the runtime and run AutoDJ doctor to check for problems.",
+        initial_indent="  ",
     )
-    print(
-        "Close any running AutoDJ server or import jobs before applying setup so doctor can check the databases."
+    print_wrapped(
+        "Setup checks that AutoDJ is stopped before changing its software.",
+        initial_indent="  ",
     )
-    print("Model downloads and track imports only run when you request a test import.")
-    print("Setup also checks FFmpeg; on Windows it can install it through WinGet.")
+    print_wrapped(
+        "The model will be downloaded if needed and tested with a short generated sound."
+        if use_model and not updating
+        else "Existing model files and music will be kept.",
+        initial_indent="  ",
+    )
+    print_wrapped(
+        "Setup also checks FFmpeg; on Windows it can install it through WinGet.",
+        initial_indent="  ",
+    )
     if issues:
-        print("\nPrerequisites to install:\n" + "\n".join(issues))
+        print("\nPrerequisites to install:")
+        for issue in issues:
+            print_wrapped(issue, initial_indent="  ", subsequent_indent="    ")
     if args.dry_run:
         return 0
     if issues:
@@ -266,6 +383,7 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     if not args.yes and (not interactive or not confirm("Apply this setup plan?")):
         print("Setup cancelled. Use --yes to accept the plan without prompts.")
         return 1
+    ensure_idle(root, environment, port, updater_pid=updater_pid)
     try:
         ensure_ffmpeg(auto_install=args.yes)
     except (OSError, RuntimeError) as exc:
@@ -285,10 +403,28 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
         print("Runtime: no-model (playback, streaming and basic library; no local model analysis)")
     else:
         runtime = probe_runtime(python, env=env)
-        device = runtime.get("device_name") or "CPU"
-        print(f"Runtime: {device} (PyTorch {runtime.get('torch_version') or 'unavailable'})")
-        print(str(runtime.get("reason", "")))
         expected = {"nvidia": "cuda", "amd": "rocm"}.get(backend)
+        gpu_failed = bool(expected) and (
+            runtime.get("torch_version") is None
+            or bool(runtime.get("error"))
+            or runtime.get("backend") != expected
+            or not runtime.get("gpu_available")
+        )
+        if gpu_failed:
+            print(
+                f"Runtime: selected {backend} GPU verification failed "
+                f"(PyTorch {runtime.get('torch_version') or 'unavailable'})."
+            )
+        else:
+            device = runtime.get("device_name") or "CPU"
+            print(f"Runtime: {device} (PyTorch {runtime.get('torch_version') or 'unavailable'})")
+        if gpu_failed:
+            detail = str(runtime.get("error") or runtime.get("reason") or "")
+            detail = detail.removesuffix("; using CPU.")
+            if detail:
+                print_wrapped(detail, initial_indent="  ")
+        elif runtime.get("reason"):
+            print_wrapped(str(runtime["reason"]), initial_indent="  ")
         if runtime.get("torch_version") is None or runtime.get("error"):
             if expected:
                 raise ValueError(
@@ -297,13 +433,18 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
             raise ValueError(
                 "The Python runtime check failed. Fix the reported problem and rerun setup."
             )
-        if expected and (runtime.get("backend") != expected or not runtime.get("gpu_available")):
+        if gpu_failed:
             raise ValueError(
                 "The selected GPU could not run a calculation. Check the driver and package compatibility, or rerun with --backend cpu."
             )
     if not (root / "config.toml").exists():
         create_configuration(root, port)
     initialize_paths(root, python, env)
+    if use_model and not updating:
+        print_wrapped(
+            "Checking MuQ Similarity analysis; the first download and test may take a few minutes."
+        )
+        run([str(python), "-m", "autodj.setup_model"], root, env)
     # Doctor stays offline here: setup is not the place to ask about updates.
     doctor_env = {**env, "AUTODJ_UPDATE_CHECK": "0"}
     try:
@@ -341,20 +482,17 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     write_json(
         root / STATE, {"environment": str(environment), "backend": backend, "external": external}
     )
-    print("\nRuntime verified and saved. Start AutoDJ with:")
-    print(".\\autodj.cmd serve" if os.name == "nt" else "./autodj serve")
-    print("Manage music folders from the Library page in AutoDJ.")
-    test_import = args.test_import or (
-        backend != "no-model"
-        and interactive
-        and confirm("Test importing up to three tracks? This may download a large audio model.")
-    )
-    if test_import:
-        run(
-            [str(python), "-m", "autodj", "index", "--limit", "3", "--no-enrich", "--no-analyse"],
-            root,
-            env,
+    print(
+        "\nRuntime updated."
+        if updating
+        else (
+            "\nReady with MuQ Similarity analysis."
+            if use_model
+            else "\nReady without local MuQ analysis."
         )
+    )
+    print("Start AutoDJ with:")
+    print(".\\autodj.cmd serve" if os.name == "nt" else "./autodj serve")
     if args.serve:
         run([str(python), "-m", "autodj", "serve"], root, env)
     return 0
@@ -365,8 +503,14 @@ def main() -> int:
     args = parser().parse_args()
     try:
         return execute(args)
-    except (OSError, ValueError, argparse.ArgumentTypeError, subprocess.TimeoutExpired) as exc:
-        print(f"Setup: {exc}", file=sys.stderr)
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        argparse.ArgumentTypeError,
+        subprocess.TimeoutExpired,
+    ) as exc:
+        print_wrapped(f"Setup failed: {exc}", file=sys.stderr)
         return 1
     except subprocess.CalledProcessError as exc:
         print(

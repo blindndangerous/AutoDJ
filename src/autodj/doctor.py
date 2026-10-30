@@ -32,6 +32,7 @@ from autodj.config import is_loopback_bind
 from autodj.index_manifest import has_legacy_index
 from autodj.repeat_settings import removed_saved_repeat_keys
 from autodj.sqlite_utils import readonly_uri
+from autodj.terminal_text import format_text
 
 _connect = sqlite3.connect
 
@@ -112,7 +113,7 @@ def render_text(report: DoctorReport) -> str:
                 else check.detail
             )
             line += f" {detail}"
-        lines.append(line)
+        lines.append(format_text(line))
     return "\n".join(lines)
 
 
@@ -453,13 +454,13 @@ def _module_available(name: str) -> bool:
 
 def _dependency_check() -> DoctorCheck:
     """Inspect optional audio modules and FFmpeg without importing or executing them."""
-    missing_modules = [name for name in ("soundfile", "sounddevice") if not _module_available(name)]
+    missing_modules = [name for name in ("soundfile",) if not _module_available(name)]
     ffmpeg = shutil.which("ffmpeg")
     if not missing_modules and ffmpeg:
         return DoctorCheck(
             "dependencies",
             CheckStatus.PASS,
-            "soundfile, sounddevice, and FFmpeg are available.",
+            "soundfile and FFmpeg are available.",
         )
     issues: list[str] = []
     details: list[str] = []
@@ -484,6 +485,25 @@ def _dependency_check() -> DoctorCheck:
         "Action: " + " ".join(details),
         repair="install-ffmpeg" if not ffmpeg and sys.platform == "win32" else None,
     )
+
+
+def _speaker_checks(cfg: AutoDJConfig) -> list[DoctorCheck]:
+    """Check the optional sound-card package only for stations that use it."""
+    if cfg.station.output != "server" and not cfg.station.server_audio_too:
+        return []
+    available = _module_available("sounddevice")
+    return [
+        DoctorCheck(
+            "server-speakers",
+            CheckStatus.PASS if available else CheckStatus.WARN,
+            "sounddevice is available"
+            if available
+            else "server sound-card output needs sounddevice",
+            ""
+            if available
+            else "Rerun setup to install playback support, or install the play extra in the environment you manage.",
+        )
+    ]
 
 
 def _model_cache_check(cfg: AutoDJConfig) -> DoctorCheck:
@@ -969,7 +989,7 @@ def run_doctor(
         _update_check(cfg, network=check_updates),
     ]
     if default:
-        checks += [_stream_check(cfg), *_relay_checks(cfg)]
+        checks += [_stream_check(cfg), *_speaker_checks(cfg), *_relay_checks(cfg)]
     checks += [_related_artists_check(cfg), _related_tracks_check(cfg)]
     if default:
         checks += [_time_checks_check(cfg), *_voice_pack_checks(cfg), _categories_check(cfg)]
@@ -1042,6 +1062,7 @@ def _station_checks(cfg: AutoDJConfig, spec: StationSpec) -> list[DoctorCheck]:
         _saved_settings_check(own, paths),
         _dmca_check(own, paths),
         _stream_check(own),
+        *_speaker_checks(own),
         *_relay_checks(own, paths=paths),
         _time_checks_check(own, paths),
         *_voice_pack_checks(own, paths),

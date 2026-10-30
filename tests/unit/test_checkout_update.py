@@ -303,6 +303,7 @@ def test_a_stable_update_follows_the_upgrade_checklist(tmp_path: Path) -> None:
     ] in checkout.calls
     assert ["git", "switch", "--detach", "v0.22.0"] in checkout.calls
     assert checkout.calls[7] == ["setup-py", str(checkout.root / "scripts" / "setup.py"), "--yes"]
+    assert checkout.options[7]["env"]["AUTODJ_SETUP_UPDATE"] == str(os.getpid())
     assert checkout.calls[8] == [
         *BASE,
         "--config",

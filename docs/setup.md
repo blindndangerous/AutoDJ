@@ -33,7 +33,9 @@ flow, then continues your original command after setup succeeds. Running the lau
 arguments starts `serve`. Use the same launcher for all commands; there is no separate AMD command.
 
 Setup detects the operating system and GPU, recommends a supported AMD or NVIDIA runtime or CPU,
-asks for a web port, and shows the installation plan before changing anything. A new installation
+shows the actual port and paths it plans to use from existing configuration, local configuration,
+and environment settings, then shows the installation plan before changing anything. On each
+interactive run it asks whether to install model support; choose Yes or No. A new installation
 starts with an empty library; add music folders from the Library page after starting AutoDJ.
 It installs the selected PyTorch build before the application so it does not download a CPU build
 just to replace it with a GPU build. GPU packages are pinned by the installation profiles; the
@@ -50,8 +52,8 @@ can guarantee support for every driver, operating system release, or graphics ca
 
 Existing configuration files, music, indexes, and model files are retained. Doctor runs in read-only
 mode during setup. An old index or another doctor finding is reported without starting an expensive
-rebuild or preventing a verified runtime from being remembered. Run `doctor` afterwards to review
-its repair offers. Model downloads and indexing are separate actions unless `--test-import` is supplied.
+catalog scan or preventing a verified runtime from being remembered. Setup also verifies generated
+audio automatically. Run `doctor` afterwards to review its repair offers.
 
 ## CPU-only installation
 
@@ -64,11 +66,12 @@ Use the launcher for ordinary commands. You do not need to activate an environme
 
 ## No-model installation
 
-Use this mode when the server needs the web UI, basic library imports, browser
-playback or server streams, but will not run the music embedding model locally:
+Choose No at the model-support prompt, or pass `--model no`, when the server needs the web UI, basic
+library imports, browser playback or server streams, but will not run the music embedding model
+locally:
 
 ```sh
-./autodj setup --no-model --yes
+./autodj setup --model no --yes
 ./autodj serve
 ```
 
@@ -77,9 +80,9 @@ On Windows use `.\autodj.cmd` in place of `./autodj`. The saved selection is
 Transformers packages or model weights are installed. CPU audio processing still
 uses NumPy, librosa and FFmpeg; no-model does not mean dependency-free. Set
 `UV_NO_CACHE=1` during setup to avoid retaining a second installer cache.
-Fresh no-model setup omits sound-card output packages. Browser playback and
-server streaming are included; server sound-card output needs the `play` extra
-and platform audio support. Existing sound-card packages are not removed.
+Setup includes browser playback, streaming and sound-card output packages with
+or without MuQ. Choosing No uses the `play` extra; choosing Yes uses `all`.
+Sound-card output still needs platform audio support and is enabled per station.
 
 Basic scanning, shared Audio analysis and previously saved vectors remain usable.
 `autodj index` imports playable songs and reports pending Similarity work without
@@ -96,12 +99,13 @@ bootstrap this cache with `autodj index`; preserve an existing compatible cache
 or use a model-capable runtime to obtain it before returning to no-model mode.
 See [remote worker requirements](guides/operations/gpu-worker.md#3-install-autodj-on-the-gpu-machine).
 
-The ordinary setup still installs the complete CPU/GPU-capable runtime. To add
-local model analysis later, run `./autodj setup --backend cpu` or the appropriate
-supported GPU setup. Switching runtimes preserves the old environment; review
-its disk use before installing another one. Model weights are downloaded only
-when analysis is requested. `--no-model` cannot be combined with GPU setup or
-`--test-import`.
+The `--no-model` flag remains an alias for `--model no`. This saves the no-model runtime and
+preserves any existing model weights. To add local model analysis later, run
+`./autodj setup --model yes --backend cpu` or the appropriate supported GPU setup. Choosing Yes
+installs model runtime packages and downloads or reuses about 1.3 GB of standard model weights.
+Switching runtimes preserves the old environment; review its disk use before installing another one.
+The deprecated, hidden `--test-import` option is an alias for `--model yes`; it no longer performs
+a track import.
 
 For direct package installs, the base package is now the no-model serving set;
 the `index` extra adds model analysis, `play` adds sound-card output, and `all`
@@ -122,7 +126,7 @@ opening a new terminal. This does not rewrite your PATH settings.
 
 The launcher bootstraps uv with WinGet package ID `astral-sh.uv`. Setup and Doctor share
 the FFmpeg installer, using `Gyan.FFmpeg` for the current user. Ordinary serving does not install tools.
-The prompt defaults to No. Use `.\autodj.cmd setup --yes` to approve these downloads and
+The prompt defaults to No. Use `./autodj.cmd setup --model no --yes` to approve these downloads and
 the setup plan without prompts. This also accepts the packages' installation agreements.
 For a manual installation, add the folder containing each executable to PATH.
 
@@ -144,8 +148,8 @@ selection on the old computer. Use the same AutoDJ version on both machines for 
 1. Copy `config.toml` and `config.local.toml` if present, original music and external liner
    folders, and any configured external tools such as Stereo Tool. Preserve file paths where
    possible; changing drive letters requires updating saved paths, not just the configuration.
-2. Run `.\autodj.cmd setup` on Windows, or `./autodj setup` on Linux/macOS. Decline the
-   optional test import and leave the destination server stopped until after restoring.
+2. Run `.\autodj.cmd setup` on Windows, or `./autodj setup` on Linux/macOS. Choose whether to
+   install model support and leave the destination server stopped until after restoring.
 3. On Windows, create a backup with `.\autodj.cmd backup station.zip`, copy it to the new
    checkout, then run `.\autodj.cmd restore station.zip` there. On Linux/macOS, use `./autodj`.
    See [Backup](operations.md#backup) and [Restore and validate](operations.md#restore-and-validate)
@@ -166,26 +170,34 @@ Use `setup --help` to see all options. Common examples (replace `./autodj` with 
 
 ```sh
 ./autodj setup --dry-run
-./autodj setup --port 8080 --yes
+./autodj setup --port 8080 --model no --yes
 ./autodj setup --backend cpu
+./autodj setup --model yes --backend cpu --yes
+./autodj setup --model no --yes
 ./autodj setup --backend amd --environment .uv/existing-amd
 ./autodj setup --manage-environment
-./autodj setup --test-import
 ```
 
 `--dry-run` inspects hardware and prints a plan without installing or writing files; bootstrap
-Python or uv must already be available. `--yes` accepts the setup plan for unattended
-installation; on Windows it also installs missing uv and FFmpeg through WinGet. If WinGet
-is unavailable, install these tools beforehand. Help and `--dry-run` never install tools,
-even with `--yes`. Optional
-`--test-import` and `--serve` actions still require their flags in unattended mode. `--environment`
+Python or uv must already be available. If no model choice is supplied, the preview says to specify
+`--model yes` or `--model no` when applying the plan. `--yes` accepts the setup plan for unattended
+installation, but requires an explicit model choice. On Windows it also installs missing uv and
+FFmpeg through WinGet. If WinGet is unavailable, install these tools beforehand. Help and
+`--dry-run` never install tools, even with `--yes`. `--model yes` installs or reuses model support
+and its standard weights;
+`--model no` selects the no-model runtime. The deprecated hidden `--test-import` alias means
+`--model yes` and does not import tracks. Optional `--serve` still requires its flag in unattended
+mode. `--environment`
 adopts an existing installation without changing its Python packages. A remembered adopted
 environment also stays externally managed on reruns. Use `--manage-environment` to explicitly let
 setup synchronize that remembered environment or a supplied `--environment`; after successful
 verification it becomes setup managed. Synchronization removes packages from it that AutoDJ does
 not need. A failed update leaves the saved selection unchanged.
 `--dry-run` shows the target environment and planned synchronization without writing files or
-installing packages.
+installing packages, including the full installation commands. Normal setup gives a short summary;
+add `--verbose` to show those commands while installing. Setup's running-instance guard checks
+locks, the selected port, and scoped AutoDJ processes at a point in time; it cannot guarantee that
+an arbitrary custom script is not running.
 
 See [AMD GPU support](windows-amd.md) for the supported AMD families and driver requirements.
 NVIDIA setup uses the configured CUDA wheel channel on Windows/Linux x86-64; CPU is the fallback on
@@ -193,7 +205,9 @@ other platforms, subject to Python package availability.
 
 ## Runtime storage and development
 
-Setup records its verified choice in ignored `.uv/setup.json`; users do not need to edit this file.
+Setup records its verified backend, environment, and model mode in ignored `.uv/setup.json`; users do
+not need to edit this file. No new configuration keys are added. Web-based updates preserve the
+saved model mode and runtime without asking questions or downloading model weights.
 The ordinary installed `autodj` and `python -m autodj` entry points honor it too. A missing or invalid
 saved runtime produces an error instead of silently switching to another installation.
 
