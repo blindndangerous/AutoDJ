@@ -7,11 +7,14 @@ import importlib
 import importlib.util
 import json
 import re
+import shutil
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
+from zipfile import ZipFile
 
 import pytest
 
@@ -698,6 +701,85 @@ def test_managed_sync_removes_packages_the_lock_no_longer_lists(
     assert "--exact" in installs[-1]
     assert installs[-1][installs[-1].index("-r") + 1].endswith(f"setup-{backend}-requirements.txt")
     assert all("--exact" not in command for command in installs[:-1])
+
+
+def test_exact_sync_requests_every_backend_recipe(setup_modules, tmp_path: Path) -> None:
+    """All declared device extras remain roots of the final dependency resolution."""
+    root, _ = _project(tmp_path)
+    for backend, profile in setup_modules.support.profiles(root).items():
+        for system, platform in profile.get("platforms", {}).items():
+            variants = platform.get("architectures", {None: platform.get("packages", [])})
+            for architecture, packages in variants.items():
+                commands = setup_modules.support.install_commands(
+                    root, root / ".uv/runtime", backend, system, "x86_64", architecture
+                )
+                assert set(packages) <= set(commands[-1]), (backend, system, architecture)
+
+
+def test_exact_sync_retains_device_extra_and_removes_obsolete_package(
+    setup_modules, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolve local wheels with uv: keep a device extra's transitive dependencies."""
+    uv = shutil.which("uv")
+    assert uv is not None, "Setup verification requires the project's uv tool"
+    root = tmp_path
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+
+    def wheel(name: str, metadata: str = "") -> Path:
+        path = wheels / f"{name}-1.0-py3-none-any.whl"
+        info = f"{name}-1.0.dist-info"
+        with ZipFile(path, "w") as archive:
+            archive.writestr(
+                f"{info}/METADATA",
+                f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n{metadata}\n",
+            )
+            archive.writestr(
+                f"{info}/WHEEL",
+                "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+            )
+            archive.writestr(f"{info}/RECORD", "")
+        return path
+
+    wheel("device_runtime")
+    wheel("device_bridge", "Requires-Dist: device_runtime==1.0\n")
+    wheel(
+        "torch",
+        'Provides-Extra: device-test\nRequires-Dist: device_bridge==1.0; extra == "device-test"\n',
+    )
+    wheel("obsolete")
+    app = wheel("test_app", "Requires-Dist: torch==1.0\n")
+    environment = root / ".uv/runtime"
+
+    def run(command: list[str]) -> None:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    run([uv, "venv", "--python", sys.executable, "--no-python-downloads", str(environment)])
+    python = str(setup_modules.support.python_path(environment))
+    offline = ["--no-index", "--find-links", str(wheels), "--no-cache"]
+    run([uv, "pip", "install", "--python", python, *offline, "torch[device-test]==1.0", "obsolete"])
+    monkeypatch.setattr(
+        setup_modules.support,
+        "_platform_recipe",
+        lambda *args: {"index": "https://unused.invalid", "packages": ["torch[device-test]==1.0"]},
+    )
+    command = setup_modules.support.install_commands(root, environment, "amd", "Windows")[-1]
+    Path(command[command.index("--constraint") + 1]).write_text("torch==1.0\n", encoding="utf-8")
+    Path(command[command.index("-r") + 1]).write_text("", encoding="utf-8")
+    # Substitute a prebuilt app wheel for the editable app; keep the generated
+    # exact install, constraints and backend requirements unchanged.
+    run([uv, *command[1:-2], *offline, str(app)])
+    result = subprocess.run(
+        [uv, "pip", "list", "--python", python, "--format", "json"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    installed = {package["name"] for package in json.loads(result.stdout)}
+    assert {"torch", "device-bridge", "device-runtime", "test-app"} <= installed
+    assert "obsolete" not in installed
 
 
 def test_no_model_sync_keeps_installed_sound_card_output(setup_modules, tmp_path: Path) -> None:

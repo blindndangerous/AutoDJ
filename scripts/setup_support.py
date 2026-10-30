@@ -183,6 +183,9 @@ def install_commands(
                 str(python_path(environment)),
                 "--constraint",
                 str(constraints),
+                # Constraints preserve versions, not optional dependencies. The
+                # exact install must also request the backend's device extras.
+                *platform_recipe["packages"],
                 "-r",
                 str(requirements),
                 "-e",
