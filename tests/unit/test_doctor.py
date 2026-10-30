@@ -267,7 +267,6 @@ def test_music_path_check_uses_registered_roots_when_catalog_exists(tmp_path: Pa
 
 def test_configuration_describes_catalog_storage_and_legacy_purposes(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    cfg.config_path.write_text('[library]\nmusic_dir = "old-music"\n', encoding="utf-8")
     roots = [tmp_path / "first", tmp_path / "second"]
     with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         for root in roots:
@@ -311,9 +310,15 @@ def test_empty_catalog_guidance_does_not_use_legacy_root(
             pass
     before = _tree_snapshot(tmp_path)
 
-    report = DoctorReport((doctor._configuration_check(cfg), doctor._music_paths_check(cfg)))
+    music_paths = doctor._music_paths_check(cfg)
+    report = DoctorReport((doctor._configuration_check(cfg), music_paths))
 
     assert report.exit_code == 0
+    assert music_paths.summary == "no music folders registered"
+    assert music_paths.detail == (
+        "Add music folders in Library to make music available. "
+        "Setting music_dir does not add music."
+    )
     effective = report.to_dict()["checks"][0]["detail"]
     assert ("legacy_music_dir" in effective) is legacy_root
     for rendered in (render_text(report), report.to_json()):

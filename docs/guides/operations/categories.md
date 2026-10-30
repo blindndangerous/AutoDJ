@@ -35,8 +35,9 @@ clockwheels with a step for the category.
 
 ## Beets paths and `music_dir`
 
-Registered folders supply the music; `music_dir` only helps match paths and find DJ cue exports.
-It does not register sources. Before removing an existing value, review
+Registered folders supply the music. `music_dir` does not register sources; it is a base for
+relative Beets paths, relative playlist lines, old DJ cue cache keys, relative listener-request
+`blocked_folders` and `migrate-index`, and a place AutoDJ looks for DJ cue exports. Before removing an existing value, review
 [configuration cleanup](catalog-migration.md#clean-up-an-existing-configuration).
 
 AutoDJ finds a song's beets values by its file path. Beets stores full paths, or paths relative
