@@ -185,7 +185,8 @@ setup synchronize that remembered environment or a supplied `--environment`; aft
 verification it becomes setup managed. Synchronization removes packages from it that AutoDJ does
 not need. A failed update leaves the saved selection unchanged.
 `--dry-run` shows the target environment and planned synchronization without writing files or
-installing packages.
+installing packages, including the full installation commands. Normal setup gives a short summary;
+add `--verbose` to show those commands while installing.
 
 See [AMD GPU support](windows-amd.md) for the supported AMD families and driver requirements.
 NVIDIA setup uses the configured CUDA wheel channel on Windows/Linux x86-64; CPU is the fallback on

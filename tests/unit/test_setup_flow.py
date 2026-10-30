@@ -77,7 +77,9 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
     scripts = root / "scripts"
     scripts.mkdir(parents=True)
     (scripts / "setup-profiles.json").write_bytes((SCRIPTS / "setup-profiles.json").read_bytes())
-    (root / "pyproject.toml").write_text("[project]\nname = 'autodj-test'\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        "[project]\nname = 'autodj'\nversion = '1.2.3'\n", encoding="utf-8"
+    )
     (root / "uv.lock").write_text("test lock\n", encoding="utf-8")
     (root / ".python-version").write_text("3.14\n", encoding="utf-8")
     music = root / "Music # Café"
@@ -258,7 +260,8 @@ def test_dry_run_prints_plan_without_writing_or_installing(
     assert setup_modules.setup.execute(args, root) == 0
 
     output = capsys.readouterr().out
-    assert "Processing: nvidia" in output
+    assert "Welcome to AutoDJ 1.2.3 setup." in output
+    assert "Use NVIDIA graphics processing." in output
     assert "Install: uv venv" in output
     assert not (root / "config.toml").exists()
     assert not (root / ".uv").exists()
@@ -285,11 +288,67 @@ def test_managed_existing_environment_dry_run_plans_sync_without_changes(
     )
 
     output = capsys.readouterr().out
-    assert f"Environment: {environment.resolve()}" in output
+    assert str(environment.resolve()) in " ".join(output.split())
     assert "Install: uv export" in output
     assert state.read_bytes() == before
     mocks.install_python.assert_not_called()
     assert not (root / ".uv/setup-cpu-requirements.txt").exists()
+
+
+def test_install_commands_are_hidden_unless_verbose_or_dry_run(
+    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    root, _ = _project(tmp_path)
+    _patch_execution(setup_modules, monkeypatch)
+
+    args = setup_modules.setup.parser().parse_args(["--yes"])
+    assert setup_modules.setup.execute(args, root) == 0
+    ordinary = capsys.readouterr().out
+    assert "AutoDJ will install the runtime packages." in ordinary
+    assert "Install: uv" not in ordinary
+
+    (root / setup_modules.support.STATE).unlink()
+    args = setup_modules.setup.parser().parse_args(["--yes", "--verbose"])
+    assert setup_modules.setup.execute(args, root) == 0
+    verbose = capsys.readouterr().out
+    assert "Install: uv venv" in verbose
+
+
+def test_setup_prose_wraps_to_narrow_terminal(
+    setup_modules, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    monkeypatch.setattr(
+        setup_modules.setup.shutil,
+        "get_terminal_size",
+        lambda fallback: SimpleNamespace(columns=50),
+    )
+    setup_modules.setup.print_wrapped(
+        "Setup verifies the selected runtime and checks AutoDJ for problems.",
+        initial_indent="  ",
+        subsequent_indent="    ",
+    )
+    output = capsys.readouterr().out
+    assert all(len(line) <= 50 for line in output.splitlines())
+    assert "\n    " in output
+
+
+def test_welcome_is_printed_before_hardware_detection(
+    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    root, _ = _project(tmp_path)
+    events = []
+
+    def detect():
+        events.append(capsys.readouterr().out)
+        return _hardware(setup_modules, system="Linux")
+
+    monkeypatch.setattr(setup_modules.setup, "detect_hardware", detect)
+    _patch_execution(setup_modules, monkeypatch)
+    # _patch_execution installs its own detector, so restore this ordering probe.
+    monkeypatch.setattr(setup_modules.setup, "detect_hardware", detect)
+    args = setup_modules.setup.parser().parse_args(["--dry-run"])
+    assert setup_modules.setup.execute(args, root) == 0
+    assert "Welcome to AutoDJ 1.2.3 setup." in events[0]
 
 
 @pytest.mark.parametrize(
@@ -333,7 +392,11 @@ def test_backend_selection_uses_auto_recommendation_and_explicit_choice(
     args = setup_modules.setup.parser().parse_args(argv)
     assert setup_modules.setup.execute(args, root) == 0
 
-    assert f"Processing: {expected}" in capsys.readouterr().out
+    plan = {
+        "cpu": "Use CPU processing.",
+        "nvidia": "Use NVIDIA graphics processing.",
+    }[expected]
+    assert plan in capsys.readouterr().out
     mocks.install_python.assert_not_called()
 
 
@@ -364,7 +427,7 @@ def test_explicit_existing_environment_is_adopted_without_package_install(
     assert "music_dir" not in generated["library"]
     output = capsys.readouterr().out
     assert "Manage music folders" in output
-    assert "without changing its packages" in output
+    assert "without changing its packages" in " ".join(output.split())
     setup_modules.setup.ensure_ffmpeg.assert_called_once_with(auto_install=True)
     selection = setup_modules.support.read_json(root / setup_modules.support.STATE)
     assert selection == {
@@ -382,7 +445,15 @@ def test_manage_environment_updates_adopted_runtime_and_saves_managed_ownership(
     environment = _environment(setup_modules.support, root)
     mocks = _patch_execution(setup_modules, monkeypatch)
     args = setup_modules.setup.parser().parse_args(
-        ["--yes", "--backend", "cpu", "--environment", str(environment), "--manage-environment"]
+        [
+            "--yes",
+            "--verbose",
+            "--backend",
+            "cpu",
+            "--environment",
+            str(environment),
+            "--manage-environment",
+        ]
     )
 
     assert setup_modules.setup.execute(args, root) == 0
@@ -537,7 +608,7 @@ def test_doctor_failure_does_not_discard_verified_runtime(
 
 
 def test_selected_gpu_backend_fails_when_runtime_has_no_usable_gpu(
-    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
 ) -> None:
     root, _ = _project(tmp_path)
     environment = _environment(setup_modules.support, root)
@@ -572,6 +643,10 @@ def test_selected_gpu_backend_fails_when_runtime_has_no_usable_gpu(
     with pytest.raises(ValueError, match="rerun setup with --backend cpu"):
         setup_modules.setup.execute(args, root)
 
+    output = capsys.readouterr().out
+    assert "Runtime: selected nvidia GPU verification failed" in output
+    assert "Runtime: CPU" not in output
+    assert "No usable driver" in output
     assert not (root / setup_modules.support.STATE).exists()
 
 

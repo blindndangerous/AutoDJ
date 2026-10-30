@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import textwrap
 import tomllib
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from setup_support import (
 )
 
 from autodj.host_tools import ensure_ffmpeg
+from autodj.version import _project_version
 
 #: Setup's read-only Doctor run gives up after this long.
 DOCTOR_TIMEOUT_SECONDS = 600
@@ -45,6 +47,26 @@ def ask(prompt: str, default: str) -> str:
 def confirm(prompt: str) -> bool:
     """Optional expensive actions always default to no."""
     return ask(prompt + " (y/n)", "n").lower() in {"y", "yes"}
+
+
+def print_wrapped(
+    message: str,
+    *,
+    initial_indent: str = "",
+    subsequent_indent: str = "",
+    file=None,
+) -> None:
+    """Print plain prose within the current terminal width."""
+    width = shutil.get_terminal_size((80, 24)).columns
+    print(
+        textwrap.fill(
+            message,
+            width=max(20, width),
+            initial_indent=initial_indent,
+            subsequent_indent=subsequent_indent,
+        ),
+        file=file,
+    )
 
 
 def prerequisites() -> list[str]:
@@ -138,6 +160,9 @@ def parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Show the plan without installing or writing files."
     )
     result.add_argument(
+        "--verbose", action="store_true", help="Show full package installation commands."
+    )
+    result.add_argument(
         "--test-import",
         action="store_true",
         help="Import up to three tracks; may download model weights.",
@@ -178,10 +203,13 @@ def configure(args: argparse.Namespace, root: Path, interactive: bool) -> int:
 def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     """Collect a plan, then install and verify it before saving the selection."""
     interactive = sys.stdin.isatty() and not args.yes and not args.dry_run
+    print_wrapped(f"Welcome to AutoDJ {_project_version(root / 'pyproject.toml')} setup.")
+    print_wrapped("First, I'll check your computer and show you what needs to be installed.")
     hardware = detect_hardware()
-    print(f"System: {hardware.system} ({hardware.machine})")
-    print("Graphics: " + (", ".join(hardware.gpus) or "not identified"))
-    print(hardware.reason)
+    print_wrapped("Graphics: " + (", ".join(hardware.gpus) or "not identified"))
+    if args.verbose or args.dry_run:
+        print_wrapped(f"System: {hardware.system} ({hardware.machine})")
+        print_wrapped(hardware.reason)
     previous = read_json(root / STATE)
     if "environment" in previous and not isinstance(previous["environment"], str):
         raise ValueError(
@@ -228,37 +256,63 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
         raise ValueError(f"No Python interpreter in {environment}.")
     port = configure(args, root, interactive)
     issues = prerequisites()
-    print(f"\nProcessing: {backend}\nEnvironment: {environment}")
+    plan = {
+        "cpu": "Use CPU processing.",
+        "nvidia": "Use NVIDIA graphics processing.",
+        "amd": "Use AMD graphics processing.",
+        "no-model": "Install playback without local model analysis.",
+    }[backend]
+    print("\nSetup plan:")
+    print_wrapped(plan, initial_indent="  ")
+    print("  Environment:")
+    print("    " + str(environment))
     print(f"Web address: http://localhost:{port}")
     notice = profiles(root)[backend].get("notice")
-    if notice:
-        print(notice)
+    if notice and (args.verbose or args.dry_run):
+        print_wrapped(notice, initial_indent="  ")
     if external:
-        print(
+        print_wrapped(
             "Setup will verify this externally managed environment without changing its packages."
         )
     else:
-        for command in install_commands(
+        commands = install_commands(
             root,
             environment,
             backend,
             hardware.system,
             hardware.machine,
             getattr(hardware, "amd_arch", None),
-        ):
-            print("Install: " + subprocess.list2cmdline(command))
+        )
+        if args.dry_run or args.verbose:
+            for command in commands:
+                print("Install: " + subprocess.list2cmdline(command))
+        else:
+            print_wrapped(
+                "AutoDJ will install the runtime packages. Add --verbose to see the commands.",
+                initial_indent="  ",
+            )
         if backend != "no-model":
-            print("Installing PyTorch and audio dependencies can download several GB.")
-    print(
-        "After installation, setup will verify the runtime and run AutoDJ doctor to check for problems."
+            print_wrapped("The download may be several GB.")
+    print_wrapped(
+        "Setup will verify the runtime and run AutoDJ doctor to check for problems.",
+        initial_indent="  ",
     )
-    print(
-        "Close any running AutoDJ server or import jobs before applying setup so doctor can check the databases."
+    print_wrapped(
+        "Close any running AutoDJ server or import jobs before applying setup so doctor can check the databases.",
+        initial_indent="  ",
     )
-    print("Model downloads and track imports only run when you request a test import.")
-    print("Setup also checks FFmpeg; on Windows it can install it through WinGet.")
+    print_wrapped(
+        "Model downloads and track imports only run when you request a test import.",
+        initial_indent="  ",
+    )
+    print_wrapped(
+        "Setup also checks FFmpeg; on Windows it can install it through WinGet.",
+        initial_indent="  ",
+    )
     if issues:
-        print("\nPrerequisites to install:\n" + "\n".join(issues))
+        print("\nPrerequisites to install:")
+        for issue in issues:
+            print_wrapped(issue, initial_indent="  ", subsequent_indent="    ")
     if args.dry_run:
         return 0
     if issues:
@@ -285,10 +339,28 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
         print("Runtime: no-model (playback, streaming and basic library; no local model analysis)")
     else:
         runtime = probe_runtime(python, env=env)
-        device = runtime.get("device_name") or "CPU"
-        print(f"Runtime: {device} (PyTorch {runtime.get('torch_version') or 'unavailable'})")
-        print(str(runtime.get("reason", "")))
         expected = {"nvidia": "cuda", "amd": "rocm"}.get(backend)
+        gpu_failed = bool(expected) and (
+            runtime.get("torch_version") is None
+            or bool(runtime.get("error"))
+            or runtime.get("backend") != expected
+            or not runtime.get("gpu_available")
+        )
+        if gpu_failed:
+            print(
+                f"Runtime: selected {backend} GPU verification failed "
+                f"(PyTorch {runtime.get('torch_version') or 'unavailable'})."
+            )
+        else:
+            device = runtime.get("device_name") or "CPU"
+            print(f"Runtime: {device} (PyTorch {runtime.get('torch_version') or 'unavailable'})")
+        if gpu_failed:
+            detail = str(runtime.get("error") or runtime.get("reason") or "")
+            detail = detail.removesuffix("; using CPU.")
+            if detail:
+                print_wrapped(detail, initial_indent="  ")
+        elif runtime.get("reason"):
+            print_wrapped(str(runtime["reason"]), initial_indent="  ")
         if runtime.get("torch_version") is None or runtime.get("error"):
             if expected:
                 raise ValueError(
@@ -297,7 +369,7 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
             raise ValueError(
                 "The Python runtime check failed. Fix the reported problem and rerun setup."
             )
-        if expected and (runtime.get("backend") != expected or not runtime.get("gpu_available")):
+        if gpu_failed:
             raise ValueError(
                 "The selected GPU could not run a calculation. Check the driver and package compatibility, or rerun with --backend cpu."
             )
@@ -366,7 +438,7 @@ def main() -> int:
     try:
         return execute(args)
     except (OSError, ValueError, argparse.ArgumentTypeError, subprocess.TimeoutExpired) as exc:
-        print(f"Setup: {exc}", file=sys.stderr)
+        print_wrapped(f"Setup failed: {exc}", file=sys.stderr)
         return 1
     except subprocess.CalledProcessError as exc:
         print(
