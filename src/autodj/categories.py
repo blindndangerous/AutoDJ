@@ -7,7 +7,7 @@ A category such as A, B, "2000s" or "Rock gold" has a name and one source:
   live beets database's fields laid over it when ``[library] beets_db`` is
   set (any beets field, flexible attributes included); or
 - an M3U or M3U8 file in the playlists folder (``[library]
-  playlists_folder``, by default ``<index_dir>/<name>/playlists``), such as
+  playlists_folder``, by default ``<index_dir>/shared/playlists``), such as
   one an update-playlists script writes.  Each line is matched to a library
   track; the lines that match none are reported as missing.
 

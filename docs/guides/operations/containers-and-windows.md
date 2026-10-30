@@ -21,8 +21,9 @@ browser to pair. A bare-metal `autodj serve` stays local-only unless you pass `-
   `ssl_certfile = "certs/fullchain.pem"`, are read from here.
 - `AUTODJ_BEETS_PATH` in `.env` mounts the folder holding beets' `library.db` read-only at `/beets`;
   set `beets_db = "/beets/library.db"` in `config.local.toml` to use it. If beets stores paths
-  relative to its music folder, leave `music_dir` unset or set it to `/music`, where the
-  container sees the music (see [Beets paths and `music_dir`](categories.md#beets-paths-and-music_dir)).
+  relative to its music folder, set `music_dir = "/music"` under `[library]` as the Beets base
+  for this mount. It does not register music. Categories and clock conditions can infer a missing
+  base in limited cases (see [Beets paths and `music_dir`](categories.md#beets-paths-and-music_dir)).
 
 ```dotenv
 AUTODJ_MUSIC_DIR=/path/to/music
@@ -36,6 +37,8 @@ AUTODJ_GID=1000
 Without `.env`, `./music` is mounted at `/music` and the index and model live in the named
 volumes `autodj-index` and `autodj-models`. Add `/music` in Library after starting the container;
 mounting a folder does not register it automatically.
+`AUTODJ_MUSIC_DIR` selects the host folder mounted by Compose. It is different from
+`AUTODJ_LIBRARY_MUSIC_DIR`, the optional compatibility base read by AutoDJ.
 
 ```bash
 docker compose pull

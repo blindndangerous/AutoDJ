@@ -1793,6 +1793,66 @@ def test_empty_library_requires_explicit_folder_and_keeps_it_after_restart(tmp_p
         reopened.close()
 
 
+def test_multifolder_scan_ignores_unregistered_legacy_music_dir(tmp_path):
+    cfg = make_config(tmp_path)
+    outside = cfg.library.music_dir / "outside.flac"
+    outside.write_bytes(b"outside audio")
+    roots = [tmp_path / "first", tmp_path / "second"]
+    songs = [root / "song.flac" for root in roots]
+    for song in songs:
+        song.parent.mkdir()
+        song.write_bytes(b"registered audio")
+    manager = LibraryManager(cfg, Similarity())
+    try:
+        for root in roots:
+            manager.catalog.add_source(root, analysis="basic")
+        with (
+            patch("autodj.library.analyze_basic", side_effect=fake_basic),
+            patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+            patch("autodj.intro_lift.measure_source_intro", return_value=0.0),
+        ):
+            manager.scan()
+        assert {entry.path for entry in manager.entries_snapshot()} == {_path(p) for p in songs}
+        assert manager.entry_for_path(outside) is None
+        assert {source["path"] for source in manager.catalog.sources("music")} == {
+            _path(root) for root in roots
+        }
+    finally:
+        manager.close()
+
+
+@pytest.mark.dj_analysis
+def test_legacy_cue_export_updates_catalog_tracks_without_importing_music(tmp_path, monkeypatch):
+    from autodj.dj_meta import DjMeta
+    from tests.unit.test_dj_cues_import import _make_mixxx_db
+
+    cfg = make_config(tmp_path)
+    cfg.playback.import_external_cues = True
+    registered = tmp_path / "registered"
+    registered.mkdir()
+    song = registered / "song.flac"
+    outside = cfg.library.music_dir / "outside.flac"
+    _make_mixxx_db(
+        cfg.library.music_dir / "mixxx.db",
+        [(str(song), 882000.0, 1, "Intro"), (str(outside), 1764000.0, 1, "Outside")],
+    )
+    monkeypatch.setattr("autodj.dj_cues_import._default_search_paths", lambda _home: [])
+    manager = LibraryManager(cfg, Similarity())
+    try:
+        manager.catalog.add_source(registered, analysis="audio")
+        manager.catalog.put_entry(make_entry(song))
+        manager._refresh_scan_cues()
+        manager.store_scan_dj(song, DjMeta(analysed=True), force=True)
+        cached = manager._dj_cache().get(str(song))
+        assert any(cue.source == "mixxx" and cue.time_s == 10.0 for cue in cached.cues)
+        assert manager.catalog.record_for_path(outside) is None
+        assert {source["path"] for source in manager.catalog.sources("music")} == {
+            _path(registered)
+        }
+    finally:
+        manager.close()
+
+
 def test_constructor_refuses_legacy_settings_in_another_station(tmp_path):
     from autodj.index_manifest import IndexConsistencyError
     from autodj.stations import StationPaths

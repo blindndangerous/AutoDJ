@@ -1726,12 +1726,13 @@ def cmd_analyse(
     "--map",
     "move_map",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="JSON mapping of old to new paths relative to music_dir.",
+    help="JSON mapping of old to new paths relative to the legacy index's music base (--music-dir).",
 )
 @click.option(
     "--music-dir",
     type=click.Path(file_okay=False, path_type=Path),
-    help="Base folder for paths in a legacy index; not needed for current-library state upgrades.",
+    help="Base folder for legacy index paths; defaults to [library] music_dir when set. "
+    "Not needed for current-library state upgrades.",
 )
 @click.pass_context
 def cmd_migrate_index(

@@ -1,12 +1,16 @@
 # Per-machine overrides. Copy to config.local.toml; this example is safe to commit.
 # These values are loaded when a sibling base configuration file is loaded.
-# The index contains library.db and dj_meta.db plus stations/<slug>/ state.
+# The index contains libraries/main/library.db and dj_meta.db, shared/ files,
+# and stations/<slug>/ state.
 # Station secrets do not belong in TOML. AutoDJ stores default station relay
 # passwords in <index_dir>/stations/default/relays.json and listener credentials
 # and webhooks in that folder's secrets.json. Other stations have matching files
 # under their own slug. These files are private and excluded from backups.
 
 [library]
+# Register music folders in Library. A music_dir override does not add music.
+# Keep it only for supported relative paths or DJ cue exports; see
+# docs/guides/operations/catalog-migration.md before cleaning up an old value.
 # beets_db = "/srv/beets/library.db"
 
 [index]
