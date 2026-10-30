@@ -753,6 +753,9 @@ class CheckoutUpdater:
             return -1
         environment = os.environ.copy()
         environment["AUTODJ_RUNTIME"] = "current"
+        # Older setup scripts ignore this; newer ones preserve the runtime's
+        # model mode without asking or authorizing new weight downloads.
+        environment["AUTODJ_SETUP_UPDATE"] = str(os.getpid())
         done = self._step(
             [self._setup_python, str(script), "--yes"],
             timeout=SETUP_TIMEOUT_SECONDS,

@@ -92,6 +92,8 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0012-08` | Similarity is offered only when local MuQ execution is available or a compatible worker can use installed model weights; a saved selection remains intact when unavailable. | automated | `tests/unit/test_audio_analysis_pipeline.py::test_similarity_choice_reflects_installed_capability`; `tests/jsmodules/library-folders.test.js::offers similarity only when available and preserves unavailable existing folders` |
 | `ADR-0012-09` | Setup synchronizes managed runtimes from the lock and selected backend on rerun; adopted external runtimes stay unchanged unless explicitly managed. | automated | `tests/unit/test_setup_flow.py::test_install_python_always_synchronizes_and_checks_runtime`; `tests/unit/test_setup_flow.py::test_explicit_existing_environment_is_adopted_without_package_install`; `tests/unit/test_setup_flow.py::test_manage_environment_updates_adopted_runtime_and_saves_managed_ownership` |
 | `ADR-0012-10` | Managed synchronization is exact: the final install removes packages that the lock, the backend wheel profile and an installed no-model sound-card output do not need. | automated | `tests/unit/test_setup_flow.py::test_managed_sync_removes_packages_the_lock_no_longer_lists`; `tests/unit/test_setup_flow.py::test_no_model_sync_keeps_installed_sound_card_output` |
+| `ADR-0012-11` | Interactive setup asks once whether to enable MuQ; Yes verifies a real generated-audio embedding before saving the runtime, while No retains existing weights without invoking model verification. Unattended setup requires an explicit choice. | automated | `tests/unit/test_setup_flow.py::test_interactive_model_choice_is_asked_once_and_does_not_import_tracks`; `tests/unit/test_setup_flow.py::test_unattended_setup_requires_explicit_model_choice`; `tests/unit/test_setup_flow.py::test_model_verification_failure_does_not_save_runtime`; `tests/unit/test_setup_model.py::test_cached_model_is_loaded_offline_without_downloading` |
+| `ADR-0012-12` | Setup refuses detected active AutoDJ processes before mutation; updater maintenance excludes its own stopped-server supervisor but still refuses other launchers. Updates preserve model mode without new weight downloads. | automated | `tests/unit/test_setup_flow.py::test_running_autodj_refuses_setup_before_mutations`; `tests/unit/test_setup_flow.py::test_web_update_preserves_model_mode_without_downloading`; `tests/unit/test_setup_activity.py::test_update_ignores_its_own_supervisor_but_not_other_launchers` |
 
 ## Amendment 2026-10-18: optional no-model serving runtime
 
@@ -173,6 +175,33 @@ such as pip, are kept. This replaces the 2026-10-27 statement that existing opti
 are not removed, except that a no-model runtime that already has the sound-card output
 package keeps the `play` extra. Adopted external runtimes remain unchanged. This amendment
 preserves the ADR's Proposed status and evidence limits.
+
+## Amendment 2026-10-29: explicit MuQ choice and setup verification
+
+The maintainer agreed in [issue #686](https://github.com/blindndangerous/AutoDJ/issues/686)
+that setup should ask one model question, explain its purpose and approximate download
+size, and carry out the choice. `--model yes` installs model support, obtains missing
+weights and verifies a short generated-audio embedding without scanning the library.
+Existing local weights are reused without refreshing a floating revision. `--model no`
+and its `--no-model` alias select the no-model runtime and preserve downloaded files.
+Interactive setup asks again; only the verified runtime selection is persisted, with
+no additional configuration keys. Unattended manual setup requires an explicit choice.
+This replaces the optional three-track import described earlier; the hidden legacy
+`--test-import` flag now selects the model verification path instead of importing music.
+
+Setup checks launcher locks, the configured port and recognizable processes scoped to
+the checkout or selected environment before changing software. This is a point-in-time
+check, not an exclusion lock: custom scripts and processes starting afterwards remain
+outside its guarantee. The supervising updater identifies itself through a transient
+environment marker while its server is stopped. That path retains the existing model
+mode and performs runtime verification without asking or downloading new weights;
+older setup versions ignore the marker, preserving rollback compatibility.
+Setup also recognizes an older updater through its held update/serving locks and
+process ancestry, so the first upgrade to this flow can proceed without prompting.
+
+Doctor and setup share plain-text wrapping; Doctor's JSON output remains machine-readable.
+Model/GPU checks still require the native evidence in ADR-0012-05. This amendment records
+the agreed setup evolution without accepting unrelated Proposed material in this ADR.
 
 ## Verification
 

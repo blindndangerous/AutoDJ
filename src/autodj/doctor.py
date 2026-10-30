@@ -32,6 +32,7 @@ from autodj.config import is_loopback_bind
 from autodj.index_manifest import has_legacy_index
 from autodj.repeat_settings import removed_saved_repeat_keys
 from autodj.sqlite_utils import readonly_uri
+from autodj.terminal_text import format_text
 
 _connect = sqlite3.connect
 
@@ -112,7 +113,7 @@ def render_text(report: DoctorReport) -> str:
                 else check.detail
             )
             line += f" {detail}"
-        lines.append(line)
+        lines.append(format_text(line))
     return "\n".join(lines)
 
 
