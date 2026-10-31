@@ -190,6 +190,9 @@ def test_saved_certificate_config_helper(tmp_path: Path) -> None:
     assert (cfg.server.ssl_certfile, cfg.server.ssl_keyfile) == tuple(
         map(str, store.paths(item["id"]))
     )
+    cfg.server.allowed_origins = None
+    assert apply_saved_certificate(cfg) is True
+    assert cfg.server.allowed_origins is None
 
 
 def test_private_file_access_policy_applies_to_both_pem_files(tmp_path: Path) -> None:

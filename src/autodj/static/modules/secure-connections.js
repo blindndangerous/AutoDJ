@@ -54,6 +54,8 @@ export function installSecureConnections({ panel = document.getElementById("secu
     const returnTo = opener?.isConnected ? opener : doc.getElementById(opener?.id) || panel.querySelector("#sc-remote");
     closeDialog(dialog, { opener: returnTo });
     wizard = null;
+    content.replaceChildren();
+    errorRegion.textContent = "";
     const url = new URL(win.location.href);
     url.searchParams.delete("https-setup");
     win.history.replaceState(null, "", url.href);
@@ -144,7 +146,7 @@ export function installSecureConnections({ panel = document.getElementById("secu
         wizard.id = result.id;
         await refresh();
       } catch (error) { if (isAuthenticatedRequestCurrent(epoch)) dialogError(error); return; }
-      finally { setBusy(false); }
+      finally { setBusy(false); if (!isAuthenticatedRequestCurrent(epoch)) closeWizard(); }
     } else {
       if (wizard.id && !selected()?.active) { dialogError("Activate this certificate before continuing."); return; }
       wizard.step = 2;

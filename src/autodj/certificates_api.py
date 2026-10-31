@@ -89,7 +89,14 @@ def install_certificates_api(app: FastAPI, cfg: AutoDJConfig, *, https: bool) ->
 
     def status(request: Request) -> dict:
         entries = store.list()
-        active = None if overridden else store.active_id
+        active = (
+            next(
+                (item["id"] for item in entries if store.paths(item["id"]) == configured_paths),
+                None,
+            )
+            if overridden
+            else store.active_id
+        )
         selected = store.paths(active) if active else None
         for item in entries:
             item["managed"] = True

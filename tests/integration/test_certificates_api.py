@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from autodj.config import load_config
+from autodj.config import load_config, validate_server_exposure
 from tests._layout import point_index
 from tests._server import create_app
 
@@ -57,6 +57,7 @@ def test_local_setup_persists_selection_and_download_contains_only_public_certif
     config = tmp_path / "config.toml"
     config.write_text(f'[index]\nindex_dir = "{tmp_path.as_posix()}"\n', encoding="utf-8")
     loaded = load_config(str(config))
+    validate_server_exposure(loaded.server)
     assert Path(loaded.server.ssl_certfile) == client.app.state.certificate_store.paths(ident)[0]
 
 

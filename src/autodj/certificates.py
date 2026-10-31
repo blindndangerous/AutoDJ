@@ -386,6 +386,8 @@ def apply_saved_certificate(cfg: AutoDJConfig) -> bool:
     cfg.server.ssl_certfile = str(cert_path)
     cfg.server.ssl_keyfile = str(key_path)
     # Keep exact configured origins usable after switching the listener protocol.
+    if cfg.server.allowed_origins is None:
+        return True
     origins = cfg.server.allowed_origins or []
     cfg.server.allowed_origins = list(
         dict.fromkeys(
