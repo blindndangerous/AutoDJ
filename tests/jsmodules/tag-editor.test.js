@@ -160,7 +160,7 @@ describe("Track info tag editor", () => {
   });
 
   it("asks beets to follow when its box is ticked, and reports a beets failure", async () => {
-    const request = vi.fn(async () => ({ ...RECORD, beets: "failed", beets_error: "database is locked" }));
+    const request = vi.fn(async () => ({ ...RECORD, beets: "failed", beets_error: "the beets database could not be updated" }));
     const editor = install({ request });
     editor.load({ ...RECORD, beets_writeback: true });
     field("artist").value = "Band";
@@ -168,7 +168,7 @@ describe("Track info tag editor", () => {
     expect(JSON.parse(request.mock.calls[0][1].body).beets).toBe(true);
     await settle();
     expect(document.getElementById("tags-status").textContent).toBe(
-      "Saved the tags of Old Title in AutoDJ, but beets was not updated: database is locked. Run beet update to read them into beets.",
+      "Saved the tags of Old Title in AutoDJ, but beets was not updated: the beets database could not be updated. Run beet update to read them into beets.",
     );
   });
 

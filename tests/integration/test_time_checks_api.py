@@ -304,7 +304,7 @@ def test_a_voice_pack_that_cannot_say_the_minute_keeps_the_song_on_a_hard_event(
 
 
 def test_settings_are_refused_in_words_while_the_file_cannot_be_read(
-    bridge, tmp_path, monkeypatch
+    bridge, tmp_path, monkeypatch, caplog
 ) -> None:
     from autodj import time_checks
 
@@ -313,7 +313,7 @@ def test_settings_are_refused_in_words_while_the_file_cannot_be_read(
     client = TestClient(create_app(bridge))
 
     def unreadable(_path: object) -> None:
-        raise time_checks.TimeChecksUnreadable("The time checks file could not be read just now")
+        raise PermissionError(13, "private-state-read-failure", "/private/time_checks.json")
 
     monkeypatch.setattr(time_checks, "_read_state", unreadable)
     body = {
@@ -326,3 +326,6 @@ def test_settings_are_refused_in_words_while_the_file_cannot_be_read(
     refused = client.put("/api/time-checks", json=body)
     assert refused.status_code == 503
     assert "could not be read just now" in refused.json()["detail"]
+    assert "private-state-read-failure" not in refused.text
+    assert "/private/time_checks.json" not in refused.text
+    assert "private-state-read-failure" in caplog.text

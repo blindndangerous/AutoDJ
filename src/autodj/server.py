@@ -99,7 +99,7 @@ from autodj.breaks_api import (
     VOICE_UPLOAD_PATH,
 )
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
-from autodj.catalog import ADVANCED_MAX_MINUTES_LIMIT
+from autodj.catalog import ADVANCED_MAX_MINUTES_LIMIT, normalize_path
 from autodj.config import AdsConfig, BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
@@ -2180,10 +2180,10 @@ def create_app(
         """Return the embedded album art for a track (304 if unchanged)."""
         # Only serve art for tracks that exist in the index — prevents
         # arbitrary file access through the path parameter.
-        known = shared.entry_for_path(path) is not None
-        if not known:
+        entry = shared.entry_for_path(path)
+        if entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
-        result = await asyncio.to_thread(shared.cover_art_for, path)
+        result = await asyncio.to_thread(shared.cover_art_for, entry.path)
         if result is None:
             raise HTTPException(status_code=404, detail="No embedded cover art")
         data, mime = result
@@ -2195,7 +2195,12 @@ def create_app(
         authorized_entry = shared.entry_for_path(path)
         if authorized_entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
-        lyrics = await _read_lyrics_owned(path)
+        # Keep lookup keys opaque; read the authorized entry's filesystem path.
+        # Identity-only entries use the normalized, already-authorized key.
+        read_path = getattr(authorized_entry, "path", None)
+        if read_path is None:
+            read_path = normalize_path(path)
+        lyrics = await _read_lyrics_owned(read_path)
         if shared.entry_for_path(path) != authorized_entry:
             raise HTTPException(status_code=409, detail="Track index changed")
         return {"path": path, "lyrics": lyrics}
@@ -2207,9 +2212,10 @@ def create_app(
     @app.api_route("/api/audio", methods=["GET", "HEAD"])
     async def api_audio(path: str, request: Request) -> Response:
         """Serve indexed audio with byte ranges; ALAC is transcoded to MP3."""
-        if shared.entry_for_path(path) is None:
+        entry = shared.entry_for_path(path)
+        if entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
-        audio_path = Path(path)
+        audio_path = Path(entry.path)
         try:
             metadata = await asyncio.to_thread(audio_path.stat)
         except OSError:

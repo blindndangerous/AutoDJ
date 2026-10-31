@@ -49,6 +49,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, field_validat
 from autodj.clip_dates import ClipDates, ClipDatesError, parse_dates
 from autodj.fsutil import confirm_missing
 from autodj.liner_scheduler import LinerDecodeError, decode_liner_path
+from autodj.profiles import InvalidProfileError
 from autodj.scheduler import Action
 from autodj.station_routes import SavedStationDep, StationDep, StationRouter
 from autodj.stations import DEFAULT_SLUG, StationControlError, StationPaths
@@ -800,8 +801,9 @@ class TimeChecks:
         try:
             state = _read_state(self.state_path)
         except OSError as exc:
+            logger.exception("Could not read time checks settings from %s", self.state_path)
             raise TimeChecksUnreadable(
-                f"The time checks file could not be read just now ({exc}); nothing was saved"
+                "The time checks file could not be read just now; nothing was saved"
             ) from exc
         except ValueError as exc:
             # Set aside, and saved again from what this process last read.
@@ -1391,8 +1393,24 @@ def install_time_checks(router: StationRouter) -> None:
             return _file_error(exc)
         except StationControlError as exc:
             return JSONResponse(status_code=409, content={"detail": str(exc)})
-        except ValueError as exc:
-            return JSONResponse(status_code=400, content={"detail": str(exc)})
+        except InvalidProfileError as exc:
+            logger.exception("Could not remove time check voice pack %s", name)
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": f"The saved profile {exc.name} is invalid, so the voice pack was kept. "
+                    "Repair or remove that profile, then try again."
+                },
+            )
+        except ValueError:
+            logger.exception("Could not remove time check voice pack %s", name)
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "A saved profile file is damaged, so the voice pack was kept. "
+                    "Repair or remove that profile file, then try again."
+                },
+            )
         return {**await asyncio.to_thread(checks.status), "removed": name}
 
     @router.post("/time-checks/clips", response_model=None)
