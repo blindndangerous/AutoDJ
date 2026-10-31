@@ -116,9 +116,16 @@ export function installUpdates({
   request = requestJson,
   confirm = confirmAction,
   probe = (url) => requestJson(url, { cache: "no-store" }),
+  // This no-cors health probe must accept an opaque response; requestJson
+  // cannot read it. Fetch still verifies TLS normally.
+  // eslint-disable-next-line no-restricted-syntax -- opaque no-cors probe for HTTPS reachability
+  probeHttps = (url) => globalThis.fetch(url, {
+    mode: "no-cors", credentials: "omit", cache: "no-store", redirect: "error",
+  }),
   sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
   now = () => Date.now(),
   reload = () => globalThis.location.reload(),
+  navigate = (url) => globalThis.location.assign(url),
   settle = () => new Promise((resolve) => { setTimeout(resolve, SETTLE_MS); }),
 } = {}) {
   const get = (id) => doc.getElementById(id);
@@ -154,7 +161,9 @@ export function installUpdates({
     restartNote, restartButton, notes, notesLink, updateButton, installNote, installWords,
     guideLink, goBack, goBackNote, goBackButton, last, result, how, commands, progress,
     reloadButton, updateRefused, goBackRefused, restartRefused];
-  if (parts.some((part) => !part)) return { load: async () => false };
+  if (parts.some((part) => !part)) {
+    return { load: async () => false, canRestart: () => false, restartForHttps: async () => false };
+  }
 
   let view = null;
   let loading = null;
@@ -314,14 +323,14 @@ export function installUpdates({
   // True once AutoDJ has gone away and answered again, or answered after
   // RESTART_UNSEEN_MS; false when it is still away after *waitMs*.
   // *onAway* hears how long AutoDJ has been away, after each poll.
-  async function waitForServer(waitMs = RESTART_WAIT_MS, onAway = () => {}) {
+  async function waitForServer(waitMs = RESTART_WAIT_MS, onAway = () => {}, checkServer = () => probe("/api/version")) {
     const started = now();
     let away = false;
     while (now() - started < waitMs) {
       await sleep(RESTART_POLL_MS);
       let answered = true;
       try {
-        await probe("/api/version");
+        await checkServer();
       } catch (_) {
         answered = false;
       }
@@ -454,7 +463,20 @@ export function installUpdates({
     });
   }
 
-  async function restart() {
+  function httpsRestartTarget(url) {
+    try {
+      const source = new URL(doc.location.href);
+      const target = new URL(url, source);
+      const port = (address) => address.port || (address.protocol === "http:" ? "80" : "443");
+      if (target.protocol !== "https:" || target.username || target.password
+        || target.hostname !== source.hostname || port(target) !== port(source)) return null;
+      return target;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function restart(target = null) {
     let refused = null;
     const confirmed = await confirm(doc, {
       title: "Restart AutoDJ?",
@@ -483,7 +505,15 @@ export function installUpdates({
     }
     await settle();
     say("AutoDJ is restarting.  The stream is off the air until it is back.");
-    if (await waitForServer()) {
+    const checkServer = target
+      ? () => probeHttps(new URL("/healthz", target).href)
+      : undefined;
+    if (await waitForServer(RESTART_WAIT_MS, () => {}, checkServer)) {
+      if (target) {
+        say("AutoDJ is back.");
+        navigate(target.href);
+        return;
+      }
       await load();
       say(`AutoDJ is back.  ${view ? installationWords(view) : ""}`.trim());
     } else {
@@ -505,5 +535,12 @@ export function installUpdates({
     if (panel.open) void load();
   });
   if (panel.open) void load();
-  return { load };
+  function restartForHttps(url) {
+    const target = httpsRestartTarget(url);
+    if (!target || !view?.restart?.available) return Promise.resolve(false);
+    clearRefusals();
+    return withDisabled(restartButton, () => restart(target));
+  }
+
+  return { load, canRestart: () => Boolean(view?.restart?.available), restartForHttps };
 }

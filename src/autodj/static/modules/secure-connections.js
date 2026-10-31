@@ -18,18 +18,19 @@ const expiry = (value) => {
     : `Expires ${exactDate(value)} (${approximateDurationText(value)})`;
 };
 const instructions = {
-  windows: '<ol><li>Open the certificate and choose <strong>Install Certificate → Current User</strong>.</li><li>Select <strong>Trusted Root Certification Authorities</strong>.</li><li>Finish and approve the Windows prompt.</li></ol>',
-  mac: '<ol><li>Import the certificate into <strong>Keychain Access</strong>.</li><li>Open it, expand <strong>Trust</strong>, and set <strong>Secure Sockets Layer (SSL)</strong> to <strong>Always Trust</strong>.</li><li>Close the window and approve the change.</li></ol>',
+  windows: '<ol><li>Open the certificate and choose <strong>Install Certificate → Current User</strong>.</li><li>Select <strong>Trusted Root Certification Authorities</strong> as the store.</li><li>Finish and approve the Windows prompt.</li></ol>',
+  mac: '<ol><li>Import the certificate into <strong>Keychain Access</strong>.</li><li>Open the certificate, expand <strong>Trust</strong>, and set <strong>Secure Sockets Layer (SSL)</strong> to <strong>Always Trust</strong>.</li><li>Close the window and approve the change.</li></ol><a href="https://support.apple.com/guide/keychain-access/kyca11871/mac">Apple’s certificate instructions</a>',
   linux: '<p>In your browser’s certificate settings, import the certificate and trust it for websites.</p><details><summary>Chrome / Chromium instructions</summary><p>Open <code>chrome://settings/certificates</code> to manage certificates.</p><a href="https://chromium.googlesource.com/chromium/src/+/main/docs/linux/cert_management.md">Chromium’s Linux certificate guide</a></details>',
   other: '<p>Use your device’s certificate settings to install and trust the certificate. For a managed device, ask your administrator.</p>',
 };
 
-export function installSecureConnections({ panel = document.getElementById("secure-connections"), status = document.getElementById("secure-connections-status"), request = requestJson } = {}) {
+export function installSecureConnections({ panel = document.getElementById("secure-connections"), status = document.getElementById("secure-connections-status"), request = requestJson, updates = null } = {}) {
   if (!panel) return { refresh() {} };
   if (installed.has(panel)) { const controller = installed.get(panel); void controller.refresh(); return controller; }
   const doc = panel.ownerDocument;
   const win = doc.defaultView;
   let inventory = null, wizard = null, opener = null, busy = false, refreshSequence = 0;
+  let restartAvailable = false;
   let resumePending = new URL(win.location.href).searchParams.get("https-setup") === "trust";
   const ready = () => win.isSecureContext && win.location.protocol === "https:";
   const say = (message) => announceStatus(status, message, { force: true });
@@ -81,41 +82,58 @@ export function installSecureConnections({ panel = document.getElementById("secu
       return `<li><a href="${esc(url.href)}">${esc(address)}</a></li>`;
     }).join("");
   }
+  function restartControl() {
+    return inventory?.restart_required && restartAvailable ? '<button type="button" data-https-restart>Restart now</button>' : '';
+  }
+  function restartNow() {
+    if (busy || !restartAvailable) return;
+    const destination = new URL(win.location.href);
+    const port = destination.port || (destination.protocol === "https:" ? "443" : "80");
+    destination.protocol = "https:";
+    destination.port = port;
+    destination.searchParams.set("https-setup", "trust");
+    destination.hash = "settings";
+    if (dialog.open) closeWizard();
+    doc.getElementById("tab-settings")?.click();
+    doc.getElementById("stab-updates")?.click();
+    void updates.restartForHttps(destination.href);
+  }
   function certificateStep() {
     const cert = selected();
     if (wizard.kind === "add" && !wizard.id) {
-      return '<p>Create a certificate for this host, or import an existing pair.</p>'
+      return '<p>Create a certificate for this host. Save the public copy for your recording device.</p>'
         + '<label for="sc-name">Certificate name</label><input id="sc-name" maxlength="120" required value="AutoDJ certificate">'
         + `<label for="sc-hosts">Host names and addresses</label><input id="sc-hosts" aria-describedby="sc-hosts-help" value="${esc((inventory.hosts || []).join(", "))}"><p id="sc-hosts-help" class="setting-desc">Separate addresses with commas.</p>`
         + '<details><summary>Import a certificate</summary><label for="sc-cert">Certificate (PEM)</label><textarea id="sc-cert" rows="4" autocomplete="off" spellcheck="false"></textarea><label for="sc-key">Private key (PEM)</label><textarea id="sc-key" rows="4" autocomplete="off" spellcheck="false"></textarea></details>';
     }
-    if (!cert) return `<p>On the AutoDJ host, open <code>http://localhost:${esc(win.location.port || "8080")}</code>, then go to <strong>Settings → Server → Secure connections (HTTPS)</strong> and choose <strong>Add certificate</strong>.</p><details><summary>Using a NAS or a server without a browser?</summary><p>Set up the certificate through a trusted terminal or admin connection. Follow <a href="https://github.com/blindndangerous/AutoDJ/blob/master/docs/guides/operations/network.md#https-on-your-home-network">the host setup guide</a>.</p></details>`;
+    if (!cert) return `<p>Start on the computer or server running AutoDJ.</p><ol><li>On the host, open <code>http://127.0.0.1:${esc(win.location.port || "8080")}</code>.</li><li>Go to <strong>Settings → Server → Secure connections (HTTPS)</strong>.</li><li>Create the certificate and save the public copy.</li></ol><details><summary>Using a NAS or a server without a browser?</summary><p>Set up AutoDJ’s certificate through a trusted terminal or admin connection. Use that connection to copy the public certificate to your recording device.</p><a href="https://github.com/blindndangerous/AutoDJ/blob/master/docs/guides/operations/network.md#https-on-your-home-network">Host setup guide</a></details>`;
     let text = `<p><strong>${esc(cert.name)}</strong></p>`;
     text += inventory.local || inventory.https ? `<p>${download(cert)}</p>`
-      : '<p>Save the public certificate on the AutoDJ host and transfer it to this recording device through a trusted connection.</p>';
+      : '<p>Get the public certificate from the AutoDJ host.</p><p>Transfer the public certificate using a USB drive or a trusted connection to the host. Keep the private key on the host.</p>';
     if (!cert.active && inventory.can_manage) {
-      if (!inventory.https) text += '<p>Activating this certificate requires restarting AutoDJ to start serving HTTPS.</p>';
+      if (!inventory.https) text += '<p>Restart AutoDJ to start serving HTTPS.</p>';
       text += '<button type="button" id="sc-activate">Activate certificate</button>';
     }
-    if (inventory.restart_required) text += '<p>Restart AutoDJ to start serving HTTPS. Use <strong>Settings → Update and restart</strong>, or restart AutoDJ on the host.</p>';
-    return text;
+    if (inventory.restart_required) text += '<p>Restart AutoDJ to start serving HTTPS.</p>';
+    return text + restartControl();
   }
   function trustGuide() {
     const cert = selected();
     return (cert && (inventory.local || inventory.https) ? `<p>${download(cert)}</p>` : '')
       + `<label for="sc-platform">Recording device</label><select id="sc-platform">${[["windows", "Windows"], ["mac", "macOS"], ["linux", "Linux"], ["other", "Other / managed device"]].map(([value, label]) => `<option value="${value}"${wizard.platform === value ? " selected" : ""}>${label}</option>`).join("")}</select><div id="sc-trust-instructions">${instructions[wizard.platform]}</div>`
-      + (inventory.restart_required ? '<p>Restart AutoDJ on the host, then open an HTTPS address below.</p>' : '<p>Open AutoDJ over HTTPS on the recording device.</p>')
-      + `<ul>${httpsLinks()}</ul>`;
+      + (inventory.restart_required ? '<p>Restart AutoDJ to start serving HTTPS.</p>' : '<p>Open AutoDJ over HTTPS on the recording device to finish setup.</p>')
+      + restartControl() + `<ul>${httpsLinks()}</ul>`;
   }
   function renderWizard() {
     if (!wizard) return;
     const complete = wizard.step === 3;
-    dialog.querySelector("#sc-dialog-title").textContent = wizard.kind === "add" ? "Add certificate" : "Set up a remote device";
+    const stepTitle = wizard.step === 1 ? (wizard.kind === "remote" ? "Get the server certificate" : "Create the certificate") : "Trust the certificate";
+    dialog.querySelector("#sc-dialog-title").textContent = wizard.kind === "add" ? "Set up HTTPS" : "Set up a remote device";
     const trust = ready() && !inventory.restart_required ? '<p>This browser is ready to record.</p><details><summary>Set up another recording device</summary>' + trustGuide() + '</details>' : trustGuide();
     content.innerHTML = complete ? '<h3 id="sc-step-heading" tabindex="-1">You’re all set</h3><p>Go to Voice tracks to start recording. Allow microphone access when your browser asks.</p>'
-      : `<h3 id="sc-step-heading" tabindex="-1">Step ${wizard.step} of 2</h3><ol class="secure-steps"><li${wizard.step === 1 ? ' aria-current="step"' : ''}>Certificate</li><li${wizard.step === 2 ? ' aria-current="step"' : ''}>Trust</li></ol><h3>${wizard.step === 1 ? 'Certificate' : 'Trust on the recording device'}</h3>${wizard.step === 1 ? certificateStep() : trust}`;
+      : `<h3 id="sc-step-heading" tabindex="-1">Step ${wizard.step} of 2</h3><ol class="secure-steps"><li${wizard.step === 1 ? ' aria-current="step"' : ''}>Certificate</li><li${wizard.step === 2 ? ' aria-current="step"' : ''}>Trust</li></ol><h3>${stepTitle}</h3>${wizard.step === 1 ? certificateStep() : trust}`;
     back.hidden = wizard.step !== 2;
-    back.textContent = "Previous: certificate";
+    back.textContent = wizard.kind === "remote" ? "Previous: get the certificate" : "Previous: create the certificate";
     next.hidden = complete || (wizard.step === 1 && !selected() && wizard.kind !== "add");
     next.textContent = wizard.step === 1 ? (wizard.kind === "add" && !wizard.id ? "Save certificate" : "Next: trust the certificate") : "Finish setup";
     next.setAttribute("aria-disabled", String(busy || (wizard.step === 2 && (!ready() || inventory.restart_required))));
@@ -125,6 +143,7 @@ export function installSecureConnections({ panel = document.getElementById("secu
       content.querySelector("#sc-trust-instructions").innerHTML = instructions[wizard.platform];
     });
     content.querySelector("#sc-activate")?.addEventListener("click", () => void activate(selected()));
+    content.querySelector("[data-https-restart]")?.addEventListener("click", restartNow);
   }
   async function advance() {
     if (busy || !wizard) return;
@@ -163,7 +182,7 @@ export function installSecureConnections({ panel = document.getElementById("secu
       await api(`${BASE}/${encodeURIComponent(cert.id)}/activate`, "POST");
       if (!isAuthenticatedRequestCurrent(epoch)) return;
       await refresh();
-      (dialog.open ? dialogError : say)(inventory.restart_required ? "Certificate selected. Restart AutoDJ to serve HTTPS." : "Certificate activated.");
+      (dialog.open ? dialogError : say)(inventory.restart_required ? "Restart AutoDJ to start serving HTTPS." : "Certificate activated.");
     } catch (error) { if (isAuthenticatedRequestCurrent(epoch)) (dialog.open ? dialogError : say)(error.message); }
     finally {
       setBusy(false);
@@ -192,9 +211,14 @@ export function installSecureConnections({ panel = document.getElementById("secu
       const manageable = data.can_manage && cert.managed !== false && !cert.active;
       return `<tr data-row="${esc(cert.id)}"><td role="rowheader"><strong>${esc(cert.name)}</strong><small>${cert.hosts.map(esc).join(" · ")}</small><small>Issued ${exactDate(cert.issued)} · ${esc(cert.type)}</small></td><td role="gridcell">${cert.active ? "Active" : expired ? "Expired" : cert.status === "invalid" ? "Unavailable" : "Saved"}</td><td role="gridcell">${expiry(cert.expires)}</td><td role="gridcell">${manageable && !expired && cert.status !== "invalid" ? `<button type="button" data-activate="${esc(cert.id)}">Activate</button>` : "—"}</td><td role="gridcell">${manageable ? `<button type="button" data-delete="${esc(cert.id)}">Delete</button>` : "—"}</td></tr>`;
     }).join("");
-    panel.innerHTML = `<h4 id="secure-connections-heading" tabindex="-1">Secure connections (HTTPS)</h4><h5 id="sc-table-heading">Server certificate</h5>${rows ? `<div class="data-table-scroll"><table role="grid" aria-labelledby="sc-table-heading"><thead><tr><th scope="col">Certificate</th><th scope="col">Status</th><th scope="col">Expiry</th><th scope="col">Activate</th><th scope="col">Delete</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p>Create a certificate on the AutoDJ host to get started.</p>'}${data.can_manage ? '<button type="button" id="sc-add">Add certificate</button>' : '<p>Manage certificates at localhost on the AutoDJ host.</p>'} <button type="button" id="sc-remote">Set up a remote device</button>${!data.https && data.can_manage ? '<p>Activating a certificate requires restarting AutoDJ to start serving HTTPS.</p>' : ''}${data.restart_required ? '<p>Restart AutoDJ from Settings → Update and restart, then open an HTTPS address.</p>' : ''}${ready() ? '<p>This browser is ready to record.</p>' : ''}<details><summary>How to remove trust on this device</summary><p>If you installed the certificate on this device, open its certificate settings, select the AutoDJ certificate, and remove trust.</p></details>`;
+    panel.innerHTML = `<h4 id="secure-connections-heading" tabindex="-1">Secure connections (HTTPS)</h4><h5 id="sc-table-heading">Server certificate</h5>${rows ? `<div class="data-table-scroll"><table role="grid" aria-labelledby="sc-table-heading"><thead><tr><th scope="col">Certificate</th><th scope="col">Status</th><th scope="col">Expiry</th><th scope="col">Activate</th><th scope="col">Delete</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p>Create a certificate on the AutoDJ host, then trust it on your recording device.</p>'}${data.can_manage ? '<button type="button" id="sc-add">Add certificate</button>' : '<p>Manage certificates at localhost on the AutoDJ host.</p>'} <button type="button" id="sc-remote">Set up a remote device</button>${(!data.https && data.can_manage) || data.restart_required ? '<p>Restart AutoDJ to start serving HTTPS.</p>' : ''}${ready() ? '<p>This browser is ready to record.</p>' : ''}<details><summary>How to remove trust on this device</summary><p>If you installed the certificate on this device, open its certificate settings, select the AutoDJ certificate, and remove trust.</p></details>`;
     panel.querySelector("#sc-add")?.addEventListener("click", (event) => openWizard("add", event.currentTarget));
     panel.querySelector("#sc-remote").addEventListener("click", (event) => openWizard("remote", event.currentTarget));
+    const restartMarkup = restartControl();
+    if (restartMarkup) {
+      panel.querySelector("#sc-remote").insertAdjacentHTML("afterend", restartMarkup);
+      panel.querySelector("[data-https-restart]").addEventListener("click", restartNow);
+    }
     for (const button of panel.querySelectorAll("[data-activate]")) button.addEventListener("click", () => void activate(data.certificates.find((cert) => cert.id === button.dataset.activate)));
     for (const button of panel.querySelectorAll("[data-delete]")) button.addEventListener("click", () => void remove(data.certificates.find((cert) => cert.id === button.dataset.delete)));
     installTableNavigation(panel.querySelector("tbody"));
@@ -204,6 +228,8 @@ export function installSecureConnections({ panel = document.getElementById("secu
     const epoch = captureAuthenticatedRequestEpoch();
     try {
       const data = await api(BASE);
+      if (!isAuthenticatedRequestCurrent(epoch) || sequence !== refreshSequence) return;
+      restartAvailable = Boolean(data.restart_required && updates && await updates.load() && updates.canRestart());
       if (!isAuthenticatedRequestCurrent(epoch) || sequence !== refreshSequence) return;
       inventory = data;
       render();

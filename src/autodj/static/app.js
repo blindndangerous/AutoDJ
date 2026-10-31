@@ -1443,7 +1443,7 @@ import { setTimeFormat } from "./modules/time-format.js";
 
 installAnalysisWorkers();
 // Settings > Updates -- ./modules/updates.js loads when its subtab is shown.
-installUpdates();
+const updateControls = installUpdates();
 const timeSettings = installTimeSettings();
 
 // ----------------------------------------------------------------
@@ -3437,7 +3437,7 @@ function startAuthenticatedApp(initialState) {
   void cartWallControls?.refresh();
   voiceTrackerControls = installVoiceTracker();
   void voiceTrackerControls?.refresh();
-  installSecureConnections();
+  installSecureConnections({ updates: updateControls });
   adsControls = installAdsPanel();
   void adsControls?.refresh();
   void liveSettings?.refresh();

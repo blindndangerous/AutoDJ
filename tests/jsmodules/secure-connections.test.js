@@ -42,6 +42,19 @@ describe("secure connections", () => {
   });
   afterEach(() => { document.body.innerHTML = ""; vi.restoreAllMocks(); });
 
+  it("offers Restart now only when supported and hands off to the shared restart flow", async () => {
+    const { panel } = mount();
+    const updates = { load: vi.fn(async () => true), canRestart: vi.fn(() => true), restartForHttps: vi.fn() };
+    const request = vi.fn(async () => inventory([cert("active", { active: true })], { restart_required: true }));
+    const controller = installSecureConnections({ panel, request, updates });
+    await vi.waitFor(() => expect(panel.querySelector("[data-https-restart]")).toBeTruthy());
+    panel.querySelector("[data-https-restart]").click();
+    expect(updates.restartForHttps).toHaveBeenCalledWith("https://autodj.example.test/?https-setup=trust#settings");
+    updates.canRestart.mockReturnValue(false);
+    await controller.refresh();
+    expect(panel.querySelector("[data-https-restart]")).toBeNull();
+  });
+
   it("renders active, expired, and external rows with status and exact plus relative expiry", async () => {
     const { panel } = mount();
     const request = vi.fn(async () => inventory([

@@ -44,6 +44,12 @@ origin policy change together. The wizard explains that before selection and
 completes only in a secure HTTPS browser. Selection survives restart. Failed
 activation restores the previous selection; the active pair cannot be deleted.
 
+When the existing restart service reports support, setup offers **Restart now**
+through the shared [restart flow](0016-update-and-restart-from-the-web.md).
+The browser probes HTTPS on the same host and listening port, with normal TLS
+verification and no credentials, before navigating to resume the Trust step.
+The usual confirmation, restart authorization and rate limits still apply.
+
 ## Alternatives and consequences
 
 Replacing a single PEM pair hides prior certificates and complicates rollback.
@@ -70,6 +76,7 @@ coordination.
 | `ADR-0019-02` | Certificate download contains only public certificate material. | automated | `tests/integration/test_certificates_api.py::test_local_setup_persists_selection_and_download_contains_only_public_certificate` |
 | `ADR-0019-03` | Remote and forwarded requests cannot change certificates or bootstrap trust over HTTP. | automated | `tests/integration/test_certificates_api.py::test_remote_or_forwarded_requests_cannot_manage_or_bootstrap_trust` |
 | `ADR-0019-04` | Trust installation and microphone recording work on the chosen client OS/browser. | manual | Follow the HTTPS setup in docs/guides/operations/network.md on a second device; record OS, browser, trust installation, HTTPS status, microphone permission and recording result. |
+| `ADR-0019-05` | HTTPS restart uses the existing confirmation and waits for its validated destination before navigation. | automated | `tests/jsmodules/updates.test.js::can restart into the validated HTTPS setup URL after its health check answers`; `tests/jsmodules/updates.test.js::does not request a restart for an invalid HTTPS destination`; `tests/jsmodules/updates.test.js::does not navigate when the HTTPS restart is refused` |
 
 ## Implementation and verification
 

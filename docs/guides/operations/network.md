@@ -55,6 +55,9 @@ and addresses, or import an existing PEM certificate and private key.
 Activate the certificate you want AutoDJ to serve. The first switch from HTTP
 to HTTPS requires restarting AutoDJ; subsequent activations take effect for new
 connections. The previous certificate stays in the table until you delete it.
+When AutoDJ was started by its launcher or a supported supervisor, **Restart now**
+uses the normal restart confirmation and reopens setup over HTTPS once the browser
+can connect securely. Install the public certificate's trust before restarting.
 
 Choose **Set up a remote device** to save the public certificate and follow
 the trust instructions for the recording device. Transfer that public copy
