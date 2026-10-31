@@ -131,6 +131,115 @@ afterEach(() => {
 });
 
 describe("audio engine request recovery", () => {
+  // ADR-0019-17
+  it("schedules local-owned crossfade ramps in the initiating tick and cancels rejected play without advance", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetcher);
+    const { engine, context } = await importEngine();
+    context.sampleRate = 44100;
+    engine.prepareLocalProgramme();
+    engine.setSrcOnDeck(engine.decks[0], "current.mp3");
+    const incoming = engine.decks[1];
+    const outgoing = engine.decks[0];
+    const play = deferred();
+    incoming.audio.play.mockReturnValue(play.promise);
+    const operation = engine.startCrossfade("next.mp3", 1);
+    expect(outgoing.gain.gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, context.currentTime + 1);
+    expect(fetcher).not.toHaveBeenCalled();
+    play.reject(new Error("Playback refused"));
+    await expect(operation).resolves.toBe(false);
+    expect(outgoing.gain.gain.cancelScheduledValues).toHaveBeenLastCalledWith(context.currentTime);
+    expect(outgoing.gain.gain.setValueAtTime).toHaveBeenLastCalledWith(1, context.currentTime);
+    expect(incoming.gain.gain.setValueAtTime).toHaveBeenLastCalledWith(0, context.currentTime);
+    expect(incoming.audio.pause).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(engine.activeIdx).toBe(0);
+    expect(engine.crossfading).toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  // ADR-0019-17
+  it("does not finish or advance a local-owned crossfade while play is unsettled", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    const { engine, context } = await importEngine();
+    context.sampleRate = 44100;
+    engine.prepareLocalProgramme();
+    const play = deferred();
+    engine.decks[1].audio.play.mockReturnValue(play.promise);
+    const operation = engine.startCrossfade("next.mp3", 1);
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(engine.activeIdx).toBe(0);
+    expect(fetcher).not.toHaveBeenCalled();
+    play.reject(new Error("Late playback refusal"));
+    await expect(operation).resolves.toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  async function checkOrdinaryCrossfadeOrdering(outcome) {
+    vi.useFakeTimers();
+    const { engine, context } = await importEngine();
+    const fetcher = vi.fn(() => {
+      expect(engine._nextTrackPathCache).toBeNull();
+      expect(engine.decks[0].gain.gain.linearRampToValueAtTime)
+        .toHaveBeenCalledWith(0, context.currentTime + 1);
+      return Promise.resolve(jsonResponse({ ok: true }));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    engine.applyBrowserPlaybackState({
+      browser_playback: true, current_track: { path: "current.mp3" },
+      next_track: { path: "next.mp3" }, is_paused: false, is_muted: false,
+      settings: { transition: "none", playback: {} },
+    });
+    engine.ensureAudioGraph();
+    engine.setSrcOnDeck(engine.decks[0], "current.mp3");
+    const play = deferred();
+    engine.decks[1].audio.play.mockReturnValue(play.promise);
+    expect(engine.localProgrammeOwned).toBe(false);
+    expect(engine._nextTrackPathCache).toBe("next.mp3");
+    const operation = engine.startCrossfade("next.mp3", 1);
+    expect(engine._nextTrackPathCache).toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({ from_path: "current.mp3" });
+    if (outcome === "rejected") play.reject(new Error("Playback refused"));
+    await vi.advanceTimersByTimeAsync(1100);
+    await expect(operation).resolves.toBe(true);
+    expect(engine.activeIdx).toBe(1);
+    expect(engine.crossfading).toBe(false);
+    expect(engine.decks[0].path).toBeNull();
+    expect(engine.decks[0].audio.pause).toHaveBeenCalled();
+    play.resolve();
+  }
+
+  // ADR-0019-12 ADR-0019-17
+  it("preserves ordinary crossfade ordering with pending play", async () => {
+    await checkOrdinaryCrossfadeOrdering("pending");
+  });
+
+  // ADR-0019-12 ADR-0019-17
+  it("preserves ordinary crossfade ordering with rejected play", async () => {
+    await checkOrdinaryCrossfadeOrdering("rejected");
+  });
+
+  // ADR-0019-04
+  it("uses 44100 Hz for the first shared context when local programme is enabled", async () => {
+    document.documentElement.dataset.localProgrammeEnabled = "true";
+    try {
+      const { engine } = await importEngine();
+      engine.ensureAudioGraph();
+      expect(window.AudioContext).toHaveBeenCalledWith({ sampleRate: 44100 });
+    } finally { delete document.documentElement.dataset.localProgrammeEnabled; }
+  });
+
+  // ADR-0019-12
+  it("preserves default context construction when local programme is disabled", async () => {
+    const { engine } = await importEngine();
+    engine.ensureAudioGraph();
+    expect(window.AudioContext).toHaveBeenCalledWith();
+  });
+
   it("clears transient transition markers without destructive session reset", async () => {
     vi.stubGlobal("fetch", vi.fn());
     const { engine } = await importEngine();
@@ -1118,4 +1227,72 @@ describe("browser playback robustness", () => {
     expect(incoming.audio.preservesPitch).toBe(true);
     engine.stopAllDecks();
   });
+});
+
+// ADR-0019-17
+it("ignores stale play completion after the standby deck was reused", async () => {
+  const { engine, context } = await importEngine();
+  context.sampleRate = 44100;
+  engine.prepareLocalProgramme();
+  const pending = deferred();
+  const standby = engine.decks[1];
+  standby.audio.play.mockReturnValue(pending.promise);
+  const transition = engine.startCrossfade("old.mp3", .1, true);
+  engine.stopAllDecks();
+  standby.gain.gain.setValueAtTime.mockClear();
+  standby.audio.pause.mockClear();
+  engine.setSrcOnDeck(standby, "replacement.mp3");
+  pending.resolve();
+  expect(await transition).toBe(false);
+  expect(standby.gain.gain.setValueAtTime).not.toHaveBeenCalled();
+  expect(standby.audio.pause).not.toHaveBeenCalled();
+});
+
+// ADR-0019-04
+it("clears the legacy programme pause when local ownership starts", async () => {
+  const { engine, context } = await importEngine();
+  context.sampleRate = 44100;
+  engine.applyBrowserPlaybackState({ browser_playback: true, is_paused: true });
+  engine.ensureAudioGraph();
+  const programme = context.createGain.mock.results[1].value;
+  engine.prepareLocalProgramme();
+  expect(programme.gain.setValueAtTime).toHaveBeenLastCalledWith(1, context.currentTime);
+});
+
+// ADR-0019-17
+it("does not advance either deck when incoming play rejects", async () => {
+  vi.useFakeTimers();
+  const { engine, context } = await importEngine();
+  context.sampleRate = 44100;
+  engine.prepareLocalProgramme();
+  engine.setSrcOnDeck(engine.decks[0], "current.mp3");
+  engine.decks[1].audio.play.mockRejectedValue(new Error("decoder unavailable"));
+  const result = engine.startCrossfade("next.mp3", 0.1, true);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(await result).toBe(false);
+  expect(engine.activeIdx).toBe(0);
+  expect(engine.decks[0].path).toBe("current.mp3");
+  expect(engine.crossfading).toBe(false);
+});
+
+// ADR-0019-04
+it("creates a 44100 Hz programme context and leaves monitor gain after capture", async () => {
+  const { engine, context } = await importEngine();
+  context.sampleRate = 44100;
+  const output = engine.prepareLocalProgramme();
+  expect(window.AudioContext).toHaveBeenCalledWith({ sampleRate: 44100 });
+  expect(output).not.toBe(engine._master);
+  engine.setVolume(0.2);
+  engine.setMuted(true);
+  expect(output.gain.value).toBe(1);
+  expect(engine.localProgrammeOwned).toBe(true);
+  engine.endLocalProgramme();
+  expect(engine.localProgrammeOwned).toBe(false);
+});
+
+it("refuses local performance if the context did not obtain 44100 Hz", async () => {
+  const { engine, context } = await importEngine();
+  context.sampleRate = 48000;
+  expect(() => engine.prepareLocalProgramme()).toThrow("44,100 Hz");
+  expect(engine.localProgrammeOwned).toBe(false);
 });

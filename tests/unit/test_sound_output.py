@@ -71,3 +71,22 @@ def test_partial_frames_request() -> None:
 
 def test_close_without_a_stream_is_a_no_op() -> None:
     _output().close()
+
+
+def test_local_monitor_gate_preserves_saved_volume_and_mute() -> None:
+    """ADR-0019-04: local ownership gates only the speaker output, not broadcast PCM."""
+    state = PlayerState()
+    state.volume = 0.5
+    out = _output(state)
+    state.local_monitor_owned = True
+    block = np.full((882, 2), 0.4, np.float32)
+    out.write(block)
+    buf = np.zeros_like(block)
+    out._fill(buf, 882)
+    np.testing.assert_array_equal(buf, 0)
+    np.testing.assert_array_equal(block, np.full_like(block, 0.4))
+    assert state.volume == 0.5 and not state.is_muted
+    state.local_monitor_owned = False
+    out.write(block)
+    out._fill(buf, 882)
+    np.testing.assert_allclose(buf, 0.2)

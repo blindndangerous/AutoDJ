@@ -1089,6 +1089,62 @@ def test_every_stop_step_is_tried_and_a_failed_stop_is_not_remembered() -> None:
     assert calls == [1, 1]
 
 
+@pytest.mark.parametrize("close_fails,recover_fails", [(True, False), (False, True), (True, True)])
+def test_local_programme_failures_do_not_interrupt_station_shutdown(
+    close_fails: bool, recover_fails: bool
+) -> None:
+    from autodj.stations import StationRuntime
+
+    calls: list[str] = []
+
+    def close_local() -> None:
+        calls.append("local close")
+        if close_fails:
+            raise OSError("local close failed")
+
+    def recover() -> None:
+        calls.append("receipts")
+        if recover_fails:
+            raise OSError("receipt recovery failed")
+
+    player = SimpleNamespace(
+        _state=SimpleNamespace(should_stop=False), _skip_event=threading.Event()
+    )
+    runtime = StationRuntime.__new__(StationRuntime)
+    runtime.stopped = False
+    runtime.local_programme = SimpleNamespace(  # type: ignore[assignment]
+        close=close_local, performance=SimpleNamespace(recover=recover)
+    )
+    runtime.live = SimpleNamespace(source=None)  # type: ignore[assignment]
+    runtime.bridge = SimpleNamespace(  # type: ignore[assignment]
+        scheduler_track_changed=None,
+        player=player,
+        shutdown_liner_worker=lambda: calls.append("liners"),
+    )
+    runtime._schedule_ticker = None
+    runtime._stream_ticker = None
+    runtime.webhooks = SimpleNamespace(close=lambda: calls.append("webhooks"))  # type: ignore[assignment]
+    runtime.stream_out = None
+    runtime.recorder = SimpleNamespace(close=lambda: calls.append("recorder"))  # type: ignore[assignment]
+    runtime.server_audio = True
+    runtime.player_thread = None
+    runtime._stop_task = None
+    runtime.stop_problems = []
+
+    assert asyncio.run(runtime.stop(1.0)) is True
+    assert calls == ["local close", "receipts", "webhooks", "recorder", "liners"]
+    assert runtime.stopped
+    assert player._state.should_stop and player._skip_event.is_set()
+    assert len(runtime.stop_problems) == int(close_fails) + int(recover_fails)
+    assert any("Closing its local programme" in problem for problem in runtime.stop_problems) == (
+        close_fails
+    )
+    assert (
+        any("Draining local programme receipts" in problem for problem in runtime.stop_problems)
+        == recover_fails
+    )
+
+
 def test_new_station_runtime_ignores_thread_from_previous_run(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,

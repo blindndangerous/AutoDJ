@@ -959,6 +959,14 @@ class StationRuntime:
             on_end=self._live_ended,
         )
         self.nowplaying.live_status = self.live.status
+        from autodj.local_programme import LocalProgramme
+
+        self.local_programme = LocalProgramme(self.live)
+        if bridge.player._cfg.server.local_programme_enabled is True:
+            from autodj.local_programme_playout import LocalPerformance
+
+            self.local_programme.performance = LocalPerformance(self)
+            bridge.player.local_performance = self.local_programme.performance
         self.nowplaying.live_title = self.live.title
         # Only stream mode has a mix bus to take the DJ.
         if callable(attach := getattr(getattr(bridge.player, "bus", None), "set_live", None)):
@@ -1298,7 +1306,13 @@ class StationRuntime:
                 self.paths,
             )
             if bridge.station is not None:
-                bridge.station.live_active = lambda: self.live.active
+                bridge.station.live_active = lambda: (
+                    self.live.active
+                    or (
+                        self.local_programme.performance is not None
+                        and self.local_programme.performance.busy
+                    )
+                )
             self._stream_ticker = asyncio.create_task(tick_stream_workers(bridge))
         elif self.server_audio:
             await asyncio.to_thread(start_server_audio_liners, bridge, self.paths.liners)
@@ -1341,13 +1355,22 @@ class StationRuntime:
             Whether every cache writer stopped in time.
         """
         self.stopped = True
+        problems = self.stop_problems
+        local_programme = getattr(self, "local_programme", None)
+        if local_programme is not None:
+            await _step("closing its local programme", local_programme.close, problems)
+            if (performance := local_programme.performance) is not None:
+                await _step(
+                    "draining local programme receipts",
+                    lambda: asyncio.to_thread(performance.recover),
+                    problems,
+                )
         if (source := self.live.source) is not None:
             await _step(
                 "disconnecting its live DJ",
                 lambda: asyncio.to_thread(self.live.release, source),
                 self.stop_problems,
             )
-        problems = self.stop_problems
         bridge = self.bridge
         bridge.scheduler_track_changed = None
         await _step(

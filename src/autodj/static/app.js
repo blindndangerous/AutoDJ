@@ -207,6 +207,7 @@ const streamMode = createStreamMode({
   fetchInfo: () => requestJson(pinnedStationApi("/api/stream", listenStation)),
   // The stream never starts before it has the page's volume and mute.
   beforePlay: () => applyPageLevel(),
+  canListen: () => !localOwner.owned && !localOwner.acquiring,
 });
 const relaySettings = installRelaySettings({
   doc: document,
@@ -345,6 +346,7 @@ function invalidateReconnectAttempt() {
 // A link that only drops stops nothing (see ws.onclose).
 function stopProtectedPlayback() {
   holdVolumeCeiling();
+  localOwner.stop("Session ended; returning to automation");
   stopAllDecks();
   streamMode.stop();
   stopActiveLiners();
@@ -635,6 +637,7 @@ function applyState(s, { announceTrack = true } = {}) {
   _lastStreamMode = inStream;
   _lastStreamServerAudio = inStream && Boolean(s.stream_server_audio);
   streamMode.apply(s);
+  localProgrammeControls.apply(s);
   streamSettings.apply(s);
   recordingControls.apply(s.stream_mode ? { ...s.recording, available: true } : { running: false, available: false });
   liveDesk?.applyState(s);
@@ -788,7 +791,7 @@ function applyState(s, { announceTrack = true } = {}) {
   // saved volume and mute, never from the slider's 100 % default.  With
   // --server-audio as well they drive the machine's speakers, and this
   // page's listening follows the server's volume and mute.
-  const pageOnlyVolume = inStream && !_lastStreamServerAudio;
+  const pageOnlyVolume = localOwner.owned || (inStream && !_lastStreamServerAudio);
   const takeServerLevel = !pageOnlyVolume || !_pageLevelSet;
   if (takeServerLevel && !volumeSaveHolds(s.volume)) {
     // After the link has dropped, a server volume above the page's own
@@ -1059,6 +1062,10 @@ async function _refreshAudioDevices() {
 
 // Explicit saves use the shared result region; background failures are deduplicated.
 async function _applySink(sinkId, { reportError = true } = {}) {
+  if (localOwner.owned) {
+    if (reportError) announceStatus(settingsStatus, "Return to automation before changing the monitor device.");
+    return false;
+  }
   // Prefer AudioContext.setSinkId — it actually routes the live crossfade
   // graph.  Element-level setSinkId is a fallback for browsers that lack
   // ctx.setSinkId (Firefox 116+) AND only works when we're playing the
@@ -1261,6 +1268,20 @@ import {
 // into app.js's scope.  Module-top so it lands before any user gesture
 // can invoke unlockAndPlay.
 setApplyState(applyState);
+
+import { ProgrammeOwner } from "./modules/local-programme.js";
+import { installLocalProgrammeControls } from "./modules/local-programme-controls.js";
+const localOwner = new ProgrammeOwner({ stopListening: () => streamMode.stop() });
+const localProgrammeControls = installLocalProgrammeControls({
+  wrap: document.getElementById("local-programme-controls"),
+  take: document.getElementById("take-local-control"),
+  returnButton: document.getElementById("return-to-automation"),
+  status: document.getElementById("local-programme-status"),
+  announce: message => announceStatus(document.getElementById("sr-status"), message,
+    { dwellMs: 5000, mirror: false }),
+  owner: localOwner,
+});
+window.addEventListener("pagehide", () => localOwner.stop());
 
 
 
@@ -1999,7 +2020,8 @@ async function loadStation({ announce = true } = {}) {
 // and drops clockwheel changes not saved and a voice track not booked,
 // so the page asks first: once, naming everything that would go.
 async function confirmLeavingStation(name) {
-  const decks = Boolean(_lastBrowserPlayback && playbackEnabled);
+  const local = localOwner.owned || localOwner.acquiring;
+  const decks = local || Boolean(_lastBrowserPlayback && playbackEnabled);
   const unsaved = [
     clockwheelPanelControls?.hasUnsavedWork() && "the clockwheel changes not saved yet",
     voiceTrackerControls?.hasUnsavedWork() && "the voice track not booked yet",
@@ -2011,13 +2033,21 @@ async function confirmLeavingStation(name) {
   const ok = await confirmAction(document, {
     title: `Switch to ${name}?`,
     message: [
-      decks && `This page is playing ${stationName()} itself. Switching stops that music on this page; the station goes on for everyone else.`,
+      local ? "Switching returns this station to automation."
+        : decks && `This page is playing ${stationName()} itself. Switching stops that music on this page; the station goes on for everyone else.`,
       lost,
     ].filter(Boolean).join(" "),
     confirmLabel: unsaved.length ? "Switch and discard" : "Switch and stop",
   });
   if (!ok) return false;
   if (!decks) return true;
+  if (local) {
+    try { await localOwner.returnToAutomation(); }
+    catch (error) {
+      announceStatus(document.getElementById("sr-status"), error.message, { tone: "error" });
+      return false;
+    }
+  }
   stopAllDecks();
   stopActiveLiners();
   resetTransitionCaches();
@@ -2127,6 +2157,11 @@ function announcePlayState(paused) {
 }
 
 btnPause.addEventListener("click", async () => {
+  if (localOwner.owned) {
+    try { announcePlayState(await localOwner.togglePause()); }
+    catch (error) { localOwner.stop(error.message); }
+    return;
+  }
   const epoch = captureAuthenticatedRequestEpoch();
   // First-click unlock path \u2014 synchronous play() inside the click
   // handler is required for iOS autoplay grants.
@@ -2214,6 +2249,11 @@ function returnToOwnTempo({ audio, deck, path, rate, prevPitch }, finished) {
 }
 
 btnSkip.addEventListener("click", async () => {
+  if (localOwner.owned) {
+    try { await localOwner.transition(); }
+    catch (error) { localOwner.stop(error.message); }
+    return;
+  }
   const epoch = captureAuthenticatedRequestEpoch();
   // In browser-playback mode, run a client-side crossfade with the
   // current transition effect.  Falls back to plain server skip if the
@@ -2459,7 +2499,7 @@ function sayMuteState(muted) {
 btnMute.addEventListener("click", async () => {
   // Stream mode: mute this page's listening only, never the station.
   // With --server-audio as well, the server's mute covers both.
-  if (_lastStreamMode && !_lastStreamServerAudio) {
+  if (localOwner.owned || (_lastStreamMode && !_lastStreamServerAudio)) {
     _pageMuted = !_pageMuted;
     applyPageLevel();
     renderMute(_pageMuted);
@@ -2658,7 +2698,7 @@ volSlider.addEventListener("input", () => {
   _pageGain = _sliderToGain(val);
   _pageLevelSet = true;
   applyPageLevel();
-  if (!_lastStreamMode || _lastStreamServerAudio) sendVolume(val);
+  if (!localOwner.owned && (!_lastStreamMode || _lastStreamServerAudio)) sendVolume(val);
   // Polite announce for shortcut presses, debounced so holding the key
   // does not read every intermediate step.
   // Cleared 3 s after the announcement so AT users running with a
@@ -2779,7 +2819,7 @@ installHotkeys({
   // In stream mode Play / Pause stops the station for every listener, so
   // Space and k toggle Listen here (this page only) instead.
   togglePlay:  () => {
-    if (!_lastStreamMode) {
+    if (localOwner.owned || !_lastStreamMode) {
       btnPause.click();
       return;
     }
@@ -3369,7 +3409,7 @@ async function playBrowserClip(arrayBuf, duckDb, sources, epoch) {
   // own after both decks, so a crossfade running under the clip (a
   // Test press, or a fade that starts mid-clip) keeps its ramps and
   // both of its decks are ducked.
-  if (duckDb < 0 && playbackEnabled && !_lastState?.is_paused) {
+  if (!localOwner.owned && duckDb < 0 && playbackEnabled && !_lastState?.is_paused) {
     duckMusic(Math.pow(10, duckDb / 20), dur);
   }
   sources.add(src);
@@ -3397,7 +3437,7 @@ function startAuthenticatedApp(initialState) {
   // Whenever the server mixes the audio (stream mode or --server-audio),
   // Test asks the server to play the liner or time check into that mix;
   // only browser playback plays it on this page.
-  const testOnServer = () => _lastStreamMode || _lastState?.browser_playback === false;
+  const testOnServer = () => !localOwner.owned && (_lastStreamMode || _lastState?.browser_playback === false);
   // Scheduled liners and the time check after the hour join music that is
   // playing: none plays while paused, or after a hard stop (the session
   // ended) until the listener has pressed Play again.  Nor during a

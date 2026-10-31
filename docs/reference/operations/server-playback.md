@@ -13,6 +13,63 @@ hold playback while the requested audio becomes available.
 
 ## Controls while streaming
 
+### Experimental local browser control
+
+Set `local_programme_enabled = true` under `[server]` in the server TOML and
+restart to expose **Take local control** and **Return to automation** on a
+streaming station. The default is false: existing installations show neither
+control and install no local programme routes. This is a bounded prototype;
+[ADR 19](../../adr/0019-local-browser-programme-ownership.md) records its limits.
+
+Use Chromium through a direct native loopback connection. Reverse proxies,
+forwarded headers, remote browsers and non-native authentication are refused.
+When enabled, the page requests 44,100 Hz for its shared AudioContext from the
+first audio action, including previews. Local control is unavailable if the
+browser does not obtain that rate. Conversion from 48 kHz is deferred.
+
+The station must contain ordinary songs. Automatic liners, breaks, ads, time
+checks, configured scheduled events, matched intros, prepared shows and booked
+voice are outside this prototype. Admission reports the unsupported feature;
+it does not rewrite settings or discard prepared content.
+
+Taking control stops this browser's encoded Listen playback. Its decks feed the
+existing broadcast master and encoders; its monitor volume and mute act after
+that split. The station's sound-card output is temporarily gated, preserving
+saved volume, mute and device settings. Private tests and auditions remain on
+their private branch. **Skip** makes a browser-deck transition; **Play or Pause**
+pauses that programme while the encoded stream stays connected. Return before
+changing the monitor device or station programming. Unreserved queue entries
+remain editable; the two reserved occurrences cannot be moved or removed.
+Review generation, cancellation and deletion require returning to automation;
+existing review audio remains available through its private playback path.
+
+**Return to automation** prepares the next unheard song while the browser keeps
+feeding, then waits for the programme fade to be consumed. Losing the tab or a stalled feed also returns control;
+neither path restarts stream connections. Recovery can emit silence while the
+next source becomes ready. A failed history flush retains receipts and blocks
+another claim; retry Return after correcting the storage failure.
+If rendering does not become ready within the bounded wait, the station stays
+silent with a recovery status instead of resuming an unprepared cursor. Retry
+Return once the source is available; an unchanged target reuses its pending render.
+
+During local playback, progress and lyrics still follow the automation cursor.
+They do not show the browser deck's current position in this prototype.
+
+Capture has 32 fixed transferable buffers (320 ms) and a separate 200 ms server ceiling. Long main
+thread tasks can exhaust that budget and trigger a safe return. Keep expensive
+page audits outside an active performance. This prototype makes no long-run
+drift, physical latency or subjective audio-quality guarantee.
+Initial endurance trials returned early because of capture-pool exhaustion,
+accumulated sender timer delay and receive batching. The revised fixed pool,
+sender pacing and bounded arrival allowance completed separate 30-minute idle
+and controlled-load trials on one Windows/Chromium setup, with no detected
+broadcast dropouts or stream reconnection. This does not cover other devices,
+browser engines, arbitrary main-thread stalls or longer performances. An
+active-owner axe audit still exceeded the fixed capture bound and returned to
+automation; run such audits after returning control.
+
+### Automation controls
+
 - **Skip** takes effect immediately on the server with a short fade. A speaker hears it a few
   seconds later, once its own playback buffer catches up. **Skip style** (Settings, Transitions, or
   `[playback] skip_style`) can make it a DJ-style exit instead: Echo out, Backspin or Loop roll.

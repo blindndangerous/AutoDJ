@@ -28,6 +28,8 @@
     "vitest": "^5.0.5"
   },
   "knip": {
+    "ignoreBinaries": ["uv", "ffmpeg"],
+    "ignoreUnresolved": ["/modules/audio-engine.js"],
     "entry": [
       "commitlint.config.cjs",
       "src/autodj/static/app.js",

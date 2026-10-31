@@ -173,11 +173,34 @@ async def current_station(request: Request) -> StationRuntime:
     runs in the request's own task rather than a worker thread.)
     """
     station = resolve_station(request)
+    _fence_local_programming(request, station)
     CURRENT_STATION.set(station.slug)
     return station
 
 
 StationDep = Annotated[StationRuntime, Depends(current_station)]
+
+
+def _fence_local_programming(request: Request, station: Any) -> None:
+    """Opt-in ownership fences programming writes before their side effects."""
+    controller = getattr(station, "local_programme", None)
+    if (
+        controller is None
+        or controller.performance is None
+        or controller.performance.busy is not True
+    ):
+        return
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return
+    from autodj.security import station_relative
+
+    path = station_relative(request.url.path, None) or request.url.path
+    if path == "/api/queue" or path.startswith("/api/queue/"):
+        # The bridge checks the reserved prefix under its queue lock.
+        return
+    if path in {"/api/recording/start", "/api/recording/stop", "/api/recording/split"}:
+        return
+    raise HTTPException(409, "Return to automation before changing station programming")
 
 
 async def editable_station(request: Request) -> Any:
@@ -194,6 +217,7 @@ async def editable_station(request: Request) -> Any:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise
     CURRENT_STATION.set(slug)
+    _fence_local_programming(request, station)
     return station
 
 

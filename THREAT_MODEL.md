@@ -1504,3 +1504,34 @@ Browser cookies do not reveal which passkey authenticated a session,
 and no device-bound/synced classification is inferred. See the
 [deployment procedure](docs/guides/operations/network.md#single-sign-on-through-a-trusted-proxy)
 and [ADR 7 amendment](docs/adr/0007-separate-browser-worker-and-listener-access.md#amendment-2026-10-18-provider-neutral-browser-sso).
+
+
+## Experimental local programme input
+
+`server.local_programme_enabled` defaults to false. Disabled servers install no
+local-programme routes and retain their existing proxy/WebSocket setup. Enabled
+servers preserve the protocol peer before the same Uvicorn forwarding policy
+runs. Admission requires native authentication (when configured), a raw loopback
+peer, exact same-origin loopback authority and the served port. Proxy settings,
+forwarding/identity headers and absent provenance deny admission. A relay that
+strips every identifying header is indistinguishable from another local process;
+this opt-in must not be exposed through such a relay.
+
+Each station permits one socket-bound lease, with a random capability,
+runtime epoch and generation. Preparation has an absolute deadline; on-air
+ownership requires lease renewal and continuing bounded PCM. Revocation clears
+unconsumed PCM while retaining heard receipts and the live-input reservation
+until recovery finishes. Two pending/owning sockets per station, bounded control messages,
+packet rate/credit limits, fixed PCM storage and feed/lease deadlines limit
+resource use. The opt-in explicitly selects Uvicorn's bounded `websockets` backend
+with a 64 KiB assembled-message cap and four-message queue; its deprecation is a
+tracked compatibility risk. Ordinary forwarded client address and scheme remain
+unchanged. On-air activation requires server-issued song occurrences, future
+render markers and fresh prefill. The bus records consumption; a control thread
+flushes history before completion acknowledgements. There are at most two held
+occurrences, 64 pending/heard events and 256 cached acknowledgements. Programming
+and reserved queue edits are fenced, including internal settings callers. A
+storage failure keeps recovery busy rather than granting another performance.
+Crash-atomic audio/accounting and long-run clock correction remain deferred.
+See [ADR 19](docs/adr/0019-local-browser-programme-ownership.md) for the prototype
+boundary, tests and remaining evidence limits.

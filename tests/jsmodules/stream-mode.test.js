@@ -27,7 +27,7 @@ function mediaError(audio, code) {
   Object.defineProperty(audio, "error", { configurable: true, value: { code } });
 }
 
-function setup({ fetchInfo, beforePlay = vi.fn() } = {}) {
+function setup({ fetchInfo, beforePlay = vi.fn(), canListen } = {}) {
   document.body.innerHTML = `
     <audio id="stream-audio" hidden></audio>
     <button id="btn-listen" type="button" aria-pressed="false" hidden><span aria-hidden="true">🔊</span> Listen here</button>
@@ -47,6 +47,7 @@ function setup({ fetchInfo, beforePlay = vi.fn() } = {}) {
     srStatus: document.getElementById("sr-status"),
     fetchInfo: info,
     beforePlay,
+    canListen,
   });
   return { mode, audio, button, fetchInfo: info, sr: document.getElementById("sr-status") };
 }
@@ -55,6 +56,15 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
 
 describe("stream mode", () => {
   beforeEach(() => vi.useRealTimers());
+
+  // ADR-0019-04
+  it("does not start encoded monitoring while the browser owns the programme", async () => {
+    const { mode, audio, fetchInfo } = setup({ canListen: () => false });
+    await mode.toggleListen();
+    expect(fetchInfo).not.toHaveBeenCalled();
+    expect(audio.play).not.toHaveBeenCalled();
+    expect(mode.isListening()).toBe(false);
+  });
 
   it("stays hidden in browser mode", () => {
     setup().mode.apply({ stream_mode: false });

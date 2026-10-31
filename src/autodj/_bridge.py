@@ -709,7 +709,7 @@ class PlayerBridge(LibraryAccess):
         else:
             self._play_history.append(row)
 
-    def _append_history(self, entry: Any) -> dict:
+    def _append_history(self, entry: Any, *, event_id: str | None = None) -> dict:
         """Record one play while holding ``_history_lock``; never trim the archive.
 
         A show's standalone speech segment airs as a track but is not music:
@@ -725,6 +725,8 @@ class PlayerBridge(LibraryAccess):
             performances = None
         speech = getattr(entry, "_prepared_clip", False) is True
         row = _history_entry(entry, None if speech else performances)
+        if event_id is not None:
+            row["event_id"] = event_id
         if speech:
             row["kind"] = "speech"
         elif self._is_liner(entry):
@@ -736,6 +738,26 @@ class PlayerBridge(LibraryAccess):
             if not speech:
                 ledger.remember_play(entry.path)
         return row
+
+    def local_occurrence_started(self, entry: Any, occurrence: str) -> None:
+        """Record consumed browser audio without live-source or insert callbacks."""
+        with self._history_lock:
+            if any(row["event_id"] == occurrence for row in self._play_history):
+                return
+            row = self._append_history(entry, event_id=occurrence)
+            self._open_play = (entry, row)
+        with self.player._pick_lock:
+            self.player._state.record_played(entry)
+        self.player.note_browser_start(entry)
+        for output in (self.stream, self.mounts, self.relays):
+            if output is not None:
+                output.set_title(entry.artist or "", entry.title or "")
+
+    def local_occurrence_ended(self, occurrence: str) -> None:
+        """Close a heard occurrence without deleting its history row."""
+        with self._history_lock:
+            if self._open_play is not None and self._open_play[1]["event_id"] == occurrence:
+                self._open_play = None
 
     def _is_liner(self, entry: Any) -> bool:
         """Whether *entry* is from a liner folder, from the player's cached liner paths."""
@@ -890,6 +912,9 @@ class PlayerBridge(LibraryAccess):
         track sequencing, so we ask it to fade out and move on (or, with
         no bus, signal the audio loop).
         """
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         if getattr(self.player, "_dry_run", False):
             self.advance_now()
         elif getattr(self.player, "bus", None) is not None:
@@ -912,6 +937,9 @@ class PlayerBridge(LibraryAccess):
         Returns:
             Whether the player advanced.
         """
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         if from_path is not None:
             current = self.player._state.current_track
             if current is None or current.path != from_path:
@@ -933,6 +961,9 @@ class PlayerBridge(LibraryAccess):
                 to recently-played so similarity won't immediately re-pick
                 it.  Pass None to just refresh from current.
         """
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         p = self.player
         state = p._state
         cur = state.current_track
@@ -968,6 +999,9 @@ class PlayerBridge(LibraryAccess):
         process alive.  Its one-off startup pick commits under the same
         ``_advance_lock`` this holds, so neither overwrites the other.
         """
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         with self.player._advance_lock:
             self._advance_now_locked()
 
@@ -1143,6 +1177,9 @@ class PlayerBridge(LibraryAccess):
         Returns:
             New paused state (``True`` = paused).
         """
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         state = self.player._state
         state.is_paused = not state.is_paused
         if self._bus_mode():
@@ -1560,6 +1597,11 @@ class PlayerBridge(LibraryAccess):
             and not self.stream_mode,
             "settings": self.get_settings(),
             "stream_mode": self.stream_mode,
+            **(
+                {"local_programme": self.player.local_performance.station.local_programme.status()}
+                if self.player._cfg.server.local_programme_enabled is True
+                else {}
+            ),
             # Stream mode with --server-audio: the machine's sound card plays
             # the mix too, so the page's volume and Mute drive it.
             "stream_server_audio": self.stream_mode
@@ -1651,6 +1693,10 @@ class PlayerBridge(LibraryAccess):
         giving back; it is re-rendered only if the edit changed the queue
         head it picked, and stays playable until the replacement is ready.
         """
+        if (
+            performance := getattr(self.player, "local_performance", None)
+        ) is not None and performance.busy is True:
+            return
         if self._bus_mode():
             self.player.refresh_playout()
 
@@ -1658,7 +1704,11 @@ class PlayerBridge(LibraryAccess):
     def _queue_mutation_lock(self) -> Iterator[bool]:
         """Hold the live bus boundary, when present, then the queue lock."""
         state = self.player._state
-        if getattr(self.player, "live_mixing", False):
+        performance = getattr(self.player, "local_performance", None)
+        if performance is not None and performance.busy is True:
+            with performance._lock, state.queue_lock:
+                yield True
+        elif getattr(self.player, "live_mixing", False):
             with self.player.live_queue_guard(), state.queue_lock:
                 yield True
         else:
@@ -1674,6 +1724,12 @@ class PlayerBridge(LibraryAccess):
         voice_revision: str | None = None,
     ) -> Any:
         from autodj.live_queue import plan_queue_edit
+
+        if (
+            performance := getattr(self.player, "local_performance", None)
+        ) is not None and performance.busy is True:
+            performance.validate_queue(queued_next, queue)
+            return None
 
         return plan_queue_edit(
             self.player,
@@ -1718,6 +1774,10 @@ class PlayerBridge(LibraryAccess):
         affect the track after it: Up Next is the playing render's
         ``next_entry``, whatever the queue says.
         """
+        if (
+            performance := getattr(self.player, "local_performance", None)
+        ) is not None and performance.busy is True:
+            return
         state = self.player._state
         if self._bus_mode():
             playing = getattr(self.player, "_playing_render", None)
@@ -2565,6 +2625,9 @@ class PlayerBridge(LibraryAccess):
         self, low: float | None = None, mid: float | None = None, high: float | None = None
     ) -> dict[str, float]:
         """Set one or more EQ band gains. Returns the resulting state."""
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         return self.settings.set_eq(low=low, mid=mid, high=high)
 
     def get_eq(self) -> dict[str, float]:
@@ -2599,18 +2662,30 @@ class PlayerBridge(LibraryAccess):
 
     def set_preset(self, name: str | None) -> None:
         """Set the active preset by name, or pass None / '' to clear."""
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         self.settings.set_preset(name)
 
     def set_transition(self, effect: str) -> None:
         """Set a validated transition effect."""
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         self.settings.set_transition(effect)
 
     def set_djmix(self, **flags: bool | int | float | str | None) -> None:
         """Set DJ-mix toggles and numeric options."""
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         self.settings.set_djmix(**flags)
 
     def set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool = False) -> None:
         """Apply validated playback settings through the station settings owner."""
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         self._set_playback_settings(body, restoring=restoring)
 
     def _set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool) -> None:
@@ -2619,8 +2694,14 @@ class PlayerBridge(LibraryAccess):
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         self.settings.set_bpm_range(lo, hi)
 
     def set_discovery_every(self, every: int | None, *, restoring: bool = False) -> None:
         """Set the discovery rate; null disables."""
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         self.settings.set_discovery_every(every, restoring=restoring)

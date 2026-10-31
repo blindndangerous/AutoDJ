@@ -6,6 +6,13 @@ Status: Accepted. Supersedes part of [ADR 3](0003-browser-driven-playback.md).
 > Current scope and implementation evidence are in the dated amendment
 > at the end of this record. Original sections below are retained as history.
 
+Amendment, 2026-10-30: [ADR 19](0019-local-browser-programme-ownership.md)
+designs browser-owned stereo programme input before the existing master and
+outputs. The maintainer accepted the opt-in input boundary. Existing automation and
+external-live contracts remain unchanged. Phase 2a had no public on-air activation;
+Phase 2b connects the opt-in browser owner through the same master and outputs,
+with bounded consumption receipts and return to the next unheard song.
+
 ## Context
 
 ADR 3 made the browser the default audio host and kept `--server-audio`
