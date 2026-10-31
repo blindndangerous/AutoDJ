@@ -4,6 +4,50 @@ Rescan moved files or preview and apply a legacy import with recovery copies. Us
 
 [Operations index](../../operations.md) · [Settings reference](../../settings-reference.md)
 
+## Clean up an existing configuration
+
+Registered catalog folders determine the available music. Add or remove sources in Library;
+changing `[library] music_dir` does not add music or move catalog paths. Doctor's `configuration`
+check names the catalog and library storage paths, and `music-path` checks registered music
+folders. An empty catalog needs folders added in Library, not a `music_dir` value.
+
+Current shipped examples and setup defaults start without a music root. An older installation's
+`config.toml` may still contain comments about `metadata.json`, a single music root, or the
+former `index/<name>/` layout. Updates do not replace those comments. The current catalog is
+`<index_dir>/libraries/main/library.db`, with `dj_meta.db` beside it. Shared files live in
+`<index_dir>/shared/`; station settings and state live in `<index_dir>/stations/<slug>/`.
+Old metadata and vector files are legacy artifacts, not the current library. Only supported
+published-index formats can be imported with `migrate-index`, as described below.
+
+Before editing, back up `config.toml` and any `config.local.toml`. Review
+`AUTODJ_LIBRARY_MUSIC_DIR` in the server environment too; it overrides both files.
+Keep `music_dir` if any of these supported uses still depends on it:
+
+- Beets relative paths for categories, clock conditions, enrichment, lyrics or tag updates.
+  Categories and clock conditions can infer a base in limited cases; other Beets lookups still
+  need an explicit base for relative paths. See [Beets paths](categories.md#beets-paths-and-music_dir).
+- Relative M3U/M3U8 lines tried from that base after the playlist's own folder. To stop using
+  this fallback, use full paths or paths relative to the playlist file. Lines only match songs
+  already in the catalog; a playlist does not import music.
+- Old relative keys in `dj_meta.db`. Keep the base so saved cues remain readable during playback,
+  analysis, moved-file handling and programme reviews. New cache entries use full paths.
+- Mixxx, Rekordbox or Traktor cue exports stored directly in that folder: `mixxx.db`,
+  `mixxxdb.sqlite`, `Library.xml` or `collection.nml`. These supply cues for existing tracks,
+  not new music. Default per-user DJ software locations are checked separately.
+- Relative listener-request `blocked_folders`. With `music_dir`, these resolve from that base;
+  without it, they resolve from every registered music folder. Convert them to full paths first
+  if you need to preserve exactly the existing exclusions.
+- Explicit legacy index migration. Prefer `migrate-index --music-dir PATH` for the one-time
+  import rather than keeping a setting solely for that command.
+
+If none applies, manually remove `music_dir` and its environment override. Update obsolete
+comments using the current examples and [settings reference](../../settings-reference.md).
+Do not replace the whole configuration or delete old data merely because a comment is outdated.
+Restart AutoDJ after configuration changes, then run `autodj doctor --no-fix` with the same
+configuration and environment. Check the registered folders and any Beets findings.
+Doctor provides guidance; it does not automatically remove this supported setting, rewrite
+comments, or change catalog contents.
+
 ## Moved files
 
 When a file moves between registered folders in the same catalog, a scan can recognize it by its

@@ -148,7 +148,8 @@ A category's songs come from one of three sources:
 - **An M3U or M3U8 file** in the playlists folder (`[library] playlists_folder`, by default
   `shared/playlists/` in the index folder). Each line that is not a comment is matched to a
   library song by its full path, or by a path from the playlist's own folder or from
-  `[library] music_dir` (where beets keeps relative paths); `file://` addresses work too. Lines
+  `[library] music_dir` (an optional compatibility base); `file://` addresses work too.
+  These paths only match songs already in the catalog; they never register sources or import music. Lines
   that match no song, web addresses included, are counted and the first few are named, so a
   script that writes paths for another machine is easy to spot. M3U8 files are UTF-8; plain M3U
   files that are not UTF-8 are read as Windows-1252.

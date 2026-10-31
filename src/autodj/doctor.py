@@ -124,12 +124,25 @@ def _configuration_check(cfg: AutoDJConfig) -> DoctorCheck:
         "host": cfg.server.host,
         "port": cfg.server.port,
         "lan": cfg.server.lan,
-        "music_dir": str(cfg.library.music_dir) if cfg.library.music_dir is not None else None,
         "index_dir": str(cfg.index.index_dir),
+        "library_dir": str(cfg.index.library_dir),
+        "catalog_path": str(cfg.index.library_dir / "library.db"),
+        "dj_meta_path": str(cfg.index.library_dir / "dj_meta.db"),
+        "music_sources": "Available music comes from registered catalog folders; see music-path.",
         "model_dir": str(cfg.index.model_dir),
         "access_token": "<redacted>" if cfg.server.access_token else None,
         "huggingface_token": "<redacted>" if cfg.huggingface.token else None,
     }
+    if cfg.library.music_dir is not None:
+        effective["legacy_music_dir"] = {
+            "path": str(cfg.library.music_dir),
+            "purpose": "Base for relative Beets, playlist and DJ cue cache paths; "
+            "also checks for DJ cue exports, resolves legacy request exclusions "
+            "and supplies the base for explicit index migration. Does not register music folders.",
+            "cleanup": "Keep this setting while those uses need it. Otherwise, back up your "
+            "configuration and remove it manually. See docs/guides/operations/"
+            "catalog-migration.md for cleanup of old settings and comments.",
+        }
     return DoctorCheck(
         "configuration",
         CheckStatus.PASS,
@@ -234,6 +247,7 @@ def _beets_paths_check(cfg: AutoDJConfig) -> list[DoctorCheck]:
         "matched": check.matched,
         "relative_paths": check.relative,
         "music_dir": str(check.music_dir) if check.music_dir is not None else None,
+        "music_dir_purpose": "Base for relative Beets paths; does not register music folders.",
         "found_folder": check.found.as_posix() if check.found is not None else None,
         "example": check.example,
     }
@@ -249,8 +263,14 @@ def _beets_paths_check(cfg: AutoDJConfig) -> list[DoctorCheck]:
 def _music_paths_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Check registered music folders; an empty library needs no configured root."""
     catalog_path = cfg.index.library_dir / "library.db"
+    empty = DoctorCheck(
+        "music-path",
+        CheckStatus.PASS,
+        "no music folders registered",
+        "Add music folders in Library to make music available. Setting music_dir does not add music.",
+    )
     if not catalog_path.is_file():
-        return DoctorCheck("music-path", CheckStatus.PASS, "no music folders registered")
+        return empty
     try:
         conn = _connect(readonly_uri(catalog_path), uri=True)
         with closing(conn):
@@ -259,7 +279,7 @@ def _music_paths_check(cfg: AutoDJConfig) -> DoctorCheck:
                 for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
             }
             if "catalog_sources" not in tables:
-                return DoctorCheck("music-path", CheckStatus.PASS, "no music folders registered")
+                return empty
             roots = [
                 Path(str(row[0]))
                 for row in conn.execute(
@@ -274,7 +294,7 @@ def _music_paths_check(cfg: AutoDJConfig) -> DoctorCheck:
             f"The library catalog could not be read; see the index check ({exc}).",
         )
     if not roots:
-        return DoctorCheck("music-path", CheckStatus.PASS, "no music folders registered")
+        return empty
     unavailable = [str(root) for root in roots if not root.is_dir() or not os.access(root, os.R_OK)]
     if unavailable:
         return DoctorCheck(

@@ -19,6 +19,9 @@ Browse [operation tasks](guides/operations/README.md), [detailed reference](refe
 
 See [Configuration precedence and repeat settings — Configuration precedence](reference/operations/configuration.md#configuration-precedence).
 
+For obsolete comments, old storage paths and supported uses of `music_dir`, see
+[Clean up an existing configuration](guides/operations/catalog-migration.md#clean-up-an-existing-configuration).
+
 ## Diagnose before serving
 
 See [Diagnose an installation before serving — Diagnose before serving](guides/operations/diagnose.md#diagnose-before-serving).
