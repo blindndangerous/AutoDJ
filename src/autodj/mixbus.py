@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from autodj.breaks import Break
     from autodj.indexer import IndexEntry
     from autodj.live import LiveDesk, LiveSource, PcmBuffer
+    from autodj.local_programme_audio import LocalPCM
 
 logger = logging.getLogger(__name__)
 
@@ -461,6 +462,11 @@ class MixBus:
         # Live input (#48): the desk, the crossfade level (0 automation,
         # 1 live) and the jitter buffers' state.  Read on the bus thread only.
         self._live: LiveDesk | None = None
+        # Internal selector only until local occurrence accounting/handoff exists.
+        self._local_programme: LocalPCM | None = None
+        self._local_down = False
+        self._local_up = False
+        self._automation_up = False
         self._live_gain = 0.0
         self._live_feed: LiveSource | None = None
         self._live_primed = False
@@ -1218,6 +1224,34 @@ class MixBus:
         self._unreported_holds = 0
         return message
 
+    def take_local_programme(
+        self,
+        source: LocalPCM,
+        *,
+        validate: Callable[[], None] | None = None,
+        commit: Callable[[], None] | None = None,
+    ) -> None:
+        """Prevalidate off-bus; commit checks only immutable revision values."""
+        if validate is not None:
+            validate()
+        source.start()
+        with self._lock:
+            if commit is not None:
+                commit()
+            self._local_programme = source
+            self._local_down = self._local_up = True
+
+    def return_local_programme(self) -> None:
+        """Resume a freshly prepared automation cursor without replacing outputs."""
+        with self._lock:
+            self._local_programme = None
+            self._local_down = self._local_up = False
+            self._automation_up = True
+            self._current = None
+            self._pos = 0
+            self._tail = None
+            self._skip_fade = 0
+
     def render_block(self, master_enabled: bool | None = None) -> np.ndarray:
         """Return the next ``(882, 2)`` block without pacing.
 
@@ -1228,47 +1262,69 @@ class MixBus:
             _master, master_enabled = self._master_state()
         pending: list[Callable[[], None]] = []
         with self._lock:
-            desk = self._live
-            live_input = desk is not None and (
-                desk.active or desk.return_source is not None or self._mic_gain < 1.0
-            )
-            if (self._paused or not self._playing) and not live_input:
-                return np.zeros((self.BLOCK, 2), np.float32)
-            # While a live source has the air the automation is held where
-            # it is: no track advances, so the clockwheel, the repeat
-            # history and the planned song change stay as they were.
-            self._advance_held = self._live_taking_over()
-            self._block_hold = None
-            if self._live_gain >= 1.0 or self._paused or not self._playing:
-                # No music under live input: the EQ is skipped rather than
-                # fed silence (its filters' decaying tails would go
-                # denormal and cost a hundred times more), and starts clean.
-                block = np.zeros((self.BLOCK, 2), np.float32)
-                reset_eq_state(self._eq_state)
-            else:
-                block = self._music(self.BLOCK, pending)
-                gains = self._eq_gains()
-                # Keep filter memory current even at unity gain.  Both EQ calls
-                # return a new array, so the music view is never written to.
-                if gains != self._eq_previous_gains:
-                    # Ramp slider changes over this 20 ms block to avoid clicks.
-                    block = ramp_eq(
-                        block, self._eq_filters, self._eq_previous_gains, gains, self._eq_state
-                    )
+            if self._local_programme is not None:
+                source = self._local_programme
+                if self._local_down:
+                    self._local_down = False
+                    self._advance_held = True
+                    # _music cannot pick another automation track while held.
+                    block = self._music(self.BLOCK, pending).copy()
+                    block *= np.linspace(1, 0, self.BLOCK, dtype=np.float32)[:, None]
                 else:
-                    block = apply_eq(block, self._eq_filters, *gains, state=self._eq_state)
-                self._eq_previous_gains = gains
-            hold = self._block_hold
-            message = self._note_hold(*hold) if hold is not None else self._end_hold()
-            if message is not None:
-                pending.append(partial(logger.warning, "%s", message))
-            self._duck_and_mix(block)
-            block = self._mix_live(block)
-            if not master_enabled:
-                np.clip(block, -1.0, 1.0, out=block)
-            if self._current is not None and self._unannounced is None:
-                pos = self._pos
-                pending.append(lambda: self._events.on_position(pos))
+                    block, _spans = source.read_block(source.grant.generation, self.BLOCK)
+                    if self._local_up:
+                        self._local_up = False
+                        block *= np.linspace(0, 1, self.BLOCK, dtype=np.float32)[:, None]
+                # Local programme already includes its mix; do not add automation,
+                # station EQ, liners or microphone. The paced loop still masters
+                # and distributes this block through its existing outputs.
+                if not master_enabled:
+                    np.clip(block, -1.0, 1.0, out=block)
+            else:
+                desk = self._live
+                live_input = desk is not None and (
+                    desk.active or desk.return_source is not None or self._mic_gain < 1.0
+                )
+                if (self._paused or not self._playing) and not live_input:
+                    return np.zeros((self.BLOCK, 2), np.float32)
+                # While a live source has the air the automation is held where
+                # it is: no track advances, so the clockwheel, the repeat
+                # history and the planned song change stay as they were.
+                self._advance_held = self._live_taking_over()
+                self._block_hold = None
+                if self._live_gain >= 1.0 or self._paused or not self._playing:
+                    # No music under live input: the EQ is skipped rather than
+                    # fed silence (its filters' decaying tails would go
+                    # denormal and cost a hundred times more), and starts clean.
+                    block = np.zeros((self.BLOCK, 2), np.float32)
+                    reset_eq_state(self._eq_state)
+                else:
+                    block = self._music(self.BLOCK, pending)
+                    gains = self._eq_gains()
+                    # Keep filter memory current even at unity gain.  Both EQ calls
+                    # return a new array, so the music view is never written to.
+                    if gains != self._eq_previous_gains:
+                        # Ramp slider changes over this 20 ms block to avoid clicks.
+                        block = ramp_eq(
+                            block, self._eq_filters, self._eq_previous_gains, gains, self._eq_state
+                        )
+                    else:
+                        block = apply_eq(block, self._eq_filters, *gains, state=self._eq_state)
+                    self._eq_previous_gains = gains
+                hold = self._block_hold
+                message = self._note_hold(*hold) if hold is not None else self._end_hold()
+                if message is not None:
+                    pending.append(partial(logger.warning, "%s", message))
+                self._duck_and_mix(block)
+                block = self._mix_live(block)
+                if self._automation_up:
+                    block *= np.linspace(0, 1, self.BLOCK, dtype=np.float32)[:, None]
+                    self._automation_up = False
+                if not master_enabled:
+                    np.clip(block, -1.0, 1.0, out=block)
+                if self._current is not None and self._unannounced is None:
+                    pos = self._pos
+                    pending.append(lambda: self._events.on_position(pos))
             # Liners that started in this block, said after the lock is released.
             pending.extend(self._liner_started)
             self._liner_started = []

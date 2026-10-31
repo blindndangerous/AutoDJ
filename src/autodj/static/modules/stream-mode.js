@@ -83,7 +83,7 @@ function mediaFailureText(audio, hasPlayed) {
 // before every play(), so the stream never starts at the element's
 // default full volume.
 export function createStreamMode({
-  audio, button, idleNote, srStatus, fetchInfo, beforePlay,
+  audio, button, idleNote, srStatus, fetchInfo, beforePlay, canListen = () => true,
 }) {
   let listening = false;
   // Bumped by every start and stop, so a start still waiting on the link
@@ -270,6 +270,10 @@ export function createStreamMode({
   audio.addEventListener("waiting", onStalled);
 
   async function toggleListen() {
+    if (!canListen()) {
+      say("Direct monitoring is active. Return to automation before listening to the broadcast here.");
+      return;
+    }
     if (listening) {
       stop();
       return;

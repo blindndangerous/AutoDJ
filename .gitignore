@@ -69,6 +69,7 @@ node_modules/
 *_audit.json
 *_audit_report.json
 .playwright-mcp/
+test-results/local-programme-prototype/
 
 # TLS certificate and private key for [server] ssl_certfile / ssl_keyfile
 certs/

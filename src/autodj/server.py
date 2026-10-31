@@ -55,7 +55,7 @@ import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Literal
+from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Literal, cast
 
 from fastapi import (
     FastAPI,
@@ -85,7 +85,7 @@ from starlette.convertors import Convertor, register_url_convertor
 from starlette.datastructures import Headers
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import NotModifiedResponse
-from starlette.types import Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 # PlayerBridge lives in autodj._bridge; it is re-exported here.
 from autodj._bridge import LibraryServices, PlayerBridge
@@ -1366,6 +1366,11 @@ def create_app(
     # lives on a NAS mount and the file is ~80 KB.
     try:
         _index_html_cache = _static_html_path.read_text(encoding="utf-8")
+        if cfg.server.local_programme_enabled:
+            # Available before scripts or gestures can create the shared context.
+            _index_html_cache = _index_html_cache.replace(
+                '<html lang="en">', '<html lang="en" data-local-programme-enabled="true">', 1
+            )
     except OSError as exc:  # pragma: no cover -- only when the package is corrupt
         logger.error("Could not read %s at startup: %s", _static_html_path, exc)
         _index_html_cache = (
@@ -2828,6 +2833,9 @@ def create_app(
         policy,
         allow_lan_plain_http=bool(getattr(cfg.server, "live_plain_http_lan", False)),
     )
+    from autodj.local_programme_routes import install_local_programme_routes
+
+    install_local_programme_routes(app, policy)
 
     def prepare(station: StationRuntime) -> None:
         """Wire a station that is about to start to this app."""
@@ -3431,7 +3439,30 @@ def serve(
     #
     # uvicorn.Server rather than uvicorn.run: Settings, Updates' Restart
     # (autodj.updates_api) stops this server through app.state.server_exit.
-    server = uvicorn.Server(uvicorn.Config(app, **uvicorn_kwargs))
+    transport_app: ASGIApp = app
+    if cfg.server.local_programme_enabled:
+        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+        from autodj.local_programme_routes import RawPeerMiddleware
+
+        # Capture protocol provenance before Uvicorn rewrites client/scheme.
+        # The opt-out path above retains Uvicorn's existing middleware setup.
+        # Uvicorn and Starlette annotate the same ASGI protocol with different
+        # dictionary types. Adapt those annotations at this tested boundary.
+        proxy_app = cast(ASGIApp, ProxyHeadersMiddleware(cast(Any, app), trusted_hosts=allow))
+        transport_app = RawPeerMiddleware(
+            proxy_app,
+            proxy_configured=bool(
+                cfg.server.trusted_proxies or os.environ.get("FORWARDED_ALLOW_IPS")
+            ),
+        )
+        uvicorn_kwargs["proxy_headers"] = False
+        uvicorn_kwargs["ws_max_size"] = 65536
+        uvicorn_kwargs["ws_max_queue"] = 4
+        # The installed sans-I/O implementation ignores ws_max_queue. Select the
+        # bounded receiver explicitly for this opt-in experiment.
+        uvicorn_kwargs["ws"] = "websockets"
+    server = uvicorn.Server(uvicorn.Config(transport_app, **uvicorn_kwargs))
 
     def _server_exit() -> None:
         server.should_exit = True
