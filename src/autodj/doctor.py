@@ -55,6 +55,7 @@ class CheckStatus(StrEnum):
     PASS = "pass"  # nosec B105
     WARN = "warn"
     FAIL = "fail"
+    SKIP = "skip"
 
 
 @dataclass(frozen=True)
@@ -369,20 +370,37 @@ def _saved_settings_check(cfg: AutoDJConfig, paths: StationPaths | None = None) 
 
 def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Check the current catalog without reading old generation files."""
+    from autodj.index_manifest import LibraryMigrationRequired
+    from autodj.layout import old_layout
+    from autodj.stations import StationPaths
+
     index_dir = cfg.index.library_dir
     catalog_path = index_dir / "library.db"
+    states = [
+        StationPaths.default(cfg).web_state,
+        *(StationPaths.for_station(cfg, s.slug).web_state for s in cfg.stations),
+    ]
+    try:
+        for directory in (old_layout(cfg), index_dir):
+            if directory is not None and (
+                (directory / "library.db").is_file()
+                or has_legacy_index(directory)
+                or any(path.is_file() for path in states)
+            ):
+                from autodj.library import require_configured_library
+
+                require_configured_library(cfg)
+                break
+    except LibraryMigrationRequired as exc:
+        return DoctorCheck(
+            "index", CheckStatus.FAIL, "library migration needed", str(exc), "migrate-index"
+        )
+    except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
+        return DoctorCheck("index", CheckStatus.FAIL, "library cannot be read", str(exc))
     if catalog_path.is_file():
         from autodj.catalog import catalog_counts
 
         try:
-            from autodj.index_migration import migration_required
-            from autodj.stations import StationPaths
-
-            needed, reason = migration_required(index_dir, (StationPaths.default(cfg).web_state,))
-            if needed:
-                return DoctorCheck(
-                    "index", CheckStatus.FAIL, "library migration needed", reason, "migrate-index"
-                )
             ready, analyzed = catalog_counts(catalog_path)
         except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
             return DoctorCheck("index", CheckStatus.FAIL, "library cannot be read", str(exc))
@@ -504,6 +522,37 @@ def _dependency_check() -> DoctorCheck:
         "; ".join(issues) + ".",
         "Action: " + " ".join(details),
         repair="install-ffmpeg" if not ffmpeg and sys.platform == "win32" else None,
+    )
+
+
+def _runtime_packages_check() -> DoctorCheck:
+    """Check installed distribution versions without imports, network, or repairs."""
+    from autodj.runtime_packages import missing_runtime_packages, package_repair, setup_command
+
+    try:
+        required = missing_runtime_packages()
+        problems = missing_runtime_packages(include_extras=True)
+    except (OSError, ValueError, KeyError, StopIteration) as exc:
+        return DoctorCheck(
+            "runtime-packages", CheckStatus.FAIL, "Cannot read runtime requirements", str(exc)
+        )
+    if not problems:
+        return DoctorCheck("runtime-packages", CheckStatus.PASS, "Required packages are installed.")
+    args, note, _ = package_repair()
+    detail = "; ".join(
+        f"{p.name}{p.required}: installed {p.installed}"
+        if p.installed
+        else f"{p.name}{p.required}: missing"
+        for p in problems
+    )
+    return DoctorCheck(
+        "runtime-packages",
+        CheckStatus.FAIL if required else CheckStatus.WARN,
+        "Missing or too-old "
+        + ("required/optional Python packages: " if required else "optional profile packages: ")
+        + ", ".join(p.name for p in problems),
+        f"{detail}. Run `{setup_command(args)}`. {note}".strip(),
+        repair="sync-packages",
     )
 
 
@@ -745,7 +794,19 @@ def _lan_network_check(cfg: AutoDJConfig) -> DoctorCheck:
 
 def _network_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Classify configured bind exposure using the canonical loopback policy."""
-    server = cfg.server
+    from autodj.lan import AccessTokenError, resolve_server_config
+    from autodj.secret_files import access_token_path
+
+    try:
+        server = resolve_server_config(
+            cfg.server, token_path=access_token_path(cfg), read_only=True
+        )
+    except AccessTokenError:
+        return _lan_network_check(cfg)
+    except (TypeError, ValueError) as exc:
+        return DoctorCheck(
+            "network-safety", CheckStatus.FAIL, "unsafe server configuration", str(exc)
+        )
     if server.lan:
         return _lan_network_check(cfg)
     if is_loopback_bind(server.host):
@@ -753,6 +814,13 @@ def _network_check(cfg: AutoDJConfig) -> DoctorCheck:
             "network-safety",
             CheckStatus.PASS,
             "loopback-only",
+            f"{server.host}:{server.port}",
+        )
+    if server.auth_mode == "trusted_proxy":
+        return DoctorCheck(
+            "network-safety",
+            CheckStatus.PASS,
+            "authenticated trusted proxy",
             f"{server.host}:{server.port}",
         )
     if server.access_token:
@@ -775,6 +843,26 @@ def _network_check(cfg: AutoDJConfig) -> DoctorCheck:
         "non-loopback bind lacks authentication",
         f"{server.host}:{server.port}; configure an access token or explicit insecure LAN mode",
     )
+
+
+def _tls_checks(cfg: AutoDJConfig) -> list[DoctorCheck]:
+    """Validate configured HTTPS with the same read-only loader used before serving."""
+    if cfg.server.ssl_certfile is None and cfg.server.ssl_keyfile is None:
+        return []
+    from autodj.tls import tls_date_warning, validate_tls_pair
+
+    try:
+        validate_tls_pair(cfg.server)
+        warning = tls_date_warning(cfg.server)
+    except ValueError as exc:
+        return [
+            DoctorCheck("https", CheckStatus.FAIL, "HTTPS certificate/key cannot be used", str(exc))
+        ]
+    if warning:
+        return [DoctorCheck("https", CheckStatus.WARN, warning)]
+    return [
+        DoctorCheck("https", CheckStatus.PASS, "Configured certificate and key can serve HTTPS.")
+    ]
 
 
 def _update_check(cfg: AutoDJConfig, *, network: bool = True) -> DoctorCheck:
@@ -966,6 +1054,19 @@ def _related_artists_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
+def _checked(
+    check: Callable[..., DoctorCheck | Iterable[DoctorCheck]], *args: Any, **kwargs: Any
+) -> list[DoctorCheck]:
+    """Keep independent diagnostics available when a check cannot import a package."""
+    try:
+        result = check(*args, **kwargs)
+    except ImportError as exc:
+        name = check.__name__.removeprefix("_").removesuffix("_checks").removesuffix("_check")
+        name = "https" if name == "tls" else name.replace("_", "-")
+        return [DoctorCheck(name, CheckStatus.SKIP, "check skipped: package unavailable", str(exc))]
+    return [result] if isinstance(result, DoctorCheck) else list(result)
+
+
 def run_doctor(
     cfg: AutoDJConfig,
     *,
@@ -984,42 +1085,53 @@ def run_doctor(
         check_updates: Ask the network whether a newer AutoDJ exists
             (``doctor --offline`` turns it off; so does the saved setting).
     """
+    packages = _runtime_packages_check()
     from autodj.stations import DEFAULT_SLUG
 
     default = station in (None, DEFAULT_SLUG)
-    checks: list[DoctorCheck] = [_configuration_check(cfg)]
+    checks = _checked(_configuration_check, cfg)
     if default:
-        checks += [_speech_check(cfg), _dmca_check(cfg)]
+        checks += [*_checked(_speech_check, cfg), *_checked(_dmca_check, cfg)]
     checks += [
-        _python_check(python_version),
-        _music_paths_check(cfg),
-        _beets_db_check(cfg),
-        *_beets_paths_check(cfg),
-        _path_check("index-path", cfg.index.index_dir, writable=True),
-        _index_check(cfg),
+        *_checked(_python_check, python_version),
+        *_checked(_music_paths_check, cfg),
+        *_checked(_beets_db_check, cfg),
+        *_checked(_beets_paths_check, cfg),
+        *_checked(_path_check, "index-path", cfg.index.index_dir, writable=True),
+        *_checked(_index_check, cfg),
     ]
     if default:
-        checks.append(_saved_settings_check(cfg))
+        checks += _checked(_saved_settings_check, cfg)
     checks += [
-        _dj_meta_database_check(cfg),
-        _dependency_check(),
-        _model_cache_check(cfg),
-        *_gpu_image_check(),
-        _network_check(cfg),
-        _update_check(cfg, network=check_updates),
+        *_checked(_dj_meta_database_check, cfg),
+        *_checked(_dependency_check),
+        packages,
+        *_checked(_model_cache_check, cfg),
+        *_checked(_gpu_image_check),
+        *_checked(_network_check, cfg),
+        *_checked(_tls_checks, cfg),
+        *_checked(_update_check, cfg, network=check_updates),
     ]
     if default:
-        checks += [_stream_check(cfg), *_speaker_checks(cfg), *_relay_checks(cfg)]
-    checks += [_related_artists_check(cfg), _related_tracks_check(cfg)]
+        checks += [
+            *_checked(_stream_check, cfg),
+            *_checked(_speaker_checks, cfg),
+            *_checked(_relay_checks, cfg),
+        ]
+    checks += [*_checked(_related_artists_check, cfg), *_checked(_related_tracks_check, cfg)]
     if default:
-        checks += [_time_checks_check(cfg), *_voice_pack_checks(cfg), _categories_check(cfg)]
-    checks += [_config_keys_check(cfg), *_restore_check(cfg)]
+        checks += [
+            *_checked(_time_checks_check, cfg),
+            *_checked(_voice_pack_checks, cfg),
+            *_checked(_categories_check, cfg),
+        ]
+    checks += [*_checked(_config_keys_check, cfg), *_checked(_restore_check, cfg)]
     if default:
-        checks += [_recording_check(cfg), _liners_check(cfg)]
+        checks += [*_checked(_recording_check, cfg), *_checked(_liners_check, cfg)]
     for spec in cfg.stations:
         if station in (None, spec.slug):
-            checks += _station_checks(cfg, spec)
-    checks += _station_folders_check(cfg)
+            checks += _checked(_station_checks, cfg, spec)
+    checks += _checked(_station_folders_check, cfg)
     checks += [
         DoctorCheck("station-definition", CheckStatus.WARN, f"{path}: {reason}")
         for path, reason in cfg.skipped_definitions
@@ -1077,18 +1189,18 @@ def _station_checks(cfg: AutoDJConfig, spec: StationSpec) -> list[DoctorCheck]:
     own = station_config(spec.cfg, cfg)
     paths = StationPaths.for_station(own, spec.slug)
     checks = [
-        _station_folder_check(paths),
-        _speech_check(own, paths),
-        _saved_settings_check(own, paths),
-        _dmca_check(own, paths),
-        _stream_check(own),
-        *_speaker_checks(own),
-        *_relay_checks(own, paths=paths),
-        _time_checks_check(own, paths),
-        *_voice_pack_checks(own, paths),
-        _categories_check(own, paths),
-        _recording_check(own, paths),
-        _liners_check(own, paths),
+        *_checked(_station_folder_check, paths),
+        *_checked(_speech_check, own, paths),
+        *_checked(_saved_settings_check, own, paths),
+        *_checked(_dmca_check, own, paths),
+        *_checked(_stream_check, own),
+        *_checked(_speaker_checks, own),
+        *_checked(_relay_checks, own, paths=paths),
+        *_checked(_time_checks_check, own, paths),
+        *_checked(_voice_pack_checks, own, paths),
+        *_checked(_categories_check, own, paths),
+        *_checked(_recording_check, own, paths),
+        *_checked(_liners_check, own, paths),
     ]
     return [replace(check, station=spec.slug) for check in checks]
 

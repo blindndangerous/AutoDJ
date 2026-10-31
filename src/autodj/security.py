@@ -1062,3 +1062,23 @@ class SecurityMiddleware:
             status=413,
             level=logging.WARNING,
         )
+
+
+def advertised_server_origin(policy: SecurityPolicy) -> str:
+    """Choose one browser URL accepted by both transport and request policy."""
+    from urllib.parse import urlsplit
+
+    expected_scheme = "https" if policy.secure_cookie else "http"
+    for origin in policy.effective_allowed_origins():
+        parsed = urlsplit(origin)
+        origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        if (
+            parsed.scheme == expected_scheme
+            and origin_port == policy.config.port
+            and policy.host_allowed(parsed.netloc)
+        ):
+            return origin
+    raise ValueError(
+        "server.allowed_origins must include an allowed origin whose hostname is "
+        "present in server.allowed_hosts and whose scheme and port match server TLS/bind"
+    )

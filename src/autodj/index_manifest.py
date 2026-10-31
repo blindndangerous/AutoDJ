@@ -58,6 +58,10 @@ class IndexConsistencyError(RuntimeError):
     """Raised when published index artifacts do not describe one snapshot."""
 
 
+class LibraryMigrationRequired(IndexConsistencyError):
+    """Supported legacy library data requires the explicit migration command."""
+
+
 REBUILD_COMMAND = "autodj index --force"
 CONVERT_SCRIPT = "scripts/convert_index_v3_to_v4.py"
 

@@ -426,6 +426,8 @@ def test_missing_beets_db_warns_and_unset_passes(tmp_path: Path) -> None:
 def test_network_rejects_unsafe_bind_and_accepts_loopback_alternates(tmp_path: Path) -> None:
     unsafe = _config(tmp_path / "unsafe", host="192.168.1.20")
     unsafe.server.access_token = None
+    unsafe.server.allowed_hosts = ["radio.local"]
+    unsafe.server.allowed_origins = ["http://radio.local:8080"]
     assert doctor._network_check(unsafe).status is doctor.CheckStatus.FAIL
 
     for host in ("127.0.0.2", "::1"):
@@ -602,6 +604,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "saved-settings",
         "dj-meta-db",
         "dependencies",
+        "runtime-packages",
         "model-cache",
         "network-safety",
         "updates",
@@ -859,7 +862,7 @@ def test_literal_planned_api_skeleton_has_failure_exit() -> None:
 
 def test_check_status_values_are_stable_lowercase() -> None:
 
-    assert [status.value for status in doctor.CheckStatus] == ["pass", "warn", "fail"]
+    assert [status.value for status in doctor.CheckStatus] == ["pass", "warn", "fail", "skip"]
 
 
 def test_report_structured_serialization_is_stable() -> None:

@@ -74,6 +74,16 @@ describe("secure connections", () => {
     expect(rows[0].textContent).toMatch(/Expires .*\(.*about/);
   });
 
+  it.each(["expired", "not yet valid"])("warns about an active %s certificate while keeping renewal controls available", async (reason) => {
+    const { panel } = mount();
+    const warning = `The HTTPS certificate is ${reason}. HTTPS remains enabled; renew the certificate.`;
+    const request = vi.fn(async () => inventory([cert("active", { active: true, warning })]));
+    installSecureConnections({ panel, request });
+    await vi.waitFor(() => expect(panel.textContent).toContain(warning));
+    expect(panel.textContent).toContain("Active");
+    expect(panel.querySelector("#sc-add")).toBeTruthy();
+  });
+
   it("creates, activates, and finishes only after this browser is secure", async () => {
     const { panel } = mount();
     let saved = false, activated = false;

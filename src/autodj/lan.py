@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import socket
 import threading
 from dataclasses import replace
@@ -240,6 +241,7 @@ def lan_server_config(
     tls: bool,
     token_path: Path,
     hosts: list[str] | None = None,
+    read_only: bool = False,
 ) -> ServerConfig:
     """Return *server* set up for local-network use.
 
@@ -252,6 +254,7 @@ def lan_server_config(
         tls: TLS is on, so ``https://`` origins are allowed too.
         token_path: Where the saved access token lives.
         hosts: Detected hosts; ``None`` detects them now.
+        read_only: Preview with a transient token when none is saved; write nothing.
 
     Raises:
         AccessTokenError: The saved token cannot be read or written.
@@ -264,7 +267,11 @@ def lan_server_config(
     )
     token = server.access_token
     if token is None and not server.insecure_lan:
-        token = load_or_create_access_token(token_path)
+        token = (
+            read_access_token(token_path) or secrets.token_urlsafe(32)
+            if read_only
+            else load_or_create_access_token(token_path)
+        )
     return replace(
         server,
         host=bind,
@@ -273,6 +280,34 @@ def lan_server_config(
         allowed_origins=allowed_origins,
         access_token=token,
     )
+
+
+def resolve_server_config(
+    server: ServerConfig, *, token_path: Path, read_only: bool = False
+) -> ServerConfig:
+    """Apply implicit LAN mode and validate the effective exposure for serve and Doctor."""
+    from autodj.config import validate_server_exposure
+    from autodj.security import SecurityPolicy, advertised_server_origin
+
+    # A bare network host opts into the same authenticated LAN setup as --lan.
+    if (
+        not server.lan
+        and not is_loopback_bind(server.host)
+        and not server.allowed_hosts
+        and not server.allowed_origins
+        and not server.access_token
+        and not server.insecure_lan
+    ):
+        server = replace(server, lan=True)
+    if server.lan:
+        server = lan_server_config(
+            server, tls=server.ssl_certfile is not None, token_path=token_path, read_only=read_only
+        )
+    else:
+        server = replace(server)
+    validate_server_exposure(server)
+    advertised_server_origin(SecurityPolicy(server, secure_cookie=server.ssl_certfile is not None))
+    return server
 
 
 def lan_urls(

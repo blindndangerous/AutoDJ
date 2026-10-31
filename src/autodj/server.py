@@ -140,6 +140,9 @@ from autodj.security import (
     new_request_id,
     peer_address,
 )
+from autodj.security import (
+    advertised_server_origin as _advertised_server_origin,
+)
 from autodj.station_log import (
     CURRENT_STATION,
     DEFAULT_SLUG,
@@ -446,26 +449,6 @@ async def _broadcast_state_once(
 # Moved to autodj.stations; still importable from here.
 _quiesce_cache_writers = quiesce_cache_writers
 _tick_stream_workers = tick_stream_workers
-
-
-def _advertised_server_origin(policy: SecurityPolicy) -> str:
-    """Choose one browser URL accepted by both transport and request policy."""
-    from urllib.parse import urlsplit
-
-    expected_scheme = "https" if policy.secure_cookie else "http"
-    for origin in policy.effective_allowed_origins():
-        parsed = urlsplit(origin)
-        origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        if (
-            parsed.scheme == expected_scheme
-            and origin_port == policy.config.port
-            and policy.host_allowed(parsed.netloc)
-        ):
-            return origin
-    raise ValueError(
-        "server.allowed_origins must include an allowed origin whose hostname is "
-        "present in server.allowed_hosts and whose scheme and port match server TLS/bind"
-    )
 
 
 # Browsers get index.html fresh every time; scripts and the stylesheet
@@ -1002,6 +985,9 @@ def create_app(
     extra_stations: Sequence[ExtraStation] = (),
 ) -> FastAPI:
     """Create the server with shared library services and station factories."""
+    from autodj.runtime_packages import require_runtime_packages
+
+    require_runtime_packages()
     _lyrics_read_gate = asyncio.Semaphore(1)
     install_log_prefix()
     cfg = services.cfg
@@ -1372,6 +1358,22 @@ def create_app(
             "<!doctype html><meta charset=utf-8>"
             "<title>AutoDJ unavailable</title>"
             "<p>Web UI files missing — see server log.</p>"
+        )
+
+    from html import escape as escape_html
+
+    from autodj.runtime_packages import missing_runtime_packages
+
+    optional_packages = missing_runtime_packages(include_extras=True)
+    if optional_packages:
+        warning = (
+            "Optional Python packages missing or too old: "
+            + ", ".join(p.name for p in optional_packages)
+            + ". Run `autodj doctor --fix` to repair the installed profile."
+        )
+        _index_html_cache = _index_html_cache.replace(
+            '<p id="runtime-package-warning" role="status" hidden></p>',
+            '<p id="runtime-package-warning" role="status">' + escape_html(warning) + "</p>",
         )
 
     @app.get("/", response_class=HTMLResponse)
@@ -3200,6 +3202,14 @@ def _apply_time_settings(cfg: AutoDJConfig, library: Any) -> None:
     timefmt.time_format = "12" if catalog.get_setting("time_format") == "12" else "24"
 
 
+@dataclass(frozen=True)
+class ServePreflight:
+    """Successful CLI safety checks, retained through the startup write phase."""
+
+    tls_context: ssl.SSLContext | None
+    advertised_origin: str
+
+
 def serve(
     cfg: AutoDJConfig,
     sim: SimilarityIndex,
@@ -3210,6 +3220,7 @@ def serve(
     stream: bool | None = None,
     lan_configured_hosts: list[str] | None = None,
     library: LibraryManager | None = None,
+    preflight: ServePreflight | None = None,
 ) -> int | None:
     """Start the Player thread and the FastAPI/uvicorn web server.
 
@@ -3239,6 +3250,9 @@ def serve(
     a :class:`~autodj.tls.CertificateReloader` then loads renewed files into
     the running server.
     """
+    from autodj.runtime_packages import require_runtime_packages
+
+    require_runtime_packages()
     started = time.perf_counter()
     from dataclasses import replace
 
@@ -3246,8 +3260,6 @@ def serve(
 
     from autodj.config import StationSpec, validate_server_exposure
     from autodj.stereo import configure_spill_dir
-
-    configure_spill_dir(cfg.index.index_dir)
 
     # One exact search per pick: OpenMP's thread pool makes it slower (27 ms
     # on one thread against 41 ms on four, measured on 77k tracks) and
@@ -3257,13 +3269,23 @@ def serve(
     host = cfg.server.host if host is None else host
     port = cfg.server.port if port is None else port
     staged_server = replace(cfg.server, host=host, port=port)
-    validate_server_exposure(staged_server)
+    from autodj.library import require_configured_library
+    from autodj.tls import validate_tls_pair
+
+    if preflight is None:
+        validate_server_exposure(staged_server)
+        advertised_origin = _advertised_server_origin(
+            SecurityPolicy(staged_server, secure_cookie=staged_server.ssl_certfile is not None)
+        )
+        tls_context = validate_tls_pair(staged_server)
+        require_configured_library(cfg)
+    else:
+        tls_context = preflight.tls_context
+        advertised_origin = preflight.advertised_origin
+    configure_spill_dir(cfg.index.index_dir)
     ssl_certfile = staged_server.ssl_certfile
     ssl_keyfile = staged_server.ssl_keyfile
     secure_cookie = ssl_certfile is not None
-    advertised_origin = _advertised_server_origin(
-        SecurityPolicy(staged_server, secure_cookie=secure_cookie)
-    )
     cfg.server = staged_server
     host = staged_server.host
     port = staged_server.port
@@ -3273,7 +3295,7 @@ def serve(
     from autodj.library import LibraryManager
 
     if library is None:
-        library = LibraryManager(cfg, sim)
+        library = LibraryManager(cfg, sim, compatibility_checked=True)
     _apply_time_settings(cfg, library)
     timezone = cfg.station.timezone or system_timezone()
     default = cfg.default_station or StationSpec(slug=DEFAULT_SLUG, autostart=True, cfg=cfg)
@@ -3413,10 +3435,11 @@ def serve(
         certfile, keyfile = ssl_certfile, ssl_keyfile
 
         def _watched_ssl_context(
-            _config: object, default_factory: Callable[[], ssl.SSLContext]
+            _config: object, _default_factory: Callable[[], ssl.SSLContext]
         ) -> ssl.SSLContext:
             """Build uvicorn's context and reload renewed certificate files into it."""
-            context = default_factory()
+            assert tls_context is not None
+            context = tls_context
             reloader = CertificateReloader(context, certfile, keyfile)
             app.state.certificate_reloader = reloader
             reloader.start()

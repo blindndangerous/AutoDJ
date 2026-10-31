@@ -81,20 +81,43 @@ if TYPE_CHECKING:
 
 def require_current_library(directory: Path, station_web_states: Iterable[Path] = ()) -> None:
     """Refuse legacy application data before creating or changing database files."""
-    from autodj.index_manifest import IndexConsistencyError, has_legacy_index
+    from autodj.index_manifest import LibraryMigrationRequired
     from autodj.index_migration import migration_required
 
-    if not (directory / "library.db").is_file() and has_legacy_index(directory):
-        reason = "an older published index is present"
-    else:
-        needed, reason = migration_required(directory, station_web_states)
-        if not needed:
-            return
-    raise IndexConsistencyError(
+    needed, reason = migration_required(directory, station_web_states)
+    if not needed:
+        return
+    raise LibraryMigrationRequired(
         f"The library in {directory} needs migration ({reason}). Stop AutoDJ and run "
         "`autodj migrate-index` to preview, then `autodj migrate-index --apply`. "
-        "Your original files will be kept."
+        "Your original files will be kept. Run `autodj doctor --fix` for guided repair."
     )
+
+
+def require_configured_library(cfg: AutoDJConfig) -> None:
+    """Check current and not-yet-moved library data before startup writes anything."""
+    from autodj.backup import pending_restore_state
+    from autodj.index_manifest import IndexConsistencyError
+    from autodj.layout import old_layout
+
+    previous = old_layout(cfg)
+    if previous is not None and (previous / ".autodj-restore.json").exists():
+        raise IndexConsistencyError(
+            "A restore of the previous layout did not finish. Run `autodj doctor --fix` "
+            "with the AutoDJ release that made the restore before starting this version."
+        )
+    if pending_restore_state(cfg.index.library_dir) not in (None, "installed"):
+        raise IndexConsistencyError(
+            "A restore of this index folder did not finish, so some files are new and some old. "
+            "Run `autodj doctor --fix` to put the old files back, then start AutoDJ again."
+        )
+    states = [
+        StationPaths.default(cfg).web_state,
+        *(StationPaths.for_station(cfg, s.slug).web_state for s in cfg.stations),
+    ]
+    for directory in (previous, cfg.index.library_dir):
+        if directory is not None:
+            require_current_library(directory, states)
 
 
 def freeze_long_lived() -> None:
@@ -178,7 +201,12 @@ class LibraryManager:
     """Keep the playable library and its similarity view current."""
 
     def __init__(
-        self, cfg: AutoDJConfig, sim: Any, *, clock: Callable[[], float] = time.monotonic
+        self,
+        cfg: AutoDJConfig,
+        sim: Any,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        compatibility_checked: bool = False,
     ) -> None:
         from autodj.config import station_config
 
@@ -259,16 +287,17 @@ class LibraryManager:
         self._category_lock = threading.Lock()
         self.clock_beets = BeetsConditions(cfg, self.entries_snapshot)
         catalog_path = cfg.index.library_dir / "library.db"
-        require_current_library(
-            cfg.index.library_dir,
-            [
-                StationPaths.default(cfg).web_state,
-                *(
-                    StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
-                    for spec in cfg.stations
-                ),
-            ],
-        )
+        if not compatibility_checked:
+            require_current_library(
+                cfg.index.library_dir,
+                [
+                    StationPaths.default(cfg).web_state,
+                    *(
+                        StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
+                        for spec in cfg.stations
+                    ),
+                ],
+            )
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)
         default_store = self._station_store(DEFAULT_SLUG)
