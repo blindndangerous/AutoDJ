@@ -38,7 +38,7 @@ def test_local_preflight_queues_work_and_does_not_echo_secrets(bridge, tmp_path)
     ],
 )
 def test_acme_local_policy_rejects_remote_forwarded_and_bad_origin(bridge, tmp_path, peer, headers):
-    """ADR-0019-10."""
+    """ADR-0019-12."""
     client = client_for(bridge, tmp_path, peer=peer)
     assert client.post(BASE + "/acme/preflight", json=PREFLIGHT, headers=headers).status_code == 403
     assert not (tmp_path / ".tls" / "acme").exists()
@@ -151,7 +151,7 @@ def test_saved_acme_operations_are_local_only_and_redacted(bridge, tmp_path):
 
 
 def test_renewal_pruning_keeps_the_pair_still_served_until_restart(bridge, tmp_path):
-    """ADR-0019-20."""
+    """ADR-0019-22."""
     from tests.unit.test_acme_worker import issued
 
     store = CertificateStore(tmp_path / ".tls")
@@ -208,7 +208,7 @@ def test_renewal_pruning_keeps_the_pair_still_served_until_restart(bridge, tmp_p
 def test_inventory_renewal_details_require_direct_native_localhost(
     bridge, tmp_path, peer, headers, auth_mode, expected_local
 ):
-    """ADR-0019-27."""
+    """ADR-0019-29."""
     from tests.unit.test_acme_worker import issued
 
     bridge.player._cfg.server.auth_mode = auth_mode

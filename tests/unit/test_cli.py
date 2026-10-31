@@ -39,8 +39,9 @@ def clear_autodj_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
 @pytest.fixture(autouse=True)
 def mock_library_startup():
     # CLI option tests use fake configs; catalog startup has separate integration tests.
-    def create(cfg, sim):
+    def create(cfg, sim, *, compatibility_checked=False):
         library = MagicMock()
+        library.compatibility_checked = compatibility_checked
         library.entries_snapshot.side_effect = sim.entries_snapshot
         library.snapshot.return_value = {
             "tracks_ready": sim.ntotal,

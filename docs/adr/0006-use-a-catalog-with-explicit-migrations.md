@@ -84,6 +84,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0006-06` | Audio-feature results are versioned and tied to catalog file identity; storing estimates preserves manual key/BPM and a positive source BPM. | automated | `tests/unit/test_catalog_audio_analysis.py::test_audio_analysis_cache_is_identity_checked_and_survives_source_changes`; `tests/unit/test_catalog_audio_analysis.py::test_audio_estimates_preserve_manual_tags_and_existing_source_bpm` |
 | `ADR-0006-07` | Station history keeps audio aired over or between the songs, and a show's standalone speech segments, with its kind in the existing `play_history.kind` column, with no schema change; existing station databases read as before. The repeat rules, pending repeat rows, the default play-log export and SoundExchange reports count songs and live sets only, and audio mixed over a song never shortens its reported duration, while a standalone speech segment ends it as the next song would. Inserted rows have their own room, so the songs-only History view keeps its 500 rows live and after a restart. | automated | `tests/unit/test_history_inserts.py::test_repeat_rules_count_songs_only`; `tests/unit/test_history_inserts.py::test_the_play_log_leaves_inserted_items_out_and_keeps_song_lengths`; `tests/unit/test_history_inserts.py::test_a_database_written_before_inserted_items_keeps_working`; `tests/unit/test_history_inserts.py::test_pending_rows_for_the_repeat_rules_leave_inserted_items_out`; `tests/unit/test_history_inserts.py::test_the_export_counts_songs_unless_asked_for_everything`; `tests/unit/test_history_inserts.py::test_a_show_speech_segment_is_speech_not_a_song`; `tests/unit/test_history_inserts.py::test_inserted_items_never_push_songs_out_of_history`; `tests/unit/test_history_inserts.py::test_a_standalone_speech_segment_ends_the_song_before_it` |
 | `ADR-0006-08` | Inserted audio is recorded as it actually airs on a station's playout, from in-memory buffers that touch no disk on the mix-bus thread; it never changes last-played times. The mix bus says when a liner, cart or time check starts: at once, at its cue, or when a live DJ hands back; one it drops is never recorded. Scheduler snapshots used for forecasts never record. | automated | `tests/unit/test_history_inserts.py::test_the_bridge_records_an_inserted_item_without_disturbing_song_history`; `tests/unit/test_history_inserts.py::test_the_player_reports_each_handoff_item_once_as_it_airs`; `tests/unit/test_history_inserts.py::test_a_scheduler_snapshot_never_reports`; `tests/unit/test_history_inserts.py::test_a_liner_held_for_a_live_dj_is_recorded_when_it_airs`; `tests/unit/test_history_inserts.py::test_the_bus_says_when_a_cued_liner_really_starts`; `tests/unit/test_live.py::test_a_liner_due_under_a_dj_plays_once_after_and_a_time_check_never` |
+| `ADR-0006-09` | Serve checks library compatibility read-only before startup writes, locks or station construction. Doctor uses the same check: legacy data offers migration; a newer manifest or catalog schema requires a compatible AutoDJ version. | automated | `tests/unit/test_serve_refusal.py::test_library_refusal_is_read_only_and_matches_doctor`; `tests/unit/test_serve_refusal.py::test_catalog_refusal_never_writes_sqlite_sidecars`; `tests/unit/test_serve_refusal.py::test_large_checkpointed_catalog_is_inspected_without_copying`; `tests/unit/test_serve_refusal.py::test_cli_passes_successful_library_preflight_to_server_and_manager` |
 
 ## Clarification, 2026-10-22: analysis follows file identity
 
@@ -157,6 +158,30 @@ Older AutoDJ releases opened on a database with inserted rows would list them as
 play-log exports and SoundExchange reports, and end song durations at them; the
 [upgrade guide](../guides/operations/upgrade.md#going-back-to-an-older-release) warns operators.
 This extends the proposed record and does not change its status.
+
+## Clarification 2026-10-31: check library compatibility before startup writes
+
+The owner's serve refusal policy requires a read-only compatibility check before startup
+moves files, opens writable databases, claims its lock or constructs stations. Doctor and
+serve use the same detection for the current library directory, the previous layout and
+all configured stations' saved state. Legacy data offers the existing explicit migration
+through `autodj doctor --fix`; newer schemas require a compatible AutoDJ version or backup.
+
+Current catalogs have SQLite `user_version = 0`. A positive version is unsupported by this
+release and is refused before opening the catalog for writes. This check does not introduce
+a new schema migration system. A current catalog still supersedes a retired index manifest,
+so stale generation files do not prevent startup. An empty library remains a warning.
+
+SQLite read-only connections can create WAL sidecars. After review, compatibility inspection
+uses immutable mode when no WAL exists, and reads in place when WAL and shared memory exist.
+Only an orphaned WAL without shared memory needs a temporary copy, because SQLite must
+reconstruct its sidecar and immutable mode would ignore pending changes. Ordinary startup
+does not copy the catalog or need proportional temporary space. Existing shared-memory read
+marks may change during a read; database and WAL content stay unchanged. The CLI passes its
+successful preflight to the server and library manager, so startup inspects compatibility once.
+
+This clarifies the proposed record without changing its status. The broader startup policy
+is recorded in [ADR 19](0019-manage-server-certificates-on-the-host.md#clarification-2026-10-31-serve-refusal-policy).
 
 ## Verification
 

@@ -61,11 +61,12 @@ async def _lyrics_executor(request):
 
 
 def _tls_files(tmp_path: Path) -> dict[str, str]:
-    """Create placeholder certificate and key files; uvicorn is mocked, so never parsed."""
-    cert = tmp_path / "radio.pem"
-    key = tmp_path / "radio-key.pem"
-    cert.write_text("cert", encoding="utf-8")
-    key.write_text("key", encoding="utf-8")
+    """Create a usable pair: startup validates TLS even when uvicorn is mocked."""
+    from autodj.certificates import CertificateStore
+
+    store = CertificateStore(tmp_path / "test-certificates")
+    item = store.create("Server", ["radio.local"])
+    cert, key = store.paths(item["id"])
     return {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
 
 
@@ -101,6 +102,21 @@ def _register_index_entry(bridge, entry) -> None:
 
 
 class TestStatus:
+    def test_optional_packages_warn_in_the_web_ui(self, bridge):
+        from fastapi.testclient import TestClient
+
+        from autodj.runtime_packages import PackageProblem
+
+        def missing(*, include_extras=False):
+            return [PackageProblem("sounddevice", ">=0.4.6", None)] if include_extras else []
+
+        with patch("autodj.runtime_packages.missing_runtime_packages", side_effect=missing):
+            response = TestClient(create_app(bridge)).get("/")
+        assert response.status_code == 200
+        assert "Optional Python packages" in response.text
+        assert "sounddevice" in response.text
+        assert "autodj doctor --fix" in response.text
+
     def test_status_returns_200(self, client) -> None:
         resp = client.get("/api/status")
         assert resp.status_code == 200

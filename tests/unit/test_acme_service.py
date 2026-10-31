@@ -11,7 +11,7 @@ from autodj.certificates import CertificateStore
 
 
 def test_persistent_budget_and_retry_schedule(tmp_path):
-    """ADR-0019-12."""
+    """ADR-0019-14."""
     from autodj.acme_dns import AcmeError
     from autodj.acme_service import Budget, retry_time
 
@@ -26,7 +26,7 @@ def test_persistent_budget_and_retry_schedule(tmp_path):
 
 
 def test_renewal_schedule_uses_actual_validity_and_ari():
-    """ADR-0019-11."""
+    """ADR-0019-13."""
     from autodj.acme_service import renewal_time
 
     start = datetime(2026, 1, 1, tzinfo=UTC)
@@ -108,7 +108,7 @@ def task_data():
 
 
 def test_terms_and_host_confirmation_before_registration(tmp_path, operation):
-    """ADR-0019-07."""
+    """ADR-0019-09."""
     task = task_data()
     operation.run_operation(tmp_path, task)
     assert task["phase"] == "ready"

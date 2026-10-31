@@ -60,7 +60,7 @@ class FakeCloudflare:
 
 
 def test_owned_txt_cleanup_and_cname_refusal():
-    """ADR-0019-06."""
+    """ADR-0019-08."""
     from autodj.acme_dns import AcmeError, CloudflareDNS
 
     fake = FakeCloudflare()

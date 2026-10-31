@@ -14,13 +14,58 @@ import shutil
 import ssl
 import tempfile
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from autodj.secret_files import write_private_file
+
+if TYPE_CHECKING:
+    from autodj.config import ServerConfig
 
 logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_SECONDS = 300.0
+
+
+def certificate_date_warning(before: datetime, after: datetime) -> str:
+    """Dates warn without closing the HTTPS route used to renew the certificate."""
+    now = datetime.now(UTC)
+    if now >= after:
+        return "The HTTPS certificate has expired. HTTPS remains enabled; renew the certificate in Secure connections."
+    if now < before:
+        return "The HTTPS certificate is not yet valid. HTTPS remains enabled; check the clock or replace the certificate in Secure connections."
+    return ""
+
+
+def tls_date_warning(server: ServerConfig) -> str:
+    """Describe a configured certificate's date warning after pair validation."""
+    from cryptography import x509
+
+    assert server.ssl_certfile is not None
+    cert = x509.load_pem_x509_certificate(Path(server.ssl_certfile).read_bytes())
+    return certificate_date_warning(cert.not_valid_before_utc, cert.not_valid_after_utc)
+
+
+def validate_tls_pair(server: ServerConfig) -> ssl.SSLContext | None:
+    """Load configured HTTPS read-only, refusing unusable pairs without HTTP fallback."""
+    if server.ssl_certfile is None and server.ssl_keyfile is None:
+        return None
+    if server.ssl_certfile is None or server.ssl_keyfile is None:
+        raise ValueError("HTTPS certificate and key must be set together")
+    from cryptography import x509
+
+    try:
+        x509.load_pem_x509_certificate(Path(server.ssl_certfile).read_bytes())
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        # Encrypted keys cannot prompt on an unattended server or in Doctor.
+        context.load_cert_chain(server.ssl_certfile, server.ssl_keyfile, password=lambda: b"")
+        return context
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"HTTPS certificate/key cannot be used: {exc}. "
+            "Restore a valid certificate and matching unencrypted key before starting AutoDJ."
+        ) from exc
 
 
 class CertificateReloader:

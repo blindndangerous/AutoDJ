@@ -238,7 +238,7 @@ class LocalDNSProvider:
 @pytest.mark.timeout(90)
 @pytest.mark.parametrize("cleanup_interrupted", [False, True])
 def test_pebble_dns01_issuance_and_owned_cleanup(pebble, tmp_path, cleanup_interrupted):
-    """ADR-0019-17: actual CA validation, chain/key checks and persisted cleanup retry."""
+    """ADR-0019-19: actual CA validation, chain/key checks and persisted cleanup retry."""
     session, management, resolver = pebble
     provider = LocalDNSProvider(session, management)
     dns_provider = CloudflareDNS("a" * 32, "local-test-token", request=provider)

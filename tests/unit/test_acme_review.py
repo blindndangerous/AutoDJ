@@ -17,7 +17,7 @@ from tests.unit.test_acme_worker import issued
 
 
 def test_deleted_lineage_sweep_is_independent_and_retryable(tmp_path):
-    """ADR-0019-18."""
+    """ADR-0019-20."""
     manager = AcmeManager(CertificateStore(tmp_path / ".tls"))
     first = issued(manager, CertificateStore(tmp_path / "ca"))
     manager.finish(first)
@@ -42,7 +42,7 @@ def test_deleted_lineage_sweep_is_independent_and_retryable(tmp_path):
 
 
 def test_startup_sweeps_lineage_after_interrupted_certificate_delete(tmp_path):
-    """ADR-0019-18."""
+    """ADR-0019-20."""
     manager = AcmeManager(CertificateStore(tmp_path / ".tls"))
     task = issued(manager, CertificateStore(tmp_path / "ca"))
     manager.finish(task)
@@ -56,7 +56,7 @@ def test_startup_sweeps_lineage_after_interrupted_certificate_delete(tmp_path):
 
 
 def test_job_setup_failure_terminates_and_reaps_child(tmp_path, monkeypatch):
-    """ADR-0019-21."""
+    """ADR-0019-23."""
     events = []
 
     class Process:
@@ -92,7 +92,7 @@ def test_job_setup_failure_terminates_and_reaps_child(tmp_path, monkeypatch):
 
 
 def test_cleanup_release_is_confirmed_logged_and_unblocks_removal(tmp_path, caplog):
-    """ADR-0019-19."""
+    """ADR-0019-21."""
     manager = AcmeManager(CertificateStore(tmp_path / ".tls"))
     task = issued(manager, CertificateStore(tmp_path / "ca"))
     task.update(
@@ -119,7 +119,7 @@ def test_cleanup_release_is_confirmed_logged_and_unblocks_removal(tmp_path, capl
 
 
 def test_successful_renewal_keeps_only_active_and_previous_in_its_lineage(tmp_path):
-    """ADR-0019-20."""
+    """ADR-0019-22."""
     manager = AcmeManager(CertificateStore(tmp_path / ".tls"))
     manual = manager.store.create("Manual", ["localhost"])
     ca = CertificateStore(tmp_path / "other")
@@ -161,7 +161,7 @@ def test_saved_renewal_reports_paused_after_manual_selection(tmp_path):
 
 
 def test_activation_failure_message_matches_saved_selection(tmp_path, monkeypatch):
-    """ADR-0019-23."""
+    """ADR-0019-25."""
     store = CertificateStore(tmp_path / ".tls")
     old = store.create("Working", ["localhost"])
     store.activate(old["id"])
@@ -280,7 +280,7 @@ def test_releasing_completed_cleanup_restores_saved_renewal_schedule(tmp_path):
     ["json", "missing", "unreadable", "identity", "schedule", "receipt", "overflow", "domain"],
 )
 def test_bad_task_does_not_stop_other_renewals_and_reports_attention(tmp_path, monkeypatch, damage):
-    """ADR-0019-25."""
+    """ADR-0019-27."""
     manager = AcmeManager(CertificateStore(tmp_path / ".tls"))
     task = issued(manager, CertificateStore(tmp_path / "ca"))
     manager.finish(task)
@@ -339,7 +339,7 @@ def test_bad_task_does_not_stop_other_renewals_and_reports_attention(tmp_path, m
 
 
 def test_publication_retry_restores_future_renewal_schedule(tmp_path, monkeypatch):
-    """ADR-0019-26."""
+    """ADR-0019-28."""
     manager = AcmeManager(CertificateStore(tmp_path / ".tls"))
     task = issued(manager, CertificateStore(tmp_path / "ca"))
     real_save = manager.store.save_acme
@@ -372,7 +372,7 @@ def test_publication_retry_restores_future_renewal_schedule(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("failures", [0.5, 1.0])
 def test_invalid_child_failure_counter_releases_slot_without_overwriting_state(tmp_path, failures):
-    """ADR-0019-25."""
+    """ADR-0019-27."""
     manager = AcmeManager(CertificateStore(tmp_path / ".tls"))
     task = manager.preflight("Radio", "radio.example.com", "a" * 32, "token", "staging")
     saved = manager.state.read(task["id"])
@@ -397,7 +397,7 @@ def test_invalid_child_failure_counter_releases_slot_without_overwriting_state(t
 
 @pytest.mark.parametrize("cause", ["timeout", "job_setup", "shutdown"])
 def test_slow_child_reaping_does_not_hold_management_lock(tmp_path, monkeypatch, cause):
-    """ADR-0019-13."""
+    """ADR-0019-15."""
     manager = AcmeManager(CertificateStore(tmp_path / ".tls"))
     task = manager.preflight("Radio", "radio.example.com", "a" * 32, "token", "staging")
     manual = manager.store.create("Manual", ["localhost"])

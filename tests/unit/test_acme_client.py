@@ -193,7 +193,7 @@ def test_real_library_dns01_and_cleanup(authority):
 
 
 def test_library_resume_uses_saved_order_after_auth_fetch_failure(authority):
-    """ADR-0019-15."""
+    """ADR-0019-17."""
     ca, http, dns, _records = authority
     task = {"environment": "staging", "domain": "radio.example.com"}
     http.fail_auth_once = True
@@ -237,7 +237,7 @@ def test_directory_failure_preserves_retry_after(authority, tmp_path):
 def test_two_authorizations_keep_every_receipt_and_cleanup_independently(
     authority, monkeypatch, fail_first_cleanup
 ):
-    """ADR-0019-22."""
+    """ADR-0019-24."""
     ca, http, provider, records = authority
     http.authorization_count = 2
     original_request = records.__call__

@@ -35,7 +35,7 @@ def issued(manager, source, *, environment="production"):
 
 
 def test_staging_never_enters_inventory_and_secrets_are_removed(tmp_path):
-    """ADR-0019-08."""
+    """ADR-0019-10."""
     from autodj.acme_worker import AcmeManager
 
     store = CertificateStore(tmp_path / ".tls")
@@ -50,7 +50,7 @@ def test_staging_never_enters_inventory_and_secrets_are_removed(tmp_path):
 
 
 def test_renewal_respects_manual_selection(tmp_path):
-    """ADR-0019-09."""
+    """ADR-0019-11."""
     from autodj.acme_worker import AcmeManager
 
     store = CertificateStore(tmp_path / ".tls")
@@ -126,7 +126,7 @@ def test_one_slot_and_consent_are_enforced(tmp_path):
 
 
 def test_doctor_acme_is_read_only_and_redacted(tmp_path, monkeypatch):
-    """ADR-0019-14."""
+    """ADR-0019-16."""
     from autodj.acme_worker import AcmeManager
     from autodj.doctor import _acme_check
 
@@ -143,7 +143,7 @@ def test_doctor_acme_is_read_only_and_redacted(tmp_path, monkeypatch):
 
 
 def test_child_has_one_slot_deadline_and_no_secret_arguments(tmp_path, monkeypatch):
-    """ADR-0019-13."""
+    """ADR-0019-15."""
     from autodj import acme_worker as worker
 
     calls = []

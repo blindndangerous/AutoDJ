@@ -38,7 +38,7 @@ describe("ACME secure connections", () => {
   beforeEach(() => { Object.defineProperty(window, "isSecureContext", { configurable: true, value: true }); confirmAction.mockClear(); });
   afterEach(() => { button("sc-cancel")?.click(); document.body.innerHTML = ""; vi.useRealTimers(); vi.restoreAllMocks(); });
 
-  // ADR-0019-16
+  // ADR-0019-18
   it("offers ACME third in the existing wizard with staging first and private native inputs", async () => {
     await mount();
     expect([...button("sc-method").options].map((o) => o.value)).toEqual(["create", "import", "acme"]);
@@ -58,7 +58,7 @@ describe("ACME secure connections", () => {
     expect(request.mock.calls.filter(([, o]) => o.method === "POST")).toHaveLength(0);
   });
 
-  // ADR-0019-16.
+  // ADR-0019-18.
   it("associates zone format and token permissions with their inputs", async () => {
     await mount(); chooseAcme();
     for (const [id, text] of [["sc-zone", "32"], ["sc-token", "DNS Edit and Zone Read"]]) {
@@ -93,7 +93,7 @@ describe("ACME secure connections", () => {
     expect(button("sc-ct-warning")?.textContent).toContain("public Certificate Transparency logs");
   });
 
-  // ADR-0019-16.
+  // ADR-0019-18.
   it("announces successful preflight exactly once while retaining heading focus", async () => {
     const announce = vi.spyOn(liveRegion, "announceStatus");
     await preflight();

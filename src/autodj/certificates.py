@@ -14,14 +14,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-
 from autodj.secret_files import write_private_file
 
 if TYPE_CHECKING:
+    from cryptography import x509
+
     from autodj.config import AutoDJConfig
 
 MAX_CERTIFICATES = 20
@@ -94,6 +91,11 @@ class CertificateStore:
 
     @staticmethod
     def _metadata(cert: x509.Certificate, name: str, ident: str, cert_type: str) -> dict:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes
+
+        from autodj.tls import certificate_date_warning
+
         try:
             sans = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
             hosts = sorted(
@@ -115,6 +117,7 @@ class CertificateStore:
             "expires": after.isoformat(),
             "fingerprint": cert.fingerprint(hashes.SHA256()).hex(),
             "status": "expired" if datetime.now(UTC) > after else "valid",
+            "warning": certificate_date_warning(before, after),
         }
 
     @staticmethod
@@ -133,6 +136,10 @@ class CertificateStore:
         *,
         lineage: str | None = None,
     ) -> dict:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.x509.oid import ExtendedKeyUsageOID
+
         if (
             not isinstance(name, str)
             or not name.strip()
@@ -206,6 +213,11 @@ class CertificateStore:
         return dict(item)
 
     def create(self, name: str, hosts: list[str]) -> dict:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
         if not hosts or len(hosts) > 100:
             raise CertificateError("one to 100 host names are required")
         now = datetime.now(UTC).replace(microsecond=0)
@@ -266,6 +278,9 @@ class CertificateStore:
 
     def save_acme(self, name: str, cert_pem: bytes, key_pem: bytes, lineage: str) -> dict:
         """Publish once, including after interruption between inventory and job writes."""
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes
+
         if not _ID.fullmatch(lineage):
             raise CertificateError("invalid ACME lineage")
         fingerprint = x509.load_pem_x509_certificate(cert_pem).fingerprint(hashes.SHA256()).hex()
@@ -307,6 +322,8 @@ class CertificateStore:
 
     def validate_hosts(self, ident: str, hosts: list[str]) -> None:
         """Require every requested DNS/IP host to be covered by the stored SAN."""
+        from cryptography import x509
+
         cert_path, _ = self.paths(ident)
         try:
             cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
@@ -335,6 +352,8 @@ class CertificateStore:
                 raise CertificateError("certificate does not cover all required hosts")
 
     def list(self) -> list[dict]:
+        from cryptography import x509
+
         with self._lock:
             items = self._load()["certificates"]
             for item in items:
@@ -399,6 +418,8 @@ class CertificateStore:
             self._save(data)
 
     def activate(self, ident: str, apply: Callable[[Path, Path], None] | None = None) -> None:
+        from cryptography import x509
+
         with self._lock:
             cert_path, key_path = self.paths(ident)
             try:
