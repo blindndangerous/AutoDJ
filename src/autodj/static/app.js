@@ -58,6 +58,7 @@ import { initSubtabs } from "./modules/subtabs.js";
 import { installCardState } from "./modules/card-state.js";
 import { installThemeSetting } from "./modules/theme.js";
 import { confirmAction } from "./modules/confirm-dialog.js";
+import { installSecureConnections } from "./modules/secure-connections.js";
 import {
   DEFAULT_STATION,
   controllingText,
@@ -3436,6 +3437,7 @@ function startAuthenticatedApp(initialState) {
   void cartWallControls?.refresh();
   voiceTrackerControls = installVoiceTracker();
   void voiceTrackerControls?.refresh();
+  installSecureConnections();
   adsControls = installAdsPanel();
   void adsControls?.refresh();
   void liveSettings?.refresh();

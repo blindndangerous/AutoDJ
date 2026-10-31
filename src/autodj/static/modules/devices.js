@@ -101,7 +101,7 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
     row.text = doc.createElement("span");
     row.text.className = "device-text";
     row.rename = rowButton(doc, "Rename", "", () => void renameDevice(row));
-    row.revoke = rowButton(doc, "Revoke", "", (button) => void revokeDevice(row.device, button));
+    row.revoke = rowButton(doc, "Revoke access", "", (button) => void revokeDevice(row.device, button));
     for (const [button, action] of [[row.rename, "rename"], [row.revoke, "revoke"]]) {
       button.dataset.deviceId = device.device_id;
       button.dataset.action = action;
@@ -124,7 +124,7 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
         + `last seen ${lastSeenWords(device.last_seen_at, now)}.`;
       if (row.text.textContent !== words) row.text.textContent = words;
       if (row.rename.getAttribute("aria-label") !== `Rename ${name}`) row.rename.setAttribute("aria-label", `Rename ${name}`);
-      const action = sso ? "Forget" : "Revoke";
+      const action = sso ? "Forget" : "Revoke access";
       if (row.revoke.textContent !== action) row.revoke.textContent = action;
       if (row.revoke.getAttribute("aria-label") !== `${action} ${name}`) row.revoke.setAttribute("aria-label", `${action} ${name}`);
     }, { fallback: refresh, onFocusLost: ({ target }) => {

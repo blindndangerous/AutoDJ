@@ -2608,6 +2608,8 @@
 
   <div class="card" role="tabpanel" id="spanel-server" data-settings-kind="server" aria-labelledby="stab-server" hidden>
     <h3>Server</h3>
+    <section id="secure-connections" aria-labelledby="secure-connections-heading"></section>
+    <p id="secure-connections-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></p>
     <fieldset id="advanced-length-group">
       <legend>Similarity analysis</legend>
       <div class="settings-row">
@@ -3161,6 +3163,7 @@
        ============================================================ -->
   <section data-view="voice" id="panel-voice" role="tabpanel" hidden aria-labelledby="tab-voice">
     <h2 id="voice-heading">Voice tracks</h2>
+    <p id="voice-https-help" class="setting-desc" hidden>This page needs HTTPS to record from this device. <button type="button" id="voice-https-setup">Set up HTTPS</button></p>
     <div id="voice-tracker">
       <p id="vt-help">
         Record a DJ break for the open song change, listen back, then book it.
