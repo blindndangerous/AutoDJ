@@ -37,6 +37,7 @@ dependencies = [
     "filelock>=3.32.5", # cross-process index manifest lock
     "tzdata>=2026.1", # IANA time zones on Windows
     "tzlocal>=5.3.1", # detect the system IANA zone, including on Windows
+    "cryptography>=46.0.0",
 ]
 
 [project.optional-dependencies]

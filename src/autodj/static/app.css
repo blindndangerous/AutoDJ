@@ -2359,3 +2359,13 @@ dialog h1 { font-size: 1.5em; }
    words arrive, it was a new region each time, and NVDA in Firefox said
    nothing. */
 .settings-save-status:empty { margin: 0; }
+.secure-connection-dialog {
+  width: min(42rem, calc(100vw - 2rem));
+  max-height: min(85vh, 52rem);
+  overflow: auto;
+}
+.secure-connection-dialog label { display: block; margin-block: .65rem .25rem; }
+.secure-connection-dialog input, .secure-connection-dialog textarea { box-sizing: border-box; width: 100%; }
+.secure-steps { display: flex; gap: 1.5rem; padding-inline-start: 1.5rem; }
+.secure-steps [aria-current="step"] { font-weight: 700; }
+#secure-connections small { display: block; }

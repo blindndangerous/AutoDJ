@@ -16,6 +16,8 @@ import tempfile
 import threading
 from pathlib import Path
 
+from autodj.secret_files import write_private_file
+
 logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_SECONDS = 300.0
@@ -46,6 +48,7 @@ class CertificateReloader:
         self._seen = self._stamp()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._lock = threading.RLock()
 
     def _stamp(self) -> tuple[int, int, int, int] | None:
         """Return both files' modification time and size, or ``None`` if one is missing."""
@@ -68,6 +71,10 @@ class CertificateReloader:
         Returns:
             Whether a new certificate was loaded.
         """
+        with self._lock:
+            return self._check()
+
+    def _check(self) -> bool:
         stamp = self._stamp()
         if stamp is None or stamp == self._seen:
             return False
@@ -75,6 +82,9 @@ class CertificateReloader:
             with tempfile.TemporaryDirectory(prefix="autodj-tls-") as scratch:
                 cert = Path(scratch) / "cert.pem"
                 key = Path(scratch) / "key.pem"
+                # Create protected targets before copyfile writes private material.
+                write_private_file(cert, b"")
+                write_private_file(key, b"")
                 shutil.copyfile(self.certfile, cert)
                 shutil.copyfile(self.keyfile, key)
                 self._seen = stamp  # read: only a further change is tried again
@@ -89,6 +99,18 @@ class CertificateReloader:
             return False
         logger.info("Loaded the renewed TLS certificate from %s", self.certfile)
         return True
+
+    def replace(self, certfile: Path, keyfile: Path) -> None:
+        """Select a validated saved pair for new connections and future renewal checks."""
+        with self._lock:
+            ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(certfile, keyfile)
+            try:
+                self.context.load_cert_chain(certfile, keyfile)
+            except (OSError, ssl.SSLError):
+                self.context.load_cert_chain(self.certfile, self.keyfile)
+                raise
+            self.certfile, self.keyfile = Path(certfile), Path(keyfile)
+            self._seen = self._stamp()
 
     def start(self) -> None:
         """Check in a daemon thread every ``interval`` seconds until :meth:`stop`."""

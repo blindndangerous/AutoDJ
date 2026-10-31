@@ -128,6 +128,46 @@ def test_half_copied_pair_keeps_serving_the_old_certificate(pairs) -> None:
     assert _served_certificate(context) == _der(renewed[0])
 
 
+def test_mismatched_pair_keeps_serving_old_certificate_until_repaired(pairs) -> None:
+    live, first, renewed = pairs
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(*live)
+    reloader = CertificateReloader(context, *live)
+
+    _install((renewed[0], first[1]), live, 1_000_000_000)
+    assert reloader.check() is False
+    assert _served_certificate(context) == _der(first[0])
+
+    _install(renewed, live, 2_000_000_000)
+    assert reloader.check() is True
+    assert _served_certificate(context) == _der(renewed[0])
+
+
+def test_replace_switches_live_context_and_tracks_selected_pair(pairs, tmp_path: Path) -> None:
+    live, first, renewed = pairs
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(*live)
+    reloader = CertificateReloader(context, *live)
+    selected = (tmp_path / "selected.pem", tmp_path / "selected-key.pem")
+    _install(renewed, selected, 0)
+
+    reloader.replace(*selected)
+    assert reloader.certfile == selected[0]
+    assert reloader.keyfile == selected[1]
+    assert _served_certificate(context) == _der(renewed[0])
+    assert reloader.check() is False
+
+    _install(first, selected, 1_000_000_000)
+    assert reloader.check() is True
+    assert _served_certificate(context) == _der(first[0])
+
+    with pytest.raises(ssl.SSLError):
+        reloader.replace(renewed[0], first[1])
+    assert reloader.certfile == selected[0]
+    assert reloader.keyfile == selected[1]
+    assert _served_certificate(context) == _der(first[0])
+
+
 def test_missing_files_are_skipped_until_they_return(pairs) -> None:
     live, _first, renewed = pairs
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
