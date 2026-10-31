@@ -306,15 +306,23 @@ class CertificateStore:
             self._safe_root()
             if not any(x["id"] == ident for x in self._load()["certificates"]):
                 raise CertificateError("unknown certificate")
+            root = self.root.resolve()
             directory = self.root / ident
             if (
                 directory.is_symlink()
                 or directory.is_junction()
                 or (directory.exists() and not directory.is_dir())
+                or not directory.resolve().is_relative_to(root)
             ):
                 raise CertificateError("certificate inventory path is unsafe")
             paths = directory / "cert.pem", directory / "key.pem"
-            if any(p.is_symlink() or p.is_junction() for p in paths):
+            if any(
+                p.is_symlink()
+                or p.is_junction()
+                or not p.resolve().is_relative_to(root)
+                or (p.exists() and p.stat().st_nlink != 1)
+                for p in paths
+            ):
                 raise CertificateError("certificate inventory path is unsafe")
             return paths
 
@@ -332,7 +340,7 @@ class CertificateStore:
             data["certificates"] = entries
             cert_path.unlink(missing_ok=True)
             key_path.unlink(missing_ok=True)
-            directory = self.root / ident
+            directory = cert_path.parent
             if directory.exists():
                 directory.rmdir()
             # Keep the row retryable if cleanup fails or the process stops midway.

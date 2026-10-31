@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -53,7 +52,7 @@ def verify(wav: Path, mp3: Path) -> None:
     )
 
 
-def build(root: Path, port: int):
+def build(root: Path, port: int, *, startup_script: str | None = None):
     sys.modules.setdefault("sounddevice", MagicMock())
     from fastapi import Body
     from fastapi.responses import HTMLResponse, Response
@@ -126,25 +125,28 @@ def build(root: Path, port: int):
         station if slug == "default" else original_editable(slug)
     )
     static = Path(__file__).resolve().parents[2] / "src/autodj/static"
-    html = re.sub(
-        r"<script\b[^>]*>.*?</script>",
-        "",
-        (static / "index.html").read_text(encoding="utf-8"),
-        flags=re.S,
-    )
-    html = html.replace("</body>", '<script type="module" src="/review-audit.js"></script></body>')
+    html = (static / "index.html").read_text(encoding="utf-8")
+    if startup_script is None:
+        startup_script = (
+            'import { initViewRouter } from "/modules/tabs.js";\n'
+            "initViewRouter();\n"
+            'import { installProgrammeReview } from "/modules/programme-review.js";\n'
+            "window.reviewAudit = installProgrammeReview();\n"
+        )
 
     @app.get("/review-audit", response_class=HTMLResponse)
     async def audit_page():
         return html
 
-    @app.get("/review-audit.js")
+    # Replace the existing asset route; the router uses its first matching path.
+    app.router.routes[:] = [
+        route for route in app.router.routes if getattr(route, "path", None) != "/app.js"
+    ]
+
+    @app.get("/app.js")
     async def audit_script():
         return Response(
-            'import { initViewRouter } from "/modules/tabs.js";\n'
-            "initViewRouter();\n"
-            'import { installProgrammeReview } from "/modules/programme-review.js";\n'
-            "window.reviewAudit = installProgrammeReview();\n",
+            startup_script,
             media_type="text/javascript",
         )
 

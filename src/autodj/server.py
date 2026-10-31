@@ -2173,10 +2173,10 @@ def create_app(
         """Return the embedded album art for a track (304 if unchanged)."""
         # Only serve art for tracks that exist in the index — prevents
         # arbitrary file access through the path parameter.
-        known = shared.entry_for_path(path) is not None
-        if not known:
+        entry = shared.entry_for_path(path)
+        if entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
-        result = await asyncio.to_thread(shared.cover_art_for, path)
+        result = await asyncio.to_thread(shared.cover_art_for, entry.path)
         if result is None:
             raise HTTPException(status_code=404, detail="No embedded cover art")
         data, mime = result
@@ -2188,7 +2188,7 @@ def create_app(
         authorized_entry = shared.entry_for_path(path)
         if authorized_entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
-        lyrics = await _read_lyrics_owned(path)
+        lyrics = await _read_lyrics_owned(authorized_entry.path)
         if shared.entry_for_path(path) != authorized_entry:
             raise HTTPException(status_code=409, detail="Track index changed")
         return {"path": path, "lyrics": lyrics}
@@ -2200,9 +2200,10 @@ def create_app(
     @app.api_route("/api/audio", methods=["GET", "HEAD"])
     async def api_audio(path: str, request: Request) -> Response:
         """Serve indexed audio with byte ranges; ALAC is transcoded to MP3."""
-        if shared.entry_for_path(path) is None:
+        entry = shared.entry_for_path(path)
+        if entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
-        audio_path = Path(path)
+        audio_path = Path(entry.path)
         try:
             metadata = await asyncio.to_thread(audio_path.stat)
         except OSError:
