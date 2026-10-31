@@ -9,13 +9,19 @@ Use **Settings**, **Station**, **Schedule** to change a station at set times. Ev
 3. Choose **Repeat**: **Once**, **Every day**, **Weekdays, Monday to Friday**, **On chosen days**, or **Every few minutes**. Enter the date, time, days, or interval that appears.
 4. For a repeating event, use **Date range** when it should run only during a season. An interval event can also have **Active from** and **Active until** times.
 5. Choose **Timing**. **Soft** waits for a song change. **Hard** acts at the event time and may fade out the current song. **Wait up to seconds** lets a hard event wait briefly for a song that is nearly finished.
-6. Save the event. Check **Next events** for its next run. **Run now** performs the real action immediately; use it only when you intend that on the selected station, then read **Recent runs** for the result. Use a private practice station for rehearsal.
+6. Save the event. Check **Next events** for its next run. In the event's row, open **Options for <event name>** and choose **Run now** to perform the real action immediately. Use it only when you intend that on the selected station, then read **Recent runs** for the result. Use a private practice station for rehearsal.
+
+The **Events** table shows each event's name, timing, action, next run and enabled
+state. **Edit** opens its dialog. **Options** also contains **Enable** or
+**Disable**, and **Delete**; Delete asks for confirmation. **Next events** and
+**Recent runs** are read-only tables. All three use the shared
+[table keyboard controls](keyboard-and-screen-reader.md).
 
 An event due while AutoDJ is stopped does not run later. A one-time event missed during an outage appears as missed. A date range and an overnight interval window use the station's local date and time.
 
 ## Prepare and air a show
 
-In **Library tools**, open **Shows**, press **Add show**, and enter a **Name**. Choose **A category** or **A clockwheel** under **Songs come from**, set **Target length (minutes)**, and press **Save show**. Open its list and press **Generate list**. Review the order; use **Move up**, **Move down**, **Remove**, or **Add songs** to change it. Generating again replaces the prepared list.
+In **Library tools**, open **Shows**, press **Add show**, and enter a **Name**. Choose **A category** or **A clockwheel** under **Songs come from**, set **Target length (minutes)**, and press **Save show**. Open its list and press **Generate list**. Review the order. Use each song's **Options** menu for **Move up**, **Move down** or confirmed **Remove**. Use **Add songs** to search and add another song. Generating again replaces the prepared list.
 
 To schedule it, add an event whose **Action** is **Play a show**. Select the show. Soft timing puts its songs in the queue after the current song; hard timing starts its first song at the chosen time. **Start after this song** in the show list starts it now. **Stop show** removes its waiting songs. After its last song, normal picking resumes. Each station keeps its own shows.
 
@@ -33,7 +39,7 @@ recording, approval, re-air warnings and explicit interrupted-edition resumption
 
 An event can **Change song picking** to a saved clockwheel, switch a profile or preset, turn discovery on or off, or play a voice liner or station ID. Applying a profile resolves its saved overrides over the station's latest saved defaults; an open profile draft remains attached to the profile selected for editing. For a seasonal clockwheel, create one event to select it and a second event to return to the usual clockwheel. See [Build your sound](build-your-sound.md) for clockwheels and voice liners.
 
-To play a spoken announcement, upload it as a voice liner in **Settings**, **Voice liners**. Add an event that plays that liner. Liner and cart actions require server audio or radio stream output. A hard liner event may fade out the song; a soft one waits for the next change. Use **Run now** and listen before leaving the event enabled.
+To play a spoken announcement, upload it as a voice liner in **Settings**, **Voice liners**. Add an event that plays that liner. Liner and cart actions require server audio or radio stream output. A hard liner event may fade out the song; a soft one waits for the next change. Choose **Run now** from the event's **Options** menu and listen before leaving the event enabled.
 
 ## Schedule ads
 

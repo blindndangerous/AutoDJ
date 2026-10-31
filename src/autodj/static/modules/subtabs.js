@@ -13,7 +13,7 @@ import { settingsHaveChanges, confirmSettingsNavigation } from "./settings-draft
 // says whether it is seen now -- its tab is selected and the Settings
 // view is showing -- and a "toggle" event fires on it when that changes.
 
-import { markSelected, tabForKey } from "./tablist.js";
+import { installTabEntry, markSelected, tabForKey } from "./tablist.js";
 import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
 
 const STORAGE_KEY = "autodj.settingsSubtab";
@@ -41,6 +41,7 @@ export function initSubtabs(tablist, { storage = defaultStorage() } = {}) {
   const view = tablist.closest("section");
   const settings = tablist.closest("#panel-settings");
   const tablists = tablist.matches('[role="tablist"]') ? [tablist] : [...tablist.querySelectorAll('[role="tablist"]')];
+  tablists.forEach(installTabEntry);
   const innerSections = [...(settings?.querySelectorAll("[data-settings-section]") || [])];
   const profileTargets = [...(settings?.querySelectorAll(".profile-target-row") || [])];
   let selected = null;

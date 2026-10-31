@@ -1,6 +1,7 @@
 // Pure DOM / formatting helpers shared across modules.
 
 import { announceStatus } from "./live-region.js";
+import { tableFocusTarget } from "./table-row.js";
 
 // ----------------------------------------------------------------
 // Debug logging — opt-in via `?debug=1` URL param OR
@@ -196,6 +197,7 @@ export function releaseDialogFocus(dialog) {
 // Once the dialog is closed.  A control the browser focused anyway lets go
 // and takes focus again, so the change is still reported.
 export function focusAfterDialog(control) {
+  control = tableFocusTarget(control);
   // The page body takes no focus, so it never counts as a place to return to.
   if (!control?.isConnected || control.disabled || control === control.ownerDocument.body) return false;
   if (control.ownerDocument.activeElement === control) control.blur();
@@ -312,13 +314,17 @@ export function placeRows(list, rows) {
 
 // Reuse direct-child rows by stable item key, update them in place, then
 // order them without moving the row that currently contains focus.
-export function reconcileRows(list, items, keyOf, createRow, updateRow, { fallback = null, onFocusLost = null } = {}) {
+export function reconcileRows(list, items, keyOf, createRow, updateRow, {
+  fallback = null, onFocusLost = null, rowSelector = "li",
+  controlSelector = ":scope > button:not(:disabled)", focusSelector = "button", focusControl = (active) => active,
+} = {}) {
   const active = list.ownerDocument.activeElement;
-  const focusedRow = active?.closest?.("li");
+  const focusedRow = active?.closest?.(rowSelector);
   const focusedIndex = focusedRow && focusedRow.parentElement === list ? [...list.children].indexOf(focusedRow) : -1;
   const focusedKey = focusedRow?.dataset.rowKey;
-  const focusedAction = active?.dataset?.action || active?.dataset?.role;
-  const focusedColumn = focusedRow ? [...focusedRow.querySelectorAll("button")].indexOf(active) : -1;
+  const control = focusControl(active);
+  const focusedAction = control?.dataset?.action || control?.dataset?.role;
+  const focusedColumn = focusedRow ? [...focusedRow.querySelectorAll(focusSelector)].indexOf(control) : -1;
   const existing = new Map([...list.children]
     .filter((row) => row.dataset.rowKey !== undefined)
     .map((row) => [row.dataset.rowKey, row]));
@@ -334,7 +340,7 @@ export function reconcileRows(list, items, keyOf, createRow, updateRow, { fallba
   const focused = focusedIndex >= 0 && (!active.isConnected || active.disabled);
   let target = null;
   if (focused) {
-    const candidates = (row) => [...row.querySelectorAll(":scope > button:not(:disabled)")];
+    const candidates = (row) => [...row.querySelectorAll(controlSelector)];
     const choose = (row) => {
       const buttons = candidates(row);
       return buttons.find((button) => (button.dataset.action || button.dataset.role) === focusedAction)

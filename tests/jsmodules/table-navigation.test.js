@@ -1,7 +1,116 @@
 import { describe, expect, it, vi } from "vitest";
+import axe from "axe-core";
 import { installTableNavigation } from "../../src/autodj/static/modules/table-navigation.js";
+import { tableFocusTarget, tableRow } from "../../src/autodj/static/modules/table-row.js";
+
+function accessibleName(element) {
+  axe.setup(document);
+  try { return axe.commons.text.accessibleText(element); }
+  finally { axe.teardown(); }
+}
 
 describe("native table grid navigation", () => {
+  // ADR-0021-24
+  it("returns actions to their cell without selecting a sibling native control", () => {
+    document.body.innerHTML = '<table><tbody><tr><td role="gridcell" tabindex="0"><input id="first"><select><option>One</option></select><button>Open</button></td></tr></tbody></table>';
+    const cell = document.querySelector("td");
+    const input = cell.querySelector("input");
+    const select = cell.querySelector("select");
+    const button = cell.querySelector("button");
+    expect(tableFocusTarget(button)).toBe(cell);
+    expect(tableFocusTarget(cell)).toBe(cell);
+    expect(tableFocusTarget(input)).toBe(input);
+    expect(tableFocusTarget(select)).toBe(select);
+    installTableNavigation(document.querySelector("tbody"));
+    button.focus();
+    expect(document.activeElement).toBe(cell);
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    select.focus();
+    expect(document.activeElement).toBe(select);
+  });
+
+  // ADR-0021-23
+  it("adds only the row name on vertical data-cell moves and clears it on focusout", () => {
+    document.body.innerHTML = `<table><thead><tr><th>Name</th><th>Artist</th><th>Actions</th></tr></thead><tbody>
+      <tr><td role="gridcell" data-name>First song</td><td role="gridcell">First artist</td><td role="gridcell"><button>Open First song</button></td></tr>
+      <tr><td role="gridcell" data-name>Second song</td><td role="gridcell">Second artist</td><td role="gridcell"><button>Open Second song</button></td></tr>
+      <tr><td role="gridcell" data-name>Third song</td><td role="gridcell">Third artist</td><td role="gridcell"><input aria-label="Select Third song" type="checkbox"></td></tr>
+    </tbody></table><button id="outside">Outside</button>`;
+    const body = document.querySelector("tbody");
+    installTableNavigation(body);
+    const [first, second, third] = body.children;
+    const press = (key, options = {}) => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...options }));
+    first.cells[1].focus();
+    press("ArrowDown");
+    expect(accessibleName(second.cells[1])).toBe("Second artist, Second song");
+    press("ArrowUp");
+    expect(second.cells[1].hasAttribute("aria-label")).toBe(false);
+    expect(accessibleName(first.cells[1])).toBe("First artist, First song");
+    press("End", { ctrlKey: true });
+    expect(accessibleName(third.cells[1])).toBe("Third artist, Third song");
+    document.getElementById("outside").focus();
+    expect(third.cells[1].hasAttribute("aria-label")).toBe(false);
+    first.cells[0].focus();
+    press("ArrowDown");
+    expect(accessibleName(second.cells[0])).toBe("Second song");
+    expect(second.cells[0].hasAttribute("aria-label")).toBe(false);
+    first.cells[2].focus();
+    press("ArrowDown");
+    expect(second.cells[2].hasAttribute("aria-label")).toBe(false);
+    press("ArrowDown");
+    expect(document.activeElement).toBe(third.querySelector("input"));
+    expect(third.cells[2].hasAttribute("aria-label")).toBe(false);
+  });
+
+  // ADR-0021-16
+  it("keeps a clicked button stationary while redirecting focus to its cell", () => {
+    document.body.innerHTML = '<table><tbody id="rows"><tr><td role="gridcell">Show</td><td role="gridcell"><button>Open list</button></td></tr></tbody></table>';
+    const body = document.getElementById("rows");
+    installTableNavigation(body);
+    const [name, cell] = body.querySelectorAll("td");
+    const button = cell.querySelector("button");
+    const cellFocus = vi.spyOn(cell, "focus");
+    const cellScroll = vi.spyOn(cell, "scrollIntoView");
+    const open = vi.fn();
+    button.addEventListener("click", open);
+
+    // Native pointer focus arrives on the button before mouseup. Moving
+    // its cell at this point can move the button away from the pointer.
+    button.focus();
+    expect(document.activeElement).toBe(cell);
+    expect(cellFocus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(cellScroll).not.toHaveBeenCalled();
+    expect([...body.querySelectorAll('[tabindex="0"]')]).toEqual([cell]);
+    button.click();
+    expect(open).toHaveBeenCalledTimes(1);
+
+    // Keyboard movement still brings the complete destination cell into view.
+    name.focus();
+    name.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(cell);
+    expect(cellScroll).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
+    cell.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(open).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['<input type="checkbox">', '<select><option>One</option></select>'])(
+    "scrolls the focused native control instead of its taller cell: %s", (markup) => {
+      document.body.innerHTML = `<table><tbody id="rows"><tr><td role="gridcell">Name</td><td role="gridcell">${markup}</td></tr></tbody></table>`;
+      const body = document.getElementById("rows");
+      installTableNavigation(body);
+      const cell = body.querySelectorAll("td")[1];
+      const control = cell.firstElementChild;
+      const cellScroll = vi.spyOn(cell, "scrollIntoView");
+      const controlScroll = vi.spyOn(control, "scrollIntoView");
+      control.focus();
+      expect(document.activeElement).toBe(control);
+      expect(cellScroll).not.toHaveBeenCalled();
+      expect(controlScroll).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
+      expect([...body.querySelectorAll('[tabindex="0"]')]).toEqual([control]);
+    },
+  );
+
   it("refreshes an empty grid and makes newly loaded controls reachable", () => {
     document.body.innerHTML = '<table><tbody id="rows"></tbody></table>';
     const body = document.getElementById("rows");
@@ -55,7 +164,7 @@ describe("native table grid navigation", () => {
     expect([one, two, three, four].filter((item) => item.tabIndex === 0)).toEqual([three]);
   });
 
-  it("names the heading in another column and the song on another row", () => {
+  it("leaves native column headings out of computed cell names during navigation", () => {
     document.body.innerHTML = `<table><thead><tr><th>Title</th><th>Artist</th></tr></thead><tbody id="rows">
       <tr><td role="gridcell" data-name>Song 1</td><td role="gridcell">Band 1</td></tr>
       <tr><td role="gridcell" data-name>Song 2</td><td role="gridcell">Band 2</td></tr>
@@ -66,17 +175,40 @@ describe("native table grid navigation", () => {
     song1.focus();
     song1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(document.activeElement).toBe(band1);
-    expect(band1.getAttribute("aria-label")).toBe("Band 1, Artist");
+    expect(accessibleName(band1)).toBe("Band 1");
     band1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     expect(document.activeElement).toBe(band2);
     expect(band1.hasAttribute("aria-label")).toBe(false);
-    expect(band2.getAttribute("aria-label")).toBe("Band 2, Song 2");
+    expect(accessibleName(band2)).toBe("Band 2, Song 2");
     band2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
-    expect(song2.getAttribute("aria-label")).toBe("Song 2, Title");
+    expect(accessibleName(song2)).toBe("Song 2");
     band2.innerHTML = '<button aria-label="Track info for Song 2">Track info</button>';
     song2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(document.activeElement).toBe(band2);
     expect(band2.hasAttribute("aria-label")).toBe(false);
+  });
+
+  it("keeps shared tableRow data names and Options focus on grid cells", () => {
+    document.body.innerHTML = '<table><thead><tr><th>Name</th><th>Active</th><th>Options</th></tr></thead><tbody></tbody></table>';
+    const body = document.querySelector("tbody");
+    const button = document.createElement("button");
+    button.textContent = "Options";
+    button.setAttribute("aria-haspopup", "menu");
+    button.setAttribute("aria-label", "Options for Evening");
+    const row = tableRow(document, ["Evening", "No", button]);
+    body.append(row);
+    installTableNavigation(body);
+    row.cells[0].focus();
+    row.cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(accessibleName(row.cells[0])).toBe("Evening");
+    expect(accessibleName(row.cells[1])).toBe("No");
+    expect(accessibleName(button)).toBe("Options for Evening");
+    const scroll = vi.spyOn(row.cells[2], "scrollIntoView");
+    button.focus();
+    expect(document.activeElement).toBe(row.cells[2]);
+    expect(scroll).not.toHaveBeenCalled();
+    expect(button.tabIndex).toBe(-1);
+    expect([...body.querySelectorAll('[tabindex="0"]')]).toEqual([row.cells[2]]);
   });
 
   it("moves between data rows across browsable date headings", () => {

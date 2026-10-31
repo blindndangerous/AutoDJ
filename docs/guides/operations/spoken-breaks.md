@@ -242,9 +242,12 @@ schedule changed; a conflicting queued track is dropped whole rather than cut of
 If the song change moves on before you book, keep the recording and explicitly
 choose an available occurrence. Errors, such as a blocked microphone or refused
 cancellation, appear under Record and are linked to the relevant control.
+If a booking disappears during a refused cancellation, the error remains visible
+and focus moves to the Voice tracks heading, where the error is associated.
 
 **Booked voice tracks** lists what became of each voice track (waiting, mixed in, on the air,
-aired, dropped or expired, with the reason). **Cancel** drops a waiting recording. In server audio and streaming,
+aired, dropped or expired, with the reason). Choose **Cancel** from a booking's **Options**
+menu, then confirm **Cancel booking** in the **Cancel this booking?** dialog to drop a waiting recording. In server audio and streaming,
 it can also remove a recording installed in the current or ready handoff before that recording
 starts. The server checks this again when applying the cancellation; other speech and approved
 assets are preserved, and audio already heard is unchanged. Voice tracks share the queue,

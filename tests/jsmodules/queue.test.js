@@ -1,892 +1,331 @@
-import { describe, expect, it, vi } from "vitest";
-
-import { applyQueueState, installQueueButtons, installQueueClear, renderQueue, resetQueueState } from
-  "../../src/autodj/static/modules/queue.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as queueModule from "../../src/autodj/static/modules/queue.js";
 import { selectStation, setKnownStations } from "../../src/autodj/static/modules/stations.js";
+import { invalidateAuthenticatedRequestEpoch } from "../../src/autodj/static/modules/api-client.js";
 
-describe("queue mutations", () => {
-  it("uses one Tab stop and row and action shortcuts", () => {
-    document.body.innerHTML = '<ul id="queue"></ul>';
-    const els = { queueList: document.querySelector("#queue") };
-    renderQueue([
-      { path: "one.mp3", display_name: "One" },
-      { path: "two.mp3", display_name: "Two" },
-      { path: "three.mp3", display_name: "Three" },
-    ], els);
-    installQueueButtons(els);
-    const rows = [...els.queueList.querySelectorAll("li[data-path]")];
-    const buttons = (row) => [...row.querySelectorAll(".queue-btn")];
-    const press = (button, key, ctrlKey = false) => button.dispatchEvent(
-      new KeyboardEvent("keydown", { key, ctrlKey, bubbles: true }),
-    );
-    expect(buttons(rows[0]).at(-1).dataset.action).toBe("info");
-    expect([...els.queueList.querySelectorAll(".queue-btn[tabindex='0']")]).toHaveLength(1);
-    const first = buttons(rows[0]).find((button) => !button.disabled);
-    first.focus();
-    press(first, "End");
-    expect(document.activeElement).toBe(buttons(rows[0]).at(-1));
-    press(document.activeElement, "ArrowDown");
-    expect(document.activeElement).toBe(buttons(rows[1]).at(-1));
-    press(document.activeElement, "Home", true);
-    expect(document.activeElement).toBe(buttons(rows[0]).at(-1));
-    press(document.activeElement, "End", true);
-    expect(document.activeElement).toBe(buttons(rows[2]).at(-1));
-    const middleTop = buttons(rows[1]).find((button) => button.dataset.action === "top");
-    middleTop.focus();
-    press(middleTop, "ArrowUp");
-    expect(document.activeElement).toBe(first);
-    expect([...els.queueList.querySelectorAll(".queue-btn[tabindex='0']")]).toEqual([document.activeElement]);
+const { applyQueueState, installQueueButtons, installQueueClear, resetQueueState } = queueModule;
+const track = (path, display_name = path) => ({ path, display_name });
+const initial = () => [track("a.mp3", "Alpha"), track("b.mp3", "Bravo"), track("c.mp3", "Charlie")];
+const response = (body = { ok: true }, status = 200) => new globalThis.Response(JSON.stringify(body), {
+  status, headers: { "Content-Type": "application/json" },
+});
+const press = (key, extra = {}) => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {
+  key, bubbles: true, cancelable: true, ...extra,
+}));
+function setup(tracks = initial()) {
+  document.body.innerHTML = `<p id="announce" role="status"></p><div id="queue" tabindex="-1" aria-label="Queued tracks"></div>
+    <div id="status-toast" aria-hidden="true" hidden></div>
+    <button id="clear">Clear queue</button><button id="outside">Search</button>
+    <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
+    <button id="confirm-accept"></button><button id="confirm-cancel">Cancel</button></dialog>`;
+  const dialog = document.getElementById("confirm-dialog");
+  dialog.show = vi.fn(() => dialog.setAttribute("open", ""));
+  dialog.close = vi.fn(() => {
+    dialog.removeAttribute("open");
+    dialog.dispatchEvent(new Event("close"));
+  });
+  const els = { queueList: document.getElementById("queue"), queueCount: document.createElement("span"),
+    queueAnnounce: document.getElementById("announce"), queueClear: document.getElementById("clear") };
+  resetQueueState(els);
+  applyQueueState(tracks, els);
+  installQueueButtons(els);
+  installQueueClear(els);
+  const rows = () => [...els.queueList.querySelectorAll("tbody tr[data-row-key]")];
+  const options = (index) => rows()[index].querySelector('[aria-haspopup="menu"]');
+  const action = (index, id) => {
+    options(index).focus();
+    options(index).click();
+    rows()[index].querySelector(`[role="menuitem"][data-action="${id}"]`).click();
+  };
+  return { els, dialog, rows, options, action, answer: (yes = true) =>
+    document.getElementById(yes ? "confirm-accept" : "confirm-cancel").click() };
+}
+const settled = (els) => vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+const bodies = (fetch) => fetch.mock.calls.map(([, init]) => JSON.parse(init.body));
+afterEach(() => { selectStation("default"); vi.unstubAllGlobals(); });
+
+describe("queue collection", () => {
+  it("exposes state updates without a second public rendering entrypoint", () => {
+    expect(queueModule).not.toHaveProperty("renderQueue");
   });
 
-  it("opens Track info without changing or posting the queue", () => {
-    document.body.innerHTML = '<p id="announce"></p><ul id="queue"></ul>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-      queueAnnounce: document.querySelector("#announce"),
-    };
-    const queue = [{ path: "one.mp3", display_name: "One" }];
-    renderQueue(queue, els);
-    installQueueButtons(els);
-    const edit = vi.fn();
-    document.addEventListener("autodj:edit-points", edit, { once: true });
-
-    const button = els.queueList.querySelector('.queue-btn[data-action="info"]');
-    button.click();
-
-    expect(edit).toHaveBeenCalledOnce();
-    expect(edit.mock.calls[0][0].detail).toEqual({ path: "one.mp3", kind: "music", opener: button });
-    expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(1);
-    expect(els.queueList.textContent).toContain("One");
-    expect(els.queueList.getAttribute("aria-busy")).not.toBe("true");
+  // ADR-0021-12
+  it("uses the shared queue table with Track info and confirmed removal", async () => {
+    const fetch = vi.fn(async () => response()); vi.stubGlobal("fetch", fetch);
+    const { els, rows, action, answer, dialog } = setup();
+    expect(els.queueList.querySelector("table.collection-table[role=grid]")).not.toBeNull();
+    expect([...els.queueList.querySelectorAll("th")].map((cell) => cell.textContent))
+      .toEqual(["Position", "Track", "Bridge", "Actions", "Options"]);
+    expect(els.queueList.querySelector('[role="rowheader"]')).toBeNull();
+    expect([...rows()[0].querySelectorAll('button:not([role="menuitem"])')].map((button) => button.textContent))
+      .toEqual(["Track info", "Options"]);
+    expect([...rows()[0].querySelectorAll('[role="menuitem"]')].map((button) => button.textContent))
+      .toEqual(["Move to top", "Move up", "Move down", "Remove"]);
+    const info = vi.fn(); document.addEventListener("autodj:edit-points", info, { once: true });
+    const button = rows()[0].querySelector('button[data-action="info"]'); button.click();
+    expect(info.mock.calls[0][0].detail).toEqual({ path: "a.mp3", kind: "music", opener: button });
+    action(1, "remove");
+    expect(dialog.open).toBe(true); expect(fetch).not.toHaveBeenCalled();
+    answer(false); expect(rows()).toHaveLength(3);
+    action(1, "remove"); answer();
+    await settled(els);
+    expect(fetch.mock.calls[0][0]).toBe("/api/queue/remove");
+    expect(bodies(fetch)).toEqual([{ path: "b.mp3", position: 1 }]);
+    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Alpha", "Charlie"]);
+    expect(rows()[1].contains(document.activeElement)).toBe(true);
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Removed Bravo from queue. Focus moved to Charlie."));
+    expect(document.getElementById("status-toast").textContent).toBe("Removed Bravo from queue. Focus moved to Charlie.");
+    expect(document.getElementById("status-toast").hidden).toBe(false);
   });
 
-  it("restores focus to Track info after a queue reorder", () => {
-    document.body.innerHTML = '<ul id="queue" tabindex="-1"></ul>';
-    const els = { queueList: document.querySelector("#queue"), queueCount: document.createElement("span") };
-    resetQueueState(els);
-    applyQueueState([
-      { path: "one.mp3", display_name: "One" },
-      { path: "two.mp3", display_name: "Two" },
-    ], els);
-    const button = els.queueList.querySelector('[data-path="two.mp3"][data-action="info"]');
-    button.focus();
+  it("uses one table Tab stop with cell arrows and menu opening keys", () => {
+    const { els, rows, options } = setup();
+    expect(els.queueList.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    rows()[0].cells[1].focus(); press("ArrowDown"); expect(document.activeElement).toBe(rows()[1].cells[1]);
+    press("End"); expect(document.activeElement).toBe(rows()[1].cells[4]);
+    press("Enter"); expect(document.activeElement.dataset.action).toBe("top");
+    press("Escape"); expect(document.activeElement).toBe(options(1).closest("td"));
+    press("ArrowUp"); expect(document.activeElement).toBe(options(0).closest("td"));
+    press("Enter");
+    press("ArrowUp"); expect(document.activeElement.dataset.action).toBe("remove");
+    press("Escape"); expect(els.queueList.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+  });
 
-    applyQueueState([
-      { path: "two.mp3", display_name: "Two" },
-      { path: "one.mp3", display_name: "One" },
-    ], els);
+  it("keeps disabled boundary actions reachable and describes their reasons", async () => {
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const { rows, options, els } = setup([track("a.mp3")]);
+    options(0).focus(); press("Enter");
+    expect(document.activeElement.dataset.action).toBe("top");
+    for (const id of ["top", "up", "down"]) {
+      const item = rows()[0].querySelector(`[role=menuitem][data-action=${id}]`);
+      expect(item.getAttribute("aria-disabled")).toBe("true");
+      expect(document.getElementById(item.getAttribute("aria-describedby")).textContent).toMatch(/already/i);
+    }
+    press("Enter"); await vi.waitFor(() => expect(els.queueAnnounce.textContent).toMatch(/already/i));
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
-    expect(document.activeElement.dataset.action).toBe("info");
-    expect(document.activeElement.dataset.path).toBe("two.mp3");
+  it("blocks off-air menu keyboard actions and rechecks an open removal confirmation", async () => {
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const { els, options, action, answer, rows } = setup();
+    action(1, "remove");
+    queueModule.setQueueDisabledReason(els, "Start the station to change its queue.");
+    answer();
+    await vi.waitFor(() => expect(document.getElementById("confirm-dialog").open).toBe(false));
+    options(1).focus(); press("Enter"); press("Enter");
+    expect(document.activeElement.getAttribute("aria-disabled")).toBe("true");
+    expect(fetch).not.toHaveBeenCalled();
+    const info = vi.fn(); document.addEventListener("autodj:edit-points", info, { once: true });
+    rows()[1].querySelector('button[data-action="info"]').click(); expect(info).toHaveBeenCalledOnce();
+    queueModule.setQueueDisabledReason(els, "");
+    expect(rows()[1].querySelector('[data-action="up"]').getAttribute("aria-disabled")).toBe("false");
+  });
+
+  it("refreshes metadata and bridge names without replacing focused rows or open menus", () => {
+    const { els, rows, options } = setup([track("a.mp3", "Alpha"), track("b.mp3", "Bravo")]);
+    const row = rows()[1]; options(1).focus(); press("Enter"); const focused = document.activeElement;
+    expect(focused.getAttribute("role")).toBe("menuitem");
+    applyQueueState([track("a.mp3", "Alpha"), { ...track("b.mp3", "Renamed"), bridge_to: "Request" }], els);
+    expect(rows()[1]).toBe(row); expect(document.activeElement).toBe(focused);
+    expect(row.cells[2].textContent).toBe("Bridge to Request");
+    expect(options(1).getAttribute("aria-label")).toBe("Options for Renamed, bridge to Request");
+    expect(row.querySelector('button[data-action="info"]').getAttribute("aria-label")).toContain("bridge to Request");
+  });
+
+  it("uses current row positions after a refresh while a menu is open", async () => {
+    const fetch = vi.fn(async () => response()); vi.stubGlobal("fetch", fetch);
+    const { els, options } = setup(); options(2).focus(); press("Enter");
+    expect(document.activeElement.getAttribute("role")).toBe("menuitem");
+    applyQueueState([initial()[2], initial()[0], initial()[1]], els);
+    press("ArrowDown"); press("ArrowDown"); press("Enter"); await settled(els);
+    expect(bodies(fetch)[0]).toEqual({ paths: ["a.mp3", "c.mp3", "b.mp3"],
+      from_paths: ["c.mp3", "a.mp3", "b.mp3"], order: [1, 0, 2] });
+  });
+
+  it.each([["top", 2, ["c.mp3", "a.mp3", "b.mp3"], [2, 0, 1], "Moved Charlie to position 1 of 3."],
+    ["up", 1, ["b.mp3", "a.mp3", "c.mp3"], [1, 0, 2], "Moved Bravo to position 1 of 3."],
+    ["down", 1, ["a.mp3", "c.mp3", "b.mp3"], [0, 2, 1], "Moved Bravo to position 3 of 3."]])("optimistically moves %s with occurrence order and position feedback", async (id, index, paths, order, message) => {
+    let reply; const fetch = vi.fn(() => new Promise((resolve) => { reply = resolve; })); vi.stubGlobal("fetch", fetch);
+    const { els, rows, action } = setup(); const old = rows(); const selected = old[index];
+    action(index, id);
+    expect(rows()).toEqual(order.map((at) => old[at]));
+    expect(selected.contains(document.activeElement)).toBe(true);
+    expect(bodies(fetch)[0]).toEqual({ paths, from_paths: ["a.mp3", "b.mp3", "c.mp3"], order });
+    reply(response()); await settled(els);
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe(message));
+    expect(document.getElementById("status-toast").textContent).toBe(message);
+    expect(document.getElementById("status-toast").hidden).toBe(false);
+  });
+
+  it("announces and mirrors repeated Move up actions with their new positions", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response()));
+    const { els, action } = setup();
+    action(2, "up"); await settled(els);
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Moved Charlie to position 2 of 3."));
+    expect(document.getElementById("status-toast").textContent).toBe("Moved Charlie to position 2 of 3.");
+    action(1, "up"); await settled(els);
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Moved Charlie to position 1 of 3."));
+    expect(document.getElementById("status-toast").textContent).toBe("Moved Charlie to position 1 of 3.");
+  });
+
+  it("preserves distinct duplicate occurrences during optimistic moves and confirmed removal", async () => {
+    const fetch = vi.fn(async () => response()); vi.stubGlobal("fetch", fetch);
+    const { rows, action, answer, els } = setup([track("dup.mp3", "First"), track("x.mp3", "Middle"), track("dup.mp3", "Second")]);
+    const [first, middle, second] = rows(); action(0, "down");
+    expect(rows()).toEqual([middle, first, second]); await settled(els);
+    action(2, "remove"); answer(); await settled(els);
+    expect(rows()).toEqual([middle, first]);
+    expect(fetch.mock.calls[1][0]).toBe("/api/queue/reorder");
+    expect(bodies(fetch)[1]).toEqual({ paths: ["x.mp3", "dup.mp3"],
+      from_paths: ["x.mp3", "dup.mp3", "dup.mp3"], order: [0, 1] });
+  });
+
+  it("cancels removal if the queue changes before confirmation", async () => {
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const { els, action, answer } = setup(); action(1, "remove");
+    applyQueueState([initial()[1], initial()[2]], els); answer();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toMatch(/changed/i));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses a second mutation while a change is pending", async () => {
+    let reply; const fetch = vi.fn(() => new Promise((resolve) => { reply = resolve; })); vi.stubGlobal("fetch", fetch);
+    const { els, action } = setup(); action(1, "down"); action(0, "remove"); action(0, "remove");
+    expect(fetch).toHaveBeenCalledOnce(); expect(document.getElementById("confirm-dialog").open).toBe(false);
+    reply(response()); await settled(els);
+  });
+
+  it("ignores a push of the original queue while the reorder is pending", async () => {
+    let reply; vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { reply = resolve; })));
+    const { els, rows, action } = setup(); action(2, "top"); applyQueueState(initial(), els);
+    expect(rows()[0].cells[1].textContent).toBe("Charlie"); reply(response()); await settled(els);
+  });
+
+  it.each([200, 500])("keeps newer websocket rows and focus when a pending response is %s", async (status) => {
+    let reply; vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { reply = resolve; })));
+    const { els, rows, action } = setup(); action(2, "up");
+    applyQueueState([initial()[2], track("d.mp3", "Delta")], els);
+    const focused = document.activeElement;
+    reply(response(status === 200 ? { ok: true } : { detail: "write failed" }, status)); await settled(els);
+    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Charlie", "Delta"]);
+    expect(document.activeElement).toBe(focused);
+  });
+
+  it("rolls back a failed mutation without stealing focus moved outside the queue", async () => {
+    let reply; vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { reply = resolve; })));
+    const { els, rows, action } = setup(); action(1, "down");
+    document.getElementById("outside").focus(); reply(response({ detail: "write failed" }, 500)); await settled(els);
+    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Alpha", "Bravo", "Charlie"]);
+    expect(document.activeElement.id).toBe("outside"); expect(els.queueAnnounce.textContent).toContain("write failed");
+  });
+
+  it("restores the moved row and focus after a rejected reorder", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ detail: "write failed" }, 500)));
+    const { els, rows, action } = setup(); const row = rows()[1]; action(1, "down"); await settled(els);
+    expect(rows()[1]).toBe(row); expect(row.contains(document.activeElement)).toBe(true);
+  });
+
+  it("restores the removed occurrence and its focus after a rejected removal", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ detail: "write failed" }, 500)));
+    const { els, rows, action, answer } = setup(); action(1, "remove"); answer(); await settled(els);
+    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Alpha", "Bravo", "Charlie"]);
+    expect(rows()[1].contains(document.activeElement)).toBe(true);
+  });
+
+  it("reports old-station results without restoring its queue after a station switch", async () => {
+    setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
+    let reply; vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { reply = resolve; })));
+    const { els, rows, action } = setup(); action(1, "down"); selectStation("night"); resetQueueState(els);
+    reply(response()); await settled(els);
+    expect(rows()).toHaveLength(0); expect(els.queueAnnounce.textContent).toContain("Done on Main");
+  });
+
+  it("does not send a removal confirmed after station or auth context changed", async () => {
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const { action, answer } = setup(); action(1, "remove"); invalidateAuthenticatedRequestEpoch(); answer();
+    await vi.waitFor(() => expect(document.getElementById("confirm-dialog").open).toBe(false));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("clears busy without announcing stale authenticated replies", async () => {
+    let reply; vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { reply = resolve; })));
+    const { els, action } = setup(); action(1, "down"); invalidateAuthenticatedRequestEpoch();
+    document.getElementById("outside").focus(); reply(response()); await settled(els);
+    expect(document.activeElement.id).toBe("outside"); expect(els.queueAnnounce.textContent).not.toContain("Moved");
+  });
+
+  it("uses a shared empty row and named fallback after removing the last occurrence", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response()));
+    const { els, action, answer } = setup([track("a.mp3", "Alpha")]); action(0, "remove"); answer(); await settled(els);
+    const empty = els.queueList.querySelector("td.no-results"); expect(empty.colSpan).toBe(5);
+    expect(document.activeElement).toBe(els.queueList);
+  });
+
+  it("recovers to an adjacent cell on a passive removal and leaves outside focus alone", () => {
+    const { els, rows } = setup(); rows()[1].cells[1].focus(); applyQueueState([initial()[0], initial()[2]], els);
+    expect(document.activeElement).toBe(rows()[1].cells[1]);
+    document.getElementById("outside").focus(); applyQueueState([], els); expect(document.activeElement.id).toBe("outside");
+  });
+
+  it("keeps bridge duplicates separate and refreshes changed labels", () => {
+    const { els, rows } = setup([{ ...track("same.mp3", "Mid"), bridge_to: "Ballad" }, track("same.mp3", "Mid")]);
+    expect(rows()[0].cells[2].textContent).toBe("Bridge to Ballad"); expect(rows()[1].cells[2].textContent).toBe("");
+    applyQueueState([track("same.mp3", "Mid"), track("same.mp3", "Mid")], els);
+    expect(rows()[0].cells[2].textContent).toBe("");
   });
 
   it("does not collide queue keys containing delimiter characters", () => {
-    document.body.innerHTML = '<span id="count"></span><ul id="queue"></ul>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.querySelector("#count"),
-    };
-    applyQueueState([
-      { path: "a|b", display_name: "First shape" },
-      { path: "c", display_name: "Tail" },
-    ], els);
-    applyQueueState([
-      { path: "a", display_name: "Second shape" },
-      { path: "b|c", display_name: "Other tail" },
-    ], els);
-
-    expect(els.queueList.textContent).toContain("Second shape");
-    expect(els.queueList.textContent).not.toContain("First shape");
+    const { els, rows } = setup([track("a|b", "First"), track("c", "Tail")]);
+    applyQueueState([track("a", "Second"), track("b|c", "Other")], els);
+    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Second", "Other"]);
   });
 
-  it("mutates the clicked duplicate row rather than the first matching path", async () => {
-    document.body.innerHTML = '<p id="announce"></p><ul id="queue"></ul>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-      queueAnnounce: document.querySelector("#announce"),
-    };
-    renderQueue([
-      { path: "dup.mp3", display_name: "First duplicate" },
-      { path: "middle.mp3", display_name: "Middle" },
-      { path: "dup.mp3", display_name: "Second duplicate" },
-    ], els);
-    installQueueButtons(els);
-    let resolveRequest;
-    const fetchImpl = vi.fn(() => new Promise((resolve) => {
-      resolveRequest = resolve;
-    }));
-    vi.stubGlobal("fetch", fetchImpl);
-
-    els.queueList.querySelectorAll(
-      '[data-path="dup.mp3"][data-action="remove"]',
-    )[1].click();
-
-    expect(els.queueList.textContent).toContain("First duplicate");
-    expect(els.queueList.textContent).not.toContain("Second duplicate");
-    expect(fetchImpl.mock.calls[0][0]).toBe("/api/queue/reorder");
-    resolveRequest(new globalThis.Response('{"ok":true}', {
-      headers: { "Content-Type": "application/json" },
-    }));
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("Removed"));
-    vi.unstubAllGlobals();
+  it("reasks on new voice revisions and retries the exact confirmed removal", async () => {
+    const conflict = (revision) => response({ detail: { code: "voice_track_conflict", revision } }, 409);
+    const fetch = vi.fn().mockResolvedValueOnce(conflict("one")).mockResolvedValueOnce(conflict("two")).mockResolvedValueOnce(response());
+    vi.stubGlobal("fetch", fetch); const { els, action, answer } = setup(); action(1, "remove"); answer();
+    await vi.waitFor(() => expect(document.getElementById("confirm-title").textContent).toBe("Upcoming voice track")); answer();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(document.getElementById("confirm-dialog").open).toBe(true));
+    [...document.querySelectorAll("#confirm-dialog button")].find((button) => button.textContent === "Discard voice track").click();
+    await settled(els);
+    expect(bodies(fetch)).toEqual([{ path: "b.mp3", position: 1 },
+      { path: "b.mp3", position: 1, voice_action: "keep", voice_revision: "one" },
+      { path: "b.mp3", position: 1, voice_action: "discard", voice_revision: "two" }]);
   });
 
-  it("does not roll back over a newer WebSocket queue render", async () => {
-    document.body.innerHTML = '<p id="announce"></p><ul id="queue"></ul>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-      queueAnnounce: document.querySelector("#announce"),
-    };
-    renderQueue([
-      { path: "old.mp3", display_name: "Old" },
-      { path: "other.mp3", display_name: "Other" },
-    ], els);
-    installQueueButtons(els);
-    let resolveRequest;
-    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
-      resolveRequest = resolve;
-    })));
-    els.queueList.querySelector('[data-path="old.mp3"][data-action="remove"]').click();
-    applyQueueState([
-      { path: "server.mp3", display_name: "Server state" },
-    ], els);
-    resolveRequest(new globalThis.Response('{"detail":"write failed"}', {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    }));
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("write failed"));
-
-    expect(els.queueList.textContent).toContain("Server state");
-    expect(els.queueList.textContent).not.toContain("Old");
-    vi.unstubAllGlobals();
+  it("restores the queue when a voice conflict is canceled", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ detail: { code: "voice_track_conflict", revision: "one" } }, 409)));
+    const { els, rows, action, answer } = setup(); action(2, "top");
+    await vi.waitFor(() => expect(document.getElementById("confirm-dialog").open).toBe(true)); answer(false); await settled(els);
+    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Alpha", "Bravo", "Charlie"]);
+    expect(els.queueAnnounce.textContent).toBe("Queue change canceled.");
   });
 
-  it("locks the live queue transaction before optimistic rendering", async () => {
-    document.body.innerHTML = '<p id="announce"></p><ul id="queue"></ul>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-      queueAnnounce: document.querySelector("#announce"),
-    };
-    renderQueue([
-      { path: "one.mp3", display_name: "One" },
-      { path: "two.mp3", display_name: "Two" },
-      { path: "three.mp3", display_name: "Three" },
-    ], els);
-    installQueueButtons(els);
-    const resolvers = [];
-    const fetchImpl = vi.fn(() => new Promise((resolve) => resolvers.push(resolve)));
-    vi.stubGlobal("fetch", fetchImpl);
-
-    els.queueList.querySelector('[data-path="two.mp3"][data-action="down"]').click();
-    els.queueList.querySelector('[data-path="one.mp3"][data-action="remove"]').click();
-    expect(fetchImpl).toHaveBeenCalledOnce();
-
-    for (const resolve of resolvers) {
-      resolve(new globalThis.Response(JSON.stringify({ ok: true }), {
-        headers: { "Content-Type": "application/json" },
-      }));
-    }
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("Moved"));
-    vi.unstubAllGlobals();
-  });
-
-  it("rolls back the exact snapshot and restores action focus after busy clears", async () => {
-    document.body.innerHTML = '<p id="announce"></p><ul id="queue"></ul>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-      queueAnnounce: document.querySelector("#announce"),
-    };
-    const original = [
-      { path: "one.mp3", display_name: "One" },
-      { path: "two.mp3", display_name: "Two" },
-    ];
-    renderQueue(original, els);
-    installQueueButtons(els);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
-      JSON.stringify({ detail: "Queue write failed" }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
-    )));
-
-    const clicked = els.queueList.querySelector(
-      'li[data-path="one.mp3"] [data-action="remove"]',
-    );
-    clicked.focus();
-    clicked.click();
-    let busyWhenFocusReturned = null;
-    els.queueList.addEventListener("focusin", () => {
-      busyWhenFocusReturned = els.queueList.getAttribute("aria-busy");
-    }, { once: true });
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent)
-      .toContain("Queue write failed"));
-
-    expect(Array.from(els.queueList.querySelectorAll("li[data-path]"))
-      .map((li) => li.dataset.path)).toEqual(["one.mp3", "two.mp3"]);
-    const restored = els.queueList.querySelector(
-      'li[data-path="one.mp3"] [data-action="remove"]',
-    );
-    expect(restored.disabled).toBe(false);
-    expect(document.activeElement).toBe(restored);
-    expect(busyWhenFocusReturned).toBe("false");
-    expect(els.queueList.getAttribute("aria-busy")).toBe("false");
-    vi.unstubAllGlobals();
-  });
-
-  it("says what happened on the old station when the reply comes after a switch (#70)", async () => {
-    document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-      queueAnnounce: document.querySelector("#announce"),
-    };
+  it("does not retry or claim success when the station changes during a voice choice", async () => {
     setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
-    installQueueButtons(els);
-    let answer;
-    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { answer = resolve; })));
-    const reply = (body, status) => answer(new globalThis.Response(JSON.stringify(body),
-      { status, headers: { "Content-Type": "application/json" } }));
-    try {
-      renderQueue([{ path: "one.mp3", display_name: "One" }, { path: "two.mp3", display_name: "Two" }], els);
-      els.queueList.querySelector('li[data-path="one.mp3"] [data-action="remove"]').click();
-      await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
-      // The switch clears the queue for the new station's.
-      selectStation("night");
-      resetQueueState(els);
-      reply({ ok: true }, 200);
-      await vi.waitFor(() => expect(els.queueAnnounce.textContent)
-        .toBe("Done on Main, the station this page has just left."));
-      expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(0);
-
-      answer = null;
-      renderQueue([{ path: "owl.mp3", display_name: "Owl" }], els);
-      els.queueList.querySelector('li[data-path="owl.mp3"] [data-action="remove"]').click();
-      await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
-      selectStation("default");
-      resetQueueState(els);
-      reply({ detail: "No such entry" }, 409);
-      await vi.waitFor(() => expect(els.queueAnnounce.textContent)
-        .toBe("Night did not do that; it is the station this page has just left."));
-      // The old station's queue is not drawn back under the new one's name.
-      expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(0);
-    } finally {
-      selectStation("default");
-      vi.unstubAllGlobals();
-    }
+    const fetch = vi.fn(async () => response({ detail: { code: "voice_track_conflict", revision: "one" } }, 409));
+    vi.stubGlobal("fetch", fetch);
+    const { els, rows, action, answer } = setup(); action(2, "top");
+    await vi.waitFor(() => expect(document.getElementById("confirm-dialog").open).toBe(true));
+    selectStation("night"); resetQueueState(els); answer(); await settled(els);
+    expect(fetch).toHaveBeenCalledOnce(); expect(rows()).toHaveLength(0);
+    expect(els.queueAnnounce.textContent).not.toContain("Moved");
   });
 
-  it("keeps focus on the list while the last row's removal is sent, and clears busy after", async () => {
-    document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-      queueAnnounce: document.querySelector("#announce"),
-    };
-    renderQueue([{ path: "only.mp3", display_name: "Only" }], els);
-    installQueueButtons(els);
-    let resolveRequest;
-    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
-      resolveRequest = resolve;
-    })));
-    const remove = els.queueList.querySelector('[data-action="remove"]');
-    remove.focus();
-    remove.click();
-    // Focus goes to the list before the row goes (#328), not to the page.
-    expect(els.queueList.getAttribute("aria-busy")).toBe("true");
-    expect(document.activeElement).toBe(els.queueList);
-    resolveRequest(new globalThis.Response('{"ok":true}', {
-      headers: { "Content-Type": "application/json" },
-    }));
-    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
-    expect(document.activeElement).toBe(els.queueList);
-    vi.unstubAllGlobals();
+  it("confirms Clear and returns directly to its button after clearing", async () => {
+    const fetch = vi.fn(async () => response()); vi.stubGlobal("fetch", fetch);
+    const { els, rows, answer } = setup(); els.queueClear.click(); answer(false);
+    expect(rows()).toHaveLength(3); expect(fetch).not.toHaveBeenCalled();
+    els.queueClear.click(); answer(); await vi.waitFor(() => expect(rows()).toHaveLength(0));
+    await vi.waitFor(() => expect(document.activeElement).toBe(els.queueClear));
+    expect(bodies(fetch)).toEqual([{ paths: [] }]);
   });
 
-  it("clears busy without moving focus after a newer authoritative render", async () => {
-    document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-      queueAnnounce: document.querySelector("#announce"),
-    };
-    renderQueue([
-      { path: "old.mp3", display_name: "Old" },
-      { path: "tail.mp3", display_name: "Tail" },
-    ], els);
-    installQueueButtons(els);
-    let resolveRequest;
-    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
-      resolveRequest = resolve;
-    })));
-    const focusSpy = vi.spyOn(els.queueList, "focus");
-
-    els.queueList.querySelector('[data-action="remove"]').click();
-    applyQueueState([{ path: "server.mp3", display_name: "Server" }], els);
-    resolveRequest(new globalThis.Response('{"ok":true}', {
-      headers: { "Content-Type": "application/json" },
-    }));
-    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
-
-    expect(els.queueList.textContent).toContain("Server");
-    expect(focusSpy).not.toHaveBeenCalled();
-    expect(document.activeElement.closest?.("#queue")).toBeNull();
-    vi.unstubAllGlobals();
-  });
-
-  it("clears busy without moving focus when authentication expires", async () => {
-    document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-      queueAnnounce: document.querySelector("#announce"),
-    };
-    renderQueue([{ path: "only.mp3", display_name: "Only" }], els);
-    installQueueButtons(els);
-    let resolveRequest;
-    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
-      resolveRequest = resolve;
-    })));
-    const { invalidateAuthenticatedRequestEpoch } = await import(
-      "../../src/autodj/static/modules/api-client.js"
-    );
-    const focusSpy = vi.spyOn(els.queueList, "focus");
-
-    els.queueList.querySelector('[data-action="remove"]').click();
-    invalidateAuthenticatedRequestEpoch();
-    resolveRequest(new globalThis.Response('{"ok":true}', {
-      headers: { "Content-Type": "application/json" },
-    }));
-    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
-
-    expect(focusSpy).not.toHaveBeenCalled();
-    expect(document.activeElement.closest?.("#queue")).toBeNull();
-    vi.unstubAllGlobals();
-  });
-});
-
-describe("repeated queue actions stay audible", () => {
-  it("announces and shows a second Move up on the same track", async () => {
-    document.body.innerHTML =
-      '<p id="announce" role="status" aria-live="polite" aria-atomic="true"></p>'
-      + '<ul id="queue"></ul>'
-      + '<div id="status-toast" aria-hidden="true" hidden></div>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-      queueAnnounce: document.querySelector("#announce"),
-    };
-    renderQueue([
-      { path: "a.mp3", display_name: "Alpha" },
-      { path: "b.mp3", display_name: "Bravo" },
-      { path: "c.mp3", display_name: "Charlie" },
-    ], els);
-    installQueueButtons(els);
-    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(
-      new globalThis.Response("{}", { headers: { "Content-Type": "application/json" } }),
-    )));
-
-    const spoken = [];
-    const shown = [];
-    const region = document.querySelector("#announce");
-    const toast = document.querySelector("#status-toast");
-    new window.MutationObserver((r) => spoken.push(...r))
-      .observe(region, { childList: true, characterData: true, subtree: true });
-    new window.MutationObserver((r) => shown.push(...r))
-      .observe(toast, { childList: true, characterData: true, subtree: true });
-
-    const added = (records) => records.filter((r) => r.addedNodes.length > 0).length;
-    const clickUpOn = async (name) => {
-      // Count landings rather than text: the second announcement carries
-      // the same sentence, so waiting on the text would pass instantly.
-      const before = added(spoken);
-      const row = [...els.queueList.querySelectorAll("li")]
-        .find((li) => li.textContent.includes(name));
-      row.querySelector('.queue-btn[data-action="up"]').click();
-      await vi.waitFor(() => expect(added(spoken)).toBe(before + 1));
-    };
-
-    // Charlie moves 3 -> 2, then 2 -> 1, well inside the three-second
-    // dwell, and each move says where the track landed.
-    await clickUpOn("Charlie");
-    expect(region.textContent).toBe("Moved Charlie to position 2 of 3.");
-    await clickUpOn("Charlie");
-
-    expect(added(spoken)).toBe(2);
-    expect(added(shown)).toBe(2);
-    expect(region.textContent).toBe("Moved Charlie to position 1 of 3.");
-    expect(toast.textContent).toBe("Moved Charlie to position 1 of 3.");
-    vi.unstubAllGlobals();
-  });
-});
-
-describe("websocket queue renders keep keyboard focus", () => {
-  function setup(queue) {
-    document.body.innerHTML = '<ol id="queue" tabindex="-1"></ol>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-    };
-    applyQueueState(queue, els);
-    return els;
-  }
-  const track = (path) => ({ path, display_name: path });
-
-  it("refocuses the same action on the same track after a rebuild", () => {
-    const els = setup([track("a.mp3"), track("b.mp3"), track("c.mp3")]);
-    els.queueList.querySelector('li[data-path="c.mp3"] [data-action="remove"]').focus();
-
-    // The head of the queue started playing, so every row moved up one.
-    applyQueueState([track("b.mp3"), track("c.mp3")], els);
-
-    const active = document.activeElement;
-    expect(active.dataset.action).toBe("remove");
-    expect(active.closest("li").dataset.path).toBe("c.mp3");
-  });
-
-  it("follows the same duplicate, and skips an action that became disabled", () => {
-    const els = setup([track("x.mp3"), track("dup.mp3"), track("dup.mp3")]);
-    els.queueList.querySelectorAll('li[data-path="dup.mp3"] [data-action="up"]')[1].focus();
-
-    applyQueueState([track("dup.mp3"), track("dup.mp3")], els);
-
-    const active = document.activeElement;
-    const rows = Array.from(els.queueList.querySelectorAll("li"));
-    expect(rows.indexOf(active.closest("li"))).toBe(1);
-    expect(active.dataset.action).toBe("up");
-
-    rows[0].querySelector('[data-action="down"]').focus();
-    applyQueueState([track("dup.mp3")], els);
-    // Only row: Up and Down are disabled, so Remove takes focus.
-    expect(document.activeElement.dataset.action).toBe("remove");
-  });
-
-  it("falls back to the same position, then to the list itself", () => {
-    const els = setup([track("a.mp3"), track("b.mp3")]);
-    els.queueList.querySelector('li[data-path="b.mp3"] [data-action="remove"]').focus();
-
-    applyQueueState([track("z.mp3")], els);
-    expect(document.activeElement.closest("li").dataset.path).toBe("z.mp3");
-
-    applyQueueState([], els);
-    expect(document.activeElement).toBe(els.queueList);
-  });
-
-  it("does not take focus when it was elsewhere on the page", () => {
-    const els = setup([track("a.mp3")]);
-    const outside = document.createElement("button");
-    document.body.appendChild(outside);
-    outside.focus();
-
-    applyQueueState([track("b.mp3")], els);
-    expect(document.activeElement).toBe(outside);
-  });
-});
-
-describe("queue Top and Clear queue", () => {
-  const ok = () => Promise.resolve(new globalThis.Response('{"ok":true}', {
-    headers: { "Content-Type": "application/json" },
-  }));
-  const voiceConflict = (revision) => Promise.resolve(new globalThis.Response(JSON.stringify({
-    detail: { code: "voice_track_conflict", revision },
-  }), { status: 409, headers: { "Content-Type": "application/json" } }));
-
-  function setup() {
-    document.body.innerHTML = `
-      <p id="announce"></p><ul id="queue"></ul><button id="clear">Clear queue</button>
-      <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
-        <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>`;
-    // The confirmation as a browser runs it: closing puts focus back on
-    // the element that had it when the dialog opened, when focus is still
-    // in the dialog.
-    const dialog = document.querySelector("#confirm-dialog");
-    let opener = null;
-    dialog.show = vi.fn(() => {
-      opener = document.activeElement;
-      dialog.setAttribute("open", "");
-    });
-    dialog.close = vi.fn((value) => {
-      if (!dialog.hasAttribute("open")) return;
-      if (value !== undefined) dialog.returnValue = value;
-      const focusInside = dialog.contains(document.activeElement);
-      dialog.removeAttribute("open");
-      if (focusInside && opener?.isConnected) opener.focus();
-      dialog.dispatchEvent(new Event("close"));
-    });
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-      queueAnnounce: document.querySelector("#announce"),
-      queueClear: document.querySelector("#clear"),
-    };
-    resetQueueState(els);
-    applyQueueState([
-      { path: "a.mp3", display_name: "Alpha" },
-      { path: "b.mp3", display_name: "Bravo" },
-      { path: "c.mp3", display_name: "Charlie" },
-    ], els);
-    installQueueButtons(els);
-    installQueueClear(els);
-    const answer = (value) => {
-      document.getElementById(value === "confirm" ? "confirm-accept" : "confirm-cancel").click();
-    };
-    return { els, dialog, answer };
-  }
-
-  it("moves a track to the top and says where it landed", async () => {
-    const fetchImpl = vi.fn(ok);
-    vi.stubGlobal("fetch", fetchImpl);
-    const { els } = setup();
-
-    // A press focuses the button, as a key or a click does in a browser.
-    const top = els.queueList.querySelector('[data-path="c.mp3"][data-action="top"]');
-    top.focus();
-    top.click();
-
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent)
-      .toBe("Moved Charlie to position 1 of 3."));
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body))
-      .toEqual({
-        paths: ["c.mp3", "a.mp3", "b.mp3"],
-        // The queue as shown and where each slot came from, so the server
-        // moves these very entries (#106).
-        from_paths: ["a.mp3", "b.mp3", "c.mp3"],
-        order: [2, 0, 1],
-      });
-    expect(document.activeElement.dataset.path).toBe("c.mp3");
-    vi.unstubAllGlobals();
-  });
-
-  it("removes the very entry shown, by its place in the queue", async () => {
-    const fetchImpl = vi.fn(ok);
-    vi.stubGlobal("fetch", fetchImpl);
-    const { els } = setup();
-
-    els.queueList.querySelector('[data-path="b.mp3"][data-action="remove"]').click();
-
-    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled());
-    expect(fetchImpl.mock.calls[0][0]).toBe("/api/queue/remove");
-    // The place lets the server tell a show's copy (#106) from a request of the same file.
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ path: "b.mp3", position: 1 });
-    vi.unstubAllGlobals();
-  });
-
-  it("reasks after a new voice revision and retries the same queue removal", async () => {
-    const fetchImpl = vi.fn()
-      .mockImplementationOnce(() => voiceConflict("rev-1"))
-      .mockImplementationOnce(() => voiceConflict("rev-2"))
-      .mockImplementationOnce(ok);
-    vi.stubGlobal("fetch", fetchImpl);
-    const { els, dialog } = setup();
-
-    els.queueList.querySelector('[data-path="b.mp3"][data-action="remove"]').click();
-    await vi.waitFor(() => expect(dialog.open).toBe(true));
-    expect(document.getElementById("confirm-title").textContent).toBe("Upcoming voice track");
-    document.getElementById("confirm-accept").click();
-    await vi.waitFor(() => expect(dialog.open).toBe(true));
-    [...document.querySelectorAll("#confirm-dialog button")]
-      .find((button) => button.textContent === "Discard voice track").click();
-
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Removed Bravo from queue."));
-    expect(fetchImpl.mock.calls.map(([, init]) => JSON.parse(init.body))).toEqual([
-      { path: "b.mp3", position: 1 },
-      { path: "b.mp3", position: 1, voice_action: "keep", voice_revision: "rev-1" },
-      { path: "b.mp3", position: 1, voice_action: "discard", voice_revision: "rev-2" },
-    ]);
-    vi.unstubAllGlobals();
-  });
-
-  it("retries a reorder with its original order plus the voice decision", async () => {
-    const fetchImpl = vi.fn()
-      .mockImplementationOnce(() => voiceConflict("rev-top"))
-      .mockImplementationOnce(ok);
-    vi.stubGlobal("fetch", fetchImpl);
-    const { els, dialog } = setup();
-
-    els.queueList.querySelector('[data-path="c.mp3"][data-action="top"]').click();
-    await vi.waitFor(() => expect(dialog.open).toBe(true));
-    document.getElementById("confirm-accept").click();
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Moved Charlie to position 1 of 3."));
-    expect(fetchImpl.mock.calls.map(([, init]) => JSON.parse(init.body))).toEqual([
-      { paths: ["c.mp3", "a.mp3", "b.mp3"], from_paths: ["a.mp3", "b.mp3", "c.mp3"], order: [2, 0, 1] },
-      {
-        paths: ["c.mp3", "a.mp3", "b.mp3"], from_paths: ["a.mp3", "b.mp3", "c.mp3"],
-        order: [2, 0, 1], voice_action: "keep", voice_revision: "rev-top",
-      },
-    ]);
-    vi.unstubAllGlobals();
-  });
-
-  it("asks about the voice track before retrying Clear queue and lets Cancel keep the queue", async () => {
-    const fetchImpl = vi.fn().mockImplementationOnce(() => voiceConflict("rev-1"));
-    vi.stubGlobal("fetch", fetchImpl);
-    const { els, dialog } = setup();
-
-    els.queueClear.click();
-    await vi.waitFor(() => expect(dialog.open).toBe(true));
-    document.getElementById("confirm-accept").click();
-    await vi.waitFor(() => expect(document.getElementById("confirm-title").textContent)
-      .toBe("Upcoming voice track"));
-    document.getElementById("confirm-cancel").click();
-
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Queue clear canceled."));
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ paths: [] });
-    expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(3);
-    vi.unstubAllGlobals();
-  });
-
-  it("clears only after confirmation and keeps focus on the button", async () => {
-    const fetchImpl = vi.fn(ok);
-    vi.stubGlobal("fetch", fetchImpl);
-    const { els, dialog, answer } = setup();
-
-    els.queueClear.click();
-    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledOnce());
-    answer("cancel");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(els.queueClear);
-
-    els.queueClear.click();
-    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledTimes(2));
-    // Focus leaves the dialog once, for the button, with the list already
-    // empty: never to the page or to rows about to go.
-    const focused = [];
-    const onFocus = (event) => focused.push({
-      target: event.target, rows: els.queueList.querySelectorAll("li[data-path]").length,
-    });
-    document.addEventListener("focusin", onFocus);
-    answer("confirm");
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent)
-      .toBe("Cleared the queue.  Removed 3 tracks."));
-    document.removeEventListener("focusin", onFocus);
-    expect(focused).toEqual([{ target: els.queueClear, rows: 0 }]);
-    expect(fetchImpl.mock.calls[0][0]).toBe("/api/queue/reorder");
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ paths: [] });
-    expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(0);
-    expect(document.activeElement).toBe(els.queueClear);
-    vi.unstubAllGlobals();
-  });
-});
-
-describe("queue focus while a change is saved", () => {
-  const setupQueue = () => {
-    document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
-    const els = {
-      queueList: document.querySelector("#queue"),
-      queueCount: document.createElement("span"),
-      queueAnnounce: document.querySelector("#announce"),
-    };
-    resetQueueState(els);
-    const queue = [
-      { path: "a.mp3", display_name: "Alpha" },
-      { path: "b.mp3", display_name: "Bravo" },
-      { path: "c.mp3", display_name: "Charlie" },
-    ];
-    applyQueueState(queue, els);
-    installQueueButtons(els);
-    let resolveRequest;
-    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
-      resolveRequest = (status = 200) => resolve(new globalThis.Response(
-        status === 200 ? '{"ok":true}' : '{"detail":"write failed"}',
-        { status, headers: { "Content-Type": "application/json" } },
-      ));
-    })));
-    return { els, queue, reply: (status) => resolveRequest(status) };
-  };
-  const pressFocused = (els, path, action) => {
-    const button = els.queueList.querySelector(`[data-path="${path}"][data-action="${action}"]`);
-    button.focus();
-    button.click();
-  };
-
-  it("keeps focus on the moved track when a push redraws the list first", async () => {
-    const { els, reply } = setupQueue();
-    pressFocused(els, "c.mp3", "up");
-    // Another page added a track; its push lands before this reply.
-    applyQueueState([
-      { path: "a.mp3", display_name: "Alpha" },
-      { path: "c.mp3", display_name: "Charlie" },
-      { path: "b.mp3", display_name: "Bravo" },
-      { path: "d.mp3", display_name: "Delta" },
-    ], els);
-    reply();
-    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
-
-    const focused = document.activeElement;
-    expect(focused.closest("li")?.dataset.path).toBe("c.mp3");
-    expect(focused.dataset.action).toBe("up");
-    vi.unstubAllGlobals();
-  });
-
-  it("keeps focus in the list when a push redraws it and the save fails", async () => {
-    const { els, reply } = setupQueue();
-    pressFocused(els, "b.mp3", "remove");
-    applyQueueState([
-      { path: "a.mp3", display_name: "Alpha" },
-      { path: "c.mp3", display_name: "Charlie" },
-      { path: "d.mp3", display_name: "Delta" },
-    ], els);
-    reply(500);
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("write failed"));
-
-    expect(els.queueList.contains(document.activeElement)).toBe(true);
-    expect(document.activeElement.closest("li")?.dataset.path).toBe("c.mp3");
-    vi.unstubAllGlobals();
-  });
-
-  // #328: a list drawn again from scratch destroyed the focused button, and
-  // NVDA read a cut-off line of the list while the change was sent.
-  it("moves rows in place and never leaves focus on the page while a change is sent", async () => {
-    const { els, reply } = setupQueue();
-    const rowsOf = () => [...els.queueList.querySelectorAll("li[data-path]")];
-    const [alpha, bravo, charlie] = rowsOf();
-    const left = [];
-    document.addEventListener("focusout", (event) => {
-      if (!event.relatedTarget) left.push(event.target);
-    });
-    pressFocused(els, "b.mp3", "down");
-    // At once, before the reply: the same nodes, Bravo's own Down kept.
-    expect(rowsOf()).toEqual([alpha, charlie, bravo]);
-    expect(document.activeElement).toBe(bravo.querySelector('[data-action="up"]'));
-    expect(bravo.querySelector(".queue-name").textContent).toBe("3. Bravo");
-    expect(bravo.querySelector('[data-action="down"]').disabled).toBe(true);
-    expect(charlie.querySelector('[data-action="down"]').disabled).toBe(false);
-    reply();
-    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
-    expect(document.activeElement).toBe(bravo.querySelector('[data-action="up"]'));
-
-    // Remove: focus goes to the next row's Remove before the row goes.
-    pressFocused(els, "c.mp3", "remove");
-    expect(rowsOf()).toEqual([alpha, bravo]);
-    expect(document.activeElement).toBe(bravo.querySelector('[data-action="remove"]'));
-    reply();
-    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
-    // A push with a new track keeps the rows that stay.
-    applyQueueState([
-      { path: "a.mp3", display_name: "Alpha" },
-      { path: "b.mp3", display_name: "Bravo" },
-      { path: "d.mp3", display_name: "Delta" },
-    ], els);
-    expect(rowsOf().slice(0, 2)).toEqual([alpha, bravo]);
-    expect(document.activeElement).toBe(bravo.querySelector('[data-action="remove"]'));
-    expect(left).toEqual([]);
-    vi.unstubAllGlobals();
-  });
-
-  it("keeps each copy of a song queued twice as its own row (#328)", async () => {
-    const { els, reply } = setupQueue();
-    applyQueueState([
-      { path: "dup.mp3", display_name: "Dup" },
-      { path: "x.mp3", display_name: "Other" },
-      { path: "dup.mp3", display_name: "Dup" },
-    ], els);
-    const rowsOf = () => [...els.queueList.querySelectorAll("li[data-path]")];
-    const [first, other, second] = rowsOf();
-    expect(rowsOf().map((row) => row.querySelector(".queue-name").textContent))
-      .toEqual(["1. Dup", "2. Other", "3. Dup"]);
-    // Down on the first copy: it keeps its row and focus; Other moves round it.
-    pressFocused(els, "dup.mp3", "down");
-    expect(rowsOf()).toEqual([other, first, second]);
-    expect(document.activeElement).toBe(first.querySelector('[data-action="down"]'));
-    reply();
-    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
-    // Remove the second copy: the first copy's Remove takes focus first.
-    const secondRemove = second.querySelector('[data-action="remove"]');
-    secondRemove.focus();
-    secondRemove.click();
-    expect(rowsOf()).toEqual([other, first]);
-    expect(document.activeElement).toBe(first.querySelector('[data-action="remove"]'));
-    reply();
-    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
-    // A push with a third copy in front keeps the two rows that stay.
-    applyQueueState([
-      { path: "dup.mp3", display_name: "Dup" },
-      { path: "x.mp3", display_name: "Other" },
-      { path: "dup.mp3", display_name: "Dup" },
-    ], els);
-    expect(rowsOf().slice(0, 2)).toEqual([first, other]);
-    expect(document.activeElement).toBe(first.querySelector('[data-action="remove"]'));
-    vi.unstubAllGlobals();
-  });
-
-  it("leaves focus where the user took it while the change was sent", async () => {
-    const { els, reply } = setupQueue();
-    const elsewhere = document.createElement("button");
-    elsewhere.textContent = "Search";
-    document.body.append(elsewhere);
-    pressFocused(els, "b.mp3", "down");
-    elsewhere.focus();
-    reply();
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("Moved"));
-    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
-    expect(document.activeElement).toBe(elsewhere);
-
-    // Nor after a failure that draws the old order back.
-    pressFocused(els, "a.mp3", "remove");
-    elsewhere.focus();
-    reply(500);
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("write failed"));
-    expect(document.activeElement).toBe(elsewhere);
-    vi.unstubAllGlobals();
-  });
-
-  it("answers a second press while a change is sent, once", async () => {
-    const { els, reply } = setupQueue();
-    pressFocused(els, "b.mp3", "down");
-    const said = [];
-    new window.MutationObserver(() => {
-      if (els.queueAnnounce.textContent) said.push(els.queueAnnounce.textContent);
-    }).observe(els.queueAnnounce, { childList: true, characterData: true, subtree: true });
-    pressFocused(els, "a.mp3", "remove");
-    pressFocused(els, "a.mp3", "remove");
-    await vi.waitFor(() => expect(said).toEqual(["Still sending the last change…"]));
-    reply();
-    await vi.waitFor(() => expect(said.at(-1)).toMatch(/^Moved Bravo/));
-    expect(said.filter((text) => text.startsWith("Still"))).toHaveLength(1);
-    vi.unstubAllGlobals();
-  });
-
-  it("does not redraw the old order from a push sent before the change", async () => {
-    const { els, queue, reply } = setupQueue();
-    pressFocused(els, "c.mp3", "top");
-    applyQueueState(queue, els);
-    expect(els.queueList.querySelector("li").dataset.path).toBe("c.mp3");
-    reply();
-    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
-    expect(document.activeElement.closest("li")?.dataset.path).toBe("c.mp3");
-    vi.unstubAllGlobals();
-  });
-});
-
-describe("bridge songs in the queue (#49)", () => {
-  it("says in words which request a bridge song leads into, in the row and each button", () => {
-    document.body.innerHTML = '<ul id="queue"></ul>';
-    const els = { queueList: document.querySelector("#queue"), queueCount: document.createElement("span") };
-    resetQueueState(els);
-    applyQueueState([
-      { path: "mid.mp3", display_name: "Mid", bridge_to: "Ballad — Singer" },
-      { path: "ballad.mp3", display_name: "Ballad — Singer" },
-      { path: "mid.mp3", display_name: "Mid" },
-    ], els);
-    const rows = els.queueList.querySelectorAll("li[data-path]");
-    expect(rows[0].querySelector(".queue-bridge").textContent).toBe("Bridge to Ballad — Singer");
-    expect(rows[0].querySelector(".queue-name").textContent).toBe("1. Mid");
-    expect(rows[0].querySelector('[data-action="remove"]').getAttribute("aria-label"))
-      .toBe("Remove Mid, bridge to Ballad — Singer from queue");
-    // The operator's own copy of the same song is no bridge.
-    expect(rows[2].querySelector(".queue-bridge")).toBeNull();
-    expect(rows[2].querySelector('[data-action="remove"]').getAttribute("aria-label"))
-      .toBe("Remove Mid from queue");
-    // Only the label changing still redraws the row.
-    applyQueueState([
-      { path: "mid.mp3", display_name: "Mid" },
-      { path: "ballad.mp3", display_name: "Ballad — Singer" },
-      { path: "mid.mp3", display_name: "Mid" },
-    ], els);
-    expect(els.queueList.querySelector(".queue-bridge")).toBeNull();
+  it("keeps Clear voice-conflict cancellation intact", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ detail: { code: "voice_track_conflict", revision: "one" } }, 409)));
+    const { els, rows, answer } = setup(); els.queueClear.click(); answer();
+    await vi.waitFor(() => expect(document.getElementById("confirm-title").textContent).toBe("Upcoming voice track")); answer(false);
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Queue clear canceled.")); expect(rows()).toHaveLength(3);
   });
 });

@@ -26,7 +26,9 @@
 // page, linked to the control they are about, and said once.
 
 import { requestJson, withDisabled } from "./api-client.js";
-import { fmtTime, nextRowControl, rowButton } from "./dom-helpers.js";
+import { fmtTime } from "./dom-helpers.js";
+import { createCollectionTable } from "./collection-table.js";
+import { deleteCollectionItem } from "./collection-delete.js";
 import { announceStatus } from "./live-region.js";
 import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
 import { defaultStorage, readStorage, removeStorage, writeStorage } from "./safe-storage.js";
@@ -270,7 +272,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const error = el("vt-error");
   const status = el("vt-status");
   const list = el("vt-list");
-  const none = el("vt-none");
   const listHeading = el("vt-booked-heading");
   const transition = el("vt-transition");
   const transitionSummary = el("vt-transition-summary");
@@ -300,7 +301,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   let generation = 0;
   let linked = null;
   let wasShown = false;
-  const rows = new Map();
   const lostTracks = new Map();
   const transitionChoices = new Map();
   let transitionSlotId = null;
@@ -715,57 +715,23 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     }
   }
 
-  function trackText(track) {
-    return `${track.label || "Voice track"}: ${stateWords(track, data?.slot, wallClock())}`;
-  }
+  listHeading.setAttribute("tabindex", "-1");
+  const bookingsTable = createCollectionTable({
+    host: list, label: "Voice-track bookings", status, fallback: listHeading,
+    keyOf: (track) => track.break_id, nameOf: (track) => track.label || "Voice track",
+    emptyText: "No voice tracks yet.",
+    columns: [
+      { key: "booking", label: "Booking", value: (track) => track.label || "Voice track" },
+      { key: "state", label: "State", value: (track) => String(track.state || "Unknown").replaceAll("_", " ") },
+      { key: "details", label: "Details", value: (track) => stateWords(track, data?.slot, wallClock()) },
+    ],
+    actions: (track) => [{ id: "cancel", label: "Cancel",
+      disabledReason: track.cancellable === true ? "" : `This booking cannot be canceled: ${stateWords(track, data?.slot, wallClock())}.`,
+      run: (button) => cancel(track, button) }],
+  });
 
-  // Rows are kept and changed in place, so a refresh never takes focus off
-  // a Cancel button that is still there.
   function renderTracks(tracks) {
-    const shownTracks = tracks.slice(0, MAX_LISTED);
-    const active = doc.activeElement;
-    const hadFocus = list.contains(active);
-    const focusIndex = hadFocus ? [...list.querySelectorAll("button")].indexOf(active) : -1;
-    const keep = new Set(shownTracks.map((track) => track.break_id));
-    for (const [id, row] of rows) {
-      if (!keep.has(id)) {
-        row.item.remove();
-        rows.delete(id);
-      }
-    }
-    shownTracks.forEach((track, index) => {
-      let row = rows.get(track.break_id);
-      if (!row) {
-        const item = doc.createElement("li");
-        const text = doc.createElement("span");
-        item.append(text);
-        row = { item, text, button: null };
-        rows.set(track.break_id, row);
-      }
-      row.track = track;
-      setText(row.text, trackText(track));
-      const cancellable = track.cancellable === true;
-      if (cancellable && !row.button) {
-        const current = row;
-        row.button = rowButton(doc, "Cancel", `Cancel voice track ${track.label || ""}`.trim(),
-          (button) => void cancel(current.track, button));
-        row.item.append(" ", row.button);
-      } else if (!cancellable && row.button) {
-        row.button.previousSibling?.remove();
-        row.button.remove();
-        row.button = null;
-      }
-      if (list.children[index] !== row.item) list.insertBefore(row.item, list.children[index] || null);
-    });
-    none.hidden = shownTracks.length > 0;
-    if (hadFocus && doc.activeElement !== active) {
-      if (active.isConnected) active.focus();
-      else {
-        const next = nextRowControl(list, "button", Math.max(0, focusIndex), listHeading);
-        if (next === listHeading) listHeading.setAttribute("tabindex", "-1");
-        next.focus();
-      }
-    }
+    bookingsTable.update(tracks.slice(0, MAX_LISTED));
   }
 
   function apply(response) {
@@ -1380,16 +1346,29 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   }
 
   async function cancel(track, button) {
-    await withDisabled(button, async () => {
-      try {
-        await requestJson(`/api/voice-tracks/${encodeURIComponent(track.break_id)}`, { method: "DELETE" });
-        say(`Cancelled ${track.label || "the voice track"}.`);
-      } catch (problem) {
-        // Shown under Record and linked to this Cancel button.
-        fail(button, `Could not cancel ${track.label || "the voice track"}. ${problem.message}`);
-      }
+    const mine = generation;
+    let canceled = false, problem = null;
+    await deleteCollectionItem(doc, {
+      title: "Cancel this booking?", message: `Cancel ${track.label || "the voice track"}?`,
+      confirmLabel: "Cancel booking",
+      onConfirm: async () => {
+        if (mine !== generation) return null;
+        try {
+          await requestJson(`/api/voice-tracks/${encodeURIComponent(track.break_id)}`, { method: "DELETE" });
+          if (mine !== generation) return null;
+          canceled = true;
+        } catch (error) { problem = error; }
+        if (mine !== generation) return null;
+        await refresh();
+        if (mine !== generation) return null;
+        return bookingsTable.target(track.break_id, "options") || listHeading;
+      },
     });
-    await refresh();
+    if (mine !== generation) return;
+    if (problem) {
+      // A refresh can remove this booking before its failure is reported.
+      fail(button.isConnected ? button : listHeading, `Could not cancel ${track.label || "the voice track"}. ${problem.message}`);
+    } else if (canceled) say(`Cancelled ${track.label || "the voice track"}.`);
   }
 
   recordButton.addEventListener("click", () => void toggle());
@@ -1466,10 +1445,8 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       selectedTarget = "";
       confirming = false;
       renderTargets();
-      for (const row of rows.values()) row.item.remove();
-      rows.clear();
+      bookingsTable.clear();
       lostTracks.clear();
-      none.hidden = false;
       status.textContent = "";
       renderSlot();
       renderTimer();

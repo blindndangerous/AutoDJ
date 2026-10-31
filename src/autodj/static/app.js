@@ -427,7 +427,7 @@ function clearStationViews({ keepSettings = false } = {}) {
   introRulesControls?.clear();
   // Shows are the station's own (#106).
   showsPanelControls?.clearProtectedData();
-  schedulerPanelControls?.clear();
+  if (!keepSettings) schedulerPanelControls?.clear();
   rotationTestControls?.clear();
   hourPreviewControls?.clear();
   programmeReviewControls?.clear();
@@ -1328,7 +1328,7 @@ function applyWhyState(s) {
 
 
 import {
-  applyQueueState, installQueueButtons, resetQueueState,
+  applyQueueState, installQueueButtons, resetQueueState, setQueueDisabledReason,
 } from "./modules/queue.js";
 
 const _queueEls = { queueList, queueCount, queueAnnounce };
@@ -1745,6 +1745,7 @@ const btnStationStart = document.getElementById("station-start");
 // The panels that show one station; their names add the station's.
 let offAirTimer = null;
 let stationOffAir = false;
+const OFF_AIR_QUEUE_REASON = "Start the station to change the queue.";
 
 const stationSwitcher = installStationSwitcher({
   wrap: document.getElementById("station-switcher"),
@@ -1816,6 +1817,9 @@ function renderListenContext() {
 
 function setOffAir(offAir) {
   stationOffAir = offAir;
+  schedulerPanelControls?.setOffAir(offAir);
+  setQueueDisabledReason(_queueEls, offAir ? OFF_AIR_QUEUE_REASON : "");
+  listenerRequestControls?.setQueueDisabledReason(offAir ? OFF_AIR_QUEUE_REASON : "");
   setStoppedPlaybackControls(offAir);
   if (offAir) stoppedActionsObserver.observe(document.body, { childList: true, subtree: true });
   else stoppedActionsObserver.disconnect();
@@ -1832,14 +1836,14 @@ function setOffAir(offAir) {
 function setStoppedPlaybackControls(stopped) {
   const controls = [
     btnPause, btnSkip, btnShuffle, btnDiscovery,
-    ...document.querySelectorAll("#queue-clear, #recording-toggle, #ln-test, #shows-play-now, .result-btn, .queue-btn, #cart-wall [data-slot], #schedule-events [data-role='run'], #ads-breaks button[aria-label^='Run now, ad break']"),
+    ...document.querySelectorAll("#queue-clear, #recording-toggle, #ln-test, #shows-play-now, .result-btn, #cart-wall [data-slot], #ads-breaks button[aria-label^='Run now, ad break']"),
   ].filter(Boolean);
   for (const control of controls) control.disabled = stopped;
 }
 
 document.addEventListener("click", (event) => {
   if (!stationOffAir) return;
-  const action = event.target?.closest?.("#queue-clear, #recording-toggle, #ln-test, #shows-play-now, .result-btn, .queue-btn, #cart-wall [data-slot], #schedule-events [data-role='run'], #ads-breaks button[aria-label^='Run now, ad break']");
+  const action = event.target?.closest?.("#queue-clear, #recording-toggle, #ln-test, #shows-play-now, .result-btn, #cart-wall [data-slot], #ads-breaks button[aria-label^='Run now, ad break']");
   if (!action) return;
   event.preventDefault();
   event.stopImmediatePropagation();
@@ -1851,8 +1855,8 @@ const stoppedActionsObserver = new document.defaultView.MutationObserver((record
     for (const node of record.addedNodes) {
       if (node.nodeType !== 1) continue;
       const actions = [];
-      if (node.matches?.(".result-btn, .queue-btn, #cart-wall [data-slot], #schedule-events [data-role='run'], #ads-breaks button[aria-label^='Run now, ad break']")) actions.push(node);
-      actions.push(...node.querySelectorAll?.(".result-btn, .queue-btn, #cart-wall [data-slot], #schedule-events [data-role='run'], #ads-breaks button[aria-label^='Run now, ad break']") || []);
+      if (node.matches?.(".result-btn, #cart-wall [data-slot], #ads-breaks button[aria-label^='Run now, ad break']")) actions.push(node);
+      actions.push(...node.querySelectorAll?.(".result-btn, #cart-wall [data-slot], #ads-breaks button[aria-label^='Run now, ad break']") || []);
       for (const action of actions) action.disabled = true;
     }
   }
@@ -3317,7 +3321,7 @@ categoriesPanelControls = installCategoriesPanel({ onChange: () => {
 } });
 introRulesControls = installIntroRulesPanel({ createCategory });
 showsPanelControls = installShowsPanel();
-schedulerPanelControls = installSchedulerPanel();
+schedulerPanelControls = installSchedulerPanel({ offAir: stationOffAir });
 rotationTestControls = installRotationTest();
 hourPreviewControls = installHourPreview();
 programmeReviewControls = installProgrammeReview();
@@ -3460,6 +3464,7 @@ function startAuthenticatedApp(initialState) {
   timeCheckControls = installTimeChecks(linerAudio);
   speechControls = installSpeechStudio();
   listenerRequestControls = installListenerRequests({ isEnabled: authenticatedInteractionEnabled });
+  listenerRequestControls.setQueueDisabledReason(stationOffAir ? OFF_AIR_QUEUE_REASON : "");
   breakSettingsControls = installBreakSettings();
   linerControls = installLiners(_linerEls, linerAudio);
   // When the server mixes, it plays the cart itself and the page only

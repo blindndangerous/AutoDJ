@@ -86,6 +86,48 @@ afterEach(() => {
 // #631: every dialog the page opens itself acts modal without showModal(),
 // as the shared confirmation does since #602 and #627.
 describe("openDialog and closeDialog (#631)", () => {
+  it("preserves focus already handed outside when closing without an explicit opener", () => {
+    const { byId, editor } = mount();
+    byId("opener").focus();
+    const guard = openDialog(editor, { home: byId("name") });
+    byId("name").focus();
+    guard.release();
+    byId("elsewhere").focus();
+    closeDialog(editor);
+    expect(document.activeElement).toBe(byId("elsewhere"));
+  });
+
+  it("rejects a disabled replacement button before mapping it to a gridcell", () => {
+    const { byId, editor } = mount();
+    document.querySelector("main").insertAdjacentHTML("beforeend", '<table><tbody><tr><td id="disabled-cell" role="gridcell" tabindex="-1"></td></tr></tbody></table>');
+    const replacement = byId("elsewhere");
+    byId("disabled-cell").append(replacement);
+    replacement.disabled = true;
+    byId("opener").focus();
+    openDialog(editor, { home: byId("name") });
+    byId("name").focus();
+    const trail = focusTrail();
+    closeDialog(editor, { opener: byId("opener"), target: replacement });
+    expect(document.activeElement).toBe(byId("opener"));
+    expect(trail).toEqual(["out:name>opener", "in:opener"]);
+  });
+
+  it.each(["cancel", "same", "replacement"])("normalizes native grid restoration before %s closes the dialog", (destination) => {
+    const { byId, editor } = mount();
+    document.querySelector("main").insertAdjacentHTML("beforeend", '<table><tbody><tr><td id="first-cell" role="gridcell" tabindex="0"></td><td id="second-cell" role="gridcell" tabindex="-1"></td></tr></tbody></table>');
+    byId("first-cell").append(byId("opener"));
+    byId("second-cell").append(byId("elsewhere"));
+    byId("opener").focus();
+    openDialog(editor, { home: byId("name") });
+    byId("name").focus();
+    const trail = focusTrail();
+    const target = destination === "cancel" ? null : byId(destination === "same" ? "opener" : "elsewhere");
+    closeDialog(editor, { opener: byId("opener"), target });
+    const expected = destination === "replacement" ? "second-cell" : "first-cell";
+    expect(document.activeElement).toBe(byId(expected));
+    expect(trail).toEqual([`out:name>${expected}`, `in:${expected}`]);
+  });
+
   // ADR-0011-08
   it("opens with show() and aria-modal, with the backdrop shown until it closes", () => {
     const { byId, editor } = mount();

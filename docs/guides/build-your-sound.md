@@ -32,14 +32,14 @@ Playlist files live in the shared playlists folder by default. Categories themse
 
 A clockwheel repeats an ordered list of steps. Each step can choose from a category, choose music another way, play a liner, or change a preset. In **Library tools**, open **Clockwheels**.
 
-1. Enter a **Name** and create the clockwheel.
+1. Enter **New clockwheel name** and press **Create**. Review or change **Name** in the dialog, then press **Create** there.
 2. Add a **Music matching conditions** step, then add a **Category** condition to choose its pool.
 3. For a category step, set **Choose** to **Least recently played** or **At random**. Turn on **Follow the repeat rules** unless the step must play a specific song.
-4. Save the clockwheel and activate it. Set **Pick mode** to **Clockwheel** in **Settings**, **Profile**, **Song picking**.
+4. Press **Save clockwheel**. In its saved row, open **Options for \<name\>** and choose **Activate**. Set **Pick mode** to **Clockwheel** in **Settings**, **Profile**, **Song picking**, then press **Save changes**.
 
 Use **Restart at these minutes past each hour** to realign a clockwheel at fixed points. **Fit songs to the hour** in **Song picking** can choose a song that ends close to the next restart or scheduled event. A step with no eligible songs is skipped, so check category counts and time restrictions if the rotation sounds incomplete.
 
-If you already have a SAM Broadcaster clockwheel, **.PAL file to import** can create a starting clockwheel. Review the imported steps and categories before using it on air.
+If you already have a SAM Broadcaster clockwheel, enter **New clockwheel name**, choose **.PAL file to import**, then press **Import .PAL**. Create and Import .PAL share this name field. Opening, saving, duplicating or renaming a wheel leaves it as you typed it. Review the imported steps and categories before using its row's **Options** menu to activate it.
 
 ## Set the transitions
 

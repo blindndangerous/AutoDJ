@@ -3,8 +3,11 @@ import {
   captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, withDisabled,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { createCollectionTable } from "./collection-table.js";
+import { deleteCollectionItem } from "./collection-delete.js";
+import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
-import { fmtTime } from "./dom-helpers.js";
+import { clearFieldError, fmtTime } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { stationApi, stationEpoch } from "./stations.js";
 import {
@@ -27,7 +30,7 @@ export function installPreparedEditions({
   let show = null, edition = null, generation = 0, recording = null, starting = false, localTake = null;
   let busy = false, rerecord = null, timer = null, clock = null;
   let loadNumber = 0, refreshNumber = 0;
-  const receipts = new Map(), requested = new Map();
+  const receipts = new Map(), requested = new Map(), approving = new Set();
   const context = () => [generation, stationEpoch(), captureAuthenticatedRequestEpoch()];
   const current = ([mine, station, auth]) => mine === generation && station === stationEpoch()
     && isAuthenticatedRequestCurrent(auth);
@@ -49,11 +52,64 @@ export function installPreparedEditions({
     }
     say(error.message || "The edition request failed. Reload the edition and try again.");
   }
-  function button(action, label, handler) {
-    const value = doc.createElement("button"); value.type = "button";
-    value.dataset.action = action; value.textContent = label;
-    value.addEventListener("click", handler); return value;
-  }
+  const occurrenceTable = createCollectionTable({
+    host: get("occurrences"), label: "Edition occurrences", keyOf: (item) => item.id,
+    nameOf: (item, index) => `Item ${index + 1}, ${label(item, index)}`, nameIndex: 1,
+    columns: [
+      { key: "position", label: "Position", value: (_item, index) => index + 1 },
+      { key: "name", label: "Item", value: label },
+      { key: "kind", label: "Kind", value: (item) => item.kind === "segment" ? "Segment" : "Song" },
+    ],
+    actions: (item, index) => [
+      { id: "up", label: "Move up", disabledReason: busy ? "Wait for the edition save to finish." : index === 0 ? "This is already the first item." : "", run: () => moveOccurrence(item, index, -1) },
+      { id: "down", label: "Move down", disabledReason: busy ? "Wait for the edition save to finish." : index === edition.occurrences.length - 1 ? "This is already the last item." : "", run: () => moveOccurrence(item, index, 1) },
+      { id: "remove", label: "Remove", disabledReason: busy ? "Wait for the edition save to finish." : "", run: () => void removeOccurrence(item, index) },
+    ],
+    fallback: get("heading"), status: get("status"), emptyText: "No occurrences.",
+  });
+  const takeTable = createCollectionTable({
+    host: get("takes"), label: "Edition takes", keyOf: (take) => take.id, nameOf: takeDescription,
+    columns: [
+      { key: "name", label: "Name", value: (take) => take.label || "Speech" },
+      { key: "placement", label: "Placement", value: takePlacement },
+      { key: "status", label: "Status", value: (take) => take.status === "needs_review" ? "Needs review" : take.status === "unattached" ? "Unattached" : take.status },
+    ],
+    primary: (take) => ({ id: "listen", label: "Listen", disabledReason: audioRestriction(take), run: () => {
+      stopAudio(); get("audio").src = stationApi(endpoint(`/assets/${encodeURIComponent(take.asset_id)}`));
+    } }),
+    actions: (take) => [
+      { id: "rerecord", label: "Re-record", run: () => void rerecordTake(take) },
+      { id: "review", label: "Review", disabledReason: reviewRestriction(take), run: () => reviewTake(take) },
+      { id: "approve", label: "Approve", disabledReason: approving.has(take.id) ? "Approval is already being saved."
+        : take.status === "approved" ? "This take is already approved."
+          : reviewRestriction(take) || (!receipts.has(take.id) ? "Review the full take and joins before approving." : ""), run: () => void approveTake(take) },
+      { id: "reattach", label: "Reattach", disabledReason: take.position === "segment" ? "Remove or re-import a missing segment occurrence."
+        : take.status !== "unattached" ? "This take is already attached."
+          : !reattachPairs(take).length ? "Add programme items before reattaching this take." : "", run: (button) => openReattach(take, button) },
+      { id: "remove", label: "Remove", disabledReason: busy ? "Wait for the edition save to finish." : "", run: () => void removeTake(take) },
+    ],
+    fallback: get("heading"), status: get("status"), emptyText: "No takes.",
+  });
+  let reattachment = null;
+  const reattachEditor = createEditorDialog({
+    form: get("reattach-form"), heading: get("reattach-heading"), cancel: get("reattach-cancel"), fallback: get("heading"),
+    onCancel: () => takeTable.target(reattachment?.take.id, "options"),
+    save: async (_event, editorCurrent) => {
+      const draft = reattachment, pair = draft?.pairs[Number(get("reattach-position").value)];
+      if (!pair || !current(draft.ticket)) return;
+      try {
+        const value = await send(draft.url, "POST", {
+          expected_revision: draft.revision, before_id: pair[0], after_id: pair[1],
+        });
+        if (!current(draft.ticket) || !editorCurrent()) return;
+        render(value); reattachEditor.close();
+        (takeTable.target(draft.take.id, "options") || get("heading")).focus();
+        say("Take reattached. Review and approve its new position before broadcast.");
+      } catch (error) {
+        if (current(draft.ticket) && editorCurrent()) showEditorError(get("reattach-position"), error.message, get("reattach-error"), reattachEditor.status);
+      }
+    },
+  });
   function assets() {
     return Array.isArray(edition.assets) ? edition.assets : Object.values(edition.assets || {});
   }
@@ -149,22 +205,7 @@ export function installPreparedEditions({
       const li = doc.createElement("li"); li.textContent = typeof item === "string" ? item : item.reason || item.label;
       return li;
     }));
-    get("occurrences").replaceChildren(...edition.occurrences.map((item, index) => {
-      const li = doc.createElement("li"), text = doc.createElement("span");
-      text.textContent = `${index + 1}. ${label(item, index)}. `;
-      const move = (step) => void mutate({ occurrences: edition.occurrences.map((entry) => ({ ...entry })) }, (body) => {
-        [body.occurrences[index], body.occurrences[index + step]] = [body.occurrences[index + step], body.occurrences[index]];
-      }, `Moved ${label(item, index)}.`, `occurrence-${item.id}-${step > 0 ? "down" : "up"}`);
-      const up = button("up", "Move up", () => { if (index > 0) move(-1); else say("This is already the first item."); });
-      const down = button("down", "Move down", () => { if (index < edition.occurrences.length - 1) move(1); else say("This is already the last item."); });
-      up.setAttribute("aria-disabled", String(index === 0)); down.setAttribute("aria-disabled", String(index === edition.occurrences.length - 1));
-      up.id = `occurrence-${item.id}-up`; down.id = `occurrence-${item.id}-down`;
-      const remove = button("remove", "Remove", () => void mutate({
-        occurrences: edition.occurrences.filter((entry) => entry.id !== item.id),
-      }, null, `Removed ${label(item, index)}.`, "heading"));
-      for (const control of [up, down, remove]) control.setAttribute("aria-label", `${control.textContent} ${label(item, index)}`);
-      li.append(text, up, down, remove); return li;
-    }));
+    occurrenceTable.update(edition.occurrences);
     const transition = get("transition").value, insert = get("insert").value;
     get("transition").replaceChildren(...edition.occurrences.slice(0, -1).map((item, index) =>
       option(String(index), `Item ${index + 1}, ${label(item, index)} into item ${index + 2}, ${label(edition.occurrences[index + 1], index + 1)}`)));
@@ -179,75 +220,106 @@ export function installPreparedEditions({
     else get("resume-item").selectedIndex = hadResumeChoice || run?.interrupted || resumeChoice ? -1 : edition.occurrences.length ? 0 : -1;
     renderTakes(); positions(); onChange();
   }
-  function renderTakes() {
-    get("takes").replaceChildren(...edition.takes.map((take) => {
-      const li = doc.createElement("li"), text = doc.createElement("p");
-      const itemName = (id) => {
-        const index = edition.occurrences.findIndex((item) => item.id === id);
-        return index < 0 ? "missing item" : `item ${index + 1}, ${label(edition.occurrences[index], index)}`;
-      };
-      const placement = take.position === "transition"
-        ? `transition from ${itemName(take.before_id)} to ${itemName(take.after_id)}`
-        : take.position === "opening" ? `opening before ${itemName(take.after_id)}`
-          : take.position === "closing" ? `closing after ${itemName(take.before_id)}`
-            : `standalone segment, ${itemName(take.occurrence_id)}`;
-      const description = `${take.label || "Speech"}; ${placement}`;
-      li.dataset.takeId = take.id;
-      text.textContent = `${description}. ${take.status === "needs_review" ? "Needs review" : take.status === "unattached" ? "Unattached" : take.status}.`;
-      const listen = button("listen", "Listen to take", () => {
-        stopAudio(); get("audio").src = stationApi(endpoint(`/assets/${encodeURIComponent(take.asset_id)}`));
-      });
-      const record = button("rerecord", "Re-record", async () => {
-        if (!await confirmRecordingReplacement()) return;
-        stopRecording(true); dropLocal(); rerecord = take; get("position").value = take.position;
-        get("placement").value = take.placement || "auto"; get("allow-outro").checked = Boolean(take.allow_outro);
-        const index = edition.occurrences.findIndex((item) => item.id === take.before_id);
-        if (index >= 0) get("transition").value = String(index);
-        positions(); get("record").focus(); say(`Replacing ${description}. Record or import the replacement.`);
-      });
-      const review = button("review", "Review pending speech", () => reviewTake(take));
-      const approve = button("approve", "Approve reviewed take", () => void withDisabled(approve, () => approveTake(take)));
-      const remove = button("remove", "Remove take", async () => {
-        const ticket = context();
-        if (!await confirm({ title: "Remove this take?", message: `Remove ${description} from the edition? Its saved source audio is retained.`, confirmLabel: "Remove take" }) || !current(ticket)) return;
-        try {
-          const value = await request(endpoint(`/takes/${encodeURIComponent(take.id)}?expected_revision=${edition.revision}`), { method: "DELETE" });
-          if (current(ticket)) { render(value); get("heading").focus(); say("Take removed; saved source audio retained."); }
-        } catch (error) { fail(error, ticket); }
-      });
-      listen.disabled = ["missing", "invalid"].includes(take.status);
-      review.disabled = ["missing", "invalid", "unattached"].includes(take.status);
-      approve.disabled = !receipts.has(take.id) || review.disabled;
-      for (const control of [listen, record, review, approve, remove]) control.setAttribute("aria-label", `${control.textContent} ${description}`);
-      li.append(text, listen, record, review, approve, remove);
-      if (take.status === "unattached" && take.position !== "segment") {
-        const select = doc.createElement("select"), selectLabel = doc.createElement("label");
-        select.id = `edition-reattach-${take.id}`; selectLabel.htmlFor = select.id;
-        selectLabel.textContent = `Position for ${description}`;
-        const rows = edition.occurrences;
-        const pairs = take.position === "transition"
-          ? rows.slice(0, -1).map((item, index) => [item.id, rows[index + 1].id])
-          : rows.length ? [take.position === "opening" ? [null, rows[0].id] : [rows.at(-1).id, null]] : [];
-        select.append(...pairs.map(([before, after], index) => option(String(index),
-          before && after ? `${itemName(before)} into ${itemName(after)}` : before ? `After ${itemName(before)}` : `Before ${itemName(after)}`)));
-        const reattach = button("reattach", "Reattach", () => void withDisabled(reattach, async () => {
-          const ticket = context(), pair = pairs[Number(select.value)];
-          if (!pair) return;
-          try {
-            const value = await send(endpoint(`/takes/${encodeURIComponent(take.id)}/reattach`), "POST", {
-              expected_revision: edition.revision, before_id: pair[0], after_id: pair[1],
-            });
-            if (current(ticket)) {
-              render(value); get("takes").querySelector(`[data-take-id="${take.id}"] button[data-action='review']`)?.focus();
-              say("Take reattached. Review and approve its new position before broadcast.");
-            }
-          } catch (error) { fail(error, ticket, select); }
-        }));
-        reattach.setAttribute("aria-label", `Reattach ${description}`); reattach.disabled = !pairs.length;
-        li.append(selectLabel, select, reattach);
-      }
-      return li;
-    }));
+  function itemName(id) {
+    const index = edition.occurrences.findIndex((item) => item.id === id);
+    return index < 0 ? "missing item" : `item ${index + 1}, ${label(edition.occurrences[index], index)}`;
+  }
+  function takePlacement(take) {
+    return take.position === "transition"
+      ? `transition from ${itemName(take.before_id)} to ${itemName(take.after_id)}`
+      : take.position === "opening" ? `opening before ${itemName(take.after_id)}`
+        : take.position === "closing" ? `closing after ${itemName(take.before_id)}`
+          : `standalone segment, ${itemName(take.occurrence_id)}`;
+  }
+  function takeDescription(take) { return `${take.label || "Speech"}; ${takePlacement(take)}`; }
+  function audioRestriction(take) {
+    return ["missing", "invalid"].includes(take.status) ? `This take's audio is ${take.status}. Re-record or import a replacement.` : "";
+  }
+  function reviewRestriction(take) {
+    return audioRestriction(take) || (take.status === "unattached" ? "Reattach this take before reviewing or approving it." : "");
+  }
+  function renderTakes() { takeTable.update(edition.takes); }
+  function moveOccurrence(item, index, step) {
+    return mutate({ occurrences: edition.occurrences.map((entry) => ({ ...entry })) }, (body) => {
+      [body.occurrences[index], body.occurrences[index + step]] = [body.occurrences[index + step], body.occurrences[index]];
+    }, `Moved ${label(item, index)}.`, () => occurrenceTable.target(item.id, "options"));
+  }
+  async function removeOccurrence(item, index) {
+    const ticket = context(), revision = edition.revision, name = label(item, index);
+    const url = endpoint();
+    const occurrences = occurrenceFields(edition.occurrences.filter((entry) => entry.id !== item.id));
+    let removed = false, problem = null, target = null;
+    await deleteCollectionItem(doc, {
+      title: "Remove this occurrence?",
+      message: `Remove item ${index + 1}, ${name} from the edition?${item.kind === "segment" ? " Its active take is removed; saved source audio is retained." : " Bound speech may need reattachment and review."}`,
+      confirmLabel: "Remove occurrence",
+      onConfirm: async () => {
+        if (!current(ticket) || busy) return null;
+        let value;
+        try { value = await send(url, "PUT", { expected_revision: revision, occurrences }); }
+        catch (error) {
+          problem = error;
+          return current(ticket) ? occurrenceTable.target(item.id, "options") || get("heading") : null;
+        }
+        if (!current(ticket)) return null;
+        render(value); removed = true;
+        target = occurrenceTable.target(edition.occurrences[Math.min(index, edition.occurrences.length - 1)]?.id, "options") || get("heading");
+        return target;
+      },
+    });
+    if (problem) fail(problem, ticket);
+    else if (removed && current(ticket)) say(`Removed ${name}. ${focusDestination(target)}`);
+  }
+  async function removeTake(take) {
+    const ticket = context(), index = edition.takes.findIndex((item) => item.id === take.id);
+    const url = endpoint(`/takes/${encodeURIComponent(take.id)}?expected_revision=${edition.revision}`);
+    let removed = false, problem = null, target = null;
+    await deleteCollectionItem(doc, {
+      title: "Remove this take?", message: `Remove ${takeDescription(take)} from the edition? Its saved source audio is retained.`, confirmLabel: "Remove take",
+      onConfirm: async () => {
+        if (!current(ticket) || busy) return null;
+        let value;
+        try { value = await request(url, { method: "DELETE" }); }
+        catch (error) {
+          problem = error;
+          return current(ticket) ? takeTable.target(take.id, "options") || get("heading") : null;
+        }
+        if (!current(ticket)) return null;
+        render(value); removed = true;
+        target = takeTable.target(edition.takes[Math.min(index, edition.takes.length - 1)]?.id, "options") || get("heading");
+        return target;
+      },
+    });
+    if (problem) fail(problem, ticket);
+    else if (removed && current(ticket)) say(`Take removed; saved source audio retained. ${focusDestination(target)}`);
+  }
+  function focusDestination(target) {
+    const name = target.querySelector("button")?.getAttribute("aria-label") || target.textContent.trim();
+    return `Focus moved to ${name}.`;
+  }
+  async function rerecordTake(take) {
+    const ticket = context();
+    if (!await confirmRecordingReplacement() || !current(ticket)) return;
+    stopRecording(true); dropLocal(); rerecord = take; get("position").value = take.position;
+    get("placement").value = take.placement || "auto"; get("allow-outro").checked = Boolean(take.allow_outro);
+    const index = edition.occurrences.findIndex((item) => item.id === take.before_id);
+    if (index >= 0) get("transition").value = String(index);
+    positions(); get("record").focus(); say(`Replacing ${takeDescription(take)}. Record or import the replacement.`);
+  }
+  function reattachPairs(take) {
+    const rows = edition.occurrences;
+    return take.position === "transition"
+      ? rows.slice(0, -1).map((item, index) => [item.id, rows[index + 1].id])
+      : rows.length ? [take.position === "opening" ? [null, rows[0].id] : [rows.at(-1).id, null]] : [];
+  }
+  function openReattach(take, button) {
+    const pairs = reattachPairs(take);
+    reattachment = { take, pairs, ticket: context(), revision: edition.revision, url: endpoint(`/takes/${encodeURIComponent(take.id)}/reattach`) };
+    get("reattach-heading").textContent = `Reattach ${takeDescription(take)}`;
+    clearFieldError(get("reattach-position"), get("reattach-error"));
+    get("reattach-position").replaceChildren(...pairs.map(([before, after], index) => option(String(index),
+      before && after ? `${itemName(before)} into ${itemName(after)}` : before ? `After ${itemName(before)}` : `Before ${itemName(after)}`)));
+    reattachEditor.open(get("reattach-position"), button.closest("td"));
   }
   function reviewTake(take = null) {
     if (take) requested.set(take.id, { revision: edition.revision, dependency_hash: take.dependency_hash, asset_id: take.asset_id });
@@ -262,36 +334,46 @@ export function installPreparedEditions({
     const pending = requested.get(detail.take_id), take = edition.takes.find((item) => item.id === detail.take_id);
     if (!pending || !take || pending.revision !== detail.revision || pending.dependency_hash !== take.dependency_hash || pending.asset_id !== take.asset_id) return;
     receipts.set(take.id, { ...pending, review_id: detail.review_id });
-    const approve = get("takes").querySelector(`[data-take-id="${take.id}"] button[data-action='approve']`);
-    if (approve) approve.disabled = false;
+    renderTakes();
     say("Contextual review is available. Listen to the full take and joins, then explicitly approve it here.");
   }
   async function approveTake(take) {
-    const receipt = receipts.get(take.id); if (!receipt) return;
+    const receipt = receipts.get(take.id); if (!receipt || approving.has(take.id)) return;
     const ticket = context();
+    approving.add(take.id); renderTakes();
     try {
       const value = await send(endpoint(`/takes/${encodeURIComponent(take.id)}/approve`), "POST", { review_id: receipt.review_id });
       if (current(ticket)) {
         receipts.delete(take.id); render(value);
-        get("takes").querySelector(`[data-take-id="${take.id}"] button[data-action='listen']`)?.focus();
+        takeTable.target(take.id)?.focus();
         say("Take approved for its reviewed placement.");
       }
     } catch (error) {
       if (current(ticket)) { receipts.delete(take.id); renderTakes(); }
       fail(error, ticket);
+    } finally {
+      if (current(ticket)) { approving.delete(take.id); renderTakes(); }
     }
+  }
+  function occurrenceFields(items) {
+    return items.map(({ id, kind, path = "", asset_id = null, take_id = null }) => ({ id, kind, path, asset_id, take_id }));
   }
   async function mutate(fields, change = null, message = "Edition saved.", focus = null) {
     if (!edition || busy) return;
     const ticket = context(), body = { expected_revision: edition.revision, ...fields };
     if (change) change(body);
-    if (body.occurrences) body.occurrences = body.occurrences.map(({ id, kind, path = "", asset_id = null, take_id = null }) => ({ id, kind, path, asset_id, take_id }));
-    busy = true;
+    if (body.occurrences) body.occurrences = occurrenceFields(body.occurrences);
+    busy = true; occurrenceTable.update(edition.occurrences); renderTakes();
     try {
       const value = await send(endpoint(), "PUT", body);
-      if (current(ticket)) { render(value); if (focus) (doc.getElementById(focus) || get(focus))?.focus(); say(message); }
+      if (current(ticket)) {
+        render(value);
+        if (focus) (typeof focus === "function" ? focus() : doc.getElementById(focus) || get(focus))?.focus();
+        if (message) say(message);
+        return true;
+      }
     } catch (error) { fail(error, ticket, error.status === 409 ? get("load") : null); }
-    finally { if (current(ticket)) busy = false; }
+    finally { if (current(ticket)) { busy = false; occurrenceTable.update(edition.occurrences); renderTakes(); } }
   }
   async function refresh() {
     if (!show) return;
@@ -311,10 +393,12 @@ export function installPreparedEditions({
     try {
       const value = await request(`/api/editions/${encodeURIComponent(id)}`);
       if (!current(ticket) || number !== loadNumber) return;
-      if (edition?.id !== value.id) { generation += 1; busy = false; receipts.clear(); requested.clear(); }
+      busy = false;
+      if (edition?.id !== value.id) { generation += 1; receipts.clear(); requested.clear(); approving.clear(); }
       if (!preserveRecording) {
         starting = false; stopRecording(true); stopAudio(); dropLocal(); rerecord = null;
       }
+      reattachEditor.close(); reattachment = null;
       render(value); get("heading").focus(); say(`Opened ${value.name}.`);
     } catch (error) { if (number === loadNumber) fail(error, ticket); }
   }
@@ -357,18 +441,17 @@ export function installPreparedEditions({
     if (!edition || busy || recording || starting) return;
     const ticket = context(), query = new URLSearchParams({ expected_revision: edition.revision, filename });
     for (const [key, value] of Object.entries(target)) if (value != null) query.set(key, String(value));
-    busy = true;
+    busy = true; occurrenceTable.update(edition.occurrences); renderTakes();
     try {
       const value = await request(endpoint(`/takes?${query}`), { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
       if (current(ticket)) {
         const saved = value.takes.find((take) => !edition.takes.some((old) => old.id === take.id && old.asset_id === take.asset_id));
         render(value);
-        const review = saved && get("takes").querySelector(`[data-take-id="${saved.id}"] button[data-action='review']`);
-        (review && !review.disabled ? review : get("heading")).focus();
+        (saved && !reviewRestriction(saved) ? takeTable.target(saved.id, "options") : get("heading")).focus();
         stopAudio(); dropLocal(); rerecord = null; get("file").value = ""; say("Take saved. Contextual review and explicit approval are required before broadcast.");
       }
     } catch (error) { fail(error, ticket, error.status === 409 ? get("load") : control); }
-    finally { if (current(ticket)) busy = false; }
+    finally { if (current(ticket)) { busy = false; occurrenceTable.update(edition.occurrences); renderTakes(); } }
   }
   async function start(resume = false, now = false) {
     if (!edition) return;
@@ -401,9 +484,10 @@ export function installPreparedEditions({
     } catch (error) { fail(error, ticket, get("schedule-at")); }
   }
   function clear() {
+    reattachEditor.close(); reattachment = null;
     generation += 1; loadNumber += 1; refreshNumber += 1; starting = false; stopRecording(true); stopAudio(); dropLocal();
-    receipts.clear(); requested.clear(); edition = null; show = null; busy = false; rerecord = null;
-    get("editor").hidden = true; get("list").replaceChildren(); get("occurrences").replaceChildren(); get("takes").replaceChildren();
+    receipts.clear(); requested.clear(); approving.clear(); edition = null; show = null; busy = false; rerecord = null;
+    get("editor").hidden = true; get("list").replaceChildren(); occurrenceTable.clear(); takeTable.clear();
     get("summary").textContent = ""; get("run-status").textContent = ""; get("status").textContent = ""; get("omissions").replaceChildren();
     get("name").value = ""; get("new-name").value = ""; get("file").value = "";
     for (const id of ["transition", "insert", "resume-item"]) get(id).replaceChildren();
@@ -418,7 +502,7 @@ export function installPreparedEditions({
       const value = await send("/api/editions", "POST", { show_id: show.id, name: get("new-name").value.trim() || undefined });
       if (current(ticket)) {
         generation += 1; starting = false; stopRecording(true); stopAudio(); dropLocal(); rerecord = null;
-        receipts.clear(); requested.clear(); render(value); await refresh(); get("list").value = value.id;
+        receipts.clear(); requested.clear(); approving.clear(); render(value); await refresh(); get("list").value = value.id;
         say("Prepared edition created. The reusable show stays independent.");
       }
     } catch (error) { fail(error, ticket, get("new-name")); }
@@ -434,7 +518,7 @@ export function installPreparedEditions({
       await request(endpoint(`?expected_revision=${edition.revision}`), { method: "DELETE" });
       if (current(ticket)) {
         generation += 1; loadNumber += 1; busy = false; starting = false;
-        stopRecording(true); stopAudio(); dropLocal(); receipts.clear(); requested.clear();
+        stopRecording(true); stopAudio(); dropLocal(); receipts.clear(); requested.clear(); approving.clear();
         get("list").focus(); edition = null; get("editor").hidden = true; onChange(); await refresh(); say("Edition deleted.");
       }
     } catch (error) { fail(error, ticket); }

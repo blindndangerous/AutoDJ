@@ -106,6 +106,48 @@ describe("initSubtabs", () => {
     return { ui: initSubtabs(byId("settings-tabs"), { storage }), storage };
   }
 
+  // ADR-0011-10
+  it("uses the selected or first visible entry in every Settings tab group", () => {
+    for (const [selectedId, firstId, otherId] of [
+      ["stab-sound", "stab-mixing", "stab-stations"],
+      ["stab-schedule", "stab-stations", "stab-sound"],
+      ["stab-display", "stab-server", "stab-sound"],
+    ]) {
+      const { ui } = setup();
+      const selected = byId(selectedId), first = byId(firstId), other = byId(otherId);
+      const outside = document.querySelector(".skip-link");
+      selected.click();
+      outside.focus();
+      first.focus();
+      expect(document.activeElement).toBe(selected);
+      first.focus();
+      expect(document.activeElement).toBe(first); // Same-group movement is not redirected.
+      expect(ui.selected).toBe(selected.dataset.subview);
+      outside.focus();
+      first.dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true }));
+      first.focus();
+      expect(document.activeElement).toBe(first);
+      document.dispatchEvent(new window.PointerEvent("pointerup", { bubbles: true }));
+      first.click();
+      expect(ui.selected).toBe(first.dataset.subview);
+      selected.click();
+      outside.focus();
+      first.focus();
+      expect(document.activeElement).toBe(selected);
+      first.click();
+      expect(ui.selected).toBe(first.dataset.subview); // Focus-then-click still activates.
+      other.click();
+      selected.focus();
+      expect(document.activeElement).toBe(first); // This group has no selected tab.
+      expect(ui.selected).toBe(other.dataset.subview);
+      first.hidden = true;
+      const next = [...first.closest('[role="tablist"]').querySelectorAll('[role="tab"]')].find((tab) => !tab.hidden);
+      outside.focus();
+      selected.focus();
+      expect(document.activeElement).toBe(next);
+    }
+  });
+
   it("starts on the first tab and keeps arrow, Home and End navigation within each group", () => {
     const { ui } = setup();
     const first = byId("stab-mixing");

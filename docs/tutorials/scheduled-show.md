@@ -11,9 +11,10 @@ analysed songs, the folder-based `Practice` category, and the one-step `Practice
 clockwheel with repeat rules off. Use **Browser** output, no listeners, and a
 comfortable volume. The [two-category lesson](two-categories.md) is optional.
 
-If you followed another lesson, activate the original Practice wheel and check
+If you followed another lesson, choose **Activate** from **Options for Practice**
+in **Clockwheels**, then check
 **Settings**, **Song picking**, **Pick mode** is **Clockwheel**. Stop any show
-and disable other practice schedule events. Keep this lesson separate from a
+and choose **Disable** from each other practice event's **Options** menu. Keep this lesson separate from a
 live schedule. You will save a show named `Practice short show` and a one-time
 event named `Practice show start`. No paid services or advanced analysis are needed.
 
@@ -21,7 +22,7 @@ Allow about twenty minutes, or longer for long songs. AutoDJ must stay running
 through the scheduled time. An event missed while the application is stopped
 does not run automatically when it returns.
 
-To stop early, disable the lesson event, use **Stop show** in **Library tools**,
+To stop early, choose **Disable** from **Options for Practice show start**, use **Stop show** in **Library tools**,
 **Shows** if a show is active, and pause with **Play or Pause** in **Now Playing**.
 Pausing the browser alone does not disable a future event.
 
@@ -49,9 +50,9 @@ A song crossing the five-minute target can make the list longer. Preparing
 this list does not start the show or change what is playing.
 
 Make the example exactly two different songs. If generation produced more than
-two, use **Remove** on the extra entries. If it produced only one, enter another
+two, choose **Remove** from each extra entry's **Options** menu and confirm. If it produced only one, enter another
 practice title in **Search the library**, press **Search**, then **Add** for a
-different song. Use **Move up** or **Move down** to put the two songs in an order
+different song. Use **Move up** or **Move down** in each song's **Options** menu to set an order
 you recognize. These edits save immediately. Write down the two titles in order.
 
 Checkpoint: the list has two songs and a total duration; the saved show no longer
@@ -123,9 +124,10 @@ with delayed audio may simply be Soft timing waiting for the current song.
 Predict whether **Run now** can play the show when its schedule event is
 disabled. Does disabling remove the show, or just its automatic appointment?
 
-After the first show finishes, disable Practice show start if it is still
-enabled. If its row offers **Enable**, it is already disabled. Confirm a song
-is playing, then press that event's **Run now** once. Inspect **Recent runs**,
+After the first show finishes, open **Options for Practice show start** and
+choose **Disable** if available. If that menu offers **Enable**, the event is
+already disabled. Confirm a song is playing, reopen the menu, then choose
+**Run now** once. Inspect **Recent runs**,
 the on-air show text, and the next titles.
 
 Expected result: the action runs even though automatic scheduling is disabled.
@@ -137,7 +139,7 @@ Let this second run finish, or use **Stop show** to cancel its waiting songs.
 ## Stop and keep your work
 
 1. Leave Practice show start disabled. A completed one-time event normally
-   disables itself; check the row rather than assuming it did.
+   disables itself; check that its **Enabled** column says **No** rather than assuming it did.
 2. If a show is still active, press **Stop show** in **Shows**. Wait until the
    text says “No show is on the air.” If it reports stopping, let the next
    song change complete the removal, then check again.

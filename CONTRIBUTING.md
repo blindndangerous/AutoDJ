@@ -317,12 +317,34 @@ The browser UI uses native HTML and shared rules in
 `src/autodj/static/app.css`. Use `.card` for a grouped surface,
 `.settings-row` for a label and its control, `.setting-desc` for visible help,
 `.field-error` for an error stated in text, and `.no-results` for an empty
-list. Use `.dialog-actions` for a right-aligned, wrapping button row. These
-patterns preserve source and keyboard order; keep action-list rows aligned with
-their labels, and keep purpose-specific layouts such as the clockwheel step
-grid and dense tables local to their feature. Reuse the existing theme and
-spacing tokens, and keep native focus, forced-colors, and narrow-screen
-behavior in view.
+list. Use `.dialog-actions` for a right-aligned, wrapping button row.
+Collections, including clockwheel steps and dense data tables, use the shared
+`.collection-table` class and `modules/collection-table.js`, built on `tableRow`
+and `installTableNavigation`. Keep real data columns, one Tab stop, at most one
+visible primary row action, and an **Options for <row name>** menu for the rest.
+Let native column headings supply column names; do not repeat them in data-cell
+accessible labels. Moving vertically to a different row adds only that row's name
+to a plain data cell; clear this temporary context on focusout. Name cells and
+control cells retain their own names. Escape, completed menu actions and cancelled confirmations
+return to the Options grid cell so arrow navigation continues. Standalone menus
+return to their buttons. Editor descriptions contain short help only, never the
+whole form or its live status region. Opening an editor focuses its requested
+field directly, without an intermediate focus target. In tab strips, the selected
+tab is the sole Tab stop, including after click, shortcut or restored selection.
+Use the shared `tablist.js` entry guard too: screen-reader browse mode can focus
+negative-tabindex tabs. Outside focus enters on the selected tab, or the first
+visible tab in a Settings group without a selection. Preserve pointer activation,
+browse-mode focus-then-click activation and internal arrow/Home/End navigation
+([ADR 11](docs/adr/0011-verify-accessibility-with-browser-and-speech-evidence.md#amendment-2026-10-31-browse-mode-tab-entry)).
+Use `createEditorDialog` for add/edit and `deleteCollectionItem` for removal:
+confirm unless the screen offers Undo. Empty tables contain one `.no-results`
+row spanning every column. Disabled row actions remain focusable with
+`aria-disabled` and explain why when activated. Read-only tables need no menu.
+The cart wall and text-only lists remain exceptions. See
+[ADR 21](docs/adr/0021-unify-collection-tables.md) for the contract and phased
+migration. Reuse theme and spacing tokens. Collection buttons and menu items
+must be at least 24 CSS pixels wide and 44 CSS pixels high. Preserve visible
+focus, forced-colors and narrow-screen behavior.
 
 ## Where things live
 

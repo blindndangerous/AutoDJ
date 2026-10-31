@@ -6,13 +6,12 @@
 // and closes the station's public request page; while requests are off the
 // summary says so and the lists stay hidden.  While the card is open (and
 // the tab is showing) it refreshes every 15 seconds, silently:
-// the summary and the lists are plain text.  A refresh updates each
-// request's row in place, adds new rows and removes decided ones, so the
-// list is never rebuilt under the operator: a row that holds focus stays
-// until focus leaves it, and nothing a refresh does moves focus.
+// the summary and shared tables are not live regions. A refresh updates
+// keyed rows in place; removing a focused request moves focus to a remaining
+// row or the heading and announces that destination.
 //
 // After Approve, Play next or Turn down, focus moves to the next request's
-// Approve button (its first button when Approve is not offered), or to the
+// Approve cell (Options when Approve is unavailable), or to the
 // card's summary when none is left.  The result ("Queued Song by Artist.")
 // is said once through #requests-status a moment later, so the speech for
 // the newly focused button does not cut it off.
@@ -28,6 +27,8 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, staleActionText } from "./api-client.js";
 import { announceStatus, sayIfStillPending } from "./live-region.js";
 import { clearFieldError, showFieldError } from "./dom-helpers.js";
+import { createCollectionTable } from "./collection-table.js";
+import { deleteCollectionItem } from "./collection-delete.js";
 import { stationEpoch } from "./stations.js";
 import { clockText } from "./time-format.js";
 import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
@@ -35,11 +36,6 @@ import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
 const POLL_MS = 15000;
 // Long enough for a screen reader to start on the focused button first.
 export const ANNOUNCE_DELAY_MS = 600;
-const ACTIONS = [
-  ["approve", "Approve"],
-  ["play-next", "Play next"],
-  ["reject", "Turn down"],
-];
 
 export function songText(request) {
   const title = String(request.title || "").trim() || "Unknown title";
@@ -130,93 +126,58 @@ export function installListenerRequests({
   const status = doc.getElementById("requests-status");
   const panel = doc.getElementById("panel-queue");
   if (!card || !summary || !list || !recent || !status) {
-    return { refresh: async () => {}, clear: () => {} };
+    return { refresh: async () => {}, clear: () => {}, setQueueDisabledReason: () => {} };
   }
   let lastJson = null;
   let lastState = null;
   let busy = false;
+  let queueDisabledReason = "";
+
+  function actionReason(item, action) {
+    if (action === "reject") return "";
+    if (queueDisabledReason) return queueDisabledReason;
+    return action === "approve" && item.can_approve === false
+      ? fitText(item) || "This request cannot be approved in the current queue." : "";
+  }
 
   function say(message, tone = "info") {
     if (!isEnabled()) return;
     announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 6000 : 4000, tone });
   }
 
-  const rowOf = (id) => [...list.children].find((li) => li.dataset.id === id) || null;
-
-  function makeButton(item, action, label) {
-    const button = doc.createElement("button");
-    button.type = "button";
-    button.dataset.action = action;
-    button.dataset.id = item.id;
-    // The visible word first, so speech input matches it (2.5.3).
-    button.textContent = label;
-    button.dataset.song = songText(item);
-    button.setAttribute("aria-label", `${label} ${button.dataset.song}`);
-    return button;
-  }
-
-  function makeRow(item) {
-    const li = doc.createElement("li");
-    li.dataset.id = item.id;
-    const song = doc.createElement("p");
-    const strong = doc.createElement("strong");
-    strong.className = "request-song";
-    const when = doc.createElement("span");
-    when.className = "request-when";
-    song.append(strong, " ", when);
-    const fit = doc.createElement("p");
-    fit.className = "request-fit";
-    const buttons = doc.createElement("p");
-    buttons.className = "request-actions";
-    li.append(song, fit, buttons);
-    updateRow(li, item);
-    return li;
-  }
-
-  // Changes only what differs, so a refresh never replaces a focused button.
-  function updateRow(li, item) {
-    setText(li.querySelector(".request-song"), songText(item));
-    setText(li.querySelector(".request-when"), requestedText(item, formatTime));
-    setText(li.querySelector(".request-fit"), fitText(item));
-    const buttons = li.querySelector(".request-actions");
-    ACTIONS.forEach(([action, label], index) => {
-      const offered = action !== "approve" || item.can_approve !== false;
-      const button = buttons.querySelector(`[data-action="${action}"]`);
-      if (offered && !button) {
-        const after = ACTIONS.slice(index + 1)
-          .map(([other]) => buttons.querySelector(`[data-action="${other}"]`))
-          .find(Boolean);
-        buttons.insertBefore(makeButton(item, action, label), after || null);
-      } else if (!offered && button && doc.activeElement !== button) {
-        button.remove();
-      }
-    });
-  }
-
-  function renderPending(items) {
-    const holding = list.contains(doc.activeElement) ? doc.activeElement.closest("li") : null;
-    const wanted = new Set(items.map((item) => item.id));
-    for (const li of [...list.children]) {
-      if (!wanted.has(li.dataset.id) && li !== holding) li.remove();
-    }
-    let previous = null;
-    for (const item of items) {
-      let li = rowOf(item.id);
-      if (li) {
-        updateRow(li, item);
-      } else {
-        li = makeRow(item);
-        list.insertBefore(li, previous ? previous.nextSibling : list.firstChild);
-      }
-      previous = li;
-    }
-    list.hidden = list.children.length === 0;
-  }
-
-  function recentLine(item) {
-    const word = STATUS_WORDS[item.status] || item.status;
-    return `${word}: ${songText(item)}. ${fitText({ ...item, reason: item.note || "" })}`.trim();
-  }
+  const pendingTable = createCollectionTable({
+    host: list, label: "Waiting requests", status, fallback: heading,
+    keyOf: (item) => item.id, nameOf: songText, emptyText: "No requests waiting.",
+    columns: [
+      { key: "song", label: "Song", value: songText },
+      { key: "requester", label: "Requester", value: (item) => item.name || "Anonymous" },
+      { key: "time", label: "Time", value: (item) => formatTime(item.requested_at) },
+      { key: "fit", label: "Fit", value: fitText },
+    ],
+    primary: (item) => ({ id: "approve", label: "Approve",
+      disabledReason: actionReason(item, "approve"),
+      run: (button) => decide(item, "approve", button) }),
+    actions: (item) => [
+      { id: "play-next", label: "Play next", disabledReason: actionReason(item, "play-next"), run: (button) => decide(item, "play-next", button) },
+      { id: "reject", label: "Turn down", run: (button) => {
+        const mine = settingsGeneration;
+        return deleteCollectionItem(doc, { title: "Turn down this request?",
+          message: `Turn down ${songText(item)}?`, confirmLabel: "Turn down",
+          onConfirm: () => mine === settingsGeneration && isEnabled() ? decide(item, "reject", button) : null });
+      } },
+    ],
+  });
+  const recentTable = createCollectionTable({
+    host: recent, label: "Recent decisions", status, fallback: heading,
+    keyOf: (item) => item.id, nameOf: songText, emptyText: "No recent decisions.",
+    columns: [
+      { key: "song", label: "Song", value: songText },
+      { key: "requester", label: "Requester", value: (item) => item.name || "Anonymous" },
+      { key: "time", label: "Time", value: (item) => formatTime(item.requested_at) },
+      { key: "decision", label: "Decision", value: (item) => STATUS_WORDS[item.status] || item.status },
+      { key: "reason", label: "Reason", value: (item) => fitText({ ...item, reason: item.note || "" }) },
+    ],
+  });
 
   const settingsForm = doc.getElementById("requests-settings");
   const enabledBox = doc.getElementById("requests-enabled");
@@ -331,7 +292,7 @@ export function installListenerRequests({
     });
   }
 
-  function render(state) {
+  function render(state, { announceFocus = true } = {}) {
     lastState = state;
     const json = JSON.stringify(state);
     if (json === lastJson) return;
@@ -340,29 +301,12 @@ export function installListenerRequests({
     setText(summary, summaryText(state));
     // Off: nothing is waiting or decided for the operator to act on.
     const off = state.enabled === false;
-    renderPending(off ? [] : state.pending);
-    // The decisions list has no buttons, so it may be rebuilt when it changes.
-    const lines = off ? [] : state.recent.map(recentLine);
-    if (lines.join("\n") !== [...recent.children].map((li) => li.textContent).join("\n")) {
-      recent.replaceChildren(...lines.map((line) => {
-        const li = doc.createElement("li");
-        li.textContent = line;
-        return li;
-      }));
-    }
-    recent.hidden = lines.length === 0;
-    if (recentHeading) recentHeading.hidden = recent.hidden;
+    pendingTable.update(off ? [] : state.pending, { announceFocus });
+    recentTable.update(off ? [] : state.recent);
+    list.hidden = off;
+    recent.hidden = off;
+    if (recentHeading) recentHeading.hidden = off;
   }
-
-  // A row kept only because it held focus goes once focus has left it (the
-  // render keeps only the row that holds focus now, if any).
-  list.addEventListener("focusout", () => {
-    later(() => {
-      if (!lastState) return;
-      lastJson = null;
-      render(lastState);
-    }, 0);
-  });
 
   async function refresh() {
     if (!isEnabled()) return;
@@ -382,30 +326,15 @@ export function installListenerRequests({
     render({ ...state, pending: state.pending || [], recent: state.recent || [] });
   }
 
-  function neighbours(id) {
-    const items = [...list.children];
-    const index = items.findIndex((li) => li.dataset.id === id);
-    return [items[index + 1], items[index - 1]].filter(Boolean).map((li) => li.dataset.id);
-  }
-
-  function focusTarget(ids, state) {
-    for (const id of ids) {
-      const item = state.pending.find((pending) => pending.id === id);
-      const li = rowOf(id);
-      if (!item || !li) continue;
-      const approve = item.can_approve !== false && li.querySelector('[data-action="approve"]');
-      return approve || li.querySelector("button");
-    }
-    return heading;
-  }
-
-  list.addEventListener("click", async (event) => {
-    const button = event.target.closest?.("button[data-action]");
-    if (!button || busy || !isEnabled()) return;
+  async function decide(item, action, button) {
+    if (busy || !isEnabled()) return null;
+    const restriction = actionReason(item, action);
+    if (restriction) { say(restriction); return null; }
     const mine = settingsGeneration;
-    const { id, action } = button.dataset;
-    const song = button.dataset.song || "the song";
-    const next = neighbours(id);
+    const { id } = item;
+    const song = songText(item);
+    const index = lastState.pending.findIndex((pending) => pending.id === id);
+    if (index < 0) return null;
     // busy holds off another press.  No aria-disabled: NVDA speaks the
     // state change on the focused button, so the press was heard as
     // "unavailable" (#331).  .is-pending gives the busy look, and
@@ -425,13 +354,17 @@ export function installListenerRequests({
       const url = `/api/requests/${encodeURIComponent(id)}/${action}`;
       let reply;
       if (action === "approve" || action === "play-next") {
-        const sent = await sendWithVoiceTrackConflict(doc, (voice) => request(url, {
-          method: "POST",
-          headers: Object.keys(voice).length
-            ? { Accept: "application/json", "Content-Type": "application/json" }
-            : { Accept: "application/json" },
-          ...(Object.keys(voice).length ? { body: JSON.stringify(voice) } : {}),
-        }));
+        const sent = await sendWithVoiceTrackConflict(doc, (voice) => {
+          const reason = actionReason(item, action);
+          if (reason) throw new Error(reason);
+          return request(url, {
+            method: "POST",
+            headers: Object.keys(voice).length
+              ? { Accept: "application/json", "Content-Type": "application/json" }
+              : { Accept: "application/json" },
+            ...(Object.keys(voice).length ? { body: JSON.stringify(voice) } : {}),
+          });
+        });
         if (!sent) {
           const canceled = action === "approve" ? "Approval" : "Play next";
           if (isEnabled() && mine === settingsGeneration) say(`${canceled} canceled for ${song}.`);
@@ -446,12 +379,15 @@ export function installListenerRequests({
       }
       if (!isEnabled() || mine !== settingsGeneration) return;
       const state = { ...reply, pending: reply.pending || [], recent: reply.recent || [] };
-      // Move focus first, then let the decided row go, then say the result.
-      focusTarget(next, state)?.focus();
+      refreshGeneration++;
       lastJson = null;
-      render(state);
+      render(state, { announceFocus: false });
+      const next = state.pending[Math.min(index, state.pending.length - 1)];
+      const target = next ? pendingTable.target(next.id, next.can_approve === false ? "options" : "approve") : heading;
+      target?.focus();
       const done = action === "reject" ? `Turned down ${song}.` : `Queued ${song}.`;
       later(() => { if (mine === settingsGeneration) say(done); }, ANNOUNCE_DELAY_MS);
+      return target;
     } catch (error) {
       if (!isEnabled()) return;
       // Answered after a station switch: done, or not, on the old station.
@@ -463,7 +399,7 @@ export function installListenerRequests({
       button.classList.remove("is-pending");
       button.removeAttribute("aria-busy");
     }
-  });
+  }
 
   const showing = () => isEnabled() && card.open && !card.hidden && !doc.hidden && !panel?.hidden;
   card.addEventListener("toggle", () => { if (card.open) void refresh(); });
@@ -482,10 +418,15 @@ export function installListenerRequests({
     lastState = null;
     settingsDirty = false;
     clearThresholdError();
-    list.replaceChildren();
-    recent.replaceChildren();
+    pendingTable.clear();
+    recentTable.clear();
     card.hidden = true;
     void refresh();
   }
-  return { refresh, clear };
+  function setQueueDisabledReason(reason = "") {
+    if (queueDisabledReason === reason) return;
+    queueDisabledReason = reason;
+    if (lastState) pendingTable.update(lastState.enabled === false ? [] : lastState.pending, { announceFocus: false });
+  }
+  return { refresh, clear, setQueueDisabledReason };
 }

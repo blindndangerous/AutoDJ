@@ -4,20 +4,20 @@ import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 // The server lists the actions and their settings, so an action that a
 // later feature registers appears here without changes to this file.  The
 // panel loads when its subtab is seen, and again when the server says the
-// schedule changed or an event ran.  The lists are plain text, not live
-// regions; each result of a button is said once through #schedule-status.
+// schedule changed or an event ran. The collections use shared native
+// tables; each result of a button is said once through #schedule-status.
 //
 // Focus: Add event and Edit move to the Name field.  Save and Cancel move
-// to the event's Edit button (Add event when there is none).  Delete moves
-// to the Edit button of the event that took its place.  A bad field is
+// to the event's Edit cell (Add event when there is none). Delete moves
+// to the Edit cell of the event that took its place.  A bad field is
 // named in words, marked aria-invalid, described by the error text and
 // focused.  Rows are updated in place, so a refresh never takes focus away
-// from a row's button.
+// from a row's cell or open menu.
 
 import { requestJson } from "./api-client.js";
-import { confirmAction } from "./confirm-dialog.js";
-import { focusAfterDialog, reconcileRows } from "./dom-helpers.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
+import { deleteCollectionItem } from "./collection-delete.js";
+import { focusAfterDialog } from "./dom-helpers.js";
+import { createCollectionTable } from "./collection-table.js";
 import { announceStatus } from "./live-region.js";
 import { clockText, relativeTimeText } from "./time-format.js";
 
@@ -33,13 +33,11 @@ const DATES_REPEAT_HELP = {
     + "29 February counts as 28 February in other years.",
 };
 
-export function installSchedulerPanel({ doc = document, request = requestJson, now = () => Date.now() } = {}) {
+export function installSchedulerPanel({ doc = document, request = requestJson, now = () => Date.now(), offAir = false } = {}) {
   const panel = doc.getElementById("spanel-schedule");
-  if (!panel) return { refresh: async () => {}, clear: () => {} };
+  if (!panel) return { refresh: async () => {}, clear: () => {}, setOffAir() {} };
   const get = (id) => doc.getElementById(`schedule-${id}`);
   const status = get("status");
-  const list = get("events");
-  const listNavigation = installActionListNavigation(list);
   const form = get("form");
   const formError = get("form-error");
   const nameInput = get("name");
@@ -53,6 +51,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
   let editing = null; // the ID of the event in the form, or null when adding
   let session = 0;
   let generation = 0;
+  let stationStopped = offAir;
 
   const editor = createEditorDialog({ form, heading: get("form-legend"), cancel: get("cancel"), fallback: addButton,
     save, onCancel: closeForm });
@@ -69,13 +68,6 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     const item = doc.createElement("option");
     item.value = value;
     item.textContent = label;
-    return item;
-  }
-
-  function textItem(text, className = "") {
-    const item = doc.createElement("li");
-    if (className) item.className = className;
-    item.textContent = text;
     return item;
   }
 
@@ -108,86 +100,78 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
 
   // ---- Lists ----------------------------------------------------------
 
-  function eventById(id) {
-    return data.events.find((item) => item.id === id) || null;
-  }
-
-  function eventText(event) {
+  function eventWhen(event) {
     const wait = event.wait_seconds > 0 ? `, waits up to ${event.wait_seconds} seconds` : "";
     const timing = event.timing === "hard" ? `Hard timing${wait}` : "Soft timing";
-    const state = `${event.enabled ? "" : " Disabled."}${event.ended ? " Ended, no runs left." : ""}`;
-    return `${event.name}: ${event.repeat_text}. ${event.action_text}. ${timing}.${state}`;
+    return `${event.repeat_text}. ${timing}.`;
   }
 
-  // One button of a row: short on screen, named for the event for a
-  // screen reader ("Delete" and "Delete Morning show").
-  function rowButton(role, onClick) {
-    const button = doc.createElement("button");
-    button.type = "button";
-    button.dataset.role = role;
-    // Run now changes what is on air at the station the page controls (#70).
-    button.addEventListener("click", () => {
-      const id = button.closest("li")?.dataset.eventId;
-      const event = id && eventById(id);
-      if (event) void onClick(event, button);
-    });
-    return button;
+  function nextRun(event) {
+    if (event.ended) return "Ended, no runs left";
+    if (!event.enabled) return "Disabled";
+    const upcoming = data.upcoming.find((run) => run.id === event.id);
+    // The schedule endpoint returns only the next five occurrences, not
+    // each event's next time. Absence from that window does not mean ended.
+    return upcoming ? `${formatWhen(upcoming.time)}, ${relative(upcoming.time)}` : "Not in next 5 runs";
   }
 
-  function setText(element, text) {
-    if (element.textContent !== text) element.textContent = text;
-  }
+  const eventsTable = createCollectionTable({
+    host: get("events"), label: "Schedule events", status, fallback: addButton,
+    emptyText: "No events yet.", keyOf: (event) => event.id, nameOf: (event) => event.name,
+    columns: [
+      { key: "name", label: "Name", value: (event) => event.name },
+      { key: "when", label: "When", value: eventWhen },
+      { key: "action", label: "Action", value: (event) => event.action_text },
+      { key: "next", label: "Next run", value: nextRun },
+      { key: "enabled", label: "Enabled", value: (event) => event.enabled ? "Yes" : "No" },
+    ],
+    primary: (event) => ({ id: "edit", label: "Edit", run: (button) => openForm(event, button.closest("td")) }),
+    actions: (event) => [
+      // Run now changes what is on air at the station the page controls (#70).
+      { id: "run", label: "Run now", run: () => runEvent(event),
+        disabledReason: stationStopped ? "Start the station to run this event now" : "" },
+      { id: "toggle", label: event.enabled ? "Disable" : "Enable", run: () => toggleEvent(event) },
+      { id: "delete", label: "Delete", run: (button) => deleteEvent(event, button) },
+    ],
+  });
+  const upcomingTable = createCollectionTable({
+    host: get("upcoming"), label: "Next events", status, fallback: addButton,
+    emptyText: "Nothing is scheduled.", keyOf: (run) => `${run.id}:${run.time}`, nameOf: (run) => run.name,
+    columns: [
+      { key: "name", label: "Name", value: (run) => run.name },
+      { key: "when", label: "When", value: (run) => formatWhen(run.time) },
+      { key: "relative", label: "Due", value: (run) => relative(run.time) },
+      { key: "action", label: "Action", value: (run) => run.action_text },
+    ],
+  });
+  const runsTable = createCollectionTable({
+    host: get("runs"), label: "Recent runs", status, fallback: addButton,
+    emptyText: "No events have run yet.", keyOf: (run) => run.key, nameOf: (run) => run.event,
+    columns: [
+      { key: "name", label: "Name", value: (run) => run.event },
+      { key: "when", label: "When", value: (run) => formatWhen(run.time) },
+      { key: "action", label: "Action", value: (run) => run.summary },
+      { key: "result", label: "Result", value: (run) => run.result === "ok" ? "Done"
+        : run.result === "error" ? `Failed: ${run.message}` : run.message || "Missed" },
+    ],
+  });
 
-  function setLabel(button, visible, name) {
-    setText(button, visible);
-    if (button.getAttribute("aria-label") !== name) button.setAttribute("aria-label", name);
-  }
-
-  function fillRow(row, event) {
-    const [text, edit, toggle, run, remove] = row.children;
-    setText(text, eventText(event));
-    setLabel(edit, "Edit", `Edit ${event.name}`);
-    setLabel(toggle, event.enabled ? "Disable" : "Enable", `${event.enabled ? "Disable" : "Enable"} ${event.name}`);
-    setLabel(run, "Run now", `Run now, ${event.name}`);
-    setLabel(remove, "Delete", `Delete ${event.name}`);
-  }
-
-  function newRow(event) {
-    const row = doc.createElement("li");
-    row.dataset.eventId = event.id;
-    row.append(doc.createElement("span"));
-    // Spaced like the other settings lists (dom-helpers listRow).
-    for (const [role, onClick] of [["edit", (event, button) => openForm(event, button)], ["toggle", toggleEvent], ["run", runEvent], ["delete", deleteEvent]]) {
-      row.append(" ", rowButton(role, onClick));
-    }
-    fillRow(row, event);
-    return row;
-  }
-
-  // Keep the rows that still exist, so focus on one of their buttons
-  // survives a refresh; remove the gone ones and add the new ones in order.
   function renderEvents() {
-    const hasRows = !!list.querySelector(":scope > li[data-row-key]");
-    if (data.events.length || hasRows) reconcileRows(list, data.events, (item) => item.id, newRow, fillRow, { fallback: addButton, onFocusLost: ({ target }) => {
-      if (!listFocusAnnouncementSuppressed) say(`The schedule changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Add event"}.`);
-    } });
-    if (!data.events.length && !list.querySelector(":scope > li.no-results")) list.append(textItem("No events yet.", "no-results"));
-    listNavigation.refresh();
+    eventsTable.update(data.events, { announceFocus: !listFocusAnnouncementSuppressed });
   }
 
   function renderUpcoming() {
-    const items = data.upcoming.map((row) => textItem(
-      `${formatWhen(row.time)}, ${relative(row.time)}: ${row.name}. ${row.action_text}.`,
-    ));
-    get("upcoming").replaceChildren(...(items.length ? items : [textItem("Nothing is scheduled.", "no-results")]));
+    upcomingTable.update(data.upcoming);
   }
 
   function renderRuns() {
-    const result = { ok: () => "Done", error: (run) => `Failed: ${run.message}`, missed: (run) => run.message || "Missed" };
-    const items = data.runs.map((run) => textItem(
-      `${formatWhen(run.time)}: ${run.event}. ${run.summary}. ${(result[run.result] || result.missed)(run)}.`,
-    ));
-    get("runs").replaceChildren(...(items.length ? items : [textItem("No events have run yet.", "no-results")]));
+    const occurrences = new Map();
+    runsTable.update(data.runs.map((run) => {
+      const identity = JSON.stringify([run.time, run.event_id, run.event, run.summary, run.result, run.message]);
+      const occurrence = occurrences.get(identity) || 0;
+      occurrences.set(identity, occurrence + 1);
+      return { ...run, key: `${identity}:${occurrence}` };
+    }));
   }
 
   function render() {
@@ -216,8 +200,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
   }
 
   function focusRowButton(id, role) {
-    const row = [...list.children].find((item) => item.dataset.eventId === id);
-    focusAfterDialog(row?.querySelector(`[data-role="${role}"]`) || addButton);
+    focusAfterDialog(eventsTable.target(id, role === "edit" ? "primary" : "options") || addButton);
   }
 
   // ---- Row buttons ----------------------------------------------------
@@ -258,7 +241,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     const current = session;
     const index = data.events.findIndex((item) => item.id === event.id);
     let result = null;
-    const confirmed = await confirmAction(doc, {
+    const confirmed = await deleteCollectionItem(doc, {
       title: `Delete event ${event.name}?`,
       message: "The event is removed from the schedule.  Its past runs stay in Recent runs.",
       confirmLabel: "Delete event",
@@ -271,8 +254,8 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
           try { await load(); } finally { listFocusAnnouncementSuppressed = false; }
           if (current !== session) return null;
           result = [`Event ${event.name} deleted`];
-          const edits = list.querySelectorAll('[data-role="edit"]');
-          return edits[Math.min(index, edits.length - 1)] || addButton;
+          const next = data.events[Math.min(index, data.events.length - 1)];
+          return next ? eventsTable.target(next.id) : addButton;
         } catch (error) {
           if (current !== session) return null;
           result = [`Could not delete ${event.name}: ${error.message}`, "error"];
@@ -552,7 +535,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     }
     if (current !== session || !active()) return;
     // The list is updated before the form closes, so focus goes from Save
-    // straight to the event's Edit button.  A failed reload leaves the
+    // straight to the event's Edit cell. A failed reload leaves the
     // list to the next schedule message.
     await load().catch(() => false);
     if (current !== session || !active()) return;
@@ -576,6 +559,11 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
 
   return {
     refresh,
+    setOffAir(stopped) {
+      if (stationStopped === stopped) return;
+      stationStopped = stopped;
+      renderEvents();
+    },
     // Signed out: forget everything this session showed.
     clear() {
       session += 1;
@@ -586,13 +574,9 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
       get("timezone").textContent = "";
       actionSelect.replaceChildren();
       paramsBox.replaceChildren();
-      listFocusAnnouncementSuppressed = true;
-      try { reconcileRows(list, [], (event) => event.id, () => null, () => {}, { fallback: addButton, onFocusLost: ({ target }) => {
-        if (!listFocusAnnouncementSuppressed) say(`The schedule changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Add event"}.`);
-      } }); }
-      finally { listFocusAnnouncementSuppressed = false; }
-      get("upcoming").replaceChildren();
-      get("runs").replaceChildren();
+      eventsTable.clear();
+      upcomingTable.clear();
+      runsTable.clear();
     },
   };
 }

@@ -21,9 +21,9 @@ function mount() {
         <summary id="requests-heading"><h2>Listener requests</h2></summary>
         <p id="requests-summary">No requests waiting.</p>
         <div id="requests-status" role="status" aria-live="polite" aria-atomic="true"></div>
-        <ul id="requests-list" aria-label="Waiting requests" hidden></ul>
+        <div id="requests-list" hidden></div>
         <h3 id="requests-recent-heading" hidden>Recent decisions</h3>
-        <ul id="requests-recent" hidden></ul>
+        <div id="requests-recent" hidden></div>
         <form id="requests-settings" novalidate>
           <input type="checkbox" id="requests-enabled" aria-describedby="requests-enabled-help">
           <input type="radio" name="requests-approval" id="requests-approval-manual" value="manual" checked>
@@ -66,7 +66,22 @@ const STATE = {
 
 const byId = (id) => document.getElementById(id);
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-const row = (id) => [...byId("requests-list").children].find((li) => li.dataset.id === id);
+const requestRows = () => [...byId("requests-list").querySelectorAll("tbody tr[data-row-key]")];
+const row = (id) => requestRows().find((item) => item.dataset.rowKey === id);
+const menuAction = (id, action) => {
+  const current = row(id);
+  current.querySelector('[aria-haspopup="menu"]').click();
+  return current.querySelector(`button[data-action="${action}"]`);
+};
+async function decideRequest(id, action) {
+  const button = action === "approve" ? row(id).querySelector('button[data-action="approve"]') : menuAction(id, action);
+  button.click();
+  if (action === "reject") {
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+  }
+  return button;
+}
 
 describe("listener request words", () => {
   it("names songs, requesters and the day's count in plain words", () => {
@@ -129,7 +144,7 @@ describe("listener requests card", () => {
       await flush();
       let finish;
       request.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
-      const button = row(A).querySelector('[data-action="approve"]');
+      const button = row(A).querySelector('button[data-action="approve"]');
       if (pending === "refresh") void controls.refresh();
       else if (pending === "settings") {
         byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
@@ -142,7 +157,7 @@ describe("listener requests card", () => {
       await flush();
       runDelayed();
       expect(byId("requests-card").hidden).toBe(true);
-      expect(byId("requests-list").children).toHaveLength(0);
+      expect(requestRows()).toHaveLength(0);
       expect(byId("requests-status").textContent).toBe("");
       timers[0]();
       byId("requests-card").dispatchEvent(new Event("toggle"));
@@ -153,7 +168,7 @@ describe("listener requests card", () => {
       controls.clear();
       await flush();
       expect(request).toHaveBeenCalledTimes(calls + 1);
-      expect(byId("requests-list").children).toHaveLength(2);
+      expect(requestRows()).toHaveLength(2);
     },
   );
 
@@ -168,7 +183,7 @@ describe("listener requests card", () => {
     expect(byId("requests-enabled").checked).toBe(false);
     expect(byId("requests-approval-auto").checked).toBe(true);
     expect(byId("requests-list").hidden).toBe(true);
-    expect(byId("requests-list").children).toHaveLength(0);
+    expect(requestRows()).toHaveLength(0);
   });
 
   it("stays hidden when the station does not answer", async () => {
@@ -212,7 +227,7 @@ describe("listener requests card", () => {
   it("turns requests off: the lists go and the summary says the page is closed", async () => {
     install();
     await flush();
-    expect(byId("requests-list").children).toHaveLength(2);
+    expect(requestRows()).toHaveLength(2);
     byId("requests-enabled").checked = false;
     byId("requests-settings").dispatchEvent(new Event("change"));
     request.mockResolvedValueOnce({ ...STATE, enabled: false, pending: [], recent: [] });
@@ -274,29 +289,104 @@ describe("listener requests card", () => {
     expect(byId("requests-settings-save").hasAttribute("aria-busy")).toBe(false);
   });
 
-  it("lists waiting requests with named buttons, Approve only where it fits", async () => {
+  it.each(["mouse", "Enter", " ", "type-ahead"])("blocks off-air queue actions through %s but permits Turn down", async (activation) => {
+    const controls = install();
+    await flush();
+    const reason = "Start the station to change the queue.";
+    controls.setQueueDisabledReason(reason);
+    const approve = row(A).querySelector('button[data-action="approve"]');
+    const next = row(A).querySelector('button[data-action="play-next"]');
+    for (const button of [approve, next]) {
+      expect(button.disabled).toBe(false);
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+      expect(byId(button.getAttribute("aria-describedby")).textContent).toBe(reason);
+    }
+    const key = (button, value) => button.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true }));
+    if (activation === "mouse") approve.click();
+    else if (activation !== "type-ahead") {
+      approve.closest("td").focus(); key(approve.closest("td"), activation);
+    }
+    row(A).querySelector('[aria-haspopup="menu"]').click();
+    if (activation === "mouse") next.click();
+    else {
+      if (activation === "type-ahead") key(document.activeElement, "p");
+      else next.focus();
+      key(document.activeElement, activation === "type-ahead" ? "Enter" : activation);
+    }
+    await vi.waitFor(() => expect(byId("requests-status").textContent).toBe(reason));
+    expect(request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+    const reject = row(A).querySelector('button[data-action="reject"]');
+    expect(reject.getAttribute("aria-disabled")).toBe("false");
+    reject.click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await flush();
+    expect(request.mock.calls.filter(([, options]) => options?.method === "POST").map(([url]) => url))
+      .toEqual([`/api/requests/${A}/reject`]);
+    controls.setQueueDisabledReason("");
+    expect(approve.getAttribute("aria-disabled")).toBe("false");
+    expect(next.getAttribute("aria-disabled")).toBe("false");
+    expect(row(B).querySelector('button[data-action="approve"]').getAttribute("aria-disabled")).toBe("true");
+  });
+
+  // ADR-0021-13
+  it("uses shared pending and recent request tables with focusable unavailable approval", async () => {
+    install();
+    await flush();
+    const table = byId("requests-list").querySelector("table.collection-table");
+    expect(table).not.toBeNull();
+    expect([...table.querySelectorAll("th")].map((cell) => cell.textContent))
+      .toEqual(["Song", "Requester", "Time", "Fit", "Actions", "Options"]);
+    expect(table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    const second = table.querySelector(`tr[data-row-key="${B}"]`);
+    const approve = second.querySelector('button[data-action="approve"]');
+    expect(approve.disabled).toBe(false);
+    expect(approve.getAttribute("aria-disabled")).toBe("true");
+    approve.click();
+    await vi.waitFor(() => expect(byId("requests-status").textContent).toContain("No place in the window"));
+    expect(request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+    expect(second.querySelector('[aria-haspopup="menu"]').getAttribute("aria-label")).toBe("Options for Two");
+    expect(byId("requests-recent").querySelector(".no-results").textContent).toBe("No recent decisions.");
+  });
+
+  it("confirms Turn down and keeps the request when canceled", async () => {
+    install();
+    await flush();
+    const option = byId("requests-list").querySelector('[aria-haspopup="menu"]');
+    expect(option).not.toBeNull();
+    option.click();
+    byId("requests-list").querySelector('[role="menuitem"][data-action="reject"]').click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    expect(byId("confirm-title").textContent).toBe("Turn down this request?");
+    byId("confirm-cancel").click();
+    await flush();
+    expect(request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+    expect(document.activeElement).toBe(option.closest("td"));
+  });
+
+  it("lists waiting requests with named actions and unavailable approval where it cannot fit", async () => {
     install();
     await flush();
     expect(byId("requests-card").hidden).toBe(false);
     expect(byId("requests-summary").textContent).toBe(summaryText(STATE));
-    const items = byId("requests-list").children;
+    const items = requestRows();
     expect(items).toHaveLength(2);
-    expect(items[0].textContent).toContain("Song by Artist Requested by Sam at 2:05 PM.");
+    expect([...items[0].cells].slice(0, 3).map((cell) => cell.textContent)).toEqual(["Song by Artist", "Sam", "2:05 PM"]);
     expect(items[0].textContent).toContain("Fits after Other: same key.");
     const names = [...items[0].querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
-    expect(names).toEqual(["Approve Song by Artist", "Play next Song by Artist", "Turn down Song by Artist"]);
+    expect(names).toEqual(["Approve Song by Artist", "Options for Song by Artist", "Play next", "Turn down"]);
     const second = [...items[1].querySelectorAll("button")].map((b) => b.dataset.action);
-    expect(second).toEqual(["play-next", "reject"]);
+    expect(second).toEqual(["approve", undefined, "play-next", "reject"]);
     // Plain text: the lists never speak on their own.
     expect(byId("requests-list").closest("[aria-live]")).toBeNull();
-    expect(byId("requests-recent-heading").hidden).toBe(true);
+    expect(byId("requests-recent-heading").hidden).toBe(false);
   });
 
   it("updates rows in place on a refresh, never replacing what has focus", async () => {
     install();
     await flush();
     const first = row(A);
-    const reject = first.querySelector('[data-action="reject"]');
+    const reject = menuAction(A, "reject");
     reject.focus();
     const list = byId("requests-list");
     const replace = vi.spyOn(list, "replaceChildren");
@@ -310,32 +400,26 @@ describe("listener requests card", () => {
     await flush();
     expect(replace).not.toHaveBeenCalled();
     expect(row(A)).toBe(first);
-    expect(first.querySelector('[data-action="reject"]')).toBe(reject);
+    expect(first.querySelector('button[data-action="reject"]')).toBe(reject);
     expect(document.activeElement).toBe(reject);
     expect(first.textContent).toContain("Fits after Else.");
     // Approve appears where it now fits, before the other buttons.
     expect([...row(B).querySelectorAll("button")].map((b) => b.dataset.action))
-      .toEqual(["approve", "play-next", "reject"]);
-    expect([...list.children].map((li) => li.dataset.id)).toEqual([A, B, C]);
+      .toEqual(["approve", undefined, "play-next", "reject"]);
+    expect(requestRows().map((item) => item.dataset.rowKey)).toEqual([A, B, C]);
     expect(byId("requests-status").textContent).toBe("");
   });
 
-  it("keeps a row that holds focus until focus leaves it", async () => {
+  it("removes a decided row and announces the shared focus fallback", async () => {
     install();
     await flush();
-    const held = row(A).querySelector('[data-action="approve"]');
-    held.focus();
-    // Decided elsewhere (another browser): gone from the list.
+    row(A).querySelector('button[data-action="approve"]').focus();
     request.mockResolvedValue({ ...STATE, pending: [WAITING[1]] });
     timers[0]();
     await flush();
-    expect(row(A)).toBeTruthy();
-    expect(document.activeElement).toBe(held);
-    row(B).querySelector("button").focus();
-    // As a browser does when focus moves on (happy-dom may not).
-    held.dispatchEvent(new Event("focusout", { bubbles: true }));
-    runDelayed();
     expect(row(A)).toBeUndefined();
+    expect(document.activeElement.closest("tr")).toBe(row(B));
+    await vi.waitFor(() => expect(byId("requests-status").textContent).toContain("Focus moved to"));
   });
 
   it("refreshes only while the card is open", async () => {
@@ -355,20 +439,37 @@ describe("listener requests card", () => {
       : { ...STATE, pending: [WAITING[0], WAITING[1], third] }));
     install();
     await flush();
-    row(A).querySelector('[data-action="approve"]').click();
+    row(A).querySelector('button[data-action="approve"]').click();
     await vi.waitFor(() => expect(row(A)).toBeUndefined());
     expect(request).toHaveBeenCalledWith(`/api/requests/${A}/approve`, expect.objectContaining({ method: "POST" }));
-    // Two has no Approve (nothing fits), so focus lands on its first button.
-    expect(document.activeElement.dataset.id).toBe(B);
-    expect(document.activeElement.dataset.action).toBe("play-next");
+    // Two cannot be approved, so focus lands on Options for its other actions.
+    expect(document.activeElement.closest("tr").dataset.rowKey).toBe(B);
+    expect(document.activeElement.dataset.action).toBe("options");
     // Said only after the move, so the focus speech does not cut it off.
     expect(byId("requests-status").textContent).toBe("");
     const said = delayed.find(({ ms }) => ms === ANNOUNCE_DELAY_MS);
     expect(said).toBeTruthy();
     said.callback();
     await vi.waitFor(() => expect(byId("requests-status").textContent).toBe("Queued Song by Artist."));
-    expect(byId("requests-recent").textContent).toBe("Queued: Song by Artist. Fits after Other.");
+    expect([...byId("requests-recent").querySelector("tbody tr").cells].map((cell) => cell.textContent)).toEqual(["Song by Artist", "Sam", "2:05 PM", "Queued", "Fits after Other."]);
     expect(byId("requests-recent-heading").hidden).toBe(false);
+  });
+
+  it.each(["approve", "play-next", "reject"])("does not restore a decided request when an older poll resolves after %s", async (action) => {
+    const controls = install();
+    await flush();
+    let finishPoll;
+    request.mockImplementation((_url, options) => options?.method === "POST"
+      ? Promise.resolve({ ...STATE, pending: [WAITING[1]], recent: [{ ...WAITING[0], status: action === "reject" ? "rejected" : "queued" }] })
+      : new Promise((resolve) => { finishPoll = resolve; }));
+    const poll = controls.refresh();
+    await decideRequest(A, action);
+    await vi.waitFor(() => expect(row(A)).toBeUndefined());
+    finishPoll(STATE);
+    await poll;
+    expect(row(A)).toBeUndefined();
+    expect(byId("requests-recent").textContent).toContain("Song by Artist");
+    expect(byId("requests-summary").textContent).toContain("1 request waiting.");
   });
 
   it("lands on the next request's Approve where it is offered", async () => {
@@ -378,9 +479,9 @@ describe("listener requests card", () => {
       : { ...STATE, pending: [WAITING[0], third] }));
     install();
     await flush();
-    row(A).querySelector('[data-action="reject"]').click();
+    await decideRequest(A, "reject");
     await vi.waitFor(() => expect(row(A)).toBeUndefined());
-    expect(document.activeElement.dataset.id).toBe(C);
+    expect(document.activeElement.closest("tr").dataset.rowKey).toBe(C);
     expect(document.activeElement.dataset.action).toBe("approve");
   });
 
@@ -390,9 +491,9 @@ describe("listener requests card", () => {
       : { ...STATE, pending: [WAITING[0]] }));
     install();
     await flush();
-    row(A).querySelector('[data-action="reject"]').click();
+    await decideRequest(A, "reject");
     await vi.waitFor(() => expect(document.activeElement).toBe(byId("requests-heading")));
-    expect(byId("requests-list").hidden).toBe(true);
+    expect(byId("requests-list").querySelector(".no-results")).not.toBeNull();
     delayed.find(({ ms }) => ms === ANNOUNCE_DELAY_MS).callback();
     await vi.waitFor(() => expect(byId("requests-status").textContent).toBe("Turned down Song by Artist."));
   });
@@ -401,12 +502,12 @@ describe("listener requests card", () => {
     install();
     await flush();
     request.mockRejectedValue(new Error("Song cannot be queued within the next 30 minutes: same album."));
-    const button = row(A).querySelector('[data-action="approve"]');
+    const button = row(A).querySelector('button[data-action="approve"]');
     button.click();
     await vi.waitFor(() => expect(byId("requests-status").textContent)
       .toBe("Song cannot be queued within the next 30 minutes: same album."));
-    expect(button.hasAttribute("aria-disabled")).toBe(false);
-    expect(byId("requests-list").children).toHaveLength(2);
+    expect(button.getAttribute("aria-disabled")).toBe("false");
+    expect(requestRows()).toHaveLength(2);
   });
 
   it("never says unavailable on the pressed button while it sends (#331)", async () => {
@@ -416,20 +517,39 @@ describe("listener requests card", () => {
     request.mockImplementation((url, options) => (options?.method === "POST"
       ? new Promise((resolve) => { release = () => resolve({ ...STATE, pending: [WAITING[1]] }); })
       : Promise.resolve(STATE)));
-    const approve = row(A).querySelector('[data-action="approve"]');
+    const approve = row(A).querySelector('button[data-action="approve"]');
     approve.focus();
     approve.click();
-    expect(approve.hasAttribute("aria-disabled")).toBe(false);
+    expect(approve.getAttribute("aria-disabled")).toBe("false");
     expect(approve.classList.contains("is-pending")).toBe(true);
     // Busy, a state NVDA can report, in place of "unavailable".
     expect(approve.getAttribute("aria-busy")).toBe("true");
-    expect(document.activeElement).toBe(approve);
+    expect(document.activeElement).toBe(approve.closest("td"));
     // A second press while the first sends sends nothing.
     approve.click();
     expect(request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
     release();
     await vi.waitFor(() => expect(row(A)).toBeUndefined());
   });
+
+  it.each(["approve", "play-next"])(
+    "blocks listener %s retry if the station stops during a voice choice", async (action) => {
+      const controls = install();
+      await flush();
+      const conflict = Object.assign(new Error("Voice track changed."), {
+        status: 409, detail: { code: "voice_track_conflict", revision: "rev-1" },
+      });
+      request.mockImplementation((_url, options) => options?.method !== "POST"
+        ? Promise.resolve(STATE) : options.body ? Promise.resolve(STATE) : Promise.reject(conflict));
+      await decideRequest(A, action);
+      await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+      controls.setQueueDisabledReason("Start the station to change the queue.");
+      byId("confirm-accept").click();
+      await vi.waitFor(() => expect(byId("requests-status").textContent).toBe("Start the station to change the queue."));
+      expect(request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
+      expect(row(A)).toBeTruthy();
+    },
+  );
 
   it.each(["approve", "play-next"])(
     "retries listener %s with the selected voice action and revision", async (action) => {
@@ -444,7 +564,7 @@ describe("listener requests card", () => {
       if (!options.body) return Promise.reject(conflict);
       return Promise.resolve(STATE);
     });
-    row(A).querySelector(`[data-action="${action}"]`).click();
+    await decideRequest(A, action);
     await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
     byId("confirm-accept").click();
     await vi.waitFor(() => expect(request.mock.calls.filter(([, options]) => options?.method === "POST"))
@@ -468,7 +588,7 @@ describe("listener requests card", () => {
       request.mockImplementation((url, options) => (options?.method === "POST"
         ? new Promise((resolve) => { release = () => resolve({ ...STATE, pending: [WAITING[1]] }); })
         : Promise.resolve(STATE)));
-      row(A).querySelector('[data-action="approve"]').click();
+      row(A).querySelector('button[data-action="approve"]').click();
       await vi.advanceTimersByTimeAsync(250);
       expect(said).toEqual([]);
       await vi.advanceTimersByTimeAsync(100);
@@ -483,7 +603,7 @@ describe("listener requests card", () => {
       said.length = 0;
       request.mockImplementation(async (url, options) => (options?.method === "POST"
         ? { ...STATE, pending: [] } : STATE));
-      row(B).querySelector('[data-action="reject"]').click();
+      await decideRequest(B, "reject");
       await vi.advanceTimersByTimeAsync(0);
       runDelayed();
       await vi.advanceTimersByTimeAsync(1000);
@@ -543,8 +663,8 @@ describe("smooth transitions (#49)", () => {
     expect(byId("requests-max-bridges").value).toBe("2");
     expect(byId("requests-threshold").value).toBe("1.5");
     expect(byId("requests-no-smooth-wait").checked).toBe(true);
-    expect(byId("requests-recent").textContent)
-      .toBe("Queued: Ballad by Singer. Bridge to Ballad — Singer through Middle — Band.");
+    expect(byId("requests-recent").querySelector("tbody tr").cells[4].textContent)
+      .toBe("Bridge to Ballad — Singer through Middle — Band.");
   });
 
   it("saves the settings and says so once", async () => {

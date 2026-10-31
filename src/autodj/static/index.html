@@ -2479,15 +2479,15 @@
   <div class="card" role="tabpanel" id="spanel-schedule" data-settings-kind="station" aria-labelledby="stab-schedule" hidden>
     <h3>Schedule</h3>
     <!-- scheduler-panel.js fills this panel when it is seen, and again when
-         the server says the schedule changed or an event ran.  The lists
-         are plain text, not live regions: each result of a button is said
+         the server says the schedule changed or an event ran.  The shared
+         tables are not live regions: each result of a button is said
          once through #schedule-status. -->
     <p>Change the station at set times, in the station time zone: <span id="schedule-timezone"></span>.</p>
     <div id="schedule-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <h4 id="schedule-upcoming-heading">Next events</h4>
-    <ul id="schedule-upcoming" aria-labelledby="schedule-upcoming-heading"></ul>
+    <div id="schedule-upcoming"></div>
     <h4 id="schedule-events-heading">Events</h4>
-    <ul id="schedule-events" aria-labelledby="schedule-events-heading"></ul>
+    <div id="schedule-events"></div>
     <button type="button" id="schedule-add">Add event</button>
     <!-- Add and Edit share this form.  It checks its own fields: an error
          is said, the field gets aria-invalid and focus, and the words stay
@@ -2609,7 +2609,7 @@
       </fieldset>
     </form>
     <h4 id="schedule-runs-heading">Recent runs</h4>
-    <ul id="schedule-runs" aria-labelledby="schedule-runs-heading"></ul>
+    <div id="schedule-runs"></div>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-server" data-settings-kind="server" aria-labelledby="stab-server" hidden>
@@ -2954,11 +2954,7 @@
          aria-live="polite"
          aria-atomic="true"
          class="visually-hidden"></div>
-    <ol id="queue-list" role="list" aria-label="Queued tracks" tabindex="-1">
-      <li class="no-results">
-        Queue is empty.  Search, then use Play next or Add to queue.
-      </li>
-    </ol>
+    <div id="queue-list" tabindex="-1"></div>
     <!-- Outside the list, so it stays put while rows come and go.  It asks
          before clearing, in #confirm-dialog. -->
     <button type="button" id="queue-clear">Clear queue</button>
@@ -2983,8 +2979,8 @@
 
   <!-- Listener requests from the public request page, and the switch that
        opens and closes that page.  The card shows once the station has
-       answered; the lists show only while requests are on.  The lists are
-       plain text and refresh silently; each button's result is said once
+       answered; the tables show only while requests are on. The tables
+       refresh silently; each button's result is said once
        in #requests-status. -->
   <details class="card" id="requests-card" hidden>
     <summary id="requests-heading"><h2>Listener requests</h2></summary>
@@ -2994,9 +2990,9 @@
          aria-live="polite"
          aria-atomic="true"
          class="visually-hidden"></div>
-    <ul id="requests-list" aria-label="Waiting requests" hidden></ul>
+    <div id="requests-list"></div>
     <h3 id="requests-recent-heading" hidden>Recent decisions</h3>
-    <ul id="requests-recent" aria-labelledby="requests-recent-heading" hidden></ul>
+    <div id="requests-recent"></div>
     <!-- On or off, approval, bridge songs and the give-up rule (#49): saved
          for this station with Save request settings; the result is said in
          #requests-status. -->
@@ -3244,9 +3240,8 @@
 
       <section class="card">
         <h3 id="vt-booked-heading">Booked voice tracks</h3>
-        <p id="vt-none">No voice tracks yet.</p>
         <!-- role="list": list-style none drops the list role in Safari. -->
-        <ul id="vt-list" role="list"></ul>
+        <div id="vt-list"></div>
       </section>
     </div>
   </section>
@@ -3750,21 +3745,16 @@
       <summary><h2 id="clockwheel-heading">Clockwheels</h2></summary>
       <div class="flow-form">
       <!-- clockwheel-panel.js fills this section.  Each result of a button
-           is said once through #clock-status; the lists are plain text. -->
+           is said once through #clock-status; the shared tables are not live regions. -->
       <p>A clockwheel is a repeating order of steps: music or voice liners from a library folder, music from a category, and more. The active one plays when Pick mode is set to Clockwheel, and the Schedule can switch to another one at set times.</p>
       <p id="clock-notice" class="field-error" hidden></p>
       <div id="clock-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
       <h3 id="clock-list-heading">Saved clockwheels</h3>
-      <ul id="clock-list" aria-labelledby="clock-list-heading"><li>No clockwheels loaded.</li></ul>
-      <label for="clock-name">Name</label>
+      <div id="clock-list"></div>
+      <label for="clock-name">New clockwheel name</label>
       <input id="clock-name" type="text" maxlength="64" autocomplete="off" spellcheck="false" aria-describedby="clock-name-help">
-      <p id="clock-name-help">Up to 64 letters, digits, spaces, dashes and underscores. Create, Duplicate, Rename and Import .PAL use this name.</p>
+      <p id="clock-name-help">Up to 64 letters, digits, spaces, dashes and underscores. Create and Import .PAL use this name.</p>
       <button type="button" id="clock-create">Create</button>
-      <button type="button" id="clock-duplicate">Duplicate</button>
-      <button type="button" id="clock-rename">Rename</button>
-      <button type="button" id="clock-delete">Delete</button>
-      <button type="button" id="clock-activate">Activate</button>
-      <button type="button" id="clock-deactivate">Turn off clockwheel</button>
       <label for="clock-pal-file">.PAL file to import</label>
       <input id="clock-pal-file" type="file" accept=".pal,text/plain" aria-describedby="clock-pal-help">
       <button type="button" id="clock-import">Import .PAL</button>
@@ -3772,9 +3762,9 @@
       <p>Import makes a new clockwheel from a SAM Broadcaster .PAL file. Each folder must be a registered music or voice liner folder, or a folder inside one that adds subfolders.</p>
 
       <h3 id="clock-steps-heading">Steps of <span id="clock-open-name">no clockwheel open</span></h3>
-      <ol id="clock-slots" role="grid" aria-labelledby="clock-steps-heading"><li role="row"><div role="gridcell">Open or create a clockwheel to see its steps.</div></li></ol>
+      <div id="clock-slots"></div>
       <button type="button" id="clock-new-step">New step</button>
-      <button type="button" id="clock-undo" aria-keyshortcuts="Control+Z" disabled>Undo step change</button>
+      <button type="button" id="clock-undo" aria-keyshortcuts="Control+Z" aria-disabled="true">Undo step change</button>
       <p id="clock-next"></p>
       <h4>Station name</h4>
       <label for="clock-station-name">Station name while active</label>
@@ -3798,8 +3788,8 @@
 
     <details class="card" id="shows-card">
       <summary><h2 id="shows-heading">Shows</h2></summary>
-      <!-- shows-panel.js fills this section.  The lists, the on-air line and
-           the totals are plain text, not live regions: each result of a
+      <!-- shows-panel.js fills this section. The tables, on-air line and
+           totals are not live regions: each result of a
            button is said once through #shows-status.  A refused field gets
            aria-invalid, the error linked to it and focus. -->
       <p>A show is a list of tracks that can be played at a set time. AutoDJ picks the list from a category or a clockwheel with the station's repeat rules. To air a show, add an event with the action Play a show under Settings, Schedule.</p>
@@ -3808,7 +3798,7 @@
       <p id="shows-on-air">No show is on the air.</p>
       <button type="button" id="shows-stop" hidden>Stop show</button>
       <h3 id="shows-list-heading">Saved shows</h3>
-      <ul id="shows-list" aria-labelledby="shows-list-heading"><li>No shows loaded.</li></ul>
+      <div id="shows-list"></div>
       <button type="button" id="shows-add">Add show</button>
       <!-- Add and Edit share this form. -->
       <form id="shows-form" novalidate hidden>
@@ -3864,14 +3854,14 @@
         <p class="setting-desc" id="shows-start-help">Optional. In the station time zone; leave empty for now.</p>
         <p class="setting-desc">Generate picks as the station would at this time, so a category's days, hours and dates and a step's hours count then.</p>
         <button type="button" id="shows-generate">Generate list</button>
-        <p id="shows-songs-help">Move up and Move down change a song's place; Remove takes it out. Each change is saved at once, and the show plays its list as it is when it starts.</p>
-        <ol id="shows-songs" aria-labelledby="shows-editor-heading"><li class="no-results">No songs yet. Press Generate list, or add songs below.</li></ol>
+        <p id="shows-songs-help">Options for each song contains Move up and Move down, or use Alt+Up/Down. Remove asks first. Each change is saved at once.</p>
+        <div id="shows-songs"></div>
         <h4 id="shows-add-heading">Add songs</h4>
         <label for="shows-search">Search the library</label>
         <input id="shows-search" type="search" autocomplete="off" spellcheck="false" aria-describedby="shows-search-help">
         <p class="setting-desc" id="shows-search-help">Title, artist or album. Add puts the song at the end of the list.</p>
         <button type="button" id="shows-search-run">Search</button>
-        <ul id="shows-results" aria-labelledby="shows-add-heading"></ul>
+        <div id="shows-results"></div>
         <details id="edition-card">
           <summary><h4>Prepared editions</h4></summary>
           <p class="setting-desc">Prepare recordings for a specific airing; the reusable show stays independent.</p>
@@ -3889,8 +3879,8 @@
             <p id="edition-summary"></p>
             <p id="edition-run-status"></p>
             <ul id="edition-omissions" role="list"></ul>
-            <ol id="edition-occurrences" role="list"></ol>
-            <p class="setting-desc">Use Search the library above, then Add to edition, to add songs here.</p>
+            <div id="edition-occurrences"></div>
+            <p class="setting-desc">Use Search the library above, then Options for the song, Add to edition.</p>
             <fieldset>
               <legend>Record or import speech</legend>
               <div class="settings-row"><label for="edition-position">Position</label>
@@ -3912,7 +3902,13 @@
               <audio id="edition-audio" controls preload="none" data-preview-output aria-label="Private edition take"></audio>
             </fieldset>
             <h6>Saved takes</h6>
-            <ul id="edition-takes" role="list"></ul>
+            <div id="edition-takes"></div>
+            <form id="edition-reattach-form" hidden>
+              <h1 id="edition-reattach-heading">Reattach take</h1>
+              <div class="settings-row"><label for="edition-reattach-position">Position</label><select id="edition-reattach-position"></select></div>
+              <p id="edition-reattach-error" class="field-error" hidden></p>
+              <div class="dialog-actions"><button type="submit" id="edition-reattach-save">Reattach</button><button type="button" id="edition-reattach-cancel">Cancel</button></div>
+            </form>
             <button type="button" id="edition-review">Review edition</button>
             <button type="button" id="edition-start">Start edition after this song</button>
             <button type="button" id="edition-start-now">Start edition now</button>

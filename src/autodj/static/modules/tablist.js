@@ -4,6 +4,30 @@
 // keys wrap, Home and End jump to the ends, and only the selected tab
 // is in the tab order (roving tabindex).  Hidden tabs are skipped.
 
+// NVDA browse-mode Tab can focus tabindex=-1 tabs. Enter each group at
+// its selected tab (or its first visible tab when another group owns the
+// selection). Internal keyboard movement and pointer focus remain free.
+export function installTabEntry(tablist) {
+  let pressed = null;
+  const tabAt = (element) => {
+    const tab = element?.closest?.('[role="tab"]');
+    return tab?.closest('[role="tablist"]') === tablist ? tab : null;
+  };
+  tablist.addEventListener("pointerdown", (event) => { pressed = tabAt(event.target); });
+  const release = () => { pressed = null; };
+  tablist.ownerDocument.addEventListener("pointerup", release);
+  tablist.ownerDocument.addEventListener("pointercancel", release);
+  tablist.addEventListener("focusin", (event) => {
+    const tab = tabAt(event.target);
+    if (!tab || tab === pressed || tablist.contains(event.relatedTarget)) return;
+    const visible = [...tablist.querySelectorAll('[role="tab"]')].filter((each) => !each.hidden);
+    const entry = visible.find((each) => each.getAttribute("aria-selected") === "true") || visible[0];
+    if (entry && entry !== tab) entry.focus();
+  });
+  // Do not intercept click: browse-mode Enter focuses, then clicks the
+  // original tab even when the focus-entry guard redirected that focus.
+}
+
 // The tab an arrow, Home or End key pressed on *current* moves to, or
 // null for any other key.
 export function tabForKey(tabs, current, key) {

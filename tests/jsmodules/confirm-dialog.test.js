@@ -80,6 +80,23 @@ afterEach(() => {
 });
 
 describe("confirmAction focus (#385)", () => {
+  it.each(["cancel", "same", "replacement"])("restores a raw grid opener directly to its cell after %s", async (destination) => {
+    const { opener } = mount();
+    document.body.insertAdjacentHTML("afterbegin", '<table><tbody><tr><td id="first-cell" role="gridcell" tabindex="0"></td><td id="second-cell" role="gridcell" tabindex="-1"><button id="replacement">Next item</button></td></tr></tbody></table>');
+    document.getElementById("first-cell").append(opener);
+    opener.focus();
+    const answer = confirmAction(document, {
+      title: "Remove item?", message: "It goes.", confirmLabel: "Remove",
+      onConfirm: () => destination === "same" ? opener : document.getElementById("replacement"),
+    });
+    const trail = focusTrail();
+    document.getElementById(destination === "cancel" ? "confirm-cancel" : "confirm-accept").click();
+    expect(await answer).toBe(destination !== "cancel");
+    const expected = destination === "replacement" ? "second-cell" : "first-cell";
+    expect(document.activeElement).toBe(document.getElementById(expected));
+    expect(trail).toEqual([`out:confirm-cancel>${expected}`, `in:${expected}`]);
+  });
+
   it("returns focus to the opener when the close event comes a task later", async () => {
     // The mounted dialog always fires close a task later, as a browser does.
     const { dialog, opener } = mount();

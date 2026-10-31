@@ -107,6 +107,8 @@ checks placement again at that moment; a request that no longer fits can stay
 waiting. If **Approve** is unavailable, read the reason, resolve the actual
 restriction, and use a different eligible song if necessary. Do not substitute
 **Play next** simply to bypass the lesson's placement check.
+After a successful approval, check that the next refresh leaves it out of
+**Waiting requests** and retains the decision in **Recent decisions**.
 
 Resume Browser playback with **Play or Pause**. Let the current song finish and watch for your requested title in
 **Now Playing**. Listen if possible and inspect **History** after it plays.
@@ -129,17 +131,18 @@ save again, then inspect the waiting list.
 
 Expected result: the unapproved request remains waiting, unless its three-hour
 expiry has passed. Closing the page accepts no new requests and does not turn
-waiting requests into approved songs. Find that entry and press **Turn down**.
+waiting requests into approved songs. Find that entry, open **Options**, choose
+**Turn down**, and confirm.
 Check **Recent decisions** and confirm it did not join the queue. Explain why
 closing requests and moderating a received request are separate actions.
 
 ## Stop and restore Practice
 
 Uncheck **Take listener requests** and press **Save request settings**. Reload
-the listener page once more to check that requests are closed. Turn down any
-remaining test entries first if you do not want them waiting for a later session.
+the listener page once more to check that requests are closed. Use **Options**,
+**Turn down**, and its confirmation for any remaining test entries you do not want to retain.
 Closing requests does not remove already queued songs; remove a remaining test
-song from the queue explicitly if it has not played.
+song through its queue **Options**, **Remove**, and confirmation if it has not played.
 
 Pause Browser playback and check that elapsed time stops. For request handling
 in other output modes, use the [feature reference](../reference/feature-availability.md).

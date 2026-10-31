@@ -11,10 +11,11 @@ folder of at least five basically analysed songs, the folder-based `Practice`
 category, and the one-step `Practice` clockwheel. Use **Browser** playback on
 the same station, with no listeners. Advanced analysis is unnecessary.
 
-If you followed another lesson, activate the original Practice wheel and set
+If you followed another lesson, choose **Activate** from **Options for Practice**
+in **Clockwheels**, then set
 **Settings**, **Song picking**, **Pick mode** to **Clockwheel**. Its step should
 still have **Follow the repeat rules** unchecked and no day or hour restrictions.
-Disable any lesson schedule events and stop any show before continuing.
+Use each lesson event's **Options** menu to **Disable** it, and stop any show before continuing.
 
 This lesson saves two new categories and a new wheel, `Practice alternating`.
 It keeps the original Practice category and wheel so you can return to them.
@@ -22,7 +23,7 @@ No music files are moved or changed. Allow several song lengths for observation.
 
 Pause in **Now Playing** with **Play or Pause** while reading. Check that the
 elapsed time stops advancing. Use Tab and Enter or Space for controls; use
-Left and Right Arrow in tab strips. For the clockwheel grid, see the
+Left and Right Arrow in tab strips. For the clockwheel table, see the
 [keyboard and screen-reader guide](../guides/keyboard-and-screen-reader.md).
 Every listening check below also has a title or saved-state check.
 
@@ -84,8 +85,9 @@ again, and save. This is why checking counts comes before hearing the rotation.
 
 ## Build the alternating wheel
 
-1. Expand **Clockwheels**, enter `Practice alternating` in **Name**, and
-   press **Create**.
+1. Expand **Clockwheels**, enter `Practice alternating` in **New clockwheel name**,
+   and press **Create**. Check **Name** in the dialog, then press **Create**.
+   Opening or saving a wheel leaves the panel's new-name field as you typed it.
 2. Press **New step**. Set **Step type** to **Music matching conditions**.
 3. Set **Condition 1** to **Category**, **Music category** to
    **Practice anchor**, and **Operator** to **is**.
@@ -93,12 +95,12 @@ again, and save. This is why checking counts comes before hearing the rotation.
    rules**, leave day and hour restrictions unset, and press **Add step**.
 5. Add another step the same way, choosing **Practice other** instead.
 6. Clear **Restart at these minutes past each hour**. Press **Save clockwheel**,
-   then **Activate**.
+   then choose **Activate** from **Options for Practice alternating** in its saved row.
 7. In **Settings**, **Song picking**, confirm **Pick mode** is **Clockwheel**.
 
 The saved wheel should show two steps in order: Practice anchor, then Practice
-other. Its saved name should be marked active. Each step description should say
-it ignores repeat rules. With a one-song pool, repeat rules can interfere with
+other. Its **Active** column should say **Yes**. Each step's **Rules and hours**
+column should say it ignores repeat rules. With a one-song pool, repeat rules can interfere with
 the very repetition we are trying to observe; this small lesson deliberately
 leaves them off.
 
@@ -140,14 +142,15 @@ Expected result: one anchor selection followed by two selections from Practice
 other. The pool gets two of every three steps, not a guaranteed two-thirds of
 airtime: songs have different lengths. Explain your observed sequence using
 the three saved step descriptions and History. To repeat the two-step example,
-remove the third step using its **Delete** control, then save the wheel again.
+open the third step's **Options** menu and choose **Delete**, then save the wheel again.
 
 ## Stop and retain the example
 
 Pause with **Play or Pause** and confirm the elapsed time stops. The two new
 categories and Practice alternating remain saved. Keep them for experimentation;
 no deletion is required. To restore the first lesson's rotation, select the
-original `Practice` in **Saved clockwheels**, press **Activate**, and leave
+original `Practice` row in **Saved clockwheels**, open **Options for Practice**,
+choose **Activate**, and leave
 **Pick mode** set to **Clockwheel**. This restores the original wheel without
 deleting your new work.
 
