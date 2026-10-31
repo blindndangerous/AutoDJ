@@ -48,6 +48,39 @@ trusted network. `--insecure-lan` without `--lan` still needs explicit allowlist
 
 ## HTTPS on your home network
 
+On the AutoDJ host, open `http://127.0.0.1:8080` (use your configured port),
+then **Settings → Global → Server → Secure connections (HTTPS)**.
+Choose **Add certificate** to create a certificate for the listed host names
+and addresses, or import an existing PEM certificate and private key.
+Activate the certificate you want AutoDJ to serve. The first switch from HTTP
+to HTTPS requires restarting AutoDJ; subsequent activations take effect for new
+connections. The previous certificate stays in the table until you delete it.
+When AutoDJ was started by its launcher or a supported supervisor, **Restart now**
+uses the normal restart confirmation and reopens setup over HTTPS once the browser
+can connect securely. Install the public certificate's trust before restarting.
+
+Choose **Set up a remote device** to save the public certificate and follow
+the trust instructions for the recording device. Transfer that public copy
+from the host through a trusted connection, then open the HTTPS address on
+the recording device. Once connected, go to **Voice tracks** and allow microphone
+access. Each browser profile keeps its own AutoDJ pairing.
+
+The table shows each certificate's exact expiry and approximate remaining time.
+The active certificate cannot be deleted. **How to remove trust on this device**
+explains how to remove an installed public certificate through the local browser
+or operating system's settings.
+
+Managed pairs and their selection live under `<index_dir>/.tls` with owner-only
+permissions. Keep a separate protected copy if you need to recover the keys;
+AutoDJ backups omit this folder. A saved active selection overrides TOML TLS paths;
+explicit `serve --ssl-certfile` and `--ssl-keyfile` flags override it for that run.
+Existing externally configured files remain where you put them and can continue
+to be renewed by your certificate tool. To return to TOML configuration, stop
+AutoDJ and move `.tls/inventory.json` to a protected backup location before restarting.
+
+For a headless host, use a trusted terminal/admin connection and the procedure
+below. Certificate changes in the web page require direct localhost access.
+
 A browser trusts a certificate only when the certificate names the address in the address bar
 and the device trusts whoever signed it. Without a domain of your own, make a self-signed
 certificate and install it as trusted on each device that opens AutoDJ. With a domain,

@@ -3255,10 +3255,14 @@ def load_config(
             f"{presets_path} is no longer read: move each [NAME] table into config.toml "
             "as [presets.NAME], then delete presets.toml"
         )
-    return _build_config(
+    cfg = _build_config(
         raw,
         config_path=loaded_path,
         sources=sources,
         legacy_station_environment=legacy_station_environment,
         environment=environment,
     )
+    from autodj.certificates import apply_saved_certificate
+
+    apply_saved_certificate(cfg)
+    return cfg

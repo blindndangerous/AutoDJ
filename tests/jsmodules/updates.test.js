@@ -84,6 +84,14 @@ const confirmYes = vi.fn(async (_doc, { onConfirm }) => {
   return true;
 });
 
+function httpsSetupUrl() {
+  const url = new URL(document.location.href);
+  url.protocol = "https:";
+  url.search = "?https-setup=trust";
+  url.hash = "settings";
+  return url.href;
+}
+
 function open() {
   const panel = byId("spanel-updates");
   panel.hidden = false;
@@ -93,6 +101,7 @@ function open() {
 
 function install({
   initial, confirm = confirmYes, probeAnswers = [false, true], stepMs = 0,
+  probeHttps = vi.fn(async () => {}), navigate = vi.fn(),
 } = {}) {
   const { request, state } = server(initial);
   let clock = 0;
@@ -104,12 +113,12 @@ function install({
     return { version: "0.21.0" };
   });
   const reload = vi.fn();
-  installUpdates({
-    request, confirm, probe, reload, settle: async () => {},
+  const controls = installUpdates({
+    request, confirm, probe, probeHttps, navigate, reload, settle: async () => {},
     sleep: async (ms) => { clock += ms + stepMs; },
     now: () => clock,
   });
-  return { request, state, probe, reload, progressSeen };
+  return { request, state, probe, probeHttps, navigate, reload, progressSeen, controls };
 }
 
 // The result the updater leaves for the page, as GET /api/updates returns it.
@@ -123,6 +132,13 @@ beforeEach(installIndex);
 afterEach(() => vi.restoreAllMocks());
 
 describe("Updates markup", () => {
+  it("exposes safe HTTPS restart controls when the panel markup is missing", async () => {
+    const controls = installUpdates({ doc: { getElementById: () => null } });
+    expect(await controls.load()).toBe(false);
+    expect(controls.canRestart()).toBe(false);
+    expect(await controls.restartForHttps("https://localhost/?https-setup=trust#settings")).toBe(false);
+  });
+
   it("has its own Global settings tabpanel", () => {
     const tab = byId("stab-updates");
     expect(tab.getAttribute("role")).toBe("tab");
@@ -342,6 +358,57 @@ describe("Updates panel", () => {
     expect(state.posted).toEqual(["/api/server/restart"]);
     expect(probe).toHaveBeenCalledWith("/api/version");
     expect(document.activeElement).toBe(byId("updates-restart"));
+  });
+
+  // ADR-0019-05
+  it("can restart into the validated HTTPS setup URL after its health check answers", async () => {
+    const probeHttps = vi.fn().mockRejectedValueOnce(new Error("server is restarting"))
+      .mockResolvedValue(undefined);
+    const { controls, state, probe, navigate } = install({ probeHttps });
+    open();
+    await vi.waitFor(() => expect(controls.canRestart()).toBe(true));
+    const target = httpsSetupUrl();
+
+    await controls.restartForHttps(target);
+
+    expect(state.posted).toEqual(["/api/server/restart"]);
+    expect(probeHttps).toHaveBeenCalledWith(`${new URL(target).origin}/healthz`);
+    expect(probe).not.toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith(target);
+  });
+
+  // ADR-0019-05
+  it("does not request a restart for an invalid HTTPS destination", async () => {
+    const confirm = vi.fn(confirmYes);
+    const { controls, state, navigate } = install({ confirm });
+    open();
+    await vi.waitFor(() => expect(controls.canRestart()).toBe(true));
+
+    await controls.restartForHttps("https://other.example/?https-setup=trust#settings");
+    await controls.restartForHttps("http://localhost/?https-setup=trust#settings");
+    await controls.restartForHttps("https://user@localhost/?https-setup=trust#settings");
+    const wrongPort = new URL(httpsSetupUrl());
+    wrongPort.port = new URL(document.location.href).port === "4443" ? "4444" : "4443";
+    await controls.restartForHttps(wrongPort.href);
+
+    expect(state.posted).toEqual([]);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  // ADR-0019-05
+  it("does not navigate when the HTTPS restart is refused", async () => {
+    const navigate = vi.fn();
+    const { controls, state, probeHttps } = install({ navigate });
+    state.refuse = "Restart is temporarily unavailable.";
+    open();
+    await vi.waitFor(() => expect(controls.canRestart()).toBe(true));
+
+    await controls.restartForHttps(httpsSetupUrl());
+
+    expect(state.posted).toEqual(["/api/server/restart"]);
+    expect(probeHttps).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it("does nothing when Restart is cancelled", async () => {

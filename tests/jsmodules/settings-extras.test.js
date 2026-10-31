@@ -663,9 +663,9 @@ describe("browser access", () => {
     const rename = els.list.querySelector('[aria-label="Rename Phone"]');
     rename.focus();
     rename.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke Phone");
+    expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke access Phone");
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke Tablet, this browser");
+    expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke access Tablet, this browser");
 
     const mutations = [];
     const observer = new window.MutationObserver((records) => mutations.push(...records));
@@ -685,12 +685,12 @@ describe("browser access", () => {
     const fetchImpl = vi.fn(() => json({ pairing: true, devices: listed }));
     const { els } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
-    els.list.querySelector('[aria-label="Revoke Phone"]').focus();
+    els.list.querySelector('[aria-label="Revoke access Phone"]').focus();
     listed = [devices[1]];
     els.card.dispatchEvent(new Event("toggle"));
     await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
-    await vi.waitFor(() => expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke Tablet, this browser"));
-    await vi.waitFor(() => expect(els.status.textContent).toContain("The paired devices list changed. Focus moved to Revoke Tablet, this browser."));
+    await vi.waitFor(() => expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke access Tablet, this browser"));
+    await vi.waitFor(() => expect(els.status.textContent).toContain("The paired devices list changed. Focus moved to Revoke access Tablet, this browser."));
   });
 
   it("keeps the rename dialog open and says why when the name is refused", async () => {
@@ -809,7 +809,7 @@ describe("browser access", () => {
     const { els, onSignedOut, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
 
-    els.list.querySelector('[aria-label="Revoke Tablet, this browser"]').click();
+    els.list.querySelector('[aria-label="Revoke access Tablet, this browser"]').click();
     await answer("confirm");
 
     await vi.waitFor(() => expect(onSignedOut).toHaveBeenCalledWith(REVOKED_REASON));
@@ -826,7 +826,7 @@ describe("browser access", () => {
     });
     const { els, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
-    const revoke = els.list.querySelector('[aria-label="Revoke Phone"]');
+    const revoke = els.list.querySelector('[aria-label="Revoke access Phone"]');
     revoke.focus();
     revoke.click();
     await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
@@ -837,7 +837,7 @@ describe("browser access", () => {
     stop();
 
     expect(focused.map((element) => element.getAttribute("aria-label")))
-      .toEqual(["Revoke Tablet, this browser"]);
+      .toEqual(["Revoke access Tablet, this browser"]);
     expect(revoke.isConnected).toBe(false);
     expect(els.list.querySelectorAll("li")).toHaveLength(1);
   });
@@ -848,7 +848,7 @@ describe("browser access", () => {
       : json({ pairing: true, devices })));
     const { els, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
-    const revoke = els.list.querySelector('[aria-label="Revoke Phone"]');
+    const revoke = els.list.querySelector('[aria-label="Revoke access Phone"]');
     revoke.focus();
     revoke.click();
 

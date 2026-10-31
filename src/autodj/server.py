@@ -1256,10 +1256,12 @@ def create_app(
     # serve() asks for the first code when no browser is paired yet.
     app.state.request_pairing_code = request_pairing_code
     # Request bodies the middleware caps before any route parses them.
+    from autodj.certificates_api import BODY_LIMITS, install_certificates_api
     from autodj.prepared_editions import MAX_UPLOAD_BYTES as EDITION_UPLOAD_BYTES
     from autodj.updates_api import ROUTES as UPDATE_ROUTES
 
     body_limits: dict[str, Callable[[], int]] = {
+        **BODY_LIMITS,
         **{path: (lambda: SPEECH_BODY_LIMIT) for path in WRITE_ROUTES},
         "/api/stations": lambda: 4096,
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
@@ -1327,6 +1329,7 @@ def create_app(
             return machine_token_store[0]
 
     app.state.machine_tokens = machine_tokens
+    install_certificates_api(app, cfg, https=secure_cookie)
     app.add_middleware(
         SecurityMiddleware,
         policy=policy,
@@ -3415,6 +3418,7 @@ def serve(
             """Build uvicorn's context and reload renewed certificate files into it."""
             context = default_factory()
             reloader = CertificateReloader(context, certfile, keyfile)
+            app.state.certificate_reloader = reloader
             reloader.start()
             reloaders.append(reloader)
             return context

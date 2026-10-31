@@ -19,7 +19,7 @@ import { confirmAction } from "./confirm-dialog.js";
 import { focusAfterDialog, reconcileRows } from "./dom-helpers.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
 import { announceStatus } from "./live-region.js";
-import { clockText } from "./time-format.js";
+import { clockText, relativeTimeText } from "./time-format.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
@@ -103,11 +103,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
   }
 
   function relative(iso) {
-    const minutes = Math.round((new Date(iso).getTime() - now()) / 60000);
-    const words = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-    if (Math.abs(minutes) < 60) return words.format(minutes, "minute");
-    if (Math.abs(minutes) < 48 * 60) return words.format(Math.round(minutes / 60), "hour");
-    return words.format(Math.round(minutes / 1440), "day");
+    return relativeTimeText(iso, { reference: now(), maxUnit: "day", dayAfterHours: 48 });
   }
 
   // ---- Lists ----------------------------------------------------------

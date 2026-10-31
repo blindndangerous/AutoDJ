@@ -134,6 +134,14 @@ AutoDJ reloads a renewed certificate and key when their files change, checked ev
 minutes. It copies the pair and test-loads it before putting it into the live TLS context, so a
 half-copied or mismatched pair is refused and the previous certificate keeps being served.
 
+The certificate inventory under `<index_dir>/.tls` uses owner-only files and is
+excluded from backups. Web creation, import, activation and deletion additionally
+require a direct native-mode localhost request (local peer and URL, no forwarding
+headers). Public downloads require localhost or native HTTPS and contain only
+the leaf certificate. The saved active selection overrides TOML TLS paths;
+explicit serve CLI TLS flags retain precedence. See the
+[certificate proposal](docs/adr/0019-manage-server-certificates-on-the-host.md).
+
 ## CLI risks
 
 - Crafted audio metadata is handled through Mutagen with guarded errors.
