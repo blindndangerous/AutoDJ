@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from autodj.certificates import CertificateStore
 from autodj.config import load_config, validate_server_exposure
 from tests._layout import point_index
 from tests._server import create_app
@@ -58,7 +59,7 @@ def test_local_setup_persists_selection_and_download_contains_only_public_certif
     config.write_text(f'[index]\nindex_dir = "{tmp_path.as_posix()}"\n', encoding="utf-8")
     loaded = load_config(str(config))
     validate_server_exposure(loaded.server)
-    assert Path(loaded.server.ssl_certfile) == client.app.state.certificate_store.paths(ident)[0]
+    assert Path(loaded.server.ssl_certfile) == CertificateStore(tmp_path / ".tls").paths(ident)[0]
 
 
 @pytest.mark.parametrize(
@@ -74,7 +75,7 @@ def test_remote_or_forwarded_requests_cannot_manage_or_bootstrap_trust(
 ):
     """ADR-0019-03."""
     client = client_for(bridge, tmp_path, peer=peer)
-    item = client.app.state.certificate_store.create("Host", ["localhost"])
+    item = CertificateStore(tmp_path / ".tls").create("Host", ["localhost"])
     assert not client.get(BASE, headers=headers).json()["can_manage"]
     assert (
         client.post(BASE, json={"name": "Bad", "hosts": ["localhost"]}, headers=headers).status_code
@@ -87,14 +88,14 @@ def test_remote_or_forwarded_requests_cannot_manage_or_bootstrap_trust(
 
 def test_https_remote_browser_can_download_public_certificate_but_not_manage(bridge, tmp_path):
     client = client_for(bridge, tmp_path, peer="192.168.1.2", https=True)
-    item = client.app.state.certificate_store.create("Host", ["localhost"])
+    item = CertificateStore(tmp_path / ".tls").create("Host", ["localhost"])
     assert client.get(f"{BASE}/{item['id']}/download").status_code == 200
     assert client.post(f"{BASE}/{item['id']}/activate").status_code == 403
 
 
 def test_activation_rejects_missing_current_address_and_preserves_selection(bridge, tmp_path):
     client = client_for(bridge, tmp_path)
-    store = client.app.state.certificate_store
+    store = CertificateStore(tmp_path / ".tls")
     old = store.create("Old", ["localhost"])
     store.activate(old["id"])
     new = store.create("Wrong address", ["other.local"])
@@ -104,7 +105,7 @@ def test_activation_rejects_missing_current_address_and_preserves_selection(brid
 
 def test_failed_live_activation_preserves_previous_selection(bridge, tmp_path):
     client = client_for(bridge, tmp_path, https=True)
-    store = client.app.state.certificate_store
+    store = CertificateStore(tmp_path / ".tls")
     old = store.create("Old", ["localhost"])
     store.activate(old["id"])
     new = store.create("New", ["localhost"])

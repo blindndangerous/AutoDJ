@@ -60,7 +60,6 @@ def direct_local(request: Request) -> bool:
 
 def install_certificates_api(app: FastAPI, cfg: AutoDJConfig, *, https: bool) -> None:
     store = CertificateStore(Path(cfg.index.index_dir) / ".tls")
-    app.state.certificate_store = store
     configured = (cfg.server.ssl_certfile, cfg.server.ssl_keyfile)
     configured_paths = (
         (Path(configured[0]), Path(configured[1])) if configured[0] and configured[1] else None
