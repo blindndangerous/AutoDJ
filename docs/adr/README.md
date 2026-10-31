@@ -35,7 +35,7 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | [17: Explicit settings saves](0017-save-settings-through-one-draft-boundary.md) | Proposed | Shared drafts, revision conflicts, separate storage owners and removal of superseded writes |
 | [18: Profile overrides](0018-profiles-store-overrides-of-station-defaults.md) | Proposed | Station-owned profile overrides, defaults inheritance, activation and startup resolution |
 | [19: Server certificates](0019-manage-server-certificates-on-the-host.md) | Proposed | Host-only HTTPS setup, private certificate inventory, active selection and client trust |
-| [20: Local browser programme](0020-local-browser-programme-ownership.md) | Accepted; bounded prototype implemented, Chromium endurance checked, hardware evidence pending | Single local browser ownership, stereo programme input, direct monitoring, occurrence accounting and bounded prototype recovery |
+| [20: Local browser programme](0020-local-browser-programme-ownership.md) | Accepted; bounded prototype implemented, Chromium endurance checked, hardware evidence pending | Single local browser ownership, stereo programme input, direct monitoring, occurrence accounting and bounded prototype recovery; bounded preparation credit waits amendment 2026-10-31 |
 
 [ADR 13](0013-produce-speech-outside-playout.md) describes selected
 Showcraft-inspired speech capabilities inside AutoDJ. Its contract table records

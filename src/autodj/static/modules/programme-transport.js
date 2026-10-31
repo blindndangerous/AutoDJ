@@ -7,11 +7,19 @@ export class ProgrammeTransport {
     this.nextFrame = 0;
     this.sequence = 0;
     this.reason = "";
+    this.preparing = grant.state === "preparing";
+  }
+
+  get waitingForCredit() {
+    return this.preparing && !this.reason && this.nextFrame + 441 > this.limitFrame;
   }
 
   credit(message) {
     if (message.type === "credit" && Number.isSafeInteger(message.limit_frame)
-        && message.limit_frame >= this.limitFrame) this.limitFrame = message.limit_frame;
+        && message.limit_frame >= this.limitFrame) {
+      this.limitFrame = message.limit_frame;
+      if (message.state === "local") this.preparing = false;
+    }
   }
 
   fail(reason) {

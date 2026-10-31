@@ -270,3 +270,38 @@ def test_slow_return_does_not_block_other_requests(tmp_path):
         assert elapsed < 0.15
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("delay", [0.3, 0.6])
+def test_slow_preparation_grants_before_capture_and_reports_on_air_credit(tmp_path, delay):
+    """ADR-0020-03: capture starts after preparation; credit identifies activation."""
+    from tests.unit.test_local_programme_audio import packet
+
+    app, _, stations = fixture_app(tmp_path)
+    controller = stations["default"].local_programme
+
+    def prepare(_grant):
+        time.sleep(delay)
+        return []
+
+    performance = SimpleNamespace(
+        busy=False,
+        on_air=False,
+        admit=lambda: None,
+        prepare=prepare,
+        service=lambda: [],
+        recover=lambda **_kwargs: None,
+    )
+    controller.performance = performance
+    with client_for(app).websocket_connect(WS + PATH, headers={"Origin": BASE}) as ws:
+        started = time.monotonic()
+        grant = claim(ws)
+        assert time.monotonic() - started >= delay
+        assert grant["limit_frame"] == 8820
+        assert controller.audio.next_sequence == 0
+        ws.send_bytes(packet(generation=grant["generation"], values=(0, 0)))
+        credit = ws.receive_json()
+        assert credit == {"type": "credit", "limit_frame": 9261, "state": "preparing"}
+        performance.on_air = True
+        ws.send_bytes(packet(1, generation=grant["generation"], values=(0, 0)))
+        assert ws.receive_json() == {"type": "credit", "limit_frame": 9702, "state": "local"}

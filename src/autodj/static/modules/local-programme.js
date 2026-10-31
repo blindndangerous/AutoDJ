@@ -160,6 +160,7 @@ export class ProgrammeOwner {
       this.fadeAndRelease();
     } else if (data.type === "credit") {
       this.transport?.credit(data);
+      if (this.captureQueue.length && this.sendTimer === null) this.sendCaptured();
       if (Number.isSafeInteger(data.limit_frame) && data.limit_frame > this.progressLimit) {
         this.progressLimit = data.limit_frame;
         this.node?.port.postMessage({ type: "watch", frames: 33075 });
@@ -205,6 +206,10 @@ export class ProgrammeOwner {
     this.sendTokens = Math.min(2, this.sendTokens + Math.max(0, now - this.sendBudgetAt) / 8.2);
     this.sendBudgetAt = now;
     while (this.captureQueue.length && this.sendTokens >= 1) {
+      // Preparation may wait for the server using only existing worklet loans.
+      // Keep frame order and every buffer; credit resumes the paced sender.
+      // Once on air, exhausted credit remains a hard transport failure.
+      if (this.transport?.waitingForCredit) return;
       const data = this.captureQueue.shift();
       if (!this.transport?.send(data.buffer, data.firstFrame)) {
         this.stop(this.transport?.reason || "Programme sender is unavailable");

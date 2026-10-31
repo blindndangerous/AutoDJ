@@ -267,7 +267,15 @@ def install_local_programme_routes(app: FastAPI, policy: SecurityPolicy) -> None
                     # Consumption can free space after the sender used all its
                     # credit. Do not require another packet to acknowledge it.
                     last_credit_limit = audio.limit_frame
-                    await websocket.send_json({"type": "credit", "limit_frame": last_credit_limit})
+                    await websocket.send_json(
+                        {
+                            "type": "credit",
+                            "limit_frame": last_credit_limit,
+                            "state": "local"
+                            if getattr(performance, "on_air", False)
+                            else "preparing",
+                        }
+                    )
                 try:
                     message = await asyncio.wait_for(websocket.receive(), 0.1)
                 except TimeoutError:
@@ -287,6 +295,9 @@ def install_local_programme_routes(app: FastAPI, policy: SecurityPolicy) -> None
                         {
                             "type": "credit",
                             "limit_frame": last_credit_limit,
+                            "state": "local"
+                            if getattr(performance, "on_air", False)
+                            else "preparing",
                         }
                     )
                     continue
@@ -306,7 +317,8 @@ def install_local_programme_routes(app: FastAPI, policy: SecurityPolicy) -> None
                         raise ValueError("Expected version 1 claim at 44,100 Hz")
                     identity = hashlib.sha256((cookie or "native-anonymous").encode()).hexdigest()
                     occurrences = await _settle_control(acquire(identity, now))
-                    assert grant is not None
+                    assert grant is not None and audio is not None
+                    audio.begin_capture()
                     last_credit_limit = 8820
                     await websocket.send_json(
                         {

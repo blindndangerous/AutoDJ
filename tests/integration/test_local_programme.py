@@ -1,5 +1,6 @@
 """Local input admission on ASGI and real TCP sockets, without model startup."""
 
+import asyncio
 import socket
 import threading
 import time
@@ -69,6 +70,52 @@ def control(grant, kind):
         "version": 1,
         **{key: grant[key] for key in ("epoch", "generation", "capability")},
     }
+
+
+async def _wait_for_encoded_idle(encoded):
+    """Drain a live 320 kbps capture without relying on an encoder EOF."""
+    deadline = time.monotonic() + 10
+    last_growth = time.monotonic()
+    size = len(encoded)
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+        now = time.monotonic()
+        if len(encoded) != size:
+            size = len(encoded)
+            last_growth = now
+        # At least three seconds at 320 kbps must cover the programme stimulus.
+        if size >= 120000 and now - last_growth >= 0.5:
+            return
+    raise AssertionError(f"Encoded capture did not settle within 10 s ({size} bytes)")
+
+
+@pytest.mark.parametrize("delivery", ["delayed", "empty", "continuous"])
+async def test_encoded_capture_waits_for_idle_with_a_deadline(monkeypatch, delivery):
+    from tests.integration import test_local_programme as module
+
+    clock = [0.0]
+    encoded = bytearray()
+    arrivals = [0.3, 0.8, 1.1]
+
+    async def sleep(delay):
+        clock[0] += delay
+        if delivery == "continuous":
+            encoded.extend(bytes(40000))
+        elif delivery == "delayed":
+            while arrivals and clock[0] >= arrivals[0]:
+                arrivals.pop(0)
+                encoded.extend(bytes(40000))
+
+    monkeypatch.setattr(module, "asyncio", SimpleNamespace(sleep=sleep))
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    if delivery == "delayed":
+        await _wait_for_encoded_idle(encoded)
+        assert len(encoded) == 120000
+        assert 1.6 <= clock[0] < 2
+    else:
+        with pytest.raises(AssertionError, match="capture"):
+            await _wait_for_encoded_idle(encoded)
+        assert 10 <= clock[0] < 10.2
 
 
 def test_administrative_return_rejects_an_old_observed_generation(tmp_path):
@@ -226,7 +273,7 @@ def test_preparation_pcm_credit_stall_and_malformed_release(tmp_path):
     with client_for(app).websocket_connect(WS + PATH, headers={"Origin": BASE}) as ws:
         grant = claim(ws)
         ws.send_bytes(packet(generation=grant["generation"], values=(0, 0)))
-        assert ws.receive_json() == {"type": "credit", "limit_frame": 9261}
+        assert ws.receive_json() == {"type": "credit", "limit_frame": 9261, "state": "preparing"}
         with disconnected(4408):
             ws.receive_json()
     assert stations["default"].local_programme.status()["state"] == "automation"
@@ -261,10 +308,14 @@ def test_consumption_credit_arrives_without_another_packet(tmp_path):
         audio.arm()  # Fixture-only seam; the public protocol has no activate operation.
         for sequence in range(6):
             ws.send_bytes(packet(sequence, generation=grant["generation"]))
-            assert ws.receive_json() == {"type": "credit", "limit_frame": 8820}
+            assert ws.receive_json() == {
+                "type": "credit",
+                "limit_frame": 8820,
+                "state": "preparing",
+            }
             time.sleep(0.01)
         audio.read_block(grant["generation"])
-        assert ws.receive_json() == {"type": "credit", "limit_frame": 9702}
+        assert ws.receive_json() == {"type": "credit", "limit_frame": 9702, "state": "preparing"}
 
 
 async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_path):
@@ -359,7 +410,7 @@ async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_pa
         worker = None
         ending = None
         try:
-            async with asyncio.timeout(15):
+            async with asyncio.timeout(25):
                 while not server.started:
                     await asyncio.sleep(0.01)
                 async with (
@@ -375,9 +426,11 @@ async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_pa
                         await asyncio.to_thread(stop.wait)
                         # A live encoder deliberately has no EOF. End only the
                         # fixture listener after proving handoffs kept it open.
-                        await asyncio.sleep(0.1)
-                        assert len(requests) == 1 and not requests[0].closed
-                        requests[0].close()
+                        try:
+                            await _wait_for_encoded_idle(encoded)
+                            assert len(requests) == 1 and not requests[0].closed
+                        finally:
+                            requests[0].close()
 
                     ending = asyncio.create_task(end_fixture())
                     encoded = bytearray()
@@ -395,7 +448,9 @@ async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_pa
             if worker:
                 await asyncio.to_thread(worker.join, 3)
             if ending:
-                await ending
+                if not ending.done():
+                    ending.cancel()
+                await asyncio.gather(ending, return_exceptions=True)
             stream.close()
             server.should_exit = True
             await serving
@@ -419,10 +474,12 @@ async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_pa
         ],
         input=bytes(encoded),
         capture_output=True,
-        check=True,
+        check=False,
         timeout=20,
-    ).stdout
-    pcm = np.frombuffer(decoded, dtype="<f4").reshape((-1, 2))
+    )
+    assert len(encoded) >= 120000, f"Encoded capture too short: {len(encoded)} bytes"
+    assert decoded.returncode == 0, decoded.stderr.decode("utf-8", "replace")
+    pcm = np.frombuffer(decoded.stdout, dtype="<f4").reshape((-1, 2))
     # The production handoff applies a 20 ms fade-up to the first PCM block.
     expected = reference.copy()
     expected[:882] *= np.linspace(0, 1, 882, dtype=np.float32)[:, None]

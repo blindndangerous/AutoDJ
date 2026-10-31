@@ -158,6 +158,64 @@ describe("local programme browser performance", () => {
   });
 
   // ADR-0020-14
+  it("waits for delayed preparation credit within the fixed capture pool", async () => {
+    vi.useFakeTimers();
+    const engine = { endLocalProgramme: vi.fn(), _master: {} };
+    const owner = new ProgrammeOwner({ engine });
+    const socket = { readyState: 1, bufferedAmount: 0, send: vi.fn(), close: vi.fn() };
+    const node = { port: { postMessage: vi.fn() }, disconnect: vi.fn() };
+    owner.socket = socket; owner.node = node;
+    owner.sum = { connect: vi.fn(), disconnect: vi.fn() };
+    owner.grant = { generation: 1, limit_frame: 8820, state: "preparing" };
+    owner.transport = new ProgrammeTransport(socket, owner.grant);
+    for (let packet = 0; packet < 45; packet++) {
+      owner.capture({ type: "pcm", slot: packet % 32, firstFrame: packet * 441,
+        buffer: new ArrayBuffer(3528) });
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    // 450 ms of capture with no server credit: only 200 ms crossed the socket.
+    expect(socket.send).toHaveBeenCalledTimes(20);
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(owner.captureQueue).toHaveLength(25);
+    expect(node.port.postMessage).toHaveBeenCalledTimes(20);
+    await owner.receive({ type: "credit", limit_frame: 45 * 441, state: "preparing" });
+    await vi.advanceTimersByTimeAsync(210);
+    expect(owner.captureQueue).toHaveLength(0);
+    expect(socket.send).toHaveBeenCalledTimes(45);
+    expect(socket.send.mock.calls.map(([packet]) => Number(new DataView(packet).getBigUint64(24, true))))
+      .toEqual(Array.from({ length: 45 }, (_, i) => i * 441));
+    expect(node.port.postMessage.mock.calls.filter(([m]) => m.type === "recycle")).toHaveLength(45);
+    // The first on-air credit ends the grace; exhaustion is fatal again.
+    await owner.receive({ type: "credit", limit_frame: 45 * 441, state: "local" });
+    owner.capture({ type: "pcm", slot: 13, firstFrame: 45 * 441, buffer: new ArrayBuffer(3528) });
+    expect(socket.close).toHaveBeenCalledWith(4000, "Programme credit exhausted");
+    expect(owner.owned).toBe(false);
+  });
+
+  // ADR-0020-14
+  it("ends preparation when waiting capture reaches the fixed pool bound", async () => {
+    vi.useFakeTimers();
+    const owner = new ProgrammeOwner({ engine: { endLocalProgramme: vi.fn(), _master: {} } });
+    const socket = { readyState: 1, bufferedAmount: 0, send: vi.fn(), close: vi.fn() };
+    owner.socket = socket;
+    owner.node = { port: { postMessage: vi.fn() }, disconnect: vi.fn() };
+    owner.sum = { connect: vi.fn(), disconnect: vi.fn() };
+    owner.grant = { generation: 1, limit_frame: 8820, state: "preparing" };
+    owner.transport = new ProgrammeTransport(socket, owner.grant);
+    const change = owner.change = vi.fn();
+    for (let packet = 0; packet < 53; packet++) {
+      owner.capture({ type: "pcm", slot: packet % 32, firstFrame: packet * 441,
+        buffer: new ArrayBuffer(3528) });
+      expect(owner.captureQueue.length).toBeLessThanOrEqual(32);
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    expect(socket.send).toHaveBeenCalledTimes(20);
+    expect(change).toHaveBeenCalledWith("recovering", "Programme capture queue exhausted");
+    expect(owner.captureQueue).toHaveLength(0);
+    expect(owner.owned).toBe(false);
+  });
+
+  // ADR-0020-14
   it("paces batched render messages within the 32 buffer pool", async () => {
     vi.useFakeTimers();
     const owner = new ProgrammeOwner({engine: { endLocalProgramme: vi.fn(), _master: {} }});

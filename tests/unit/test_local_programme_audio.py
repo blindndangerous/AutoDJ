@@ -294,3 +294,15 @@ def test_selector_holds_automation_and_bypasses_eq_liners():
     bus.render_block()
     assert bus.live_position(bus.current_render()) > returned_position
     assert len(started) == 2
+
+
+def test_capture_grant_starts_the_unchanged_stall_deadline():
+    """ADR-0020-03: server preparation is excluded, but capture still has 500 ms."""
+    audio = LocalPCM(GRANT, now=0)
+    audio.clock = lambda: 0.6
+    audio.begin_capture()
+    assert audio.check(1.099)
+    assert not audio.check(1.1)
+    assert "stalled" in audio.failed
+    with pytest.raises(PCMError, match="no longer pending"):
+        audio.begin_capture()

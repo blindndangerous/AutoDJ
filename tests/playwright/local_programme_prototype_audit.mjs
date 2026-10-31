@@ -13,6 +13,14 @@ await mkdir(root, { recursive: true });
 const report = { date: new Date().toISOString(), os: `${os.type()} ${os.release()}`, node: process.version,
   fixture: "Real Player, SQLite ledger, MixBus, FFmpeg, production browser modules; synthetic catalog and audit page shell",
   output: "Chromium headless output muted by Playwright; no acoustic measurement", errors: [] };
+const cpuRate = Number(process.env.LOCAL_PROGRAMME_CPU_RATE || 1);
+assert.ok(Number.isFinite(cpuRate) && cpuRate >= 1 && cpuRate <= 20, "CPU throttle must be between 1 and 20");
+report.cpu_throttling_rate = cpuRate;
+async function throttle(page) {
+  if (cpuRate === 1) return;
+  const session = await page.context().newCDPSession(page);
+  await session.send("Emulation.setCPUThrottlingRate", { rate: cpuRate });
+}
 const fixture = spawn("uv", ["run", "--frozen", "--no-sync", "python", "-m",
   "tests.playwright.local_programme_prototype_fixture", "--root", root], {
   env: { ...process.env, UV_CACHE_DIR: resolve(".codex-tmp/uv-cache") },
@@ -67,6 +75,7 @@ try {
   report.chromium = browser.version();
   const context = await browser.newContext();
   page = await context.newPage();
+  await throttle(page);
   page.on("pageerror", error => report.errors.push(String(error)));
   await page.goto(`${base}/audit`);
   await page.locator("#take-local-control").waitFor({ state: "visible" });
@@ -199,8 +208,13 @@ try {
   assert.equal(report.recovered.encoder_generation, 0);
   report.failure_recovery = {};
   for (const fault of ["suspend", "stalled-feed", "session-revoked"]) {
+    await until(async () => {
+      const s = await state();
+      return s.ownership.state === "automation" && s.reason === "Automation";
+    }, `${fault} previous recovery settled`);
     const faultContext = await browser.newContext();
     const faultPage = await faultContext.newPage();
+    await throttle(faultPage);
     page = faultPage;
     await faultPage.goto(`${base}/audit`);
     await faultPage.evaluate(() => {
@@ -210,6 +224,8 @@ try {
         window.audit.changes.push({state, reason}); change(state, reason);
       };
     });
+    await until(async () => faultPage.locator("#take-local-control").getAttribute("aria-disabled").then(value => value === "false"),
+      `${fault} control ready`);
     await faultPage.locator("#take-local-control").click();
     await until(async () => (await state()).ownership.state === "local", `${fault} takeover`);
     const started = Date.now();

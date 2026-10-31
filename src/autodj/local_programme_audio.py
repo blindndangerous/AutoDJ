@@ -79,6 +79,13 @@ class LocalPCM:
         with self._lock:
             return self._failed
 
+    def begin_capture(self) -> None:
+        """Start the first-packet deadline when the server issues the capture grant."""
+        with self._lock:
+            if self._failed or self.next_sequence or self._armed:
+                raise PCMError("Local programme capture is no longer pending")
+            self._last_pcm = self._last_budget = self.clock()
+
     def arm(self, first_frame: int | None = None) -> None:
         """Internal boundary for fixtures; no route exposes this before accounting."""
         with self._lock:
