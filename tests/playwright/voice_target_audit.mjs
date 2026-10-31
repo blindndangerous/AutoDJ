@@ -17,13 +17,14 @@ const row = {
   estimated_airtime: Date.now() / 1000 + 180,
 };
 let posts = 0;
-const startup = `<script type="module">
+// Served in place of /app.js, so the production page loads only the voice tracker.
+const startup = `
   import { installVoiceTracker } from '/modules/voice-tracker.js';
   for (const panel of document.querySelectorAll('[role="tabpanel"]')) panel.hidden = panel.id !== 'panel-voice';
   for (const tab of document.querySelectorAll('[role="tab"]')) tab.setAttribute('aria-selected', String(tab.id === 'tab-voice'));
   window.voiceAudit = installVoiceTracker();
   await window.voiceAudit.refresh();
-</script>`;
+`;
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, "http://localhost");
@@ -51,16 +52,19 @@ const server = createServer(async (request, response) => {
       }));
       return;
     }
+    if (url.pathname === "/app.js") {
+      response.setHeader("Content-Type", "text/javascript");
+      response.end(startup);
+      return;
+    }
     const path = resolve(staticRoot, `.${url.pathname === "/" ? "/index.html" : url.pathname}`);
     if (!path.startsWith(`${staticRoot}${sep}`)) { response.writeHead(403); response.end(); return; }
-    let body = await readFile(path);
-    if (extname(path) === ".html") {
-      body = Buffer.from(body.toString().replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, "").replace("</body>", `${startup}</body>`));
-    }
+    const body = await readFile(path);
     response.setHeader("Content-Type", ({ ".html": "text/html", ".js": "text/javascript", ".css": "text/css" })[extname(path)] || "application/octet-stream");
     response.end(body);
   } catch (error) {
-    response.writeHead(500); response.end(String(error));
+    report.errors.push(String(error));
+    response.writeHead(500); response.end("Fixture error");
   }
 });
 await new Promise((done) => server.listen(0, "127.0.0.1", done));
