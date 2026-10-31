@@ -45,6 +45,52 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run lint
 
+  acme-pebble:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    name: ACME DNS-01 (Pebble)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+      - run: uv sync --frozen --no-default-groups --group test
+      - name: Download verified Pebble test binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pebble"
+          base=https://github.com/letsencrypt/pebble/releases/download/v2.10.1
+          curl --fail --location --retry 2 --max-time 60 \
+            "$base/pebble-linux-amd64.tar.gz" -o "$RUNNER_TEMP/pebble/pebble.tar.gz"
+          curl --fail --location --retry 2 --max-time 60 \
+            "$base/pebble-challtestsrv-linux-amd64.tar.gz" -o "$RUNNER_TEMP/pebble/challtestsrv.tar.gz"
+          printf '%s  %s\n' \
+            4f2fcb5bca8c85c9cf73ad140fccfc0d2be40bd81ab99879c79b7b8a0b4f70ed "$RUNNER_TEMP/pebble/pebble.tar.gz" \
+            e93a5aa25ecdf3af2f9fbb2de32b0173e64a2eae81002a4ccfe35fa6f4f60b92 "$RUNNER_TEMP/pebble/challtestsrv.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/pebble/pebble.tar.gz" -C "$RUNNER_TEMP/pebble"
+          tar -xzf "$RUNNER_TEMP/pebble/challtestsrv.tar.gz" -C "$RUNNER_TEMP/pebble"
+          pebble_bin=$(find "$RUNNER_TEMP/pebble" -type f -name pebble)
+          challenge_bin=$(find "$RUNNER_TEMP/pebble" -type f -name pebble-challtestsrv)
+          test -f "$pebble_bin" && test -f "$challenge_bin"
+          chmod +x "$pebble_bin" "$challenge_bin"
+          printf 'AUTODJ_PEBBLE_BIN=%s\nAUTODJ_PEBBLE_CHALLTESTSRV_BIN=%s\n' \
+            "$pebble_bin" "$challenge_bin" >> "$GITHUB_ENV"
+      - name: Real local CA issuance and DNS cleanup
+        run: >-
+          uv run --frozen --no-sync python -m pytest --no-cov
+          --basetemp="${{ runner.temp }}/autodj-pebble-pytest" tests/integration/test_acme_pebble.py
+        env:
+          AUTODJ_REQUIRE_PEBBLE: "1"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: pebble-logs
+          path: ${{ runner.temp }}/autodj-pebble-pytest/**/pebble-*.log
+
   container:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Container build, smoke, and scan

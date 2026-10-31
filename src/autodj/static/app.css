@@ -2365,7 +2365,10 @@ dialog h1 { font-size: 1.5em; }
   overflow: auto;
 }
 .secure-connection-dialog label { display: block; margin-block: .65rem .25rem; }
-.secure-connection-dialog input, .secure-connection-dialog textarea { box-sizing: border-box; width: 100%; }
+.secure-connection-dialog input:not([type="checkbox"]), .secure-connection-dialog textarea { box-sizing: border-box; width: 100%; }
+.secure-connection-dialog label:has(input[type="checkbox"]) { display: flex; align-items: flex-start; gap: .5rem; }
+.secure-connection-dialog label input[type="checkbox"] { flex: 0 0 auto; }
+.secure-connection-dialog code { overflow-wrap: anywhere; }
 .secure-steps { display: flex; gap: 1.5rem; padding-inline-start: 1.5rem; }
 .secure-steps [aria-current="step"] { font-weight: 700; }
 #secure-connections small { display: block; }

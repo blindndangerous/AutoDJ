@@ -6,10 +6,10 @@ import ipaddress
 import ssl
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from autodj.certificates import CertificateError, CertificateStore
 from autodj.config import AutoDJConfig
@@ -20,6 +20,9 @@ BODY_LIMITS: dict[str, Callable[[], int]] = {
     PREFIX: lambda: 16 * 1024,
     PREFIX + "/import": lambda: 270 * 1024,
     PREFIX + "/{certificate_id}/activate": lambda: 1024,
+    PREFIX + "/acme/preflight": lambda: 16 * 1024,
+    PREFIX + "/acme/{operation_id}/issue": lambda: 4096,
+    PREFIX + "/acme/{operation_id}/release-cleanup": lambda: 1024,
 }
 
 
@@ -36,6 +39,27 @@ class ImportCertificate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     certificate: str = Field(max_length=128 * 1024)
     private_key: str = Field(max_length=128 * 1024, repr=False)
+
+
+class AcmePreflight(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+    domain: str = Field(min_length=1, max_length=253)
+    zone_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    api_token: str = Field(min_length=1, max_length=1024, repr=False)
+    environment: Literal["staging", "production"]
+
+
+class AcmeIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    terms_url: str = Field(min_length=1, max_length=2048)
+    accept_terms: StrictBool = False
+    host_confirmed: StrictBool = False
+
+
+class ReleaseCleanup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirm: StrictBool = False
 
 
 def direct_local(request: Request) -> bool:
@@ -63,12 +87,32 @@ def install_certificates_api(app: FastAPI, cfg: AutoDJConfig, *, https: bool) ->
     configured_paths = (
         (Path(configured[0]), Path(configured[1])) if configured[0] and configured[1] else None
     )
+    configured_managed = configured_paths is not None and any(
+        store.paths(item["id"]) == configured_paths for item in store.list()
+    )
     initial_active = store.active_id
     overridden = bool(
         initial_active and configured_paths and store.paths(initial_active) != configured_paths
     )
     # The running pair is distinct from a selection awaiting the first HTTPS restart.
     running: list[tuple[Path, Path] | None] = [configured_paths]
+
+    from autodj.acme_dns import AcmeError
+    from autodj.acme_worker import AcmeManager
+
+    def apply_renewal(cert: Path, key: Path) -> None:
+        reloader = getattr(app.state, "certificate_reloader", None)
+        if reloader:
+            reloader.replace(cert, key)
+            running[0] = (cert, key)
+
+    acme = AcmeManager(
+        store,
+        apply=apply_renewal,
+        running=lambda: running[0],
+        enabled=cfg.server.auth_mode == "native" and not overridden,
+    )
+    app.state.acme = acme
 
     def local(request: Request) -> bool:
         return cfg.server.auth_mode == "native" and direct_local(request)
@@ -89,6 +133,15 @@ def install_certificates_api(app: FastAPI, cfg: AutoDJConfig, *, https: bool) ->
         from cryptography import x509
 
         entries = store.list()
+        is_local = local(request)
+        renewals = {}
+        acme_error = ""
+        if is_local:
+            try:
+                renewals = {task["id"]: acme.describe(task, entries) for task in acme.tasks()}
+                acme_error = acme.error
+            except (OSError, ValueError, KeyError, TypeError):
+                acme_error = "ACME saved state could not be read."
         active = (
             next(
                 (item["id"] for item in entries if store.paths(item["id"]) == configured_paths),
@@ -101,12 +154,17 @@ def install_certificates_api(app: FastAPI, cfg: AutoDJConfig, *, https: bool) ->
         for item in entries:
             item["managed"] = True
             item["active"] = item["id"] == active
+            if is_local and item.get("acme_lineage"):
+                item["renewal"] = renewals.get(item["acme_lineage"], {"error": acme_error})
         # Existing externally renewed pairs remain externally owned.
         if (
             configured[0]
             and configured[1]
+            and not configured_managed
             and not any(store.paths(item["id"]) == configured_paths for item in entries)
         ):
+            from cryptography import x509
+
             try:
                 cert = x509.load_pem_x509_certificate(Path(configured[0]).read_bytes())
                 external = store.describe(cert, "Configured certificate", "configured")
@@ -126,8 +184,8 @@ def install_certificates_api(app: FastAPI, cfg: AutoDJConfig, *, https: bool) ->
         return {
             "certificates": entries,
             "active_id": active or ("configured" if active_row else None),
-            "local": local(request),
-            "can_manage": local(request) and not overridden,
+            "local": is_local,
+            "can_manage": is_local and not overridden,
             "management_note": "Restart AutoDJ without the TLS command-line flags to use saved certificates."
             if overridden
             else "",
@@ -136,7 +194,68 @@ def install_certificates_api(app: FastAPI, cfg: AutoDJConfig, *, https: bool) ->
             "hosts": hosts,
             "urls": urls,
             "generation_available": True,
+            "acme_available": is_local and acme.enabled,
+            "acme_error": acme_error,
+            **({"acme_operations": list(renewals.values())} if is_local else {}),
         }
+
+    @app.post(PREFIX + "/acme/preflight", status_code=202)
+    def acme_preflight(request: Request, body: AcmePreflight) -> dict:
+        require_local(request)
+        try:
+            return acme.preflight(
+                body.name, body.domain, body.zone_id, body.api_token, body.environment
+            )
+        except AcmeError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except (OSError, ValueError):
+            raise HTTPException(503, "ACME setup could not be saved.") from None
+
+    @app.get(PREFIX + "/acme/{operation_id}")
+    def acme_status(request: Request, operation_id: str) -> dict:
+        require_local(request)
+        try:
+            return acme.status(operation_id)
+        except AcmeError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except (OSError, ValueError):
+            raise HTTPException(503, "ACME status could not be read.") from None
+
+    @app.post(PREFIX + "/acme/{operation_id}/issue", status_code=202)
+    def acme_issue(request: Request, operation_id: str, body: AcmeIssue) -> dict:
+        require_local(request)
+        try:
+            return acme.issue(
+                operation_id,
+                terms_url=body.terms_url,
+                accept_terms=body.accept_terms,
+                host_confirmed=body.host_confirmed,
+            )
+        except AcmeError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except (OSError, ValueError):
+            raise HTTPException(503, "ACME issuance could not be queued.") from None
+
+    @app.delete(PREFIX + "/acme/{operation_id}", status_code=204)
+    def acme_remove(request: Request, operation_id: str) -> Response:
+        require_local(request)
+        try:
+            acme.remove(operation_id)
+        except AcmeError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except (OSError, ValueError):
+            raise HTTPException(503, "ACME setup could not be removed.") from None
+        return Response(status_code=204)
+
+    @app.post(PREFIX + "/acme/{operation_id}/release-cleanup")
+    def acme_release_cleanup(request: Request, operation_id: str, body: ReleaseCleanup) -> dict:
+        require_local(request)
+        try:
+            return acme.release_cleanup(operation_id, confirm=body.confirm)
+        except AcmeError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except (OSError, ValueError):
+            raise HTTPException(503, "DNS cleanup could not be released.") from None
 
     @app.get(PREFIX)
     def inventory(request: Request) -> dict:
@@ -168,12 +287,27 @@ def install_certificates_api(app: FastAPI, cfg: AutoDJConfig, *, https: bool) ->
             raise HTTPException(503, "The certificate could not be saved.") from None
 
     @app.post(PREFIX + "/{certificate_id}/activate")
-    def activate(request: Request, certificate_id: str) -> dict:
+    def activate(
+        request: Request,
+        certificate_id: str,
+        hostname: Annotated[str | None, Query(min_length=1, max_length=253)] = None,
+    ) -> dict:
         require_local(request)
         try:
             # At least the local management address must keep working. Additional
             # SANs are shown explicitly; a certificate need not cover every interface.
-            store.validate_hosts(certificate_id, [request.url.hostname or "localhost"])
+            if hostname is not None:
+                row = next((item for item in store.list() if item["id"] == certificate_id), {})
+                if (
+                    row.get("type") != "Let's Encrypt"
+                    or hostname not in cfg.server.effective_allowed_hosts()
+                ):
+                    raise CertificateError(
+                        "Choose the certificate's domain from the configured allowed hosts."
+                    )
+            else:
+                hostname = request.url.hostname or "localhost"
+            store.validate_hosts(certificate_id, [hostname])
             reloader = getattr(app.state, "certificate_reloader", None)
             store.activate(certificate_id, reloader.replace if reloader else None)
             if reloader:
@@ -191,7 +325,12 @@ def install_certificates_api(app: FastAPI, cfg: AutoDJConfig, *, https: bool) ->
             # Also protect a still-running pair during a pending restart.
             if store.paths(certificate_id) == running[0]:
                 raise CertificateError("Restart AutoDJ before deleting the previous certificate.")
-            store.delete(certificate_id)
+            with acme.lock:
+                acme.check_delete(certificate_id)
+                store.delete(certificate_id)
+                acme.certificate_deleted()
+        except AcmeError as exc:
+            raise HTTPException(400, str(exc)) from None
         except CertificateError as exc:
             raise HTTPException(400, str(exc)) from None
         except OSError:

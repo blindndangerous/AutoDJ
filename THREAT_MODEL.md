@@ -142,6 +142,45 @@ the leaf certificate. The saved active selection overrides TOML TLS paths;
 explicit serve CLI TLS flags retain precedence. See the
 [certificate proposal](docs/adr/0019-manage-server-certificates-on-the-host.md).
 
+Built-in ACME issuance and cleanup release use that same direct localhost,
+native-mode browser authorization and Origin boundary. ACME supports DNS-01 for
+one ordinary DNS name, with a Cloudflare zone ID and a zone-scoped token. The
+provider transport uses only `api.cloudflare.com`; production and staging ACME
+directories are fixed. Redirects and foreign ACME endpoint origins are refused.
+Requests have bounded connect/read timeouts and responses have a 1 MiB limit.
+Checking zone access cannot establish that a token has no broader permissions.
+
+TXT records carry persisted ownership markers and receipts. Multiple
+authorizations retain separate receipts; cleanup compares each exact record ID,
+contents, and marker. It never replaces an RRset or deletes another owner's
+record. Challenge CNAMEs are unsupported. An explicit confirmed cleanup release
+records the non-secret record IDs in the host log and tells the operator to
+remove those TXT records manually. It does not grant broader DNS deletion rights.
+
+The server owns one bounded ACME child outside request and playout paths. A
+15-minute deadline, persisted order/account budgets, saved order recovery, and
+backoff limit repeated work. Provider Retry-After can delay a retry further.
+Credentials travel through owner-only `.tls/acme` files, not process arguments.
+Child output and library debug logging are suppressed. Public status and Doctor
+use an allowlist that excludes tokens and keys. Startup recovers pending cleanup
+and removes credentials left unreferenced by interrupted certificate deletion.
+Tests with a local CA do not prove live Cloudflare token scope or propagation.
+
+Directory terms require explicit acceptance before registration. The host
+resolver's addresses are shown before issuance; uncertain reachability requires
+operator confirmation, which is not network proof. Production certificate names
+are public through Certificate Transparency. Staging certificates never enter
+the inventory or serving context. Renewal uses conditional activation so an
+operator's newer selection wins. Only older pairs in the successfully renewed
+lineage are pruned, retaining the active pair and its predecessor.
+
+A public certificate does not cover localhost. ACME activation may name an
+explicit destination through the `hostname` query parameter, restricted to an
+already allowed host covered by that certificate. Existing body-independent
+activation remains unchanged. Browser restart handoff to another hostname must
+match the active Let's Encrypt certificate and the server's advertised HTTPS
+origins, with the same port. Its health probe omits credentials and verifies TLS.
+
 ## CLI risks
 
 - Crafted audio metadata is handled through Mutagen with guarded errors.

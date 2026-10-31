@@ -127,7 +127,15 @@ class CertificateStore:
             cert, name, ident, "Self-signed" if cert.issuer == cert.subject else "Imported"
         )
 
-    def _store(self, name: str, cert_pem: bytes, key_pem: bytes, cert_type: str) -> dict:
+    def _store(
+        self,
+        name: str,
+        cert_pem: bytes,
+        key_pem: bytes,
+        cert_type: str,
+        *,
+        lineage: str | None = None,
+    ) -> dict:
         from cryptography import x509
         from cryptography.hazmat.primitives import serialization
         from cryptography.x509.oid import ExtendedKeyUsageOID
@@ -180,6 +188,8 @@ class CertificateStore:
             raise CertificateError("certificate inventory is full")
         ident = uuid.uuid4().hex
         item = self._metadata(cert, name.strip(), ident, cert_type)
+        if lineage is not None:
+            item["acme_lineage"] = lineage
         directory = self.root / ident
         if directory.exists() or directory.is_symlink() or directory.is_junction():
             raise CertificateError("certificate inventory path is unsafe")
@@ -265,6 +275,50 @@ class CertificateStore:
     def import_pair(self, name: str, cert_pem: bytes, key_pem: bytes) -> dict:
         with self._lock:
             return self._store(name, cert_pem, key_pem, "Imported")
+
+    def save_acme(self, name: str, cert_pem: bytes, key_pem: bytes, lineage: str) -> dict:
+        """Publish once, including after interruption between inventory and job writes."""
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes
+
+        if not _ID.fullmatch(lineage):
+            raise CertificateError("invalid ACME lineage")
+        fingerprint = x509.load_pem_x509_certificate(cert_pem).fingerprint(hashes.SHA256()).hex()
+        with self._lock:
+            for item in self._load()["certificates"]:
+                if item.get("acme_lineage") == lineage and item["fingerprint"] == fingerprint:
+                    return dict(item)
+            return self._store(name, cert_pem, key_pem, "Let's Encrypt", lineage=lineage)
+
+    def activate_if_current(
+        self, ident: str, expected: str, apply: Callable[[Path, Path], None] | None = None
+    ) -> bool:
+        """A manual selection during renewal wins under the same inventory lock."""
+        with self._lock:
+            if self._load()["active"] != expected:
+                return False
+            self.activate(ident, apply)
+            return True
+
+    def prune_acme(
+        self,
+        lineage: str,
+        current: str,
+        previous: str,
+        *,
+        running: tuple[Path, Path] | None = None,
+    ) -> None:
+        """Retain the renewed, previous and serving pairs without touching other owners."""
+        with self._lock:
+            data = self._load()
+            keep = {current, previous, data.get("active")}
+            for item in data["certificates"]:
+                if (
+                    item.get("acme_lineage") == lineage
+                    and item["id"] not in keep
+                    and self.paths(item["id"]) != running
+                ):
+                    self.delete(item["id"])
 
     def validate_hosts(self, ident: str, hosts: list[str]) -> None:
         """Require every requested DNS/IP host to be covered by the stored SAN."""

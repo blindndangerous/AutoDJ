@@ -51,10 +51,17 @@ trusted network. `--insecure-lan` without `--lan` still needs explicit allowlist
 On the AutoDJ host, open `http://127.0.0.1:8080` (use your configured port),
 then **Settings → Global → Server → Secure connections (HTTPS)**.
 Choose **Add certificate** to create a certificate for the listed host names
-and addresses, or import an existing PEM certificate and private key.
+and addresses, import an existing PEM certificate and private key, or choose
+**Get a certificate from Let's Encrypt** for a domain hosted on Cloudflare.
+The built-in option offers an explicit staging test before production issuance.
+Follow [Get and renew a certificate in AutoDJ](domain-https.md#get-and-renew-a-certificate-in-autodj)
+for its DNS token, domain, terms, and hostname checks.
 Activate the certificate you want AutoDJ to serve. The first switch from HTTP
 to HTTPS requires restarting AutoDJ; subsequent activations take effect for new
 connections. The previous certificate stays in the table until you delete it.
+After an automatic Let's Encrypt renewal, AutoDJ retains the active pair and the
+pair it replaced. Older pairs from that same renewal lineage are removed.
+Manual certificates and other lineages are not removed by renewal.
 When AutoDJ was started by its launcher or a supported supervisor, **Restart now**
 uses the normal restart confirmation and reopens setup over HTTPS once the browser
 can connect securely. Install the public certificate's trust before restarting.
@@ -65,10 +72,21 @@ from the host through a trusted connection, then open the HTTPS address on
 the recording device. Once connected, go to **Voice tracks** and allow microphone
 access. Each browser profile keeps its own AutoDJ pairing.
 
+For Let's Encrypt, open the certificate's domain over HTTPS on the recording
+device. Its browser verifies the certificate without installing a public copy
+as a trusted root. A public certificate cannot cover `localhost` or a LAN IP.
+The certificate step explains the domain handoff before activation and restart.
+
 The table shows each certificate's exact expiry and approximate remaining time.
 The active certificate cannot be deleted. **How to remove trust on this device**
 explains how to remove an installed public certificate through the local browser
 or operating system's settings.
+
+Let's Encrypt failures and paused renewal appear beside the certificate.
+`uv run autodj doctor` reads the saved failure without contacting the certificate
+authority or changing DNS. Only an active Let's Encrypt lineage renews
+automatically. Choosing another certificate pauses renewal for the saved lineage.
+See [Renewal and DNS cleanup](domain-https.md#renewal-and-dns-cleanup) for recovery.
 
 Managed pairs and their selection live under `<index_dir>/.tls` with owner-only
 permissions. Keep a separate protected copy if you need to recover the keys;

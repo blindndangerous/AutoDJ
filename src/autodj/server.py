@@ -1028,6 +1028,7 @@ def create_app(
         library = SharedLibrary(shared.library, stations)
         await stations.start_all()
         await library.start()
+        app.state.acme.start()
         STARTUP_COMPLETE.set()
         logger.info(
             "Startup: stations and background services started in %.2f s (audio readiness logged separately)",
@@ -1063,6 +1064,7 @@ def create_app(
                 previews_stopped,
                 rescan_stopped,
                 reviews_stopped,
+                acme_stopped,
             ) = await asyncio.gather(
                 # A Library tools job is a child process: stop it as its Stop
                 # button does, so a restart does not leave it beside the next server.
@@ -1081,9 +1083,12 @@ def create_app(
                 stopped("stopping hour previews", getattr(app.state, "hour_previews", None)),
                 stopped("stopping the cue rescan", getattr(app.state, "cue_rescan", None)),
                 stopped("stopping review jobs", getattr(app.state, "review_jobs", None)),
+                stopped("stopping ACME", getattr(app.state, "acme", None)),
             )
             if job_was_running:
                 logger.info("Stopped the running library job")
+            if not acme_stopped:
+                logger.warning("ACME worker did not stop within its shutdown deadline")
             if not speech_stopped:
                 logger.warning(
                     "Speech worker is still stopping; pending requests will not be retried"
