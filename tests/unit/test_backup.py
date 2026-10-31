@@ -59,6 +59,53 @@ def test_schedule_is_backed_up_and_restored(tmp_path: Path) -> None:
     assert json.loads(schedule.read_text(encoding="utf-8"))["schema_version"] == 1
 
 
+@pytest.mark.parametrize("write_fails", [False, True])
+def test_snapshot_never_writes_live_dj_secrets(tmp_path, monkeypatch, write_fails):
+    from autodj import backup
+    from autodj.live import DjCredentials, strip_secrets
+    from autodj.stations import StationPaths
+
+    cfg = _config(tmp_path)
+    original = StationPaths.default(cfg).live_djs
+    DjCredentials(original).save("alice", "DJ Alice", "test-password-only")
+    raw = original.read_bytes()
+    assert b'"hash"' in raw and b'"salt"' in raw
+    snapshot = tmp_path / "snapshot"
+    writes = []
+    copy_file = backup.shutil.copy
+    write_bytes = Path.write_bytes
+
+    def observe_copy(source, destination, *args, **kwargs):
+        result = copy_file(source, destination, *args, **kwargs)
+        if Path(destination).name == "live_djs.json":
+            writes.append(Path(destination).read_bytes())
+        return result
+
+    def observe_write(path, data):
+        if path.name == "live_djs.json" and path.is_relative_to(snapshot):
+            writes.append(data)
+            if write_fails:
+                raise OSError("snapshot write failed")
+        return write_bytes(path, data)
+
+    monkeypatch.setattr(backup.shutil, "copy", observe_copy)
+    monkeypatch.setattr(Path, "write_bytes", observe_write)
+    if write_fails:
+        with pytest.raises(OSError, match="snapshot write failed"):
+            backup._snapshot(cfg, backup._roots(cfg), snapshot)
+    else:
+        members = backup._snapshot(cfg, backup._roots(cfg), snapshot)
+        saved = members["index/live_djs.json"]
+        assert saved.read_bytes() == strip_secrets(raw)
+        assert saved.stat().st_mode == original.stat().st_mode
+    assert writes
+    assert all(b'"hash"' not in data and b'"salt"' not in data for data in writes)
+    for saved in snapshot.rglob("live_djs.json"):
+        assert b'"hash"' not in saved.read_bytes()
+        assert b'"salt"' not in saved.read_bytes()
+    assert original.read_bytes() == raw
+
+
 def test_clockwheels_are_backed_up_and_restored(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     folder = (cfg.index.stations_dir / "default") / "clockwheels"

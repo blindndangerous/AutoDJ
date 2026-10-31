@@ -17,12 +17,10 @@ import { AuthenticationRequiredError } from "../../src/autodj/static/modules/api
 import { selectStation } from "../../src/autodj/static/modules/stations.js";
 
 const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
-// Parsed without its stylesheet and scripts, which happy-dom would try to
-// load from a server that is not there.
-const page = new window.DOMParser().parseFromString(
-  html.replace(/<link\b[^>]*>/g, "").replace(/<script\b[\s\S]*?<\/script>/g, ""), "text/html",
-);
-const section = page.getElementById("landmarks-section").outerHTML;
+// Template contents stay inert, so stylesheets and scripts are not loaded.
+const page = document.createElement("template");
+page.innerHTML = html;
+const section = page.content.querySelector("#landmarks-section").outerHTML;
 
 const lm = (time_s, kind, name, extra = {}) => ({
   time_s, kind, kinds: [kind], name, source: "analysis", major: true, bar: null, end_s: null, end_bar: null, ...extra,

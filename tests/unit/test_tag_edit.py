@@ -215,7 +215,7 @@ def test_disappearing_file_during_read_only_check_is_tag_error(tmp_path, monkeyp
         write_tags(path, validate_tags({"title": "Changed"}))
 
 
-def test_a_mutagen_failure_keeps_the_original(tmp_path: Path, monkeypatch) -> None:
+def test_a_mutagen_failure_keeps_the_original(tmp_path: Path, monkeypatch, caplog) -> None:
     path = make_audio(tmp_path, ".mp3")
     before = path.read_bytes()
 
@@ -223,8 +223,10 @@ def test_a_mutagen_failure_keeps_the_original(tmp_path: Path, monkeypatch) -> No
         raise mutagen.MutagenError("broken frame")
 
     monkeypatch.setattr(mutagen.mp3.MP3, "save", broken)
-    with pytest.raises(TagError, match="broken frame"):
+    with pytest.raises(TagError, match="could not be written") as refused:
         write_tags(path, validate_tags({"title": "Changed"}))
+    assert "broken frame" not in str(refused.value)
+    assert "broken frame" in caplog.text
     assert path.read_bytes() == before
     assert sorted(p.name for p in tmp_path.iterdir()) == [path.name]
 

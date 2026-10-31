@@ -193,6 +193,68 @@ def test_a_write_failure_is_409_and_keeps_the_file(tagged, monkeypatch) -> None:
     assert manager.catalog.record_for_path(song)["title"] == "Old Title"
 
 
+def test_catalog_read_failure_hides_backend_details(tagged, monkeypatch, caplog) -> None:
+    client, manager, song, _bridge = tagged
+    before = song.read_bytes()
+
+    def unreadable(*_args, **_kwargs):
+        raise OSError("private-read-error at /private/music/song.flac")
+
+    monkeypatch.setattr(manager.catalog, "retag", unreadable)
+    response = client.post("/api/library/tags", json={"path": str(song), "tags": {"title": "New"}})
+    assert response.status_code == 409
+    assert "could not read the file" in response.json()["detail"]
+    assert "Check" in response.json()["detail"]
+    assert "private-read-error" not in response.text
+    assert "/private/music" not in response.text
+    assert "private-read-error" in caplog.text
+    assert song.read_bytes() == before
+    assert manager.catalog.record_for_path(song)["title"] == "Old Title"
+
+
+@pytest.mark.parametrize("stage", ["open", "copy", "save", "replace"])
+def test_file_tag_failure_hides_backend_details(tagged, monkeypatch, caplog, stage) -> None:
+    import mutagen
+    from mutagen.flac import FLAC
+
+    from autodj import tag_edit
+
+    client, manager, song, _bridge = tagged
+    before = song.read_bytes()
+
+    def broken(*_args, **_kwargs):
+        message = "private-file-error at /private/music/song.flac"
+        if stage in {"open", "save"}:
+            raise mutagen.MutagenError(message)
+        raise OSError(message)
+
+    owner, attribute = {
+        "open": (mutagen, "File"),
+        "copy": (tag_edit.shutil, "copy2"),
+        "save": (FLAC, "save"),
+        "replace": (tag_edit.os, "replace"),
+    }[stage]
+    monkeypatch.setattr(owner, attribute, broken)
+    response = client.post(
+        "/api/library/tags",
+        json={"write_file": True, "path": str(song), "tags": {"title": "New"}},
+    )
+    assert response.status_code == 409
+    assert "Check" in response.json()["detail"]
+    assert "private-file-error" not in response.text
+    assert "/private/music" not in response.text
+    assert "private-file-error" in caplog.text
+    if stage != "open":
+        detail = response.json()["detail"]
+        assert "open in another program" in detail
+        assert "disk or share is disconnected" in detail
+        assert "file is damaged" in detail
+        assert "try again" in detail
+    assert song.read_bytes() == before
+    assert manager.catalog.record_for_path(song)["title"] == "Old Title"
+    assert list(song.parent.glob(f"*{tag_edit.TEMP_SUFFIX}")) == []
+
+
 def _beets(tmp_path: Path, song: Path) -> Path:
     db = tmp_path / "beets.db"
     conn = sqlite3.connect(db)
@@ -243,6 +305,31 @@ def test_a_beets_failure_still_saves_the_file(tagged, tmp_path: Path) -> None:
     assert response.json()["beets"] == "failed"
     assert response.json()["beets_error"]
     assert read_file_tags(song).artist == "Band"
+
+
+@pytest.mark.parametrize("error_type", [sqlite3.OperationalError, OSError])
+def test_beets_failure_hides_backend_details(tagged, tmp_path, monkeypatch, caplog, error_type):
+    from autodj import tags_api
+
+    client, manager, song, _bridge = tagged
+    manager.cfg.library.beets_db = _beets(tmp_path, song)
+
+    def broken(*_args, **_kwargs):
+        raise error_type("private-beets-error at /private/beets.db")
+
+    monkeypatch.setattr(tags_api, "update_beets", broken)
+    response = client.post(
+        "/api/library/tags",
+        json={"write_file": True, "path": str(song), "tags": {"artist": "Band"}, "beets": True},
+    )
+    assert response.status_code == 200
+    assert response.json()["beets"] == "failed"
+    assert response.json()["beets_error"] == "the beets database could not be updated"
+    assert "private-beets-error" not in response.text
+    assert "/private/beets.db" not in response.text
+    assert "private-beets-error" in caplog.text
+    assert read_file_tags(song).artist == "Band"
+    assert manager.catalog.record_for_path(song)["artist"] == "Band"
 
 
 def test_concurrent_beets_saves_keep_the_latest_tags_and_mtime(
@@ -467,11 +554,11 @@ def test_the_advance_lock_is_held_across_the_rename(tagged, monkeypatch) -> None
     assert not lock.locked()
 
 
-def test_a_catalog_failure_after_the_write_is_a_warning(tagged, monkeypatch) -> None:
+def test_a_catalog_failure_after_the_write_is_a_warning(tagged, monkeypatch, caplog) -> None:
     client, manager, song, _bridge = tagged
 
     def broken(*_args, **_kwargs):
-        raise sqlite3.OperationalError("database is locked")
+        raise sqlite3.OperationalError("private-catalog-error at /private/library.db")
 
     monkeypatch.setattr(manager.catalog, "retag", broken)
     response = client.post(
@@ -479,10 +566,14 @@ def test_a_catalog_failure_after_the_write_is_a_warning(tagged, monkeypatch) -> 
     )
     assert response.status_code == 200
     assert "could not update its library" in response.json()["warning"]
+    assert "rescan" in response.json()["warning"].lower()
+    assert "private-catalog-error" not in response.text
+    assert "/private/library.db" not in response.text
+    assert "private-catalog-error" in caplog.text
     assert read_file_tags(song).title == "New"
 
 
-def test_a_reload_failure_after_the_write_is_a_warning(tagged, monkeypatch) -> None:
+def test_a_reload_failure_after_the_write_is_a_warning(tagged, monkeypatch, caplog) -> None:
     client, manager, song, _bridge = tagged
     real_refresh = manager.refresh
     calls = []
@@ -490,7 +581,7 @@ def test_a_reload_failure_after_the_write_is_a_warning(tagged, monkeypatch) -> N
     def broken():
         calls.append(1)
         if len(calls) == 1:
-            raise RuntimeError("index busy")
+            raise RuntimeError("private-reload-error at /private/library.db")
         return real_refresh()
 
     monkeypatch.setattr(manager, "refresh", broken)
@@ -499,6 +590,10 @@ def test_a_reload_failure_after_the_write_is_a_warning(tagged, monkeypatch) -> N
     )
     assert response.status_code == 200
     assert "did not reload" in response.json()["warning"]
+    assert "rescan" in response.json()["warning"].lower()
+    assert "private-reload-error" not in response.text
+    assert "/private/library.db" not in response.text
+    assert "private-reload-error" in caplog.text
     assert manager.catalog.record_for_path(song)["title"] == "New"
 
 

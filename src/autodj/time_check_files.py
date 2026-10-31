@@ -472,7 +472,11 @@ def unpack(zip_path: Path, stage: Path) -> str:
                 zlib.error,
             ) as exc:
                 # A bad CRC, an unknown compression method or a damaged entry.
-                raise PackError(f"{name} could not be unpacked: {exc}") from exc
+                logger.exception("Could not unpack time check clip %s from %s", name, zip_path)
+                raise PackError(
+                    f"{name} could not be unpacked. "
+                    "Check that the archive is a complete zip, then upload it again."
+                ) from exc
     for _info, name in planned:
         check_audio(stage / name, name)
     return top

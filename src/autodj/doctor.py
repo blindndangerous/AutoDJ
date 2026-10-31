@@ -845,6 +845,32 @@ def _network_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
+def _acme_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Read saved public ACME status without starting a worker or contacting DNS."""
+    from autodj.acme_service import public_task
+    from autodj.acme_worker import AcmeManager
+    from autodj.certificates import CertificateStore
+
+    try:
+        tasks = AcmeManager(CertificateStore(Path(cfg.index.index_dir) / ".tls")).tasks()
+        problems = [
+            public_task(t)
+            for t in tasks
+            if t.get("error")
+            or t.get("cleanup_pending")
+            or t.get("cleanup_released")
+            or t.get("removal_pending")
+        ]
+        return DoctorCheck(
+            "acme",
+            CheckStatus.WARN if problems else CheckStatus.PASS,
+            "ACME needs attention" if problems else "No saved ACME failures",
+            {"operations": problems},
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return DoctorCheck("acme", CheckStatus.WARN, "ACME saved state could not be read")
+
+
 def _tls_checks(cfg: AutoDJConfig) -> list[DoctorCheck]:
     """Validate configured HTTPS with the same read-only loader used before serving."""
     if cfg.server.ssl_certfile is None and cfg.server.ssl_keyfile is None:
@@ -1112,6 +1138,8 @@ def run_doctor(
         *_checked(_tls_checks, cfg),
         *_checked(_update_check, cfg, network=check_updates),
     ]
+    if (Path(cfg.index.index_dir) / ".tls" / "acme").exists():
+        checks.extend(_checked(_acme_check, cfg))
     if default:
         checks += [
             *_checked(_stream_check, cfg),

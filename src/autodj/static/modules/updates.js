@@ -463,13 +463,21 @@ export function installUpdates({
     });
   }
 
-  function httpsRestartTarget(url) {
+  async function httpsRestartTarget(url) {
     try {
       const source = new URL(doc.location.href);
       const target = new URL(url, source);
       const port = (address) => address.port || (address.protocol === "http:" ? "80" : "443");
       if (target.protocol !== "https:" || target.username || target.password
-        || target.hostname !== source.hostname || port(target) !== port(source)) return null;
+        || port(target) !== port(source)) return null;
+      if (target.hostname !== source.hostname) {
+        // Only the server's active managed certificate can authorize a domain handoff.
+        const inventory = await request("/api/server/certificates");
+        const active = inventory.certificates?.find((cert) => cert.active);
+        if (!inventory.can_manage || active?.type !== "Let's Encrypt"
+          || !active.hosts.includes(target.hostname)
+          || !inventory.urls?.some((address) => new URL(address).origin === target.origin)) return null;
+      }
       return target;
     } catch (_) {
       return null;
@@ -535,9 +543,9 @@ export function installUpdates({
     if (panel.open) void load();
   });
   if (panel.open) void load();
-  function restartForHttps(url) {
-    const target = httpsRestartTarget(url);
-    if (!target || !view?.restart?.available) return Promise.resolve(false);
+  async function restartForHttps(url) {
+    const target = await httpsRestartTarget(url);
+    if (!target || !view?.restart?.available) return false;
     clearRefusals();
     return withDisabled(restartButton, () => restart(target));
   }

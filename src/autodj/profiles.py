@@ -47,6 +47,14 @@ logger = logging.getLogger(__name__)
 _NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]{1,64}$")
 
 
+class InvalidProfileError(ValueError):
+    """A saved profile failed validation; its name is safe for user-facing guidance."""
+
+    def __init__(self, name: str, message: str) -> None:
+        super().__init__(message)
+        self.name = name
+
+
 def validate_name(name: str) -> str:
     """Return *name* if it's a safe profile filename; raise ``ValueError`` otherwise."""
     if not _NAME_RE.match(name):
@@ -210,7 +218,9 @@ class ProfileStore:
         try:
             return ProfileSnapshot.from_dict(json.loads(target.read_text(encoding="utf-8")))
         except ValueError as exc:
-            raise ValueError(f"Profile {name!r} ({target}) is invalid: {exc}") from exc
+            raise InvalidProfileError(
+                name, f"Profile {name!r} ({target}) is invalid: {exc}"
+            ) from exc
 
     def delete(self, name: str) -> bool:
         """Remove the profile named *name*; returns True when a file was removed."""
@@ -222,6 +232,7 @@ class ProfileStore:
 
 
 __all__ = [
+    "InvalidProfileError",
     "ProfileSnapshot",
     "ProfileStore",
     "validate_name",

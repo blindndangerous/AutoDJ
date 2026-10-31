@@ -150,6 +150,71 @@ def test_a_zip_over_the_upload_cap_is_refused_before_it_is_read(
     assert not (tmp_path / "stations" / "default" / "time_checks" / "Studio").exists()
 
 
+def test_pack_unpack_failure_keeps_internal_details_in_server_log(
+    bridge, tmp_path, monkeypatch, caplog
+) -> None:
+    client = _client(bridge, tmp_path)
+    archive = _zip({"hr_03.wav": _wav()})
+
+    def cannot_unpack(*args, **kwargs):
+        raise RuntimeError("private-decoder-failure at /private/archive.zip")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", cannot_unpack)
+    refused = _upload_pack(client, archive)
+    assert refused.status_code == 400
+    assert "could not be unpacked" in refused.json()["detail"]
+    assert (
+        "Check that the archive is a complete zip, then upload it again."
+        in refused.json()["detail"]
+    )
+    assert "private-decoder-failure" not in refused.text
+    assert "/private/archive.zip" not in refused.text
+    assert "private-decoder-failure" in caplog.text
+    assert list((tmp_path / "stations" / "default" / "time_checks").iterdir()) == []
+
+
+def test_pack_dates_read_failure_keeps_internal_details_in_server_log(
+    bridge, tmp_path, monkeypatch, caplog
+) -> None:
+    from autodj import time_checks
+
+    client = _client(bridge, tmp_path)
+    assert _upload_pack(client, _zip({"hr_03.wav": _wav()})).status_code == 200
+
+    def unreadable(_path):
+        raise PermissionError(13, "private-state-read-failure", "/private/time_checks.json")
+
+    monkeypatch.setattr(time_checks, "_read_state", unreadable)
+    refused = client.put("/api/time-checks/packs/Studio/dates", json={})
+    assert refused.status_code == 503
+    assert "could not be read just now" in refused.json()["detail"]
+    assert "private-state-read-failure" not in refused.text
+    assert "/private/time_checks.json" not in refused.text
+    assert "private-state-read-failure" in caplog.text
+
+
+def test_pack_removal_with_invalid_profile_hides_saved_path_and_keeps_pack(
+    bridge, tmp_path, caplog
+) -> None:
+    client = _client(bridge, tmp_path)
+    assert _upload_pack(client, _zip({"hr_03.wav": _wav()})).status_code == 200
+    profiles = tmp_path / "stations" / "default" / "profiles"
+    profiles.mkdir(exist_ok=True)
+    broken = profiles / "Broken.json"
+    broken.write_text("{", encoding="utf-8")
+
+    refused = client.delete("/api/time-checks/packs/Studio")
+    assert refused.status_code == 400
+    assert refused.json()["detail"] == (
+        "The saved profile Broken is invalid, so the voice pack was kept. "
+        "Repair or remove that profile, then try again."
+    )
+    assert str(broken) not in refused.json()["detail"]
+    assert "line 1 column" not in refused.text
+    assert str(broken) in caplog.text
+    assert (tmp_path / "stations" / "default" / "time_checks" / "Studio").is_dir()
+
+
 def test_a_configured_pack_is_not_removed_or_replaced_from_the_page(bridge, tmp_path) -> None:
     listed = tmp_path / "voices" / "Listed"
     listed.mkdir(parents=True)
