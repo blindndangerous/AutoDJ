@@ -122,6 +122,8 @@ def _load_cfg_or_exit(
     *,
     show_error: bool = True,
     log_file: bool = False,
+    read_only: bool = False,
+    loaded: AutoDJConfig | None = None,
 ) -> AutoDJConfig:  # pragma: no cover
     """Load *config_path* or print + exit on missing file.
 
@@ -129,6 +131,9 @@ def _load_cfg_or_exit(
     (:mod:`autodj.layout`), then the configuration is read again.  With
     *log_file* the server's log file opens here, and what loading and the
     move logged is written to it too.
+
+    ``read_only`` skips startup writes. ``loaded`` reuses a configuration that
+    already passed preflight; only a layout/settings move requires rereading it.
     """
     from logging.handlers import MemoryHandler
 
@@ -140,14 +145,15 @@ def _load_cfg_or_exit(
     if early is not None:
         logging.getLogger().addHandler(early)
     try:
-        cfg = load_config(config_path)
-        if move_old_layout(cfg):
+        cfg = loaded if loaded is not None else load_config(config_path)
+        if not read_only and move_old_layout(cfg):
             cfg = load_config(config_path)
-        if move_station_tables(cfg):
+        if not read_only and move_station_tables(cfg):
             cfg = load_config(config_path)
-        from autodj.stereo import configure_spill_dir
+        if not read_only:
+            from autodj.stereo import configure_spill_dir
 
-        configure_spill_dir(cfg.index.index_dir)
+            configure_spill_dir(cfg.index.index_dir)
         if early is not None and isinstance(cfg.index.index_dir, Path):
             handler = _add_log_file(cfg.index.index_dir / "logs" / "autodj.log")
             if handler is not None:
@@ -175,21 +181,10 @@ def _append_cli_source(cfg: AutoDJConfig) -> None:
 
 def _load_index_for_serve(cfg: AutoDJConfig) -> SimilarityIndex:  # pragma: no cover
     """Start with an empty similarity view; LibraryManager loads catalog vectors."""
-    from autodj.config import station_config
-    from autodj.library import require_current_library
+    from autodj.library import require_configured_library
     from autodj.similarity import SimilarityIndex
-    from autodj.stations import StationPaths
 
-    require_current_library(
-        cfg.index.library_dir,
-        [
-            StationPaths.default(cfg).web_state,
-            *(
-                StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
-                for spec in cfg.stations
-            ),
-        ],
-    )
+    require_configured_library(cfg)
     return SimilarityIndex.empty()
 
 
@@ -237,6 +232,7 @@ def _stage_serve_server(
     lan: bool | None,
     ssl_certfile: str | None = None,
     ssl_keyfile: str | None = None,
+    read_only: bool = False,
 ) -> ServerConfig:
     """Return the server settings ``serve`` will use, after CLI overrides and ``--lan``.
 
@@ -258,6 +254,7 @@ def _stage_serve_server(
         ssl_certfile: ``--ssl-certfile``, or ``None``.
         ssl_keyfile: ``--ssl-keyfile``, or ``None``.  Giving either TLS option
             replaces both ``[server] ssl_certfile`` and ``ssl_keyfile``.
+        read_only: Validate using a transient LAN token without saving it.
 
     Raises:
         click.ClickException: The settings are invalid or unsafe, or the saved
@@ -265,8 +262,7 @@ def _stage_serve_server(
     """
     from dataclasses import replace
 
-    from autodj.config import is_loopback_bind, validate_server_exposure
-    from autodj.lan import AccessTokenError, lan_server_config
+    from autodj.lan import AccessTokenError, resolve_server_config
     from autodj.secret_files import access_token_path
 
     server = cfg.server
@@ -289,20 +285,9 @@ def _stage_serve_server(
         # A network host with nothing else set would be refused for lack of a
         # token; serve it in LAN mode at that address instead: detected names
         # and origins for the port, a saved token, pairing.
-        if (
-            not staged.lan
-            and not is_loopback_bind(staged.host)
-            and not staged.allowed_hosts
-            and not staged.allowed_origins
-            and not staged.access_token
-            and not staged.insecure_lan
-        ):
-            staged = replace(staged, lan=True)
-        if staged.lan:
-            staged = lan_server_config(
-                staged, tls=staged.ssl_certfile is not None, token_path=access_token_path(cfg)
-            )
-        validate_server_exposure(staged)
+        staged = resolve_server_config(
+            staged, token_path=access_token_path(cfg), read_only=read_only
+        )
     except AccessTokenError as exc:
         raise click.ClickException(f"LAN mode cannot start: {exc}") from exc
     except (TypeError, ValueError) as exc:
@@ -657,7 +642,7 @@ def _doctor_load_config(
             raise click.ClickException(
                 f"Could not repair configuration: {repair_error}"
             ) from repair_error
-    return _load_cfg_or_exit(config_path, show_error=not as_json)
+    return _load_cfg_or_exit(config_path, show_error=not as_json, read_only=as_json)
 
 
 def _station_state_dir(cfg: AutoDJConfig, slug: str | None) -> Path:
@@ -1780,6 +1765,13 @@ class _ServeCommand(click.Command):
     """Point failed serve invocations to diagnostics without changing the error."""
 
     def invoke(self, ctx: click.Context) -> Any:
+        from autodj.runtime_packages import require_runtime_packages
+
+        try:
+            require_runtime_packages()
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise click.ClickException(str(exc)) from exc
+
         try:
             return super().invoke(ctx)
         except click.Abort:
@@ -1841,7 +1833,7 @@ def _claim_index_for_serve(ctx: click.Context, library_dir: Path) -> None:
     if restore_state not in (None, "installed"):
         console.print(
             "[bold red]A restore of this index folder did not finish, so some files are new and "
-            "some old.[/] Run `autodj doctor` to put the old files back, then start AutoDJ again."
+            "some old.[/] Run `autodj doctor --fix` to put the old files back, then start AutoDJ again."
         )
         sys.exit(1)
     if restore_state == "installed":
@@ -1991,9 +1983,9 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     logger = logging.getLogger(__name__)
     logger.info("Starting the server: loading configuration and audio components...")
     started = time.perf_counter()
-    cfg = _load_cfg_or_exit(ctx.obj["config_path"], log_file=True)
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"], read_only=True)
     configured = time.perf_counter()
-    from autodj.server import serve
+    from autodj.server import ServePreflight, serve
 
     imported = time.perf_counter()
     logger.info(
@@ -2028,21 +2020,41 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         lan=lan,
         ssl_certfile=ssl_certfile,
         ssl_keyfile=ssl_keyfile,
+        read_only=True,
+    )
+    from autodj.security import SecurityPolicy, advertised_server_origin
+    from autodj.tls import validate_tls_pair
+
+    try:
+        origin = advertised_server_origin(
+            SecurityPolicy(staged_server, secure_cookie=staged_server.ssl_certfile is not None)
+        )
+        tls_context = validate_tls_pair(staged_server)
+        sim = _load_index_for_serve(cfg)
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    preflight = ServePreflight(tls_context, origin)
+    _claim_index_for_serve(ctx, cfg.index.library_dir)
+    # Only a safe preflight and successful claim may migrate layouts, open logs, or save a LAN token.
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"], log_file=True, loaded=cfg)
+    staged_server = _stage_serve_server(
+        cfg,
+        host=host,
+        port=port,
+        access_token=access_token,
+        insecure_lan=insecure_lan,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+        lan=lan,
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
     )
     # Captured before cfg.server is replaced by the merged, detected lists.
     lan_configured_hosts = _configured_allowed_hosts(cfg, allowed_hosts)
     server_cli_override = security_cli_requested and staged_server != original_server
     host = staged_server.host
     port = staged_server.port
-    from autodj.index_manifest import IndexConsistencyError
-
-    _claim_index_for_serve(ctx, cfg.index.library_dir)
-
-    try:
-        sim = _load_index_for_serve(cfg)
-    except IndexConsistencyError as exc:
-        console.print(f"[bold red]{escape(str(exc))}[/]")
-        sys.exit(1)
     if (
         staged_server.insecure_lan
         and staged_server.access_token is None
@@ -2051,7 +2063,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
     from autodj.library import LibraryManager
 
-    library = LibraryManager(cfg, sim)
+    library = LibraryManager(cfg, sim, compatibility_checked=True)
     ctx.call_on_close(library.close)
     _print_serve_banner(console, library)
     seed_entry = _resolve_seed(library, cfg, seed, console)
@@ -2086,6 +2098,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             no_playback=None if server_audio is None else not server_audio,
             stream=None,
             lan_configured_hosts=lan_configured_hosts,
+            preflight=preflight,
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")

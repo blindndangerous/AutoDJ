@@ -48,7 +48,9 @@ from autodj.dj_meta import DjMetaCache
 from autodj.fsutil import atomic_write, fsync_directory, is_absolute_storage
 from autodj.index_manifest import (
     MANIFEST_NAME,
+    SCHEMA_VERSION,
     IndexConsistencyError,
+    has_legacy_index,
     publication_lock,
     publish_generation,
     sha256_file,
@@ -208,12 +210,12 @@ def _recovery_catalog_copy(index_dir: Path, web_states: Iterable[Path] = ()) -> 
     return backup
 
 
-def _old_catalog_data(index_dir: Path) -> tuple[bool, bool]:
+def _old_catalog_data(index_dir: Path, *, immutable: bool = False) -> tuple[bool, bool]:
     """Read whether library.db has old JSON history or unseeded folder roots."""
     path = index_dir / "library.db"
     if not path.is_file():
         return False, True
-    with closing(sqlite3.connect(readonly_uri(path), uri=True)) as db:
+    with closing(sqlite3.connect(readonly_uri(path, immutable=immutable), uri=True)) as db:
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "catalog_settings" not in tables:
             return False, True
@@ -254,13 +256,13 @@ def _validate_legacy_history(index_dir: Path) -> None:
         raise ValueError(f"legacy play-history has {invalid} invalid row(s); no files were changed")
 
 
-def _has_pending_import(index_dir: Path) -> bool:
+def _has_pending_import(index_dir: Path, *, immutable: bool = False) -> bool:
     """Whether this command previously started, but did not finish, an import."""
     path = index_dir / "library.db"
     if not path.is_file():
         return False
     try:
-        with closing(sqlite3.connect(readonly_uri(path), uri=True)) as db:
+        with closing(sqlite3.connect(readonly_uri(path, immutable=immutable), uri=True)) as db:
             row = db.execute(
                 "SELECT value FROM catalog_settings WHERE key='published_index_import_state'"
             ).fetchone()
@@ -270,13 +272,13 @@ def _has_pending_import(index_dir: Path) -> bool:
     return isinstance(state, dict) and state.get("status") == "pending"
 
 
-def _has_current_catalog(index_dir: Path) -> bool:
+def _has_current_catalog(index_dir: Path, *, immutable: bool = False) -> bool:
     """Whether the path already holds the current library schema."""
     path = index_dir / "library.db"
     if not path.is_file():
         return False
     try:
-        with closing(sqlite3.connect(readonly_uri(path), uri=True)) as db:
+        with closing(sqlite3.connect(readonly_uri(path, immutable=immutable), uri=True)) as db:
             return (
                 db.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_entries'"
@@ -287,23 +289,72 @@ def _has_current_catalog(index_dir: Path) -> bool:
         return False
 
 
+def _catalog_migration_state(index_dir: Path) -> tuple[bool, bool, bool, bool]:
+    """Read in place; only an orphaned WAL needs private sidecar reconstruction."""
+    catalog_path = index_dir / "library.db"
+    if not catalog_path.is_file():
+        return False, False, False, True
+
+    def read(directory: Path, *, immutable: bool) -> tuple[bool, bool, bool, bool]:
+        with closing(
+            sqlite3.connect(readonly_uri(directory / "library.db", immutable=immutable), uri=True)
+        ) as db:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+        # Current catalogs use SQLite's default (unversioned) schema marker.
+        if version > 0:
+            raise IndexConsistencyError(
+                f"The catalog in {index_dir} has newer schema {version}; "
+                "use the AutoDJ version that wrote it or restore a compatible backup."
+            )
+        return (
+            _has_current_catalog(directory, immutable=immutable),
+            _has_pending_import(directory, immutable=immutable),
+            *_old_catalog_data(directory, immutable=immutable),
+        )
+
+    wal = index_dir / "library.db-wal"
+    if not wal.exists():
+        # No WAL to ignore: immutable mode avoids creating empty -wal/-shm files.
+        return read(index_dir, immutable=True)
+    if (index_dir / "library.db-shm").is_file():
+        return read(index_dir, immutable=False)
+    # SQLite must reconstruct missing shared memory to read an orphaned WAL.
+    # Reconstruct privately; immutable mode would miss committed WAL changes.
+    with tempfile.TemporaryDirectory(prefix="autodj-catalog-check-") as temporary:
+        snapshot = Path(temporary)
+        shutil.copyfile(catalog_path, snapshot / "library.db")
+        shutil.copyfile(wal, snapshot / wal.name)
+        return read(snapshot, immutable=False)
+
+
 def migration_required(
     index_dir: Path, station_web_states: Iterable[Path] = ()
 ) -> tuple[bool, str]:
     """Return whether supported legacy application data needs explicit import."""
     index_dir = Path(index_dir)
     manifest_path = index_dir / MANIFEST_NAME
-    current_catalog = _has_current_catalog(index_dir)
-    pending_import = _has_pending_import(index_dir)
+    catalog_path = index_dir / "library.db"
+    current_catalog, pending_import, history, sources = _catalog_migration_state(index_dir)
     schema = None
     if (not current_catalog or pending_import) and manifest_path.is_file():
         try:
             raw = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise IndexConsistencyError(f"cannot read {manifest_path}: {exc}") from exc
+            if not catalog_path.exists() and isinstance(exc, json.JSONDecodeError):
+                # Startup only identifies legacy data; migration validates its contents.
+                return True, "an older published index is present with an unreadable manifest"
+            raise IndexConsistencyError(
+                f"cannot read {manifest_path}: {exc}; inspect with `autodj migrate-index` "
+                "or restore a compatible backup before starting AutoDJ."
+            ) from exc
         if not isinstance(raw, dict) or type(raw.get("schema_version")) is not int:
             raise IndexConsistencyError(f"{manifest_path} has no valid schema_version")
         schema = raw["schema_version"]
+        if schema > SCHEMA_VERSION:
+            raise IndexConsistencyError(
+                f"The library in {index_dir} has newer schema {schema}; "
+                "use the AutoDJ version that wrote it or restore a compatible backup."
+            )
     from autodj.runtime_state import migrate_state_file
 
     settings = False
@@ -314,11 +365,12 @@ def migration_required(
             # Unsupported or corrupt settings are diagnosed by the settings loader;
             # this command only claims files it knows how to upgrade safely.
             continue
-    history, sources = _old_catalog_data(index_dir)
     needs_catalog_import = schema in (3, 4) and not current_catalog
     if current_catalog:
         needs_catalog_import = pending_import
     reasons = []
+    if not catalog_path.is_file() and has_legacy_index(index_dir) and not needs_catalog_import:
+        reasons.append("an older published index is present")
     if needs_catalog_import:
         if pending_import:
             reasons.append("published-index import was interrupted")

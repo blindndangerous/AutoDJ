@@ -8,7 +8,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
-from cryptography import x509
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -87,6 +86,8 @@ def install_certificates_api(app: FastAPI, cfg: AutoDJConfig, *, https: bool) ->
             raise HTTPException(403, "Download the certificate on the host or over trusted HTTPS.")
 
     def status(request: Request) -> dict:
+        from cryptography import x509
+
         entries = store.list()
         active = (
             next(
@@ -209,6 +210,7 @@ def install_certificates_api(app: FastAPI, cfg: AutoDJConfig, *, https: bool) ->
         except (CertificateError, OSError):
             raise HTTPException(404, "Certificate not found.") from None
         # Serialize certificates only, even if an external PEM file contains a key.
+        from cryptography import x509
         from cryptography.hazmat.primitives.serialization import Encoding
 
         try:

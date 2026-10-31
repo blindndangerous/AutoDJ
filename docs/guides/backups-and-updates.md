@@ -101,6 +101,21 @@ An externally adopted environment remains package-owned by its operator; use
 
 On Windows, use `.\autodj.cmd setup` and `.\autodj.cmd doctor --no-fix`. The [core operations guide](core-operations.md#update-and-keep-a-rollback-path) gives both shell paths and rollback precautions. Read the changes since your version in [CHANGELOG.md](../../CHANGELOG.md), especially removed settings. Start AutoDJ and confirm the version in the page footer.
 
+### AutoDJ says a Python package is missing
+
+Updating the source without synchronizing its environment can leave required
+Python packages missing or too old. AutoDJ refuses to start until they are
+installed; saved HTTPS settings remain selected. Run `autodj doctor` to review
+the package names and exact setup command, or `autodj doctor --fix` to apply the
+repair. Setup may download packages. For an adopted environment, the repair
+explains that `--manage-environment` permanently gives setup ownership of its
+packages and may remove packages outside the selected profile. `--fix` permits
+that change only when required packages are missing. If Doctor cannot identify
+the environment, it prints a command for you to review and run instead; `--fix`
+then exits non-zero. Wheel installations always use this manual repair path.
+Missing profile extras warn in Doctor and the web UI without preventing startup.
+`autodj doctor --json` and `autodj doctor --no-fix` do not install packages.
+
 ## Update a wheel installation
 
 Make a backup and stop AutoDJ. Replace `X.Y.Z` with the new release and use either command in the same environment:
