@@ -1,11 +1,13 @@
 """Bounded ownership and publication without real provider calls."""
 
+import json
 import time
 from types import SimpleNamespace
 
 import pytest
 
 from autodj.certificates import CertificateStore
+from autodj.secret_files import write_private_file
 
 
 def issued(manager, source, *, environment="production"):
@@ -27,8 +29,8 @@ def issued(manager, source, *, environment="production"):
         "accepted_at": time.time(),
         "host_confirmed": True,
     }
-    manager.state.write(task["id"], task)
     manager.state.write("index", {"tasks": [task["id"]]})
+    manager.state.write(task["id"], task)
     return task
 
 
@@ -189,7 +191,7 @@ def test_only_active_lineage_renews_and_last_delete_cleans_secrets(tmp_path, mon
     assert manager._process is None  # Saved, never-activated certificates do not renew.
     manager.store.delete(saved["certificate_id"])
     manager.certificate_deleted()
-    assert manager.state.read(task["id"]) == {}
+    assert not (manager.state.root / (task["id"] + ".json")).exists()
     assert manager.state.read("account-production") == {}
 
 
@@ -264,11 +266,21 @@ def test_startup_removes_unadmitted_setup_secrets(tmp_path):
 
     manager = AcmeManager(CertificateStore(tmp_path / ".tls"))
     ident = "1" * 32
-    manager.state.write(
-        ident, {"id": ident, "token": "orphan-token", "phase": "queued", "action": "preflight"}
+    orphan = manager.state.root / (ident + ".json")
+    write_private_file(
+        orphan,
+        json.dumps(
+            {
+                "version": 1,
+                "id": ident,
+                "token": "orphan-token",
+                "phase": "queued",
+                "action": "preflight",
+            }
+        ),
     )
     manager.tick()
-    assert manager.state.read(ident) == {}
+    assert not orphan.exists()
 
 
 def test_child_entry_runs_without_network_for_invalid_environment(tmp_path):
@@ -279,6 +291,7 @@ def test_child_entry_runs_without_network_for_invalid_environment(tmp_path):
 
     manager = AcmeManager(CertificateStore(tmp_path / ".tls"))
     ident = "1" * 32
+    manager.state.write("index", {"tasks": [ident]})
     manager.state.write(ident, {"id": ident, "environment": "invalid", "phase": "running"})
     result = subprocess.run(
         [sys.executable, "-m", "autodj.acme_worker", str(manager.state.root), ident],

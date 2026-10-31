@@ -1,5 +1,6 @@
 """ACME orchestration with a fake CA and provider."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -89,6 +90,7 @@ def operation(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "Authority", FakeCA)
     monkeypatch.setattr(service, "CloudflareDNS", FakeDNS)
     monkeypatch.setattr(service, "preflight", lambda _: {"addresses": [], "confirmed": False})
+    service.PrivateState(tmp_path).write("index", {"tasks": ["1" * 32]})
     return service
 
 
@@ -159,10 +161,10 @@ def test_private_state_rejects_linked_root(tmp_path):
 
     root = tmp_path / "missing"
     state = PrivateState(root)
-    assert state.read("state") == {}
+    assert state.read("budget") == {}
     assert not root.exists()
-    state.write("state", {"secret": "private"})
-    assert state.read("state") == {"secret": "private"}
+    state.write("budget", {"secret": "private"})
+    assert state.read("budget") == {"secret": "private"}
     with pytest.raises(ValueError):
         state.read("../outside")
 
@@ -199,8 +201,10 @@ def test_private_state_refuses_resolved_escape(tmp_path, monkeypatch, action):
     from autodj.acme_service import PrivateState
 
     state = PrivateState(tmp_path / ".tls" / "acme")
-    state.write("state", {"secret": "unchanged"})
-    path = state.path("state")
+    ident = "1" * 32
+    state.write("index", {"tasks": [ident]})
+    state.write(ident, {"secret": "unchanged"})
+    path = state.path(ident)
     before = path.read_bytes()
     resolve = Path.resolve
 
@@ -212,9 +216,9 @@ def test_private_state_refuses_resolved_escape(tmp_path, monkeypatch, action):
     monkeypatch.setattr(Path, "resolve", redirected)
     with pytest.raises(ValueError, match="unsafe"):
         if action == "write":
-            state.write("state", {"secret": "changed"})
+            state.write(ident, {"secret": "changed"})
         else:
-            getattr(state, action)("state")
+            getattr(state, action)(ident)
     assert path.read_bytes() == before
 
 
@@ -228,3 +232,53 @@ def test_private_state_rejects_names_outside_allowlist(tmp_path, name):
     with pytest.raises(ValueError, match="Invalid ACME state name"):
         state.path(name)
     assert not state.root.exists()
+
+
+@pytest.mark.parametrize("action", ["read", "write", "remove"])
+def test_private_state_refuses_unindexed_task_even_when_file_exists(tmp_path, action):
+    from autodj.acme_service import PrivateState
+    from autodj.secret_files import write_private_file
+
+    state = PrivateState(tmp_path / ".tls" / "acme")
+    ident = "a" * 32
+    path = state.root / (ident + ".json")
+    write_private_file(path, json.dumps({"version": 1, "token": "untouched"}))
+    state.write("index", {"tasks": []})
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="Unknown ACME operation"):
+        if action == "write":
+            state.write(ident, {"token": "changed"})
+        else:
+            getattr(state, action)(ident)
+    assert path.read_bytes() == before
+
+
+def test_private_state_rejects_escaping_index_entry(tmp_path):
+    from autodj.acme_service import PrivateState
+
+    state = PrivateState(tmp_path / ".tls" / "acme")
+    state.write("index", {"tasks": ["../outside"]})
+    with pytest.raises(ValueError, match="index is invalid"):
+        state.path("a" * 32)
+
+
+def test_new_task_is_indexed_before_request_lookup_and_rolls_back_failed_admission(
+    tmp_path, monkeypatch
+):
+    from autodj.acme_service import PrivateState
+
+    state = PrivateState(tmp_path / ".tls" / "acme")
+    task = state.create_task({"token": "secret"}, existing=[])
+    assert state.read("index")["tasks"] == [task["id"]]
+    assert state.read(task["id"])["token"] == "secret"
+    write = state.write
+
+    def fail_index(name, data):
+        if name == "index":
+            raise OSError("index write failed")
+        write(name, data)
+
+    monkeypatch.setattr(state, "write", fail_index)
+    with pytest.raises(OSError, match="index write failed"):
+        state.create_task({"token": "orphan-secret"}, existing=[task["id"]])
+    assert {p.name for p in state.root.glob("*.json")} == {"index.json", task["id"] + ".json"}

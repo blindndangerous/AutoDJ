@@ -255,11 +255,12 @@ def test_inventory_reads_certificate_rows_once_for_all_renewals(bridge, tmp_path
     for number in range(1, 4):
         task = issued(manager, CertificateStore(tmp_path / f"ca-{number}"))
         task["id"] = str(number) * 32
+        manager.state.write("index", {"tasks": [t["id"] for t in tasks] + [task["id"]]})
         manager.finish(task)
         tasks.append(task)
+    manager.state.write("index", {"tasks": [task["id"] for task in tasks]})
     for task in tasks:
         manager.state.write(task["id"], task)
-    manager.state.write("index", {"tasks": [task["id"] for task in tasks]})
     reads = []
     original_list = manager.store.list
 

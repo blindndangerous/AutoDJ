@@ -5,11 +5,10 @@ from __future__ import annotations
 import logging
 import math
 import re
-import subprocess
+import subprocess  # nosec B404 -- fixed worker argv, no shell or request-provided commands
 import sys
 import threading
 import time
-import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -180,7 +179,6 @@ class AcmeManager:
             if len(tasks) >= 20:
                 raise AcmeError("Remove an unused ACME setup before adding another.")
             task = {
-                "id": uuid.uuid4().hex,
                 "name": name,
                 "domain": domain,
                 "zone_id": zone_id,
@@ -189,12 +187,7 @@ class AcmeManager:
                 "action": "preflight",
                 "phase": "queued",
             }
-            self.state.write(task["id"], task)
-            try:
-                self.state.write("index", {"tasks": [t["id"] for t in tasks] + [task["id"]]})
-            except OSError:
-                self.state.remove(task["id"])
-                raise
+            task = self.state.create_task(task, existing=[t["id"] for t in tasks])
             self._wake.set()
             return public_task(task)
 
@@ -344,10 +337,11 @@ class AcmeManager:
             ):
                 raise AcmeError("This ACME setup still has certificates or unfinished DNS work.")
             remaining = [t["id"] for t in self.tasks() if t["id"] != ident]
+            path = self.state.path(ident)
             # A tombstone strips secrets before the separate index update can fail.
             self.state.write(ident, {"id": ident, "deleted": True})
             self.state.write("index", {"tasks": remaining})
-            self.state.remove(ident)
+            path.unlink(missing_ok=True)
             self._prune_accounts()
 
     def certificate_deleted(self) -> None:
@@ -476,18 +470,7 @@ class AcmeManager:
                 return
             if not self._recovered:
                 self.tasks()  # Validate the index, including its secret-free tombstones.
-                referenced = set(self.state.read("index").get("tasks", []))
-                for path in self.state.root.glob("*.json"):
-                    if not re.fullmatch(r"[0-9a-f]{32}", path.stem) or path.stem in referenced:
-                        continue
-                    try:
-                        orphan = self.state.read(path.stem)
-                    except (OSError, ValueError):
-                        continue
-                    if orphan.get("deleted") or (
-                        orphan.get("action") == "preflight" and orphan.get("phase") == "queued"
-                    ):
-                        self.state.remove(path.stem)
+                self.state.recover_orphans()
                 self._recovered = True
                 self.certificate_deleted()
             if self._process is not None:
@@ -563,7 +546,7 @@ class AcmeManager:
                     creationflags = 0
                     if sys.platform == "win32":
                         creationflags = subprocess.CREATE_NO_WINDOW
-                    process = subprocess.Popen(
+                    process = subprocess.Popen(  # nosec B603 -- fixed argv; host-owned paths/ID, no shell or request data
                         [
                             sys.executable,
                             "-m",

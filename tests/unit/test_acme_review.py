@@ -27,10 +27,10 @@ def test_deleted_lineage_sweep_is_independent_and_retryable(tmp_path):
     manager.state.write(first["id"], saved)
     second = {**saved, "id": "2" * 32, "cleanup_pending": False}
     second.pop("dns_receipt")
-    manager.state.write(second["id"], second)
     manager.state.write("index", {"tasks": [first["id"], second["id"]]})
+    manager.state.write(second["id"], second)
     manager.certificate_deleted()
-    assert manager.state.read(second["id"]) == {}
+    assert not (manager.state.root / (second["id"] + ".json")).exists()
     saved = manager.state.read(first["id"])
     assert saved["removal_pending"] and saved["removal_retry_at"] > time.time()
     assert saved["token"] == "private-token"
@@ -38,7 +38,7 @@ def test_deleted_lineage_sweep_is_independent_and_retryable(tmp_path):
     saved.update(cleanup_pending=False, removal_retry_at=0)
     manager.state.write(first["id"], saved)
     manager.tick()
-    assert manager.state.read(first["id"]) == {}
+    assert not (manager.state.root / (first["id"] + ".json")).exists()
 
 
 def test_startup_sweeps_lineage_after_interrupted_certificate_delete(tmp_path):
@@ -51,7 +51,7 @@ def test_startup_sweeps_lineage_after_interrupted_certificate_delete(tmp_path):
     resumed = AcmeManager(manager.store)
     resumed.tick()
     assert resumed.tasks() == []
-    assert resumed.state.read(task["id"]) == {}
+    assert not (resumed.state.root / (task["id"] + ".json")).exists()
     assert resumed.state.read("account-production") == {}
 
 
@@ -300,8 +300,8 @@ def test_bad_task_does_not_stop_other_renewals_and_reports_attention(tmp_path, m
     if damage == "domain":
         broken.pop("domain")
         broken.update(cleanup_pending=True, dns_receipts=[{"id": "c" * 32}])
-    manager.state.write(broken_id, broken)
     manager.state.write("index", {"tasks": [broken_id, task["id"]]})
+    manager.state.write(broken_id, broken)
     manager.state.write("account-staging", {"key": "retain-while-references-unknown"})
     if damage == "json":
         write_private_file(manager.state.path(broken_id), b'{"token":"unreadable-private-token"')

@@ -12,8 +12,8 @@ from tests.unit.test_acme_worker import issued
 def test_indexed_tombstone_survives_startup_until_index_reconciles(tmp_path):
     manager = AcmeManager(CertificateStore(tmp_path / ".tls"))
     ident = "1" * 32
-    manager.state.write(ident, {"id": ident, "deleted": True})
     manager.state.write("index", {"tasks": [ident]})
+    manager.state.write(ident, {"id": ident, "deleted": True})
     manager.tick()
     assert manager.tasks() == []
     manager.tick()

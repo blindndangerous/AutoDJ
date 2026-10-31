@@ -6,6 +6,7 @@ import json
 import random
 import re
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,29 @@ class PrivateState:
     def path(self, name: str) -> Path:
         if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9-]{1,64}", name):
             raise ValueError("Invalid ACME state name.")
-        path = self.root / (name + ".json")
+        paths = {
+            "index": self.root / "index.json",
+            "budget": self.root / "budget.json",
+            "account-staging": self.root / "account-staging.json",
+            "account-production": self.root / "account-production.json",
+        }
+        if name not in paths:
+            identifiers = self.read("index").get("tasks", [])
+            if (
+                not isinstance(identifiers, list)
+                or len(identifiers) > 20
+                or any(
+                    not isinstance(i, str) or not re.fullmatch(r"[0-9a-f]{32}", i)
+                    for i in identifiers
+                )
+            ):
+                raise AcmeError("The ACME task index is invalid.")
+            paths.update({ident: self.root / (ident + ".json") for ident in identifiers})
+        if name not in paths:
+            raise AcmeError("Unknown ACME operation.")
+        return self._checked_path(paths[name])
+
+    def _checked_path(self, path: Path) -> Path:
         for part in (self.root.parent, self.root, path):
             if part.is_symlink() or part.is_junction():
                 raise AcmeError("The ACME storage path is unsafe.")
@@ -39,7 +62,10 @@ class PrivateState:
         return path
 
     def read(self, name: str) -> dict:
-        path = self.path(name)
+        return self._read_path(self.path(name))
+
+    @staticmethod
+    def _read_path(path: Path) -> dict:
         if path.exists() and path.stat().st_size > 2 * 1024 * 1024:
             raise AcmeError("The ACME state is too large.")
         return read_private_json(path, require_private=True)
@@ -49,6 +75,34 @@ class PrivateState:
 
     def remove(self, name: str) -> None:
         self.path(name).unlink(missing_ok=True)
+
+    def create_task(self, data: dict, *, existing: list[str]) -> dict:
+        """Only the host generates new names; request lookup starts after admission."""
+        ident = uuid.uuid4().hex
+        task = {**data, "id": ident}
+        path = self._checked_path(self.root / (ident + ".json"))
+        write_private_file(path, json.dumps({**task, "version": 1}))
+        try:
+            self.write("index", {"tasks": [*existing, ident]})
+        except OSError:
+            path.unlink(missing_ok=True)
+            raise
+        return task
+
+    def recover_orphans(self) -> None:
+        """Inspect unindexed files only through host directory entries, never request IDs."""
+        referenced = set(self.read("index").get("tasks", []))
+        for path in self.root.glob("*.json"):
+            if not re.fullmatch(r"[0-9a-f]{32}", path.stem) or path.stem in referenced:
+                continue
+            try:
+                orphan = self._read_path(self._checked_path(path))
+            except (OSError, ValueError):
+                continue
+            if orphan.get("deleted") or (
+                orphan.get("action") == "preflight" and orphan.get("phase") == "queued"
+            ):
+                path.unlink(missing_ok=True)
 
 
 class Budget:
