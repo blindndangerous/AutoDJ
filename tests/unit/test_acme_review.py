@@ -2,6 +2,7 @@
 
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +10,7 @@ import pytest
 from autodj import acme_worker
 from autodj.acme_dns import AcmeError
 from autodj.acme_worker import AcmeManager
-from autodj.certificates import CertificateStore
+from autodj.certificates import CertificateError, CertificateStore
 from autodj.doctor import _acme_check
 from autodj.secret_files import write_private_file
 from tests.unit.test_acme_worker import issued
@@ -464,3 +465,39 @@ def test_slow_child_reaping_does_not_hold_management_lock(tmp_path, monkeypatch,
             request.join(5)
     assert not failures
     assert not worker.is_alive() and not request.is_alive()
+
+
+@pytest.mark.parametrize("filename", ["cert.pem", "key.pem"])
+def test_certificate_inventory_refuses_hardlinked_pem(tmp_path, filename):
+    store = CertificateStore(tmp_path / ".tls")
+    row = store.create("Radio", ["radio.example.com"])
+    paths = store.paths(row["id"])
+    pem = next(path for path in paths if path.name == filename)
+    outside = tmp_path / "outside.pem"
+    outside.hardlink_to(pem)
+    original = outside.read_bytes()
+    with pytest.raises(CertificateError, match="unsafe"):
+        store.public_pem(row["id"])
+    with pytest.raises(CertificateError, match="unsafe"):
+        store.delete(row["id"])
+    assert pem.is_file() and outside.read_bytes() == original
+
+
+@pytest.mark.parametrize("target", ["directory", "certificate", "key"])
+def test_certificate_paths_refuse_resolved_escape(tmp_path, monkeypatch, target):
+    store = CertificateStore(tmp_path / ".tls")
+    row = store.create("Radio", ["radio.example.com"])
+    cert, key = store.paths(row["id"])
+    candidate = {"directory": cert.parent, "certificate": cert, "key": key}[target]
+    outside = tmp_path / "outside"
+    resolve = Path.resolve
+
+    def redirected(path, *args, **kwargs):
+        # Model a filesystem redirect independently of platform link privileges.
+        return outside if path == candidate else resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", redirected)
+    with pytest.raises(CertificateError, match="unsafe"):
+        store.validate_hosts(row["id"], ["radio.example.com"])
+    with pytest.raises(CertificateError, match="unsafe"):
+        store.delete(row["id"])

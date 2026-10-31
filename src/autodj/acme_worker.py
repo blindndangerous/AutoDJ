@@ -560,6 +560,9 @@ class AcmeManager:
                 self.state.write(task["id"], task)
                 process = None
                 try:
+                    creationflags = 0
+                    if sys.platform == "win32":
+                        creationflags = subprocess.CREATE_NO_WINDOW
                     process = subprocess.Popen(
                         [
                             sys.executable,
@@ -571,7 +574,7 @@ class AcmeManager:
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
-                        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                        creationflags=creationflags,
                     )
                     self._job = job_for_tree(process)
                     self._process = process

@@ -82,14 +82,14 @@ jobs:
       - name: Real local CA issuance and DNS cleanup
         run: >-
           uv run --frozen --no-sync python -m pytest --no-cov
-          --basetemp=.codex-tmp/pytest tests/integration/test_acme_pebble.py
+          --basetemp="${{ runner.temp }}/autodj-pebble-pytest" tests/integration/test_acme_pebble.py
         env:
           AUTODJ_REQUIRE_PEBBLE: "1"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: pebble-logs
-          path: .codex-tmp/pytest/**/pebble-*.log
+          path: ${{ runner.temp }}/autodj-pebble-pytest/**/pebble-*.log
 
   container:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft

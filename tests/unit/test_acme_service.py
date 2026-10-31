@@ -1,6 +1,7 @@
 """ACME orchestration with a fake CA and provider."""
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -191,3 +192,39 @@ def test_unexpected_failure_does_not_persist_exception_secrets(tmp_path, operati
     FakeCA.failure = RuntimeError("private-token-never-log")
     operation.run_operation(tmp_path, task)
     assert "private-token-never-log" not in str(operation.public_task(task))
+
+
+@pytest.mark.parametrize("action", ["read", "write", "remove"])
+def test_private_state_refuses_resolved_escape(tmp_path, monkeypatch, action):
+    from autodj.acme_service import PrivateState
+
+    state = PrivateState(tmp_path / ".tls" / "acme")
+    state.write("state", {"secret": "unchanged"})
+    path = state.path("state")
+    before = path.read_bytes()
+    resolve = Path.resolve
+
+    def redirected(candidate, *args, **kwargs):
+        return (
+            tmp_path / "outside.json" if candidate == path else resolve(candidate, *args, **kwargs)
+        )
+
+    monkeypatch.setattr(Path, "resolve", redirected)
+    with pytest.raises(ValueError, match="unsafe"):
+        if action == "write":
+            state.write("state", {"secret": "changed"})
+        else:
+            getattr(state, action)("state")
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "name", ["../outside", "..\\outside", "/outside", "C:\\outside", "state.json", "state\n"]
+)
+def test_private_state_rejects_names_outside_allowlist(tmp_path, name):
+    from autodj.acme_service import PrivateState
+
+    state = PrivateState(tmp_path / ".tls" / "acme")
+    with pytest.raises(ValueError, match="Invalid ACME state name"):
+        state.path(name)
+    assert not state.root.exists()

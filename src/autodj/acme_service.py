@@ -28,12 +28,14 @@ class PrivateState:
         self.root = root
 
     def path(self, name: str) -> Path:
-        if not re.fullmatch(r"[a-z0-9-]{1,64}", name):
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9-]{1,64}", name):
             raise ValueError("Invalid ACME state name.")
         path = self.root / (name + ".json")
         for part in (self.root.parent, self.root, path):
             if part.is_symlink() or part.is_junction():
                 raise AcmeError("The ACME storage path is unsafe.")
+        if not path.resolve().is_relative_to(self.root.resolve()):
+            raise AcmeError("The ACME storage path is unsafe.")
         return path
 
     def read(self, name: str) -> dict:
