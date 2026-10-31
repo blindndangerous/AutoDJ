@@ -606,6 +606,21 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 
 For that release, record the date, exact screen reader and browser versions, flows sampled, results, and defects found. Keep this record with the release evidence so readers can find any limits or unresolved defects.
 
+For the opt-in local programme prototype, sample Take local control and Return
+to automation with Tab, Enter and Space. Both native buttons remain mounted and
+keep focus when their availability changes. Verify the visible status and one
+polite announcement per ownership state change, including refusal and recovery;
+refreshes must not repeat announcements. Check both themes, focus visibility and
+minimum target size. The automated Chromium/axe and signal audit is
+`node tests/playwright/local_programme_prototype_audit.mjs`, run after installing
+Chromium and FFmpeg. The Playwright stream-audit CI job runs it and uploads the
+report directory. Set `LOCAL_PROGRAMME_AUDIT_ROOT` to choose that directory;
+the default is `test-results/local-programme-prototype`.
+Its page shell uses production markup and owner controls, a synthetic catalog,
+and real Player/SQLite/mix-bus/FFmpeg components. It does not establish normal
+application startup or screen-reader speech. NVDA capture for this prototype is
+assigned to the reviewer; no speech result is inferred from axe or DOM checks.
+
 Do not claim support or verified behavior for NVDA, JAWS, VoiceOver, screen readers generally, or assistive technology generally unless the exact screen-reader/browser pairing and flow named in the claim were tested and recorded. Results from one pairing or flow do not transfer to another.
 
 

@@ -567,6 +567,7 @@ class PlayerState:
     clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
     volume: float = 1.0  # 0.0 (silent) â€“ 1.0 (full)
     is_muted: bool = False
+    local_monitor_owned: bool = False
     track_number: int = 0
     discovery_enabled: bool = False
     queue_lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
@@ -1024,6 +1025,7 @@ class Player:
         self._voice_targets: dict[str, Any] = {}
         self._live_queue_target: Any = None
         self._live_queue_edits: dict[int, Any] = {}
+        self._local_return_request: tuple[object, IndexEntry | None] | None = None
         self._server_audio_too = server_audio_too
         # Set when the first song starts on the mix bus with its successor
         # picked; the library's startup scan waits for it (see
@@ -3888,6 +3890,9 @@ class Player:
 
     def request_voice_track_slot(self) -> bool:
         """Start planning slots on demand for the server voice tracker."""
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self)
         if (
             self._dry_run
             or self._library is None
@@ -4433,6 +4438,28 @@ class Player:
             raise failed
         return booked
 
+    def prepare_local_return(self, entry: IndexEntry | None, *, timeout: float) -> bool:
+        """Prepare automation while the local input continues feeding the existing bus."""
+        with self._state.queue_lock:
+            source = self.bus._local_programme if self.bus is not None else None
+            request = self._local_return_request
+            if request is None or request[0] is not source or request[1] is not entry:
+                self._live_queue_revision = getattr(self, "_live_queue_revision", 0) + 1
+                self._live_queue_edits.clear()
+                self._live_queue_target = None
+                self._live_queue_dirty = False
+                queued = entry is not None and (
+                    self._state.queued_next is entry
+                    or any(item is entry for item in self._state.queue)
+                )
+                self._playout.reset(
+                    lambda: self._set_render_cursor(entry, 0, "queue", from_queue=queued)
+                )
+                self._state.next_track = entry
+                self._local_return_request = (source, entry)
+        ready = self._playout.wait_rendered(timeout)
+        return bool(ready)
+
     def reset_playout(
         self,
         entry: IndexEntry | None,
@@ -4456,6 +4483,9 @@ class Player:
             reason: Why breaks waiting to air are dropped (#88): every
                 planned song change is gone.
         """
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self)
         self.invalidate_voice_targets()
         with self._slot_lock:
             self._slot_plan = None
@@ -4500,6 +4530,9 @@ class Player:
             entry: The set's first track.
             pick_mode: How it was chosen (``"queue"`` or ``"seed"``).
         """
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self)
         with self._set_lock:
             self._set_generation += 1
             self._seed_path = entry.path
@@ -4979,6 +5012,9 @@ class Player:
         rendered by the time the fade ends, the bus plays silence briefly
         until it is -- acceptable for an explicit jump.
         """
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self)
         self.reset_playout(entry, 0, pick_mode, reason="a song was played at once")
         self._state.next_track = entry
         if self.bus is not None:
@@ -5051,10 +5087,15 @@ class Player:
             if track is not None and track.from_queue and self._commit_queue_pick(track.entry):
                 # Given back if its set stops before it starts.
                 self._taken_queue_pick = track
+            if track is not None and getattr(self, "local_performance", None) is not None:
+                self._local_render_generation = getattr(self, "_local_render_generation", 0) + 1
         return track
 
     def skip_current(self) -> None:
         """An early skip starts the next song at Start, before any unheard overlap."""
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self)
         track = self._playing_render
         if track is not None and track.full_audio is not None:
             relative = self._playback_output_pos[0]
@@ -7708,6 +7749,9 @@ class Player:
         when server audio is playing, moves the mix bus (which takes its
         own lock).
         """
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self)
         sr = max(1, self._current_sr)
         # On the mix bus the render starts partway into the file (the part
         # the previous crossfade already played); positions are in the
@@ -7734,6 +7778,9 @@ class Player:
         Convenience wrapper around :meth:`seek_to`.  Returns the new
         absolute position in seconds.
         """
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self)
         sr = max(1, self._current_sr)
         current = self._playback_pos[0] / sr
         return self.seek_to(current + delta_seconds)
