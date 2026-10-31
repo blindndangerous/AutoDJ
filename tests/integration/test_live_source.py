@@ -681,3 +681,28 @@ def test_the_connection_limit_leaves_room_for_every_stations_listeners() -> None
         stations=[SimpleNamespace(cfg=SimpleNamespace(stream=StreamConfig(max_listeners=50)))],
     )
     assert _connection_limit(cfg) == _CONNECTION_ROOM + 70
+
+
+def test_takeover_drops_future_voice_and_return_does_not_replay_it(tmp_path, bridge, monkeypatch):
+    """ADR-0004-26: takeover invalidates future bindings before automation returns."""
+    from tests.unit.test_live_voice import _book_future, _promote_pair
+
+    client = _app(tmp_path, bridge)
+    station = client.app.state.stations.default
+    folder = tmp_path / "voice-station"
+    folder.mkdir()
+    player, entries, desk, item = _book_future(folder)
+    bridge.player = player
+    station.live.source = _FakeSource()
+    station.live.since = "2026-10-30T12:00:00+00:00"
+    old_run = player._voice_run_id
+    station._live_started()
+    assert player._voice_run_id != old_run
+    assert not player._voice_targets
+    assert desk.get(item.break_id).state == "dropped"
+    assert desk.get(item.break_id).reason == "live DJ on air"
+    monkeypatch.setattr(player, "prepare_live_return", lambda timeout: None)
+    station._ready_automation(SimpleNamespace(buffer=SimpleNamespace(frames=0)))
+    _promote_pair(player, entries)
+    player._maintain_live_handoff(None)
+    assert not player._playing_render.break_events

@@ -374,6 +374,20 @@ class QueueRemoveBody(BaseModel):
     voice_revision: StrictStr | None = None
 
 
+class VoiceChoiceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    voice_action: Literal["keep", "discard"] | None = None
+    voice_revision: str | None = PydanticField(default=None, max_length=64)
+
+
+class VoiceTargetConfirmBody(VoiceChoiceBody):
+    """Confirm only a server-owned target snapshot; paths are never accepted."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    target_id: str = PydanticField(pattern=r"^[0-9a-f]{32}$")
+    revision: str = PydanticField(pattern=r"^[0-9a-f]{64}$")
+
+
 class LinerTestBody(BaseModel):
     """Request body for POST /api/liners/test.
 

@@ -262,6 +262,57 @@ def _queue(source: Any) -> list[str]:
     return [entry.path for entry in source.player._state.queue]
 
 
+@pytest.mark.parametrize("operation", ["stop", "replace"])
+def test_manual_show_preflight_preserves_runner_until_voice_choice(tmp_path, operation):
+    """ADR-0004-24: manual show preflight preserves runner until voice choice."""
+    from autodj.breaks import BreakDesk
+    from autodj.config import BreaksConfig
+    from autodj.hour_preview import Item
+    from autodj.live_queue import VoiceQueueConflict, capture_voice_targets
+    from tests.unit.test_live_voice import _voice
+
+    source, hits, gold = _station(tmp_path)
+    _playing(source, gold[0], time.time() - 20)
+    runner, _bridge, store, show_id, _published = _runner(
+        source, tmp_path, [entry.path for entry in hits[:4]]
+    )
+    asyncio.run(runner.start(show_id))
+    player = source.player
+    player.live_mixing = True
+    desk = BreakDesk(lambda: BreaksConfig(), tmp_path / "announcements")
+    desk.folder.mkdir()
+    player.break_desk = desk
+    rows = tuple(
+        Item("song", time.time() + i * 20, 20, "queued", entry)
+        for i, entry in enumerate([player._state.current_track, *player._state.queue])
+    )
+    target = capture_voice_targets(player, rows, now=time.time())[-1]
+    item = _voice(desk, target.target_id)
+    item.run_id = target.run_id
+    player.book_break(item, transition_revision=target.revision)
+    replacement, _ = store.add(_spec(name="Next programme"))
+    store.update(replacement, lambda show: with_songs(show, [entry.path for entry in gold[2:6]]))
+    before, queued = runner.status(), list(player._state.queue)
+
+    async def change(**choice):
+        if operation == "stop":
+            return await runner.stop(**choice)
+        return await runner.start(replacement, **choice)
+
+    with pytest.raises(VoiceQueueConflict) as caught:
+        asyncio.run(change())
+    assert runner.status() == before
+    assert all(a is b for a, b in zip(player._state.queue, queued, strict=True))
+    assert desk.get(item.break_id).state == "queued"
+    asyncio.run(change(voice_action="discard", voice_revision=caught.value.detail["revision"]))
+    assert desk.get(item.break_id).state == "dropped"
+    assert (
+        runner.status() is None
+        if operation == "stop"
+        else runner.status()["name"] == "Next programme"
+    )
+
+
 def test_a_show_feeds_the_queue_and_ends(tmp_path: Path) -> None:
     source, hits, gold = _station(tmp_path)
     state = source.player._state
@@ -665,6 +716,36 @@ def test_stop_cancels_a_pending_resume_and_never_resumes(
     assert not state_file.exists()
 
 
+def test_automatic_show_feed_defers_once_with_visible_voice_reason(tmp_path, monkeypatch):
+    from autodj.live_queue import VoiceQueueConflict
+
+    source, hits, gold = _station(tmp_path)
+    _playing(source, gold[0], time.time() - 30)
+    runner, bridge, _store, show_id, _published = _runner(
+        source, tmp_path, [entry.path for entry in hits[:4]]
+    )
+    asyncio.run(runner.start(show_id))
+    source.player.live_mixing = True
+    source.player._state.queue.pop()
+    calls = []
+
+    def refuse(*_args, **_kwargs):
+        calls.append(True)
+        raise VoiceQueueConflict(
+            {
+                "message": "This change affects a voice track.",
+                "affected": [{"label": "Waiting take"}],
+            }
+        )
+
+    monkeypatch.setattr(bridge, "_plan_live_queue_edit", refuse)
+    before = list(source.player._state.queue)
+    runner._feed_blocking()
+    assert len(calls) == 1
+    assert source.player._state.queue == before
+    assert "Waiting take" in runner.status()["deferred_reason"]
+
+
 def test_a_stop_that_cannot_take_the_songs_out_keeps_trying(tmp_path: Path) -> None:
     """ADR-0009-06: a show asked to stop is no longer the show on the air."""
     source, hits, gold = _station(tmp_path)
@@ -718,3 +799,79 @@ def test_queue_edits_by_path_never_take_the_shows_own_copy(tmp_path: Path) -> No
         [hits[0].path, hits[1].path, hits[0].path], from_paths=shown, order=[2, 1, 0]
     )
     assert state.queue[0] is hits[0] and state.queue[2] is show_copy
+
+
+def test_hard_show_releases_future_bindings_before_queue_cleanup(tmp_path):
+    """ADR-0004-26: a hard scheduled show releases speech before replacing its queue."""
+    from autodj.breaks import BreakDesk
+    from autodj.config import BreaksConfig
+    from autodj.hour_preview import Item
+    from autodj.live_queue import capture_voice_targets
+    from tests.unit.test_live_voice import _voice
+
+    source, hits, gold = _station(tmp_path)
+    _playing(source, gold[0], time.time() - 20)
+    runner, _bridge, store, show_id, _published = _runner(
+        source, tmp_path, [entry.path for entry in hits[:4]]
+    )
+    asyncio.run(runner.start(show_id))
+    player = source.player
+    player.live_mixing = True
+    desk = BreakDesk(lambda: BreaksConfig(), tmp_path / "announcements")
+    desk.folder.mkdir()
+    player.break_desk = desk
+    rows = tuple(
+        Item("song", time.time() + i * 20, 20, "queued", entry)
+        for i, entry in enumerate([player._state.current_track, *player._state.queue])
+    )
+    target = capture_voice_targets(player, rows, now=time.time())[-1]
+    item = _voice(desk, target.target_id)
+    item.run_id = target.run_id
+    player.book_break(item, transition_revision=target.revision)
+    replacement, _ = store.add(_spec(name="Next programme"))
+    store.update(replacement, lambda show: with_songs(show, [entry.path for entry in gold[2:6]]))
+    source.ledger.remember_history = lambda _row: None
+    action = show_action(runner, store)
+    asyncio.run(action.hard({"show": replacement}))
+    assert runner.status()["name"] == "Next programme"
+    assert desk.get(item.break_id).state == "dropped"
+    assert "hard scheduled show" in desk.get(item.break_id).reason
+    assert not player._voice_targets
+
+
+def test_manual_immediate_show_still_requires_voice_choice(tmp_path):
+    """ADR-0004-24: manual immediate playback does not inherit scheduler priority."""
+    from autodj.breaks import BreakDesk
+    from autodj.config import BreaksConfig
+    from autodj.hour_preview import Item
+    from autodj.live_queue import capture_voice_targets
+    from tests.unit.test_live_voice import _voice
+
+    source, hits, gold = _station(tmp_path)
+    _playing(source, gold[0], time.time() - 20)
+    runner, _bridge, store, show_id, _published = _runner(
+        source, tmp_path, [entry.path for entry in hits[:4]]
+    )
+    asyncio.run(runner.start(show_id))
+    player = source.player
+    player.live_mixing = True
+    desk = BreakDesk(lambda: BreaksConfig(), tmp_path / "announcements")
+    desk.folder.mkdir()
+    player.break_desk = desk
+    rows = tuple(
+        Item("song", time.time() + i * 20, 20, "queued", entry)
+        for i, entry in enumerate([player._state.current_track, *player._state.queue])
+    )
+    target = capture_voice_targets(player, rows, now=time.time())[-1]
+    item = _voice(desk, target.target_id)
+    item.run_id = target.run_id
+    player.book_break(item, transition_revision=target.revision)
+    replacement, _ = store.add(_spec(name="Next programme"))
+    store.update(replacement, lambda show: with_songs(show, [entry.path for entry in gold[2:6]]))
+    from autodj.live_queue import VoiceQueueConflict
+
+    before = runner.status()
+    with pytest.raises(VoiceQueueConflict):
+        asyncio.run(runner.start(replacement, now=True))
+    assert runner.status() == before
+    assert desk.get(item.break_id).state == "queued"

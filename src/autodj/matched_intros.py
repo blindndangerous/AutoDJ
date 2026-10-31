@@ -679,7 +679,7 @@ class MatchedIntros:
             for intro_id in intro_ids:
                 self._reserved.pop(intro_id, None)
 
-    def reserve_chosen(self, intro_id: str, at: float) -> bool:
+    def reserve_chosen(self, intro_id: str, at: float, *, owned: bool = False) -> bool:
         """Reserve a frozen intro ID without rerunning its random choice."""
         intros = self.all()
         intro = intros.get(intro_id)
@@ -690,7 +690,20 @@ class MatchedIntros:
             return False
         with self._lock:
             self._apply_heard_locked()
-            last = self._last_locked(intro_id, intro)
+            if owned and intro_id not in self._reserved:
+                return False
+            last = (
+                max(
+                    (
+                        value
+                        for value in (intro.last_aired, self._aired.get(intro_id))
+                        if value is not None
+                    ),
+                    default=None,
+                )
+                if owned
+                else self._last_locked(intro_id, intro)
+            )
             wait = intro.cooldown_minutes * 60.0
             if last is not None and wait > 0 and abs(at - last) < wait:
                 return False

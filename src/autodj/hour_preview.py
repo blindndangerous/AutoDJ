@@ -274,6 +274,9 @@ class Decided:
             )
             intro_identity = repr((item.asset_id, item.label)) if item.kind == "intro" else ""
             parts.append(f"{item.kind}:{item.status}:{identity}{intro_identity}")
+            occurrence = getattr(item.entry, "occurrence_id", None)
+            if occurrence is not None:
+                parts.append(f"occurrence:{occurrence}")
         parts.append(f"clock:{self.clock_name}:{self.clock_cursor}")
         parts.append(f"speed:{self.speed_signature}")
         return "\n".join(parts)
@@ -734,7 +737,9 @@ def _taken_places(head: Head, waiting: Sequence[Any]) -> _Places:
     free = list(range(len(waiting)))
     in_waiting: list[int | None] = []
     for used in head.taken:
-        found = next((number for number in free if waiting[number].path == used.path), None)
+        from autodj.live_queue import queue_matches
+
+        found = next((number for number in free if queue_matches(waiting[number], used)), None)
         if found is not None:
             free.remove(found)
         in_waiting.append(found)
@@ -1995,10 +2000,35 @@ def _prediction(
                 added, liner_key, intro = player._transition_voice(
                     current, entry, added, breaks, handoff
                 )
-        selected_handoff = (
-            IncomingHandoff(tuple(added), intro, tuple(ad_spots), prepared_breaks)
-            if capture_audio
-            else None
+        from autodj.breaks import TransitionItem
+
+        transition_items = tuple(
+            TransitionItem(
+                hashlib.sha256(f"liner:{index}:{chosen.path}".encode()).hexdigest()[:24],
+                "liner",
+                "queued" if queued else "automatic",
+                chosen.display_name,
+                entry=chosen,
+                committed=queued,
+            )
+            for index, (chosen, queued) in enumerate(added)
+        )
+        if intro is not None:
+            transition_items += (
+                TransitionItem(
+                    hashlib.sha256(f"intro:{intro.intro_id}".encode()).hexdigest()[:24],
+                    "matched_intro",
+                    "intro_rule" if intro.intro_id.startswith("rule:") else "matched_intro",
+                    intro.label,
+                    intro=intro,
+                ),
+            )
+        selected_handoff = IncomingHandoff(
+            tuple(added),
+            intro,
+            tuple(ad_spots),
+            prepared_breaks,
+            transition_items=transition_items,
         )
         voice: tuple[Any, dict[str, Any], bool] | None = None
         intro_label = intro.label if intro is not None else ""
@@ -2613,6 +2643,13 @@ def build_preview(
     the :class:`PreviewFill` that can go on from the last pick.
     """
     minutes = check_minutes(minutes)
+    from autodj.live_queue import target_revision
+
+    voice_revision = (
+        target_revision(source.player)
+        if getattr(source.player, "live_mixing", False) and hasattr(source.player, "_voice_targets")
+        else None
+    )
     zone = ZoneInfo(source.timezone)
     if decided is None:
         decided = read_station(
@@ -2695,6 +2732,7 @@ def build_preview(
     fill = PreviewFill(
         source, decided, end, view, snapshot, forecasts, prediction, choices, describe
     )
+    fill._voice_revision = voice_revision
     finished = fill.run(budget)
     if on_prediction is not None:
         on_prediction(tuple(choices))
@@ -2736,6 +2774,18 @@ class PreviewFill:
         #: The forecast's choices so far (:class:`HourPreviews` remembers them).
         self.choices = choices
         self._describe = describe
+        import uuid
+
+        self._voice_snapshot = uuid.uuid4().hex
+        self._voice_expires = time.monotonic() + KEEP_SECONDS
+        from autodj.live_queue import target_revision
+
+        self._voice_revision = (
+            target_revision(source.player)
+            if getattr(source.player, "live_mixing", False)
+            and hasattr(source.player, "_voice_targets")
+            else None
+        )
 
     @property
     def worked(self) -> float:
@@ -2819,6 +2869,26 @@ class PreviewFill:
             if run.own_point and now < run.at <= end
         )
         points.sort(key=lambda point: (point.at, point.kind != "event"))
+        if (
+            self._voice_revision is not None
+            and source.snapshot is None
+            and self._end - self._decided.now == 900
+        ):
+            from autodj.live_queue import capture_voice_targets
+
+            boundary = min(
+                (point.at for point in points if point.kind in {"restart", "event"}), default=None
+            )
+            targets = capture_voice_targets(
+                source.player,
+                tuple(timeline),
+                now=now,
+                boundary=boundary,
+                revision=self._voice_revision,
+                snapshot=self._voice_snapshot,
+                expires=self._voice_expires,
+            )
+            view["voice_targets"] = [target.view() for target in targets]
         view["points_note"] = (
             f"Only the first {MAX_POINTS} of {len(points)} fixed points are timed."
             if len(points) > MAX_POINTS

@@ -86,6 +86,18 @@ function fakeServer() {
       }
       return response;
     }
+    if (url === "/api/voice-tracks/targets/confirm" && method === "POST") {
+      if (server.confirmConflict) {
+        const detail = server.confirmConflict;
+        server.confirmConflict = null;
+        throw Object.assign(new Error(detail.message), { status: 409, detail });
+      }
+      const chosen = server.targets.find((row) => row.target_id === JSON.parse(options.body).target_id);
+      chosen.selection = "confirmed";
+      server.slot = { ...server.slot, ...chosen, slot_id: chosen.target_id, transition_revision: chosen.revision };
+      server.accepting = true;
+      return chosen;
+    }
     if (url === "/api/voice-tracks" && method === "POST") {
       if (server.slowPost) {
         return new Promise((_resolve, reject) => {
@@ -1051,4 +1063,256 @@ it("estimates detected speech including pauses and preserves the early lead", ()
   expect(measured.clip).toBeCloseTo(3.45);
   expect(measured.tail).toBeCloseTo(0.4);
   expect(speechLength([new Float32Array(100)], 100)).toEqual({ speech: 0 });
+});
+
+
+function futureRow(id = "c".repeat(32), over = {}) {
+  return {
+    target_id: id, run_id: "run-one", revision: "revision-one", selection: "predicted",
+    ending: song("song-c", "Third Song"), upcoming: song("song-d", "Fourth Song"),
+    outgoing_occurrence_id: `out-${id}`, incoming_occurrence_id: `in-${id}`,
+    estimated_airtime: 1200, eligible: true, songs_to_queue: 4, ...over,
+  };
+}
+
+async function chooseFuture(server, row) {
+  server.targets = [row];
+  server.slot = { ...slot(row.target_id), ...row, transition_revision: row.revision };
+  server.accepting = row.selection === "confirmed";
+  await flush();
+}
+
+describe("future voice target selection", () => {
+  // ADR-0004-28: selection is explicit; refresh retains native focus and certainty is separate.
+  it("confirms explicitly with a labelled native select and preserves focus on refresh", async () => {
+    const { server, controls, mic } = tracker();
+    const row = futureRow();
+    await chooseFuture(server, row);
+    await controls.refresh();
+    const select = byId("vt-target");
+    expect(select?.tagName).toBe("SELECT");
+    expect(document.querySelector('label[for="vt-target"]').textContent).toBe("Song change");
+    select.focus(); select.value = row.target_id;
+    select.dispatchEvent(new Event("change")); await flush();
+    expect(server.calls.filter((call) => call.method === "POST")).toHaveLength(0);
+    expect(byId("vt-selection").textContent).toContain("Predicted");
+    expect(byId("vt-confirm-count").textContent).toContain("4");
+    await press("vt-record");
+    expect(mic.getUserMedia).not.toHaveBeenCalled();
+    select.focus(); await controls.refresh();
+    expect(document.activeElement).toBe(select);
+    expect(select.value).toBe(row.target_id);
+    await press("vt-confirm");
+    expect(byId("vt-selection").textContent).toContain("Confirmed");
+    expect(byId("vt-estimated-airtime").textContent).toContain("Estimated airtime");
+    expect(document.activeElement).toBe(byId("vt-confirm"));
+    expect(mic.getUserMedia).not.toHaveBeenCalled();
+    await press("vt-record");
+    expect(mic.getUserMedia).toHaveBeenCalledTimes(1);
+    controls.clear();
+  });
+
+  // ADR-0004-28: a vanished target remains selected and the local take survives.
+  it("retains an unavailable selected occurrence and take without choosing a replacement", async () => {
+    const { server, controls } = tracker();
+    const row = futureRow(undefined, { selection: "confirmed" });
+    await chooseFuture(server, row); await controls.refresh();
+    const select = byId("vt-target");
+    select.value = row.target_id; select.dispatchEvent(new Event("change")); await flush();
+    await press("vt-record"); await press("vt-record");
+    server.targets = [futureRow("d".repeat(32))]; server.slot = null;
+    select.focus(); await controls.refresh();
+    expect(select.value).toBe(row.target_id);
+    expect(select.selectedOptions[0].textContent).toContain("Unavailable");
+    expect(document.activeElement).toBe(select);
+    expect(controls.hasUnsavedWork()).toBe(true);
+    await press("vt-book");
+    expect(server.calls.filter((call) => call.method === "POST")).toHaveLength(0);
+    controls.clear();
+  });
+
+  // ADR-0004-23: repeated catalog IDs cannot silently retarget a take.
+  it("distinguishes repeated song occurrences and requires listen-back before retargeting", async () => {
+    const { server, controls } = tracker();
+    const first = futureRow(undefined, { selection: "confirmed" });
+    await chooseFuture(server, first); await controls.refresh();
+    const select = byId("vt-target");
+    select.value = first.target_id; select.dispatchEvent(new Event("change")); await flush();
+    await press("vt-record"); await press("vt-record");
+    const second = futureRow("d".repeat(32), { selection: "confirmed" });
+    server.targets = [first, second];
+    server.slot = { ...slot(second.target_id), ...second, transition_revision: second.revision };
+    await controls.refresh();
+    select.value = second.target_id; select.dispatchEvent(new Event("change")); await flush();
+    await press("vt-book");
+    expect(server.calls.filter((call) => call.method === "POST")).toHaveLength(0);
+    expect(byId("vt-error").textContent).toContain("Listen back");
+    vi.spyOn(byId("vt-playback"), "play").mockResolvedValue();
+    await press("vt-listen"); await press("vt-book");
+    const sent = server.calls.find((call) => call.method === "POST");
+    expect(sent.body.get("target_id")).toBe(second.target_id);
+    expect(sent.body.get("run_id")).toBe(second.run_id);
+    controls.clear();
+  });
+
+  it("uses the shared conflict dialog with Cancel last and no recording side effect", async () => {
+    const { server, controls, mic } = tracker();
+    const row = futureRow();
+    await chooseFuture(server, row); await controls.refresh();
+    byId("vt-target").value = row.target_id;
+    byId("vt-target").dispatchEvent(new Event("change")); await flush();
+    server.confirmConflict = { code: "voice_track_conflict", revision: "choice-revision", message: "Affected recording", can_keep: true, affected: [] };
+    await press("vt-confirm");
+    const dialog = document.querySelector("dialog[open]");
+    const buttons = [...dialog.querySelectorAll("button")];
+    expect(buttons.at(-1).textContent).toBe("Cancel change");
+    buttons.at(-1).click(); await flush();
+    expect(server.calls.filter((call) => call.method === "POST")).toHaveLength(1);
+    expect(mic.getUserMedia).not.toHaveBeenCalled();
+    controls.clear();
+  });
+});
+
+
+// ADR-0004-28: removed action controls have a direct keyboard focus fallback.
+it("moves focus to the target selector when a transition control disappears", async () => {
+  const { server, controls } = tracker();
+  const row = futureRow(undefined, { selection: "confirmed" });
+  await chooseFuture(server, row);
+  server.slot.transition_items = [{ id: "liner:one", kind: "liner", source: "automatic", label: "Chosen clip", editable: true, default_action: "after" }];
+  await controls.refresh();
+  byId("vt-target").value = row.target_id;
+  byId("vt-target").dispatchEvent(new Event("change")); await flush();
+  byId("vt-transition-items").querySelector("select").focus();
+  server.slot = null; server.targets = [];
+  await controls.refresh();
+  expect(document.activeElement).toBe(byId("vt-target"));
+  controls.clear();
+});
+
+
+// ADR-0004-23: abandoning browser audio does not undo confirmed music choices.
+it("abandoning a take leaves confirmed songs and no speech", async () => {
+  const { server, controls } = tracker();
+  const row = futureRow();
+  await chooseFuture(server, row); await controls.refresh();
+  byId("vt-target").value = row.target_id;
+  byId("vt-target").dispatchEvent(new Event("change")); await flush();
+  await press("vt-confirm"); await press("vt-record"); await press("vt-record");
+  await press("vt-discard");
+  expect(controls.hasUnsavedWork()).toBe(false);
+  expect(server.targets[0].selection).toBe("confirmed");
+  expect(server.tracks).toEqual([]);
+  expect(server.calls.filter((call) => call.method === "POST").map((call) => call.url)).toEqual(["/api/voice-tracks/targets/confirm"]);
+  controls.clear();
+});
+
+// ADR-0004-28: action announcements and passive timing updates stay separate.
+it("announces confirmation once and keeps passive airtime refresh quiet", async () => {
+  const { server, controls } = tracker();
+  const row = futureRow();
+  await chooseFuture(server, row); await controls.refresh();
+  byId("vt-target").value = row.target_id;
+  byId("vt-target").dispatchEvent(new Event("change")); await flush();
+  const spoken = [], region = byId("vt-status");
+  const observer = new MutationObserver(() => { if (region.textContent) spoken.push(region.textContent); });
+  observer.observe(region, { childList: true, subtree: true, characterData: true });
+  await press("vt-confirm");
+  await flush();
+  expect(spoken).toEqual(["Songs confirmed. Record when ready; airtime remains an estimate."]);
+  row.estimated_airtime += 120;
+  await controls.refresh(); await controls.refresh();
+  expect(spoken).toHaveLength(1);
+  observer.disconnect(); controls.clear();
+});
+
+it("ignores a delayed confirmation response after a station change", async () => {
+  const { server, controls } = tracker();
+  const row = futureRow();
+  await chooseFuture(server, row); await controls.refresh();
+  byId("vt-target").value = row.target_id;
+  byId("vt-target").dispatchEvent(new Event("change")); await flush();
+  const original = api.requestJson.getMockImplementation();
+  let resolve;
+  api.requestJson.mockImplementation((url, options) => url.endsWith("/confirm")
+    ? new Promise((done) => { resolve = done; }) : original(url, options));
+  await press("vt-confirm"); controls.clear();
+  resolve({ ...row, selection: "confirmed" }); await flush();
+  expect(byId("vt-target").value).toBe("");
+  expect(byId("vt-selection").textContent).toBe("Selection: Current handoff");
+  expect(status()).toBe("");
+});
+
+
+// ADR-0004-26: a run change never leaves old rows claiming a live booking or known airtime.
+it("marks lost bookings unknown after a run change and preserves cancellation focus fallback", async () => {
+  const { server, controls } = tracker();
+  server.run_id = "old-run";
+  server.tracks = [{ break_id: "e".repeat(32), label: "Previous recording", state: "queued", cancellable: true, slot_id: server.slot.slot_id }];
+  await controls.refresh();
+  byId("vt-list").querySelector("button").focus();
+  server.run_id = "new-run"; server.tracks = [];
+  await controls.refresh();
+  expect(byId("vt-list").textContent).toContain("no longer booked; prior airtime is unknown");
+  expect(byId("vt-list").querySelector("button")).toBeNull();
+  expect(document.activeElement).toBe(byId("vt-booked-heading"));
+  await controls.refresh();
+  expect(byId("vt-list").textContent).toContain("no longer booked");
+  controls.clear();
+  expect(byId("vt-list").textContent).toBe("");
+});
+
+
+// ADR-0004-28: accessible status and confirmation guidance.
+it("describes selection and debounces arrow browsing announcements while refresh stays quiet", async () => {
+  const { server, controls } = tracker();
+  const first = futureRow();
+  const second = futureRow("d".repeat(32), { selection: "confirmed" });
+  server.targets = [first, second];
+  await controls.refresh();
+  const select = byId("vt-target");
+  expect(select.getAttribute("aria-describedby")?.split(/\s+/)).toEqual(expect.arrayContaining(["vt-selection", "vt-estimated-airtime"]));
+  const spoken = [], region = byId("vt-status");
+  const observer = new MutationObserver(() => { if (region.textContent) spoken.push(region.textContent); });
+  observer.observe(region, { childList: true, subtree: true, characterData: true });
+  select.value = first.target_id; select.dispatchEvent(new Event("change"));
+  await flush();
+  select.value = second.target_id; select.dispatchEvent(new Event("change"));
+  await flush();
+  expect(spoken).toEqual([]);
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  expect(spoken).toHaveLength(1);
+  expect(spoken[0]).toContain("Selection: Confirmed");
+  expect(spoken[0]).toContain("Estimated airtime:");
+  await controls.refresh();
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  expect(spoken).toHaveLength(1);
+  observer.disconnect(); controls.clear();
+});
+
+// ADR-0004-28: accessible status and confirmation guidance.
+it("explains every disabled confirmation state and counts only the supplied new songs", async () => {
+  const { server, controls } = tracker();
+  await controls.refresh();
+  const button = byId("vt-confirm"), count = byId("vt-confirm-count");
+  expect(button.getAttribute("aria-disabled")).toBe("true");
+  expect(count.textContent).toContain("Choose a predicted song change first");
+  const row = futureRow(undefined, { songs_to_queue: 1 });
+  await chooseFuture(server, row); await controls.refresh();
+  byId("vt-target").value = row.target_id;
+  byId("vt-target").dispatchEvent(new Event("change")); await flush();
+  expect(count.textContent).toContain("queues 1 song through");
+  row.eligible = false; row.reason = "This song's duration is unknown.";
+  await controls.refresh();
+  expect(button.getAttribute("aria-disabled")).toBe("true");
+  expect(count.textContent).toContain(row.reason);
+  row.eligible = true; row.selection = "confirmed";
+  await controls.refresh();
+  expect(count.textContent).toContain("already confirmed");
+  server.targets = []; server.slot = null;
+  await controls.refresh();
+  expect(button.getAttribute("aria-disabled")).toBe("true");
+  expect(byId("vt-target-reason").textContent).toContain("no longer available");
+  expect(count.textContent).toBe(byId("vt-target-reason").textContent);
+  controls.clear();
 });

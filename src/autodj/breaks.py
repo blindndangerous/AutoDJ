@@ -31,7 +31,7 @@ import secrets
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -237,6 +237,12 @@ class Break:
     source: str = ANNOUNCER
     keep_file: bool = False
     limit_s: float | None = None
+    run_id: str | None = None
+    outgoing_occurrence_id: str | None = None
+    incoming_occurrence_id: str | None = None
+    transition_items: tuple[TransitionItem, ...] = ()
+    transition_order: tuple[str, ...] = ()
+    transition_replaced: tuple[str, ...] = ()
 
     def view(self) -> dict[str, Any]:
         """What the API says about the break: never its file path or token."""
@@ -259,6 +265,9 @@ class Break:
             "aired_at": None if self.aired_at is None else round(self.aired_at, 3),
             "updated_at": round(self.updated_at, 3),
             "source": self.source,
+            "run_id": self.run_id,
+            "outgoing_occurrence_id": self.outgoing_occurrence_id,
+            "incoming_occurrence_id": self.incoming_occurrence_id,
         }
 
 
@@ -682,6 +691,41 @@ class BreakDesk:
             item = self._breaks.get(break_id)
             if item is not None:
                 item.mixed_as = placement
+
+    def return_queued(self, break_ids: tuple[str, ...]) -> None:
+        """Release a failed, unheard claim while the control worker owns admission."""
+        with self._lock:
+            for identity in break_ids:
+                item = self._breaks.get(identity)
+                if item is not None and item.state == RENDERED:
+                    item.state = QUEUED
+                    item.eta = None
+                    item.mixed_as = ""
+                    item.updated_at = self._clock()
+
+    def rebind_voice(self, break_id: str, target: Any) -> None:
+        """Apply an operator's preflighted pair change to a queued live take."""
+        with self._lock:
+            item = self._breaks.get(break_id)
+            if item is not None and item.state == QUEUED:
+                item.slot_id = target.target_id
+                item.outgoing_occurrence_id = target.outgoing_id
+                item.incoming_occurrence_id = target.incoming_id
+                item.updated_at = self._clock()
+
+    def can_rebind_voice(self, destinations: Mapping[str, str | None]) -> bool:
+        """Check all destination caps, including independent speech and uploads."""
+        with self._lock:
+            counts = {slot: self._counts(slot).in_slot for slot in destinations.values() if slot}
+            for identity, slot in destinations.items():
+                item = self._breaks.get(identity)
+                if item is None or item.keep_file or item.state not in (QUEUED, RENDERED, ON_AIR):
+                    continue
+                if item.slot_id in counts:
+                    counts[item.slot_id] -= 1
+                if slot in counts:
+                    counts[slot] += 1
+            return all(count <= self.config.max_per_slot for count in counts.values())
 
     def drop(self, break_id: str, reason: str) -> None:
         """Drop one break that has not finished, with *reason*."""

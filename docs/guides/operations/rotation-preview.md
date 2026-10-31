@@ -136,6 +136,12 @@ Each row says in its Status column whether it is fixed or predicted:
 - Clockwheel ad steps appear as **Predicted** ad breaks with their expected length. When no spot
   would play, the row has length 0 and says why.
 
+For near-air recordings, **Voice tracks** reuses a bounded 15-minute preview and
+lets you explicitly confirm a future pair into the ordinary queue. Opening either
+preview remains read-only. Confirmation fixes music choices, not their airtime;
+queue edits remain possible through Keep/Discard/Cancel when speech is affected.
+See [Choose and confirm a future song change](spoken-breaks.md#choose-and-confirm-a-future-song-change).
+
 Random and least-recently-played clockwheel steps keep their previous predicted song while it
 remains eligible and suitable for the step. A step that temporarily falls out before an hour
 restart keeps that preference if it fits again. Each wheel cycle has its own choices; changing

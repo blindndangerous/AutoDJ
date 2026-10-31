@@ -16,6 +16,11 @@ const songButton = (index, action) => songRows()[index].querySelector(`button[da
 const songTitles = () => songRows().map((row) => row.querySelector(".show-song").textContent.split(",").slice(0, 2).join(","));
 
 const ID = "a".repeat(32);
+it("shows a deferred feed reason in the ordinary on-air description", () => {
+  expect(describeOnAir({ name: "Evening", played: 0, total: 4, waiting: 1, to_come: 3,
+    deferred_reason: "Show feed deferred: Waiting take. Resolve the voice track conflict in the queue." }))
+    .toContain("Show feed deferred: Waiting take.");
+});
 const song = (n, seconds = 180) => ({
   path: `/music/${n}.flac`, title: `Artist ${n}, Song ${n}`, missing: false, seconds,
   length_text: fmtTime(seconds),
@@ -138,6 +143,33 @@ describe("shows markup", () => {
 });
 
 describe("show list keyboard navigation", () => {
+  it.each(["start", "stop"])("resolves %s through the shared voice choice", async (action) => {
+    const server = await open();
+    await openList(server);
+    server.onAir = { name: "Current programme", total: 3, played: 0, waiting: 2, to_come: 1 };
+    await controls.refresh();
+    const original = server.request.getMockImplementation();
+    const route = action === "start" ? `/api/shows/${ID}/start` : "/api/shows/on-air";
+    const attempts = [];
+    server.request.mockImplementation(async (url, options) => {
+      if (url === route) {
+        const body = options?.body ? JSON.parse(options.body) : {};
+        attempts.push(body);
+        if (!body.voice_action) throw Object.assign(new Error("Voice choice needed"), {
+          status: 409, detail: { code: "voice_track_conflict", revision: "choice-1" },
+        });
+      }
+      return original(url, options);
+    });
+    const button = byId(action === "start" ? "shows-play-now" : "shows-stop");
+    button.focus(); button.click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    expect(document.activeElement).toBe(byId("confirm-cancel"));
+    byId("confirm-accept").focus(); byId("confirm-accept").click();
+    await vi.waitFor(() => expect(attempts).toHaveLength(2));
+    expect(attempts[1]).toEqual({ voice_action: "keep", voice_revision: "choice-1" });
+  });
+
   it("keeps one tab stop and moves between the saved show's actions", async () => {
     await open();
     const actions = [...byId("shows-list").querySelectorAll("button")];
