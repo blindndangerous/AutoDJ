@@ -41,15 +41,14 @@ from __future__ import annotations
 
 import json
 import ntpath
-import os
 import posixpath
 import re
-import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from autodj.clockwheel import MUSIC_KINDS, ClockSlot, validate_resync_minutes
+from autodj.fsutil import atomic_write
 from autodj.station_name import checked_name
 
 VERSION = 1
@@ -426,17 +425,7 @@ class ClockwheelStore:
             taken = {n.casefold() for n in self.list_names()}
             if target.exists() or clock["name"].casefold() in taken:
                 raise ValueError(f"A clockwheel named {clock['name']!r} already exists")
-        self.root.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(prefix=".clock-", suffix=".tmp", dir=self.root)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-                json.dump(clock, stream, indent=2)
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, target)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
+        atomic_write(target, json.dumps(clock, indent=2) + "\n", mode=0o600)
         return clock
 
     def delete(self, name: str) -> bool:

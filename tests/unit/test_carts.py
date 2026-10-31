@@ -109,7 +109,8 @@ def test_a_damaged_wall_is_set_aside_and_startup_continues(
     assert not (tmp_path / "carts.json").exists()
     [bad] = tmp_path.glob("carts.json.bad-*")
     assert bad.read_bytes() == content
-    assert "moved to carts.json.bad-" in caplog.text
+    assert "set it aside as" in caplog.text
+    assert bad.name in caplog.text
 
 
 def test_a_wall_that_cannot_be_moved_aside_still_loads_the_default(
@@ -124,7 +125,7 @@ def test_a_wall_that_cannot_be_moved_aside_still_loads_the_default(
     with caplog.at_level(logging.ERROR, logger="autodj.carts"):
         store = CartStore(tmp_path)
     assert store.wall == CartWall()
-    assert "Could not set aside the damaged cart wall" in caplog.text
+    assert "Could not set aside the invalid cart wall" in caplog.text
 
 
 def test_names_are_trimmed_and_refuse_control_characters() -> None:

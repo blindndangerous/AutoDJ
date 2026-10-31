@@ -18,7 +18,7 @@ from typing import BinaryIO
 from zoneinfo import ZoneInfo
 
 from autodj.config import RecordingConfig
-from autodj.fsutil import atomic_write
+from autodj.fsutil import atomic_write, set_aside
 from autodj.station_log import station_thread
 
 logger = logging.getLogger(__name__)
@@ -52,8 +52,7 @@ def load_saved_state(
             state_path,
             exc,
         )
-        with suppress(OSError):
-            state_path.replace(state_path.with_name(f"{state_path.name}.{time.time_ns()}.bad"))
+        set_aside(state_path, "recording state file", str(exc), naming="timestamp")
         return False, fallback
     return state["running"], config
 

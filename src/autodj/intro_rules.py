@@ -31,7 +31,6 @@ import random
 import re
 import threading
 import time
-import uuid
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import suppress
@@ -48,7 +47,7 @@ from autodj.clip_dates import ClipDates
 from autodj.clock_conditions import condition_matcher
 from autodj.clockwheel import ClockSlot, _normalized, condition_paths
 from autodj.clockwheel_store import _condition, resolve_conditions
-from autodj.fsutil import atomic_write, confirm_missing
+from autodj.fsutil import atomic_write, confirm_missing, set_aside
 from autodj.matched_intros import MAX_COOLDOWN_MINUTES, Chosen
 
 logger = logging.getLogger(__name__)
@@ -255,17 +254,7 @@ class IntroRules:
                 if self._frozen:
                     logger.warning("Intro rules file %s is invalid (%s)", self.path, exc)
                 else:
-                    bad = self.path.with_name(f"{self.path.name}.bad-{uuid.uuid4().hex[:8]}")
-                    try:
-                        self.path.replace(bad)
-                    except OSError:
-                        logger.exception(
-                            "Could not set aside invalid intro rules file %s", self.path
-                        )
-                        raise
-                    logger.error(
-                        "Intro rules file %s was invalid (%s); saved as %s", self.path, exc, bad
-                    )
+                    set_aside(self.path, "intro rules file", str(exc), raise_on_error=True)
                 stamp = None
             else:
                 for key, value in document["rules"].items():

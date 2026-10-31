@@ -256,6 +256,7 @@ def test_filename_pattern_preview_is_read_only_and_respects_liner_dates(tmp_path
     )
     assert without_pattern.status_code == 422
     assert without_pattern.json()["field"] == "filename_pattern"
+    assert "cache-control" not in without_pattern.headers
     invalid_song = station.client.post(
         "/api/intros/rules/test",
         params={"path": "/music/gone.flac"},
@@ -263,6 +264,7 @@ def test_filename_pattern_preview_is_read_only_and_respects_liner_dates(tmp_path
         headers=SENT,
     )
     assert invalid_song.status_code == 404 and invalid_song.json()["field"] == "path"
+    assert "cache-control" not in invalid_song.headers
     invalid_pattern = station.client.post(
         "/api/intros/rules/test",
         params={"path": song["path"]},
@@ -272,6 +274,7 @@ def test_filename_pattern_preview_is_read_only_and_respects_liner_dates(tmp_path
     assert (
         invalid_pattern.status_code == 422 and invalid_pattern.json()["field"] == "filename_pattern"
     )
+    assert invalid_pattern.headers["cache-control"] == "no-store"
     saved = station.client.post("/api/intros/rules", json=body, headers=SENT)
     assert saved.status_code == 201, saved.text
     listed = station.client.get("/api/intros/rules", headers=HOST).json()["rules"]

@@ -46,7 +46,8 @@ from pydantic import (
 )
 
 from autodj import date_repeat
-from autodj.fsutil import atomic_write
+from autodj.errors import FieldError, first_issue
+from autodj.fsutil import atomic_write, set_aside
 from autodj.timefmt import clock_text
 
 logger = logging.getLogger(__name__)
@@ -88,12 +89,13 @@ FIELD_LABELS = {
 }
 
 
-class EventError(ValueError):
+class EventError(FieldError):
     """A rejected event, naming the field at fault (``params.<name>`` for an action setting)."""
 
+    field: str
+
     def __init__(self, field_name: str, message: str) -> None:
-        super().__init__(message)
-        self.field = field_name
+        super().__init__(message, field_name)
 
 
 @functools.cache
@@ -240,25 +242,24 @@ class ScheduleFile(BaseModel):
         return self
 
 
-def field_error(exc: ValidationError) -> tuple[str, str]:
-    """Return the field and a message naming it for the first error in *exc*."""
+def validation_issue(exc: ValidationError) -> tuple[str, str]:
+    """Apply schedule-specific names and action-parameter fields."""
+    name, message = first_issue(exc, FIELD_LABELS)
     error = exc.errors()[0]
-    original = (error.get("ctx") or {}).get("error")
-    if isinstance(original, EventError):
-        return original.field, str(original)
-    loc = [str(part) for part in error["loc"]]
-    if not loc:
-        return "", str(error["msg"])
-    if error["type"] == "extra_forbidden":
-        return loc[0], f"Unknown field {loc[0]}"
-    if loc[0] == "dates_repeat":
-        return "dates_repeat", "Repeat dates must be Don't repeat or Every year"
-    if loc[0] == "name":
-        return "name", f"Enter a name of up to {NAME_MAX} characters"
-    label = FIELD_LABELS.get(loc[0], loc[0])
-    if loc[0] == "params" and len(loc) > 1:
-        return f"params.{loc[1]}", f"{label}: {loc[1]}: {error['msg']}"
-    return loc[0], f"{label}: {error['msg']}"
+    if isinstance((error.get("ctx") or {}).get("error"), FieldError):
+        return name, message
+    if error.get("type") == "extra_forbidden":
+        return name, message
+    if not name:
+        return first_issue(exc)
+    if name == "dates_repeat":
+        return name, "Repeat dates must be Don't repeat or Every year"
+    if name == "name":
+        return name, f"Enter a name of up to {NAME_MAX} characters"
+    location = error.get("loc", ())
+    if name == "params" and len(location) > 1:
+        return f"params.{location[1]}", f"{FIELD_LABELS[name]}: {location[1]}: {error['msg']}"
+    return name, message
 
 
 # ----------------------------------------------------------------------
@@ -694,21 +695,13 @@ class Scheduler:
 
     # -- storage --------------------------------------------------------
 
-    def _keep_bad_copy(self, reason: str) -> None:
-        bad = self.path.with_name(f"{self.path.name}.bad-{uuid.uuid4().hex[:8]}")
-        try:
-            bad.write_bytes(self.path.read_bytes())
-        except OSError:
-            logger.exception("Could not keep a copy of the invalid schedule file %s", self.path)
-        logger.error("Schedule file %s is invalid (%s); kept a copy as %s", self.path, reason, bad)
-
     def _load(self) -> None:
         if not self.path.exists():
             return
         try:
             data = ScheduleFile.model_validate_json(self.path.read_bytes())
         except (OSError, ValueError) as exc:
-            self._keep_bad_copy(str(exc).splitlines()[0])
+            set_aside(self.path, "schedule file", str(exc).splitlines()[0], copy=True)
             return
         dropped = []
         for event in data.events:
@@ -732,7 +725,7 @@ class Scheduler:
                 self.events[event.id] = event
         self.runs = data.runs[-MAX_RUNS:]
         if dropped:
-            self._keep_bad_copy("; ".join(dropped))
+            set_aside(self.path, "schedule file", "; ".join(dropped), copy=True)
 
     def save(self) -> None:
         """Write the schedule atomically."""

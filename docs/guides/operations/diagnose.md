@@ -12,8 +12,15 @@ Doctor still asks before repairs. After resolving the checks, run your serve com
 In scripts, serve prints the suggestion without prompting. To run Doctor yourself, use the
 same `--config` option as serve.
 
+Application failures print `Error: ...` to standard error and return exit 1.
+Normal command output remains on standard output. Usage and argument errors,
+including incompatible options, return exit 2. Setup reports a failed subprocess's
+status and preserves it, including 130 for interruption and 2 for argument errors.
+Server restart/update requests retain their launcher control statuses.
+
 Run `uv run autodj doctor`. Use `uv run autodj doctor --json` for automation. A required failed
-check returns exit 1. In an interactive terminal, doctor offers to remove unsupported config
+check returns exit 1; the JSON report remains on standard output, with a short
+failure message on standard error. In an interactive terminal, doctor offers to remove unsupported config
 keys and create missing index/model directories. Doctor collects unsupported keys across all known
 config sections and shows the proposed removals together for one confirmation. It removes them
 in one edit per affected file, saving one uniquely named backup beside each original file,

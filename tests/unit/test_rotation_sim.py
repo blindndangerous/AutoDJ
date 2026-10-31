@@ -1010,7 +1010,7 @@ def test_simulate_prints_the_report_in_words_or_json(tmp_path: Path, monkeypatch
 def test_simulate_refuses_bad_options(tmp_path: Path, args: list[str], message: str) -> None:
     result = _cli(tmp_path, *args)
     assert result.exit_code == 2
-    assert message in result.output
+    assert message in result.stderr
 
 
 def test_simulate_needs_a_library(tmp_path: Path) -> None:
@@ -1021,7 +1021,7 @@ def test_simulate_needs_a_library(tmp_path: Path) -> None:
 
 def test_simulate_says_when_the_span_is_too_long(tmp_path: Path) -> None:
     result = _cli(tmp_path, "--days", "31")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "at most 720 hours" in result.stderr
 
 

@@ -16,6 +16,7 @@ import soundfile as sf
 from pydantic import ValidationError
 
 from autodj.ads import (
+    FIELD_LABELS,
     AdBreak,
     AdDesk,
     AdLog,
@@ -32,7 +33,6 @@ from autodj.ads import (
     aired_plays,
     build_report,
     choose,
-    field_error,
     latest,
     marks_between,
     new_id,
@@ -42,6 +42,7 @@ from autodj.ads import (
 )
 from autodj.breaks import AD, AD_SCHEDULE, DROPPED, QUEUED, RENDERED, BreakError
 from autodj.config import AdsConfig, BreaksConfig
+from autodj.errors import first_issue
 from autodj.stereo import SAMPLE_RATE as SR
 from tests.unit._break_station import make_station, start_station
 
@@ -81,7 +82,7 @@ def refused(make) -> AdsError:
     """The field and words of the problem *make* is refused for."""
     with pytest.raises(ValidationError) as caught:
         make()
-    return field_error(caught.value)
+    return AdsError(*first_issue(caught.value, FIELD_LABELS, fallback_label="The form"))
 
 
 def test_a_spot_needs_a_title_an_advertiser_and_dates_in_order():

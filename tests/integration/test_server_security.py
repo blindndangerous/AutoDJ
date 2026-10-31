@@ -42,6 +42,14 @@ def _pair(client: TestClient, *, name: str = "Test browser"):
     return client.post("/api/pair", json={"code": code, "device_name": name})
 
 
+def test_validation_reply_has_readable_detail_and_field() -> None:
+    """ADR-0022-01: request validation gives the browser words and a field."""
+    client = _security_client()
+    response = client.post("/api/pair", json={"device_name": "Browser"})
+    assert response.status_code == 422
+    assert response.json() == {"detail": "code: Field required", "field": "code"}
+
+
 def _security_client(*, secure_cookie: bool = False) -> TestClient:
     scheme = "https" if secure_cookie else "http"
     origin = f"{scheme}://testserver"

@@ -475,7 +475,8 @@ def test_doctor_cli_json_is_parseable_and_failure_exits_one(tmp_path: Path) -> N
         result = CliRunner().invoke(cli, ["doctor", "--json"])
 
     assert result.exit_code == 1
-    assert json.loads(result.output) == {
+    assert result.stderr.startswith("Error: ")
+    assert json.loads(result.stdout) == {
         "checks": [
             {
                 "detail": "Action: rebuild.",
@@ -504,7 +505,7 @@ def test_doctor_cli_json_uses_report_method(tmp_path: Path) -> None:
         result = CliRunner().invoke(cli, ["doctor", "--json"])
 
     assert result.exit_code == 0
-    assert json.loads(result.output) == {"source": "report.to_json"}
+    assert json.loads(result.stdout) == {"source": "report.to_json"}
 
 
 def test_doctor_cli_json_invalid_config_is_structured_and_redacted() -> None:
@@ -516,7 +517,8 @@ def test_doctor_cli_json_invalid_config_is_structured_and_redacted() -> None:
         result = CliRunner().invoke(cli, ["doctor", "--json"])
 
     assert result.exit_code == 1
-    payload = json.loads(result.output)
+    assert result.stderr.startswith("Error: ")
+    payload = json.loads(result.stdout)
     assert payload["exit_code"] == 1
     assert payload["checks"] == [
         {
@@ -538,7 +540,8 @@ def test_doctor_cli_json_config_permission_error_is_structured_and_redacted() ->
         result = CliRunner().invoke(cli, ["doctor", "--json"])
 
     assert result.exit_code == 1
-    payload = json.loads(result.output)
+    assert result.stderr.startswith("Error: ")
+    payload = json.loads(result.stdout)
     assert payload["checks"][0]["name"] == "configuration"
     assert payload["checks"][0]["status"] == "fail"
     assert secret not in result.output
@@ -550,7 +553,7 @@ def test_config_loader_does_not_catch_process_control_exceptions(fatal: BaseExce
         patch("autodj.config.load_config", side_effect=fatal),
         pytest.raises(type(fatal)),
     ):
-        _load_cfg_or_exit(None, show_error=False)
+        _load_cfg_or_exit(None)
 
 
 def test_missing_writable_child_warns_when_parent_is_writable(tmp_path: Path) -> None:
@@ -1431,7 +1434,7 @@ def test_doctor_offline_skips_the_update_check_network(tmp_path: Path, monkeypat
     )
     with patch("autodj.cli._load_cfg_or_exit", return_value=cfg):
         offline = CliRunner().invoke(cli, ["doctor", "--json", "--offline"])
-    checks = {c["name"]: c for c in json.loads(offline.output)["checks"]}
+    checks = {c["name"]: c for c in json.loads(offline.stdout)["checks"]}
     assert checks["updates"]["status"] == "pass"
     assert fetch == []
 

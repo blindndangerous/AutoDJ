@@ -67,7 +67,6 @@ from fastapi import (
     UploadFile,
     WebSocket,
 )
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import (
@@ -1164,36 +1163,10 @@ def create_app(
 
     app.state.cue_rescan = CueRescan()
 
+    from autodj.api_errors import install_error_handlers
     from autodj.speech_api import SPEECH_BODY_LIMIT, WRITE_ROUTES, install_speech
 
-    @app.exception_handler(RequestValidationError)
-    async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
-        """Return a 422 whose body is always JSON-encodable.
-
-        FastAPI's default handler echoes the rejected input back to the
-        client.  A rejected ``NaN``/``Infinity`` cannot be re-encoded, so the
-        echo itself would raise and turn a validation error into a 500.  Only
-        the type, location and message are returned.
-
-        Errors marked ``reports_field`` answer
-        with their message and ``field`` so the editor can focus that input.
-        Other validation errors keep the list format.
-        """
-        for error in exc.errors():
-            cause = (error.get("ctx") or {}).get("error")
-            named = getattr(cause, "field", None)
-            if getattr(cause, "reports_field", False) is True and isinstance(named, str) and named:
-                message = str(getattr(cause, "message", "") or cause)
-                return JSONResponse(status_code=422, content={"detail": message, "field": named})
-        detail = [
-            {
-                "type": str(error.get("type", "")),
-                "loc": [str(part) for part in error.get("loc", ())],
-                "msg": str(error.get("msg", "")),
-            }
-            for error in exc.errors()
-        ]
-        return JSONResponse(status_code=422, content={"detail": detail})
+    install_error_handlers(app)
 
     def _liner_upload_max_bytes() -> int:
         return (

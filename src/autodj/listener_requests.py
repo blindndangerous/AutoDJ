@@ -37,7 +37,6 @@ for the limits only, never on disk.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import hmac
 import ipaddress
@@ -60,7 +59,7 @@ from zoneinfo import ZoneInfo
 
 from autodj._bridge import QueueChanged, QueueView, RequestInsert
 from autodj.dj_meta import harmonic_compatible
-from autodj.fsutil import atomic_write
+from autodj.fsutil import atomic_write, set_aside
 from autodj.repeat_rules import ArtistSplitter, artist_key
 from autodj.station_log import track_station_thread
 
@@ -535,9 +534,8 @@ class RequestBook:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return
-        except (OSError, ValueError):
-            logger.warning("Setting aside the damaged listener request file %s", self.path)
-            self._set_aside()
+        except (OSError, ValueError) as exc:
+            set_aside(self.path, "listener request file", str(exc), naming="uuid")
             return
         try:
             if not isinstance(raw, dict) or raw.get("version") != STATE_VERSION:
@@ -545,15 +543,9 @@ class RequestBook:
             self.requests = [ListenerRequest(**row) for row in raw.get("requests", [])]
             self.day = str(raw.get("day", ""))
             self.today = int(raw.get("today", 0))
-        except (TypeError, ValueError):
-            logger.warning("Setting aside the damaged listener request file %s", self.path)
+        except (TypeError, ValueError) as exc:
             self.requests, self.day, self.today = [], "", 0
-            self._set_aside()
-
-    def _set_aside(self) -> None:
-        # The file may have vanished or be impossible to move; it is not used either way.
-        with contextlib.suppress(OSError):
-            os.replace(self.path, self.path.with_name(f"{self.path.name}.{uuid.uuid4().hex}.bad"))
+            set_aside(self.path, "listener request file", str(exc), naming="uuid")
 
     def save(self) -> None:
         """Write the file (hold :attr:`lock`)."""

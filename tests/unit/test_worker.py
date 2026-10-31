@@ -1676,7 +1676,7 @@ def test_worker_pair_saves_the_token_and_later_runs_use_it(token_home, simulated
     assert "Using the token saved for this server" in " ".join(again.output.split())
     missing = _invoke_worker(["--server", "https://other.local:8765"], used)
     assert missing.exit_code == 2
-    assert "--pair CODE" in " ".join(missing.output.split())
+    assert "--pair CODE" in " ".join(missing.stderr.split())
 
 
 def test_worker_pair_refuses_a_token_too_and_a_malformed_code(token_home, simulated_model_runtime):
@@ -1685,10 +1685,10 @@ def test_worker_pair_refuses_a_token_too_and_a_malformed_code(token_home, simula
         ["--server", "https://nas.local:8765", "--pair", "12345678", "--token", "adj1.x"], used
     )
     assert both.exit_code == 2
-    assert "--pair gets a new token" in " ".join(both.output.split())
+    assert "--pair gets a new token" in " ".join(both.stderr.split())
     bad = _invoke_worker(["--server", "https://nas.local:8765", "--pair", "12ab"], used)
     assert bad.exit_code == 2
-    assert "8 digits" in bad.output
+    assert "8 digits" in bad.stderr
     assert used == []
 
 

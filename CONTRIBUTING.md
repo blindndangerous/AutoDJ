@@ -348,6 +348,17 @@ focus, forced-colors and narrow-screen behavior.
 
 ## Where things live
 
+Domain refusals raise the shared `autodj.errors.FieldError`; the app renders
+their public message, field and status. Use `first_issue` for Pydantic errors,
+keeping domain-specific wording in the owning module. File replacement and
+invalid-file recovery use `fsutil.atomic_write` and `fsutil.set_aside`, preserving
+permissions and documented recovery names. See [the error contract](docs/adr/0022-share-public-error-handling.md)
+and [state recovery](docs/adr/0010-preserve-state-through-atomic-writes-and-recovery.md).
+
+CLI usage errors use `click.UsageError` or `click.BadParameter` and exit 2;
+other application failures use `click.ClickException` and exit 1. All write to
+stderr. Setup preserves its child process's exit status.
+
 - `src/autodj/cli.py` — CLI entry points (Click).
 - `src/autodj/server.py` — FastAPI + WebSocket web layer.
 - `src/autodj/stations.py` — a station's runtime (stream, recorder, schedule, start and

@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Body, HTTPException
-from fastapi.responses import JSONResponse
 
 from autodj.categories import MAX_CATEGORIES as _MAX
 from autodj.categories import (
@@ -42,11 +41,6 @@ from autodj.station_routes import SavedStationDep, _station_categories
 if TYPE_CHECKING:
     from autodj.station_routes import StationRouter
     from autodj.stations import StationRuntime
-
-
-def _rejected(field: str, message: str, status: int = 400) -> JSONResponse:
-    """A 400 whose ``field`` lets the page focus the field at fault."""
-    return JSONResponse(status_code=status, content={"detail": message, "field": field})
 
 
 def counts(resolution: Resolution) -> dict[str, Any]:
@@ -205,37 +199,29 @@ def install_categories(router: StationRouter) -> None:
     @router.post("/categories/check", response_model=None)
     async def categories_check(
         station: SavedStationDep, body: dict[str, Any] = Body(...)
-    ) -> dict[str, Any] | JSONResponse:
+    ) -> dict[str, Any]:
         """Count the songs an unsaved category holds."""
         categories = index(station)
-        try:
-            spec = parse_spec(body)
-        except CategoryError as exc:
-            return _rejected(exc.field, exc.message)
+        spec = parse_spec(body)
         return counts(await asyncio.to_thread(categories.check, spec))
 
     @router.post("/categories", status_code=201, response_model=None)
     async def categories_create(
         station: SavedStationDep,
         body: dict[str, Any] = Body(...),
-    ) -> dict[str, Any] | JSONResponse:
+    ) -> dict[str, Any]:
         """Add a category."""
-        try:
-            return await asyncio.to_thread(write, station, None, parse_spec(body))
-        except CategoryError as exc:
-            return _rejected(exc.field, exc.message)
+        return await asyncio.to_thread(write, station, None, parse_spec(body))
 
     @router.put("/categories/{category_id}", response_model=None)
     async def categories_update(
         station: SavedStationDep, category_id: str, body: dict[str, Any] = Body(...)
-    ) -> dict[str, Any] | JSONResponse:
+    ) -> dict[str, Any]:
         """Replace a category; clockwheel steps keep naming it by its ID."""
         try:
             return await asyncio.to_thread(write, station, category_id, parse_spec(body))
         except KeyError:
             raise unknown() from None
-        except CategoryError as exc:
-            return _rejected(exc.field, exc.message)
 
     @router.delete("/categories/{category_id}")
     async def categories_delete(station: SavedStationDep, category_id: str) -> dict[str, Any]:

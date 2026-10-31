@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, HTTPException, Query
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError
 
 from autodj.liner_scheduler import LinerDecodeError
@@ -20,7 +19,7 @@ from autodj.scheduler import (
     ScheduledEvent,
     Scheduler,
     describe_repeat,
-    field_error,
+    validation_issue,
 )
 from autodj.settings_bodies import PlaybackSettingsBody
 from autodj.station_routes import SavedStationDep, StationDep, StationRouter
@@ -33,11 +32,6 @@ class EnableBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: StrictBool
-
-
-def _rejected(field: str, message: str) -> JSONResponse:
-    """A 400 whose ``field`` lets the page focus the field at fault."""
-    return JSONResponse(status_code=400, content={"detail": message, "field": field})
 
 
 def _builtin_actions(
@@ -287,7 +281,7 @@ def _parse(body: dict[str, Any]) -> EventSpec:
     try:
         return EventSpec.model_validate(body)
     except ValidationError as exc:
-        raise EventError(*field_error(exc)) from exc
+        raise EventError(*validation_issue(exc)) from exc
 
 
 def _unknown() -> HTTPException:
@@ -323,27 +317,22 @@ def install_scheduler(router: StationRouter) -> None:
     @router.post("/schedule", status_code=201, response_model=None)
     async def schedule_create(
         station: SavedStationDep, body: dict[str, Any] = Body(...)
-    ) -> dict[str, Any] | JSONResponse:
+    ) -> dict[str, Any]:
         """Add an event."""
         scheduler = station.schedule
-        try:
-            event = await scheduler.add(_parse(body))
-        except EventError as exc:
-            return _rejected(exc.field, str(exc))
+        event = await scheduler.add(_parse(body))
         return _event_view(scheduler, event)
 
     @router.put("/schedule/{event_id}", response_model=None)
     async def schedule_update(
         station: SavedStationDep, event_id: str, body: dict[str, Any] = Body(...)
-    ) -> dict[str, Any] | JSONResponse:
+    ) -> dict[str, Any]:
         """Replace an event."""
         scheduler = station.schedule
         try:
             event = await scheduler.replace(event_id, _parse(body))
         except KeyError:
             raise _unknown() from None
-        except EventError as exc:
-            return _rejected(exc.field, str(exc))
         return _event_view(scheduler, event)
 
     @router.delete("/schedule/{event_id}")
@@ -359,15 +348,13 @@ def install_scheduler(router: StationRouter) -> None:
     @router.post("/schedule/{event_id}/enable", response_model=None)
     async def schedule_enable(
         station: SavedStationDep, event_id: str, body: EnableBody
-    ) -> dict[str, Any] | JSONResponse:
+    ) -> dict[str, Any]:
         """Enable or disable an event."""
         scheduler = station.schedule
         try:
             event = await scheduler.set_enabled(event_id, body.enabled)
         except KeyError:
             raise _unknown() from None
-        except EventError as exc:
-            return _rejected(exc.field, str(exc))
         return _event_view(scheduler, event)
 
     @router.post("/schedule/{event_id}/run")
