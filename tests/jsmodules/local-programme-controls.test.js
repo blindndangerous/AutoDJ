@@ -27,6 +27,17 @@ describe("local control accessibility", () => {
   }
 
   // ADR-0019-08
+  it("keeps Preparing while the server still reports automation before the claim lands", () => {
+    const owner = { owned: false, acquiring: false, take: vi.fn(), release: vi.fn(), stop: vi.fn() };
+    const { status, apply, announce } = setup(owner);
+    owner.acquiring = true;
+    owner.change("preparing", "Preparing local control");
+    apply("automation");
+    expect(status.textContent).toBe("Preparing local control");
+    expect(announce).not.toHaveBeenCalled();
+  });
+
+  // ADR-0019-08
   it("explains why Take is unavailable while preparing", () => {
     checkTakeUnavailable("preparing", "Local control is being prepared. Wait or select Return to automation to cancel.");
   });

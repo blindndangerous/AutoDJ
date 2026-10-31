@@ -71,7 +71,8 @@ export function installLocalProgrammeControls({ wrap, take, returnButton, status
       if (!visible) return;
       observed = snapshot.local_programme;
       const next = snapshot.local_programme.state;
-      if (owner.owned && next === "automation") return;
+      // The server reports automation until this page's claim lands.
+      if ((owner.owned || owner.acquiring) && next === "automation") return;
       if ((state === "recovering" || state === "returning") && next === "local") return;
       render(next);
     },
