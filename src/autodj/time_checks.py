@@ -47,7 +47,8 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, field_validator
 
 from autodj.clip_dates import ClipDates, ClipDatesError, parse_dates
-from autodj.fsutil import confirm_missing
+from autodj.errors import FieldError
+from autodj.fsutil import atomic_write, confirm_missing, set_aside
 from autodj.liner_scheduler import LinerDecodeError, decode_liner_path
 from autodj.profiles import InvalidProfileError
 from autodj.scheduler import Action
@@ -61,7 +62,6 @@ from autodj.time_check_files import (
     PackError,
     PackExists,
     PackNotFound,
-    PackTooLarge,
     check_clip_name,
     check_pack_name,
     clip_files,
@@ -807,7 +807,9 @@ class TimeChecks:
             ) from exc
         except ValueError as exc:
             # Set aside, and saved again from what this process last read.
-            self._keep_bad_copy(str(exc).splitlines()[0])
+            set_aside(
+                self.state_path, "time checks file", str(exc).splitlines()[0], raise_on_error=True
+            )
             return None
         kept = pack_dates_from(state, self.state_path)
         settings = None
@@ -829,21 +831,6 @@ class TimeChecks:
         if not self._seen and not self.state_path.parent.exists():
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _keep_bad_copy(self, reason: str) -> None:
-        """Set a damaged ``time_checks.json`` aside as ``time_checks.json.bad-<id>``."""
-        bad = self.state_path.with_name(f"{self.state_path.name}.bad-{secrets.token_hex(4)}")
-        try:
-            os.replace(self.state_path, bad)
-        except OSError:
-            logger.exception("Could not set aside the damaged %s", self.state_path)
-            raise
-        logger.error(
-            "Time checks file %s is not valid (%s); set it aside as %s",
-            self.state_path,
-            reason,
-            bad,
-        )
-
     def _write(
         self,
         settings: SettingsBody,
@@ -855,7 +842,6 @@ class TimeChecks:
         Keys this version does not know, and pack dates it could not read,
         are written back as they were.  Caller holds ``_save_lock``.
         """
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
         data: dict[str, Any] = {
             **self._extra_state,
             "version": STATE_VERSION,
@@ -870,20 +856,7 @@ class TimeChecks:
         }
         if written:
             data["pack_dates"] = dict(sorted(written.items()))
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=self.state_path.parent,
-            prefix=".time_checks_",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp = Path(handle.name)
-            json.dump(data, handle)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp, self.state_path)
+        atomic_write(self.state_path, json.dumps(data) + "\n", mode=0o600)
         self._seen = True
         # The file now names the ticked packs, so a pack found later starts
         # unticked; set under the lock rescan() reads it with.
@@ -1270,32 +1243,17 @@ def _known_pack(checks: TimeChecks, pack: str | None) -> str | None:
     return pack
 
 
-def _file_error(exc: PackError | OSError) -> JSONResponse:
-    """The answer for a pack or clip that was refused or could not be written.
-
-    A name the page may replace answers ``409`` with ``"field": "replace"``,
-    so the page can ask before it sends the upload again with ``replace``.
-    """
-    content: dict[str, str] = {"detail": str(exc)}
+def _write_error(exc: OSError) -> FieldError:
+    """Explain a storage failure without exposing internal filesystem details."""
     if isinstance(exc, TimeChecksUnreadable):
-        return JSONResponse(status_code=503, content=content)
-    if isinstance(exc, OSError):
-        logger.warning("Time checks: a pack or clip could not be written: %s", exc)
-        content["detail"] = (
-            "The time checks folder could not be changed just now (a file in it may be "
-            "in use); nothing was changed. Try again in a moment"
-        )
-        return JSONResponse(status_code=503, content=content)
-    status = 400
-    if isinstance(exc, PackExists):
-        status, content["field"] = 409, "replace"
-    elif isinstance(exc, PackConflict):
-        status = 409
-    elif isinstance(exc, PackTooLarge):
-        status = 413
-    elif isinstance(exc, PackNotFound):
-        status = 404
-    return JSONResponse(status_code=status, content=content)
+        return FieldError(str(exc), status=503, include_field=False)
+    logger.warning("Time checks: a pack or clip could not be written: %s", exc)
+    return FieldError(
+        "The time checks folder could not be changed just now (a file in it may be "
+        "in use); nothing was changed. Try again in a moment",
+        status=503,
+        include_field=False,
+    )
 
 
 def install_time_checks(router: StationRouter) -> None:
@@ -1338,8 +1296,8 @@ def install_time_checks(router: StationRouter) -> None:
             added = await asyncio.to_thread(
                 checks.add_pack, name, upload, replace=replace, filename=file.filename or ""
             )
-        except (PackError, OSError) as exc:
-            return _file_error(exc)
+        except OSError as exc:
+            raise _write_error(exc) from exc
         finally:
             await asyncio.to_thread(upload.unlink, missing_ok=True)
         return {**await asyncio.to_thread(checks.status), "added": added}
@@ -1389,8 +1347,8 @@ def install_time_checks(router: StationRouter) -> None:
 
         try:
             await asyncio.to_thread(remove)
-        except (PackError, OSError) as exc:
-            return _file_error(exc)
+        except OSError as exc:
+            raise _write_error(exc) from exc
         except StationControlError as exc:
             return JSONResponse(status_code=409, content={"detail": str(exc)})
         except InvalidProfileError as exc:
@@ -1402,6 +1360,8 @@ def install_time_checks(router: StationRouter) -> None:
                     "Repair or remove that profile, then try again."
                 },
             )
+        except FieldError:
+            raise
         except ValueError:
             logger.exception("Could not remove time check voice pack %s", name)
             return JSONResponse(
@@ -1420,18 +1380,15 @@ def install_time_checks(router: StationRouter) -> None:
         """Upload one clip, such as an intro, an outro or a minute clip, to the time checks folder."""
         checks = station.time_checks
         filename = file.filename or ""
-        try:
-            check_clip_name(filename)
-        except PackError as exc:
-            return _file_error(exc)
+        check_clip_name(filename)
         upload = hidden_name(checks.root, "clip-upload", Path(filename).suffix.lower())
         try:
             await receive_upload(
                 file, upload, (station.cfg.station.liner_upload_max_mib * 1024 * 1024)
             )
             await asyncio.to_thread(checks.add_clip, filename, upload, replace=replace)
-        except (PackError, OSError) as exc:
-            return _file_error(exc)
+        except OSError as exc:
+            raise _write_error(exc) from exc
         finally:
             await asyncio.to_thread(upload.unlink, missing_ok=True)
         return {**await asyncio.to_thread(checks.status), "uploaded": filename}
@@ -1443,12 +1400,7 @@ def install_time_checks(router: StationRouter) -> None:
         """Set a voice pack's play dates: "not before" and "do not play after"."""
         checks = station.time_checks
         _known_pack(checks, name)
-        try:
-            dates = parse_dates(body)
-        except ClipDatesError as exc:
-            return JSONResponse(
-                status_code=400, content={"detail": exc.message, "field": exc.field}
-            )
+        dates = parse_dates(body)
         try:
             await asyncio.to_thread(checks.save_pack_dates, name, dates)
         except TimeChecksUnreadable as exc:

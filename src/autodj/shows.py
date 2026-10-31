@@ -57,6 +57,7 @@ from pydantic import (
     model_validator,
 )
 
+from autodj.errors import FieldError, first_issue
 from autodj.fsutil import atomic_write, file_signature, set_aside
 from autodj.identity_map import attached
 from autodj.station_name import LABEL as STATION_NAME_LABEL
@@ -88,17 +89,20 @@ _ID = re.compile(r"[0-9a-f]{32}")
 Source = Literal["category", "clockwheel"]
 
 
-class ShowError(ValueError):
+class ShowError(FieldError):
     """A show that cannot be saved, generated or started, naming the field at fault."""
 
+    field: str
+
     def __init__(self, field_name: str, message: str) -> None:
-        super().__init__(message)
-        self.field = field_name
-        self.message = message
+        super().__init__(message, field_name)
 
 
 class ShowBusy(ShowError):
     """Another generation is running, or the server is shutting down."""
+
+    def __init__(self, field_name: str, message: str) -> None:
+        FieldError.__init__(self, message, field_name, 409)
 
 
 Name = Annotated[
@@ -163,27 +167,24 @@ class Show(ShowSpec):
     note: Annotated[StrictStr, StringConstraints(max_length=500)] = ""
 
 
-def field_error(exc: ValidationError) -> ShowError:
-    """The first error in *exc* as a :class:`ShowError` naming its field."""
-    error = exc.errors()[0]
-    original = (error.get("ctx") or {}).get("error")
+def validation_error(exc: ValidationError) -> ShowError:
+    """Apply the show's name, target length and song-count messages."""
+    name, message = first_issue(exc, FIELD_LABELS)
+    original = (exc.errors()[0].get("ctx") or {}).get("error")
     if isinstance(original, ShowError):
         return original
-    location = [str(part) for part in error.get("loc", ())]
-    name = location[0] if location else ""
-    if error.get("type") == "extra_forbidden":
-        return ShowError(name, f"Unknown field {name}")
+    if exc.errors()[0].get("type") == "extra_forbidden":
+        return ShowError(name, message)
     if name == "name":
-        return ShowError("name", f"Enter a name of up to {NAME_MAX} characters")
-    if name == "target_minutes":
-        return ShowError(
-            name,
+        message = f"Enter a name of up to {NAME_MAX} characters"
+    elif name == "target_minutes":
+        message = (
             f"Target length must be a whole number of minutes from {MIN_TARGET_MINUTES} "
-            f"to {MAX_TARGET_MINUTES}",
+            f"to {MAX_TARGET_MINUTES}"
         )
-    if name == "songs":
-        return ShowError(name, f"A show holds at most {MAX_SONGS} songs")
-    return ShowError(name, f"{FIELD_LABELS.get(name, name)}: {error['msg']}")
+    elif name == "songs":
+        message = f"A show holds at most {MAX_SONGS} songs"
+    return ShowError(name, message)
 
 
 def parse_spec(body: Mapping[str, Any]) -> ShowSpec:
@@ -195,7 +196,7 @@ def parse_spec(body: Mapping[str, Any]) -> ShowSpec:
     try:
         return ShowSpec.model_validate(dict(body))
     except ValidationError as exc:
-        raise field_error(exc) from None
+        raise validation_error(exc) from None
 
 
 class _ShowsFile(BaseModel):
@@ -396,7 +397,7 @@ def with_songs(show: Show, paths: Sequence[str], **fields: Any) -> Show:
     try:
         return Show.model_validate({**show.model_dump(), **fields, "songs": list(paths)})
     except ValidationError as exc:
-        raise field_error(exc) from None
+        raise validation_error(exc) from None
 
 
 # ---------------------------------------------------------------------------

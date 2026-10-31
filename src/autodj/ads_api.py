@@ -50,6 +50,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import ValidationError
 
 from autodj.ads import (
+    FIELD_LABELS,
     MAX_BREAKS,
     MAX_REPORT_DAYS,
     MAX_SPOTS_PER_BREAK,
@@ -63,7 +64,6 @@ from autodj.ads import (
     SpotFields,
     affidavit_csv,
     build_report,
-    field_error,
     marks_between,
     new_id,
     report_rows,
@@ -71,6 +71,7 @@ from autodj.ads import (
     summary_csv,
     valid_id,
 )
+from autodj.api_errors import error_headers
 from autodj.breaks import BreakCues, speech_cues
 from autodj.breaks_api import (
     MULTIPART_OVERHEAD_BYTES,
@@ -79,6 +80,7 @@ from autodj.breaks_api import (
     _within,
     decode_gate,
 )
+from autodj.errors import FieldError, first_issue
 from autodj.liner_files import LinerTooLargeError, store_liner_upload
 from autodj.liners import LINER_EXTS
 from autodj.station_routes import SavedStationDep, StationDep, StationRouter, audio_mime
@@ -119,16 +121,6 @@ def _desk(station: StationRuntime) -> AdDesk:
     if desk is None:
         raise HTTPException(status_code=503, detail="This station cannot keep ads")
     return desk
-
-
-def _field_error(status: int, field: str, message: str) -> JSONResponse:
-    return JSONResponse(
-        {"detail": message, "field": field or None}, status_code=status, headers=_NO_STORE
-    )
-
-
-def _ads_error(exc: AdsError) -> JSONResponse:
-    return _field_error(exc.status, exc.field, exc.message)
 
 
 def _unreadable(exc: OSError) -> HTTPException:
@@ -362,12 +354,14 @@ def install_ads(router: StationRouter) -> None:
     decoder = decode_gate
 
     @router.get("/ads")
+    @error_headers(_NO_STORE)
     async def ads(station: SavedStationDep) -> JSONResponse:
         """The spots, the breaks, the settings and what is waiting."""
         _desk(station)
         return JSONResponse(await asyncio.to_thread(_listing, station), headers=_NO_STORE)
 
     @router.post("/ads/spots", status_code=201)
+    @error_headers(_NO_STORE)
     async def spot_upload(station: SavedStationDep, request: Request) -> JSONResponse:
         """Upload one spot."""
         desk = _desk(station)
@@ -381,7 +375,9 @@ def install_ads(router: StationRouter) -> None:
                 raise HTTPException(status_code=413, detail=too_large)
             size = min(cap, int(declared))
         if len(desk.store.cached().spots) >= config.max_spots:
-            return _field_error(409, "file", f"This station keeps at most {config.max_spots} spots")
+            raise FieldError(
+                f"This station keeps at most {config.max_spots} spots", "file", status=409
+            )
         loop = asyncio.get_running_loop()
         deadline = loop.time() + BODY_DEADLINE_SECONDS + size / MIN_BODY_BYTES_PER_SECOND
         values, upload = await _within(deadline, read_single_file_form(request, "spot"))
@@ -392,17 +388,17 @@ def install_ads(router: StationRouter) -> None:
             try:
                 suffix = Path(upload.filename or "").suffix.lower()
                 if suffix not in LINER_EXTS:
-                    return _field_error(
-                        415,
-                        "file",
+                    raise FieldError(
                         "A spot must be one of these file types: " + ", ".join(LINER_EXTS),
+                        "file",
+                        status=415,
                     )
                 try:
                     fields = SpotFields.model_validate(_form_values(values))
-                except AdsError as exc:
-                    return _ads_error(exc)
                 except ValidationError as exc:
-                    return _ads_error(field_error(exc))
+                    raise AdsError(
+                        *first_issue(exc, FIELD_LABELS, fallback_label="The form")
+                    ) from exc
                 try:
                     path, _stored = await _within(
                         deadline,
@@ -433,8 +429,6 @@ def install_ads(router: StationRouter) -> None:
             )
             try:
                 await asyncio.to_thread(desk.store.add_spot, spot_id, spot)
-            except AdsError as exc:
-                return _ads_error(exc)
             except OSError as exc:
                 raise _unreadable(exc) from exc
             saved = True
@@ -449,6 +443,7 @@ def install_ads(router: StationRouter) -> None:
         return JSONResponse(view, status_code=201, headers=_NO_STORE)
 
     @router.put("/ads/spots/{spot_id}")
+    @error_headers(_NO_STORE)
     async def spot_update(station: SavedStationDep, request: Request, spot_id: str) -> JSONResponse:
         """Change what is said about a spot; its audio stays."""
         desk = _desk(station)
@@ -457,10 +452,8 @@ def install_ads(router: StationRouter) -> None:
             raise HTTPException(status_code=404, detail="No spot has that ID")
         try:
             fields = SpotFields.model_validate(body)
-        except AdsError as exc:
-            return _ads_error(exc)
         except ValidationError as exc:
-            return _ads_error(field_error(exc))
+            raise AdsError(*first_issue(exc, FIELD_LABELS, fallback_label="The form")) from exc
         try:
             spot = await asyncio.to_thread(desk.store.update_spot, spot_id, fields)
         except KeyError as exc:
@@ -482,6 +475,7 @@ def install_ads(router: StationRouter) -> None:
         return JSONResponse(view, headers=_NO_STORE)
 
     @router.get("/ads/spots/{spot_id}/audio")
+    @error_headers(_NO_STORE)
     async def spot_audio(station: SavedStationDep, spot_id: str) -> FileResponse:
         """Serve one spot's audio, to listen to."""
         desk = _desk(station)
@@ -504,6 +498,7 @@ def install_ads(router: StationRouter) -> None:
         )
 
     @router.delete("/ads/spots/{spot_id}")
+    @error_headers(_NO_STORE)
     async def spot_delete(station: SavedStationDep, spot_id: str) -> JSONResponse:
         """Remove one spot and its audio; one booked to air is kept until it has."""
         desk = _desk(station)
@@ -512,8 +507,6 @@ def install_ads(router: StationRouter) -> None:
         try:
             # Checked and removed while no break is being booked.
             removed = await asyncio.to_thread(desk.remove_spot, spot_id)
-        except AdsError as exc:
-            return _ads_error(exc)
         except OSError as exc:
             raise _unreadable(exc) from exc
         if removed is None:
@@ -522,27 +515,22 @@ def install_ads(router: StationRouter) -> None:
         desk.noticed()
         return JSONResponse({"deleted": spot_id}, headers=_NO_STORE)
 
-    async def break_fields(request: Request) -> BreakFields | JSONResponse:
+    async def break_fields(request: Request) -> BreakFields:
         body = await _read_json(request)
         try:
             return BreakFields.model_validate(body)
-        except AdsError as exc:
-            return _ads_error(exc)
         except ValidationError as exc:
-            return _ads_error(field_error(exc))
+            raise AdsError(*first_issue(exc, FIELD_LABELS, fallback_label="The form")) from exc
 
     @router.post("/ads/breaks", status_code=201)
+    @error_headers(_NO_STORE)
     async def break_add(station: SavedStationDep, request: Request) -> JSONResponse:
         """Add an ad break."""
         desk = _desk(station)
         fields = await break_fields(request)
-        if isinstance(fields, JSONResponse):
-            return fields
         break_id = new_id()
         try:
             item = await asyncio.to_thread(desk.store.add_break, break_id, fields)
-        except AdsError as exc:
-            return _ads_error(exc)
         except OSError as exc:
             raise _unreadable(exc) from exc
         desk.noticed()
@@ -550,28 +538,26 @@ def install_ads(router: StationRouter) -> None:
         return JSONResponse(view, status_code=201, headers=_NO_STORE)
 
     @router.put("/ads/breaks/{break_id}")
+    @error_headers(_NO_STORE)
     async def break_update(
         station: SavedStationDep, request: Request, break_id: str
     ) -> JSONResponse:
         """Change an ad break."""
         desk = _desk(station)
         fields = await break_fields(request)
-        if isinstance(fields, JSONResponse):
-            return fields
         if not valid_id(break_id):
             raise HTTPException(status_code=404, detail="No ad break has that ID")
         try:
             item = await asyncio.to_thread(desk.store.update_break, break_id, fields)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="No ad break has that ID") from exc
-        except AdsError as exc:
-            return _ads_error(exc)
         except OSError as exc:
             raise _unreadable(exc) from exc
         desk.noticed()
         return JSONResponse(break_view(break_id, item, desk.clock(), desk.zone), headers=_NO_STORE)
 
     @router.delete("/ads/breaks/{break_id}")
+    @error_headers(_NO_STORE)
     async def break_delete(station: SavedStationDep, break_id: str) -> JSONResponse:
         """Remove an ad break; a run of it still waiting is logged as missed."""
         desk = _desk(station)
@@ -587,6 +573,7 @@ def install_ads(router: StationRouter) -> None:
         return JSONResponse({"deleted": break_id}, headers=_NO_STORE)
 
     @router.post("/ads/breaks/{break_id}/run", status_code=202)
+    @error_headers(_NO_STORE)
     async def break_run(station: StationDep, break_id: str) -> JSONResponse:
         """Run an ad break at the next song change it can join."""
         desk = _desk(station)
@@ -594,11 +581,8 @@ def install_ads(router: StationRouter) -> None:
             raise HTTPException(status_code=404, detail="No ad break has that ID")
         reason = desk.refusal()
         if reason is not None:
-            return _field_error(409, "", reason)
-        try:
-            run = desk.request(break_id, "manual")
-        except AdsError as exc:
-            return _ads_error(exc)
+            raise FieldError(reason, None, status=409)
+        run = desk.request(break_id, "manual")
         return JSONResponse(
             {
                 "break_name": run.break_name,
@@ -609,16 +593,15 @@ def install_ads(router: StationRouter) -> None:
         )
 
     @router.put("/ads/settings")
+    @error_headers(_NO_STORE)
     async def settings_update(station: SavedStationDep, request: Request) -> JSONResponse:
         """Save the separation, late and missed times."""
         desk = _desk(station)
         body = await _read_json(request)
         try:
             settings = AdSettings.model_validate(body)
-        except AdsError as exc:
-            return _ads_error(exc)
         except ValidationError as exc:
-            return _ads_error(field_error(exc))
+            raise AdsError(*first_issue(exc, FIELD_LABELS, fallback_label="The form")) from exc
         try:
             await asyncio.to_thread(desk.store.set_settings, settings)
         except OSError as exc:
@@ -627,6 +610,7 @@ def install_ads(router: StationRouter) -> None:
         return JSONResponse(settings.model_dump(), headers=_NO_STORE)
 
     @router.get("/ads/report")
+    @error_headers(_NO_STORE)
     async def report(
         station: SavedStationDep,
         from_text: Annotated[str, Query(alias="from", max_length=10)],
@@ -649,6 +633,7 @@ def install_ads(router: StationRouter) -> None:
         return JSONResponse(view, headers=_NO_STORE)
 
     @router.get("/ads/report/export")
+    @error_headers(_NO_STORE)
     async def report_export(
         station: SavedStationDep,
         from_text: Annotated[str, Query(alias="from", max_length=10)],

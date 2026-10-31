@@ -68,12 +68,12 @@ from pydantic import (
     StrictInt,
     StrictStr,
     StringConstraints,
-    ValidationError,
     field_validator,
     model_validator,
 )
 
 from autodj.clip_dates import ClipDates, day_words
+from autodj.errors import FieldError
 from autodj.fsutil import atomic_write, file_signature, fsync_directory, set_aside
 from autodj.liners import LINER_EXTS
 from autodj.timefmt import clock_text, length_text
@@ -163,14 +163,13 @@ def spot_file_name(spot_id: str, suffix: str) -> str:
     return f"spot-{spot_id}{suffix.lower()}"
 
 
-class AdsError(ValueError):
+class AdsError(FieldError):
     """A change the store refuses, naming the field at fault."""
 
+    field: str
+
     def __init__(self, field_name: str, message: str, status: int = 422) -> None:
-        super().__init__(message)
-        self.field = field_name
-        self.message = message
-        self.status = status
+        super().__init__(message, field_name, status, null_empty_field=True)
 
 
 def _clean(value: str) -> str:
@@ -354,20 +353,6 @@ class AdSettings(BaseModel):
         if self.miss_after_minutes < self.late_minutes:
             raise AdsError("miss_after_minutes", "Missed after must not be shorter than Late after")
         return self
-
-
-def field_error(exc: ValidationError) -> AdsError:
-    """The first problem in *exc*, naming its field, in words."""
-    error = exc.errors()[0]
-    cause = (error.get("ctx") or {}).get("error")
-    if isinstance(cause, AdsError):
-        return cause
-    loc = [str(part) for part in error.get("loc", ())]
-    name = loc[0] if loc else ""
-    if error.get("type") == "extra_forbidden":
-        return AdsError(name, f"Unknown field {name}")
-    label = FIELD_LABELS.get(name, name or "The form")
-    return AdsError(name, f"{label}: {error['msg']}")
 
 
 class _AdsFile(BaseModel):
@@ -2412,7 +2397,6 @@ __all__ = [
     "aired_plays",
     "build_report",
     "choose",
-    "field_error",
     "marks_between",
     "report_rows",
     "spot_file_name",

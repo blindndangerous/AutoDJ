@@ -67,6 +67,7 @@ from autodj.clock_conditions import relative_date_now, uses_relative_dates
 from autodj.date_repeat import DateRepeat, month_day, weekday_name
 from autodj.date_repeat import contains as dates_contain
 from autodj.date_repeat import problem as dates_problem
+from autodj.errors import FieldError, first_issue
 from autodj.fsutil import atomic_write, set_aside
 from autodj.timefmt import clock_text
 
@@ -95,13 +96,13 @@ LIBRARY_FIELDS = ("title", "artist", "album", "genre", "year", "bpm", "length")
 CategoryId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
 
 
-class CategoryError(ValueError):
+class CategoryError(FieldError):
     """A category that cannot be saved, with the field at fault and the reason in words."""
 
+    field: str
+
     def __init__(self, field_name: str, message: str) -> None:
-        super().__init__(message)
-        self.field = field_name
-        self.message = message
+        super().__init__(message, field_name)
 
 
 def _playlist_path(value: str) -> str:
@@ -409,7 +410,7 @@ def parse_step_hours(step: Mapping[str, Any]) -> StepHours | None:
     try:
         hours = StepHours.model_validate(values)
     except ValidationError as exc:
-        found = spec_error(exc)
+        found = validation_error(exc)
         raise ValueError(found.message) from None
     return hours if hours.limits_anything else None
 
@@ -459,13 +460,12 @@ def describe_daypart(spec: Any) -> str:
     return f"{text}, {season}" if season else text
 
 
-def spec_error(exc: ValidationError) -> CategoryError:
+def validation_error(exc: ValidationError) -> CategoryError:
     """The first problem of a validation error, as a :class:`CategoryError` in words."""
     error = exc.errors()[0]
-    location = [str(part) for part in error.get("loc", ())]
-    name = location[0] if location and location[0] in _FIELD_NAMES else ""
-    message = str(error.get("msg", "is not valid"))
-    message = message.removeprefix("Value error, ")
+    name, _ = first_issue(exc, strip_value_error=True)
+    _, message = first_issue(exc, location_index=-1, strip_value_error=True)
+    name = name if name in _FIELD_NAMES else ""
     cause = (error.get("ctx") or {}).get("error")
     if isinstance(cause, CategoryError):
         return CategoryError(cause.field, cause.message)
@@ -491,8 +491,6 @@ def spec_error(exc: ValidationError) -> CategoryError:
         message = "Choose shared filters, a beets query or a playlist file as the source"
     elif error.get("type") == "literal_error" and name == "dates_repeat":
         message = "Repeat dates must be Don't repeat, Every week or Every year"
-    elif error.get("type") == "extra_forbidden":
-        message = f"Unknown field {location[-1] if location else ''}".strip()
     return CategoryError(name or "name", message)
 
 
@@ -505,7 +503,7 @@ def parse_spec(body: Any) -> CategorySpec:
     try:
         return CategorySpec.model_validate(body)
     except ValidationError as exc:
-        raise spec_error(exc) from None
+        raise validation_error(exc) from None
 
 
 def new_id() -> str:

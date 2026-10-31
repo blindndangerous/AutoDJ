@@ -98,7 +98,9 @@ async def _call(action: Any, *args: Any) -> Any:
         return await asyncio.to_thread(action, *args)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Review not found") from None
-    except (ReviewError, ValueError) as exc:
+    except ReviewError:
+        raise
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except RuntimeError:
         raise HTTPException(

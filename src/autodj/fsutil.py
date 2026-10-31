@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +93,10 @@ def atomic_write(path: Path, data: str | bytes, *, mode: int = 0o666) -> None:
 
     The data goes to a flushed temporary file named ``.<name>.<32 hex>.tmp``
     beside *path*, which is then renamed over it, and the directory is
-    flushed.  Text is written as UTF-8 with the newlines it contains.  The
-    folder is made if it is not there yet, such as a station's first file.
+    flushed when supported. A directory flush failure is logged after replacement,
+    since the new file is already visible. Text is written as UTF-8 with the
+    newlines it contains. The folder is made if it is not there yet, such as
+    a station's first file.
 
     Args:
         path: File to replace.
@@ -105,8 +108,8 @@ def atomic_write(path: Path, data: str | bytes, *, mode: int = 0o666) -> None:
     handle (a reader) has *path* open, which Windows refuses to replace.
 
     Raises:
-        OSError: If writing, renaming or flushing fails.  The temporary file
-            is removed.
+        OSError: If writing, flushing the temporary file or renaming fails.
+            The temporary file is removed.
     """
     payload = data.encode("utf-8") if isinstance(data, str) else data
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -122,7 +125,10 @@ def atomic_write(path: Path, data: str | bytes, *, mode: int = 0o666) -> None:
         with suppress(OSError):
             temporary.unlink(missing_ok=True)
         raise
-    fsync_directory(path.parent)
+    try:
+        fsync_directory(path.parent)
+    except OSError as exc:
+        logger.warning("Replaced %s but could not flush its directory: %s", path, exc)
 
 
 def confirm_missing(path: Path, error: FileNotFoundError) -> None:
@@ -164,17 +170,50 @@ def file_signature(path: Path) -> tuple[int, int, int] | None:
     return found.st_mtime_ns, found.st_size, found.st_ino
 
 
-def set_aside(path: Path, what: str, reason: str) -> bool:
+def set_aside(
+    path: Path,
+    what: str,
+    reason: str,
+    *,
+    naming: Literal["prefix", "timestamp", "uuid"] = "prefix",
+    copy: bool = False,
+    raise_on_error: bool = False,
+) -> bool:
     """Rename the invalid *path* to ``<name>.bad-<random>`` beside it, and log why.
 
     *what* names the file in the log, such as ``"ads file"``.  Returns
-    whether it was moved; a failure is logged with its traceback.
+    whether it was preserved; a failure is logged with its traceback and
+    optionally re-raised for stores that must refuse subsequent saves.
+
+    ``timestamp`` keeps listener bans/statistics and recorder recovery names
+    as ``<name>.<time_ns>.bad``; ``uuid`` keeps listener requests' existing
+    ``<name>.<32 hex>.bad`` names. Other stores use the default ``.bad-<8 hex>``.
+    ``copy`` keeps the scheduler's original file: partially valid schedules
+    must survive a restart before the next save of their usable events.
     """
-    bad = path.with_name(f"{path.name}.bad-{uuid.uuid4().hex[:8]}")
+    if naming == "timestamp":
+        name = f"{path.name}.{time.time_ns()}.bad"
+    elif naming == "uuid":
+        name = f"{path.name}.{uuid.uuid4().hex}.bad"
+    else:
+        name = f"{path.name}.bad-{uuid.uuid4().hex[:8]}"
+    bad = path.with_name(name)
     try:
-        path.replace(bad)
+        if copy:
+            bad.write_bytes(path.read_bytes())
+        else:
+            path.replace(bad)
     except OSError:
         logger.exception("Could not set aside the invalid %s %s", what, path)
+        if raise_on_error:
+            raise
         return False
-    logger.error("%s %s is invalid (%s); set it aside as %s", what.capitalize(), path, reason, bad)
+    logger.error(
+        "%s %s is invalid (%s); %s %s",
+        what.capitalize(),
+        path,
+        reason,
+        "kept a copy as" if copy else "set it aside as",
+        bad,
+    )
     return True

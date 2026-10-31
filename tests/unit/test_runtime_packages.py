@@ -89,7 +89,7 @@ def test_doctor_runs_without_crypto_and_never_repairs(tmp_path, without_crypto, 
     assert result.exit_code == 1, result.exception
     assert "cryptography" in result.output
     if "--json" in flags:
-        checks = json.loads(result.output)["checks"]
+        checks = json.loads(result.stdout)["checks"]
         check = next(c for c in checks if c["name"] == "runtime-packages")
         assert check["repair"] == "sync-packages"
         assert check["status"] == "fail"
@@ -391,7 +391,7 @@ def test_missing_package_keeps_independent_doctor_checks(tmp_path, without_crypt
     )
     assert result.exit_code == 1, result.exception
     if as_json:
-        checks = {check["name"]: check for check in json.loads(result.output)["checks"]}
+        checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
         assert {
             "configuration",
             "network-safety",

@@ -300,7 +300,7 @@ def test_cli_refuses_an_unknown_station(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     result = _cli(cfg, ["--station", "oldies"])
     assert result.exit_code == 2
-    assert "no station is named 'oldies'" in result.output
+    assert "no station is named 'oldies'" in result.stderr
 
 
 def test_cli_dry_run_changes_nothing(tmp_path: Path) -> None:
@@ -314,7 +314,7 @@ def test_cli_dry_run_changes_nothing(tmp_path: Path) -> None:
 def test_cli_json_is_read_only_and_names_the_station(tmp_path: Path) -> None:
     cfg = _config(tmp_path, missing_station_folder=True)
     result = _cli(cfg, ["--json", "--station", "nightowl"], tty=True)
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)
     assert {"station": "nightowl", "name": "station-folder"}.items() <= next(
         item for item in data["checks"] if item.get("station")
     ).items()

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from autodj.errors import FieldError, first_issue
 from autodj.fsutil import atomic_write, file_signature, read_bytes_shared, set_aside
 
 if TYPE_CHECKING:
@@ -40,13 +41,13 @@ MAX_LINER_DATES = 2000
 FIELD_LABELS = {"not_before": "Not before", "not_after": "Do not play after"}
 
 
-class ClipDatesError(ValueError):
+class ClipDatesError(FieldError):
     """Dates that cannot be saved, naming the field at fault."""
 
+    field: str
+
     def __init__(self, field_name: str, message: str) -> None:
-        super().__init__(message)
-        self.field = field_name
-        self.message = message
+        super().__init__(message, field_name)
 
 
 def day_words(day: Date) -> str:
@@ -114,16 +115,7 @@ def parse_dates(body: object) -> ClipDates:
     try:
         return ClipDates.model_validate(body)
     except ValidationError as exc:
-        error = exc.errors()[0]
-        cause = (error.get("ctx") or {}).get("error")
-        if isinstance(cause, ClipDatesError):
-            raise ClipDatesError(cause.field, cause.message) from None
-        location = [str(part) for part in error.get("loc", ())]
-        name = location[0] if location else ""
-        if error.get("type") == "extra_forbidden":
-            raise ClipDatesError(name, f"Unknown field {name}") from None
-        label = FIELD_LABELS.get(name, name or "Dates")
-        raise ClipDatesError(name, f"{label}: {error['msg']}") from None
+        raise ClipDatesError(*first_issue(exc, FIELD_LABELS, fallback_label="Dates")) from None
 
 
 def station_zone(cfg: AutoDJConfig) -> str:

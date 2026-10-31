@@ -26,9 +26,9 @@ from autodj.scheduler import (
     ScheduledEvent,
     Scheduler,
     describe_repeat,
-    field_error,
     next_run,
     system_timezone,
+    validation_issue,
 )
 
 DENVER = ZoneInfo("America/Denver")
@@ -180,7 +180,7 @@ def test_interval_across_dst_changes() -> None:
 def field_of(**changes: Any) -> tuple[str, str]:
     with pytest.raises(ValidationError) as caught:
         spec(**changes)
-    return field_error(caught.value)
+    return validation_issue(caught.value)
 
 
 @pytest.mark.parametrize(
@@ -961,11 +961,17 @@ def test_an_action_can_run_hard_events_itself_and_soft_ones_at_once(tmp_path: Pa
 def test_a_known_action_with_bad_settings_is_set_aside_as_before(tmp_path: Path) -> None:
     path = tmp_path / "schedule.json"
     write_schedule(path, [stored("a" * 32), stored("b" * 32, params={"extra": "1"})])
+    original = path.read_bytes()
     rig = Rig(path)
     rig.schedule.start()
     assert list(rig.schedule.events) == ["a" * 32]
     assert rig.schedule.kept == []
     assert len(list(tmp_path.glob("schedule.json.bad-*"))) == 1
+    # Startup must not remove the valid events before any later save happens.
+    assert path.read_bytes() == original
+    restarted = Rig(path)
+    restarted.schedule.start()
+    assert list(restarted.schedule.events) == ["a" * 32]
 
 
 def test_hard_event_wait_preserves_priority_without_fading(tmp_path):

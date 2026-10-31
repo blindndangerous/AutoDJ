@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from autodj.errors import FieldError
 from autodj.fsutil import atomic_write, fsync_directory
 
 logger = logging.getLogger(__name__)
@@ -35,14 +36,11 @@ _ID = re.compile(r"[0-9a-f]{32}\Z")
 type Renderer = Callable[[Path, Callable[[], bool]], dict[str, Any]]
 
 
-class ReviewError(ValueError):
+class ReviewError(FieldError):
     """An actionable, explicitly public error without paths or provider secrets."""
 
-    reports_field = True
-
     def __init__(self, message: str, *, field: str | None = None) -> None:
-        super().__init__(message)
-        self.field = field
+        super().__init__(message, field, include_field=False)
 
 
 def _identity(value: str) -> str:

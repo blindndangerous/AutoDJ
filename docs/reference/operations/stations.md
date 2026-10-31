@@ -65,6 +65,13 @@ A station keeps its state in `<index_dir>/stations/<slug>/`, the default station
 `categories.json`, `liners/` and `profiles/`. Each station's `station.db` holds its history,
 last-played values and clock setting independently of the library catalog.
 
+Damaged state files are kept beside the original location for inspection. Carts,
+time checks and intro rules use `<name>.bad-<id>`. Listener bans, listener statistics
+and recording state retain `<name>.<timestamp>.bad`; listener requests use
+`listener_requests.json.<id>.bad`. Schedules keep a copy as
+`schedule.json.bad-<id>` and leave the original in place until a later save, so
+valid events remain available if the server restarts before saving.
+
 Startup imports existing station history and settings from `library.db`, including records for
 stations no longer configured. Each import commits with a completion marker, so interrupted imports
 can be retried without duplicating history or replacing newer station values. The legacy source is

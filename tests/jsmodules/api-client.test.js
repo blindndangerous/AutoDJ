@@ -38,6 +38,19 @@ describe("requestJson response checks", () => {
     });
   });
 
+  // ADR-0022-01
+  it("surfaces validation words and preserves the field for the editor", async () => {
+    await expect(requestAnswered(jsonResponse(
+      { detail: "code: Field required", field: "code" }, { status: 422 },
+    ))).rejects.toMatchObject({
+      name: "ApiError",
+      message: "code: Field required",
+      status: 422,
+      detail: "code: Field required",
+      field: "code",
+    });
+  });
+
   it("preserves structured error detail for conflict handling", async () => {
     await expect(requestAnswered(jsonResponse(
       { detail: { code: "voice_track_conflict", revision: "rev-7", message: "A voice track is upcoming." } },

@@ -33,6 +33,7 @@ from typing import Any
 from autodj.audio_meta import normalize_isrc, read_reporting_tags
 from autodj.beets import _path_candidates, parse_initial_key
 from autodj.dj_meta import musical_label
+from autodj.errors import FieldError
 from autodj.fsutil import fsync_directory
 
 logger = logging.getLogger(__name__)
@@ -61,16 +62,18 @@ _write_lock = threading.Lock()
 Guard = Callable[[Path], AbstractContextManager[Any]]
 
 
-class TagError(Exception):
+class TagError(FieldError):
     """A tag edit that cannot be made; ``field`` names the field at fault."""
 
+
+class TagWriteError(TagError):
+    """A file operation refused after the form has already been validated."""
+
     def __init__(self, message: str, field: str | None = None) -> None:
-        """Keep the message for the page and the field it belongs to, if any."""
-        super().__init__(message)
-        self.field = field
+        super().__init__(message, field, 409, include_field=False)
 
 
-class TagFileBusyError(TagError):
+class TagFileBusyError(TagWriteError):
     """The file stayed open in another program for the whole wait."""
 
 
@@ -175,17 +178,17 @@ def _open(path: Path, kind: Callable[..., Any] | None = None) -> Any:
         audio = kind(str(path)) if kind is not None else mutagen.File(str(path))
     except mutagen.MutagenError as exc:
         logger.exception("Could not read tags from %s", path)
-        raise TagError(
+        raise TagWriteError(
             "AutoDJ could not read the tags of this file. "
             "Check the file and the server log before trying again."
         ) from exc
     if audio is None:
-        raise TagError("AutoDJ cannot edit the tags of this kind of file.")
+        raise TagWriteError("AutoDJ cannot edit the tags of this kind of file.")
     if audio.tags is None:
         try:
             audio.add_tags()
         except (mutagen.MutagenError, NotImplementedError) as exc:
-            raise TagError("AutoDJ cannot edit the tags of this kind of file.") from exc
+            raise TagWriteError("AutoDJ cannot edit the tags of this kind of file.") from exc
     return audio
 
 
@@ -200,7 +203,7 @@ def _family(audio: Any) -> str:
         return "vorbis"
     if isinstance(audio.tags, MP4Tags):
         return "mp4"
-    raise TagError("AutoDJ cannot edit the tags of this kind of file.")
+    raise TagWriteError("AutoDJ cannot edit the tags of this kind of file.")
 
 
 def tags_writable(path: str | Path) -> bool:
@@ -329,7 +332,9 @@ def _verify(tags: Any, family: str, values: TagValues) -> None:
         if field not in values.changed:
             continue
         if _read(tags, family, _KEYS[family][field]) != _text(values, field, family):
-            raise TagError("The tags did not read back as written, so the file was not changed.")
+            raise TagWriteError(
+                "The tags did not read back as written, so the file was not changed."
+            )
 
 
 def _replace(source: Path, target: Path, guard: Guard | None) -> None:
@@ -465,7 +470,7 @@ def write_tags(
 
     target = Path(os.path.realpath(path))
     if roots is not None and not inside_roots(target, roots):
-        raise TagError(
+        raise TagWriteError(
             "This file is outside the library folders, so AutoDJ will not change its tags."
         )
     with _write_lock:
@@ -475,9 +480,9 @@ def write_tags(
                 writable = bool(target.stat().st_mode & stat.S_IWRITE)
             except OSError as exc:
                 logger.exception("Could not inspect %s before writing tags", target)
-                raise TagError(_os_message(exc)) from exc
+                raise TagWriteError(_os_message(exc)) from exc
             if not writable:
-                raise TagError(
+                raise TagWriteError(
                     "AutoDJ is not allowed to change this read-only file, so its tags were not changed."
                 )
         family = _family(original)
@@ -502,10 +507,10 @@ def write_tags(
                 _verify(_open(temp, kind).tags, family, values)
             except OSError as exc:
                 logger.exception("Could not write tags to the working copy of %s", target)
-                raise TagError(_os_message(exc)) from exc
+                raise TagWriteError(_os_message(exc)) from exc
             except mutagen.MutagenError as exc:
                 logger.exception("Could not encode tags in the working copy of %s", target)
-                raise TagError(
+                raise TagWriteError(
                     "The tags could not be written, so the file was not changed. "
                     "Check whether the file is open in another program, the disk or share is "
                     "disconnected, or the file is damaged, then try again. "
@@ -515,7 +520,7 @@ def write_tags(
                 _replace(temp, target, guard)
             except OSError as exc:
                 logger.exception("Could not replace %s after writing tags", target)
-                raise TagError(_os_message(exc)) from exc
+                raise TagWriteError(_os_message(exc)) from exc
             # The file is changed now: a failed folder flush (some network
             # shares refuse it) must not be reported as an unchanged file.
             try:
