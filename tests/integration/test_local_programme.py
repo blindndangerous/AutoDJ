@@ -318,7 +318,8 @@ def test_consumption_credit_arrives_without_another_packet(tmp_path):
         assert ws.receive_json() == {"type": "credit", "limit_frame": 9702, "state": "preparing"}
 
 
-async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_path):
+@pytest.mark.parametrize("startup_blocks", [0, 275], ids=["ready", "late-input"])
+async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_path, startup_blocks):
     """ADR-0020-13: real encoder and one HTTP response survive internal input selection.
 
     Synthetic Python PCM isolates the new receiver/bus seam. This is not evidence
@@ -354,10 +355,9 @@ async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_pa
 
     for _ in range(6):
         feed()
-    bus, _, _ = _bus([_track(0.04, 44100 * 10)])
-    from autodj.mixbus import SystemClock
-
-    bus._clock = SystemClock()
+    # Keep the fake bus clock: this proves selection/output continuity, not
+    # scheduler throughput. Bounded batches below wait for actual encoder IO.
+    bus, _, _ = _bus([_track(0.04, 44100 * 30)])
     stop = threading.Event()
 
     class Master:
@@ -371,25 +371,43 @@ async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_pa
             self.blocks.append(block.copy())
             return block * 0.5
 
+    class StartupEncoder(FfmpegEncoder):
+        """Simulate unavailable startup input, beyond the old 225-block fixture.
+
+        Discard only this test's automation pre-roll, without buffering it or
+        sleeping. Once input is available, use the real encoder unchanged.
+        """
+
+        def __init__(self, bitrate):
+            super().__init__(bitrate)
+            self.seen = 0
+
+        def write(self, pcm):
+            self.seen += 1
+            if self.seen > startup_blocks:
+                super().write(pcm)
+
     master = Master()
-    stream = StreamOutput(320, 2, encoder_factory=FfmpegEncoder, loop=asyncio.get_running_loop())
+    stream = StreamOutput(320, 2, encoder_factory=StartupEncoder, loop=asyncio.get_running_loop())
     encoder = stream._encoder
     bus.set_master(master)
     bus.add_output(stream)
     captured = []
+    batch_end = 0
+    local_blocks = None
 
     class Capture:
         def write(self, block):
+            nonlocal local_blocks
             captured.append(block.copy())
-            count = len(captured)
-            if count == 25:
-                bus.take_local_programme(audio)
-            elif 26 < count < 176:
-                feed()
-                feed()
-            elif count == 176:
-                bus.return_local_programme()
-            elif count == 225:
+            if local_blocks is not None:
+                local_blocks += 1
+                # The first selected block fades down automation. Every later
+                # block consumes 882 frames; replenish exactly that amount.
+                if local_blocks > 1:
+                    feed()
+                    feed()
+            if len(captured) == batch_end:
                 stop.set()
 
     bus.add_output(Capture())
@@ -407,8 +425,31 @@ async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_pa
         port = sock.getsockname()[1]
         server = uvicorn.Server(uvicorn.Config(app, lifespan="off", log_level="error"))
         serving = asyncio.create_task(server.serve(sockets=[sock]))
-        worker = None
-        ending = None
+        reading = None
+        encoded = bytearray()
+
+        async def render_batch(count=25):
+            nonlocal batch_end
+            assert 0 < count <= 25  # Below StreamOutput's 100-block queue cap.
+            assert len(captured) < 1000, "Encoder/listener made no progress within 1000 blocks"
+            batch_end = len(captured) + count
+            stop.clear()
+
+            # Drive bounded fake-clock work synchronously, then yield for IO.
+            # A separate pacing thread and per-block writer wakeups turn this
+            # fixture into a scheduler benchmark on one contended core.
+            with stream._pcm_cond:
+                bus.run(stop)
+            assert len(captured) == batch_end
+            # Do not overrun the live output's bounded, intentionally lossy
+            # queue. Also let HTTP consume everything published so far before
+            # supplying another batch. Neither wait assumes a startup latency.
+            while stream._pcm_in < len(captured) * 882 * 2 * 4 or len(encoded) < stream._mp3_out:
+                if reading.done():
+                    await reading
+                    raise AssertionError("HTTP stream closed before the handoff finished")
+                await asyncio.sleep(0.01)
+
         try:
             async with asyncio.timeout(25):
                 while not server.started:
@@ -420,67 +461,99 @@ async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_pa
                     assert response.status_code == 200
                     assert client.timeout.read is None
                     bus.start_set()
-                    worker = threading.Thread(target=bus.run, args=(stop,), daemon=True)
-                    worker.start()
 
-                    async def end_fixture():
-                        await asyncio.to_thread(stop.wait)
-                        # A live encoder deliberately has no EOF. End only the
-                        # fixture listener after proving handoffs kept it open.
-                        try:
-                            await _wait_for_encoded_idle(encoded)
-                            assert len(requests) == 1 and not requests[0].closed
-                        finally:
-                            requests[0].close()
+                    async def read_stream():
+                        async for chunk in response.aiter_bytes():
+                            encoded.extend(chunk)
 
-                    ending = asyncio.create_task(end_fixture())
-                    encoded = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        encoded.extend(chunk)
-                    await ending
+                    reading = asyncio.create_task(read_stream())
+                    # A live encoder has no EOF to flush a finite startup clip.
+                    # Keep pre-roll flowing until real audio bytes reach HTTP,
+                    # including when startup discarded more than 225 blocks.
+                    while len(encoded) < 4096:
+                        await render_batch()
+                    warmup_blocks = len(captured)
+                    assert encoder.seen > startup_blocks
+                    # Count from encoder input, not the currently received
+                    # prefix: startup bytes can still be in flight at takeover.
+                    # At 320 kbps each 20 ms block represents 800 encoded bytes.
+                    byte_target = (warmup_blocks - startup_blocks + 151 + 50) * 800
+                    bus.take_local_programme(audio)
+                    local_blocks = 0
+                    for _ in range(6):
+                        await render_batch()
+                    await render_batch(1)  # One fade-down + 150 local PCM blocks.
+                    assert local_blocks == 151
+                    assert audio.consumed_frame == len(reference)
+                    local_blocks = None
+                    bus.return_local_programme()
+                    # Keep automation supplying the encoder until the listener
+                    # has the programme and return tail, not merely until some
+                    # number of wall-clock periods has elapsed.
+                    while len(encoded) < byte_target:
+                        await render_batch()
+                    await _wait_for_encoded_idle(encoded)
+                    assert len(requests) == 1 and not requests[0].closed
+                    requests[0].close()
+                    await reading
                 assert len(requests) == 1
                 assert stream._encoder is encoder and stream._encoder_generation == 0
                 assert bus._master is master
-                assert len(captured) == len(master.blocks) == 225
+                assert len(captured) == len(master.blocks)
+                assert len(captured) > warmup_blocks + 151
                 assert audio.high_water_frames <= 2646
                 assert not audio.failed
         finally:
             stop.set()
-            if worker:
-                await asyncio.to_thread(worker.join, 3)
-            if ending:
-                if not ending.done():
-                    ending.cancel()
-                await asyncio.gather(ending, return_exceptions=True)
+            for listener in requests:
+                listener.close()
+            if reading:
+                if not reading.done():
+                    reading.cancel()
+                await asyncio.gather(reading, return_exceptions=True)
             stream.close()
             server.should_exit = True
             await serving
-    decoded = subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "mp3",
-            "-i",
-            "pipe:0",
-            "-f",
-            "f32le",
-            "-ar",
-            "44100",
-            "-ac",
-            "2",
-            "pipe:1",
-        ],
-        input=bytes(encoded),
-        capture_output=True,
-        check=False,
-        timeout=20,
-    )
     assert len(encoded) >= 120000, f"Encoded capture too short: {len(encoded)} bytes"
-    assert decoded.returncode == 0, decoded.stderr.decode("utf-8", "replace")
-    pcm = np.frombuffer(decoded.stdout, dtype="<f4").reshape((-1, 2))
+    encoded_path = tmp_path / "selector.mp3"
+    decoded_path = tmp_path / "selector.f32"
+    encoded_path.write_bytes(encoded)
+    # File IO keeps this verification decode independent of subprocess stdin/
+    # stdout pump scheduling on a contended host. The live capture above still
+    # exercises the production encoder pipes and the real HTTP response.
+    with (tmp_path / "decode.stderr").open("w+b") as errors:
+        decoded = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-threads",
+                "1",
+                "-filter_threads",
+                "1",
+                "-f",
+                "mp3",
+                "-i",
+                str(encoded_path),
+                "-f",
+                "f32le",
+                "-ar",
+                "44100",
+                "-ac",
+                "2",
+                str(decoded_path),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=errors,
+            check=False,
+            timeout=20,
+        )
+        errors.seek(0)
+        assert decoded.returncode == 0, errors.read().decode("utf-8", "replace")
+    pcm = np.fromfile(decoded_path, dtype="<f4").reshape((-1, 2))
     # The production handoff applies a 20 ms fade-up to the first PCM block.
     expected = reference.copy()
     expected[:882] *= np.linspace(0, 1, 882, dtype=np.float32)[:, None]
