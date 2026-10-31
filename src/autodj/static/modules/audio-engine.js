@@ -237,14 +237,17 @@ const _WORKLET_OF = {
 };
 const _workletReady = {};
 
-export function ensureAudioGraph() {
+export function ensureAudioGraph(options) {
   if (_ctx) return _ctx;
   const Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) {
     console.warn("Web Audio API unavailable; falling back to plain <audio>.");
     return null;
   }
-  _ctx = new Ctx();
+  if (document.documentElement.dataset.localProgrammeEnabled === "true") {
+    options = { ...options, sampleRate: 44100 };
+  }
+  _ctx = options ? new Ctx(options) : new Ctx();
   // Every sound the page makes reaches the speakers through this one
   // gain, which carries the page volume and drops to 0 while muted: both
   // decks, every transition effect and voice liners.
@@ -433,9 +436,50 @@ function setDeckIntro(deck, track) {
 }
 
 function playOnDeck(deck) {
-  return deck.audio.play().catch((err) => {
+  if (!localProgrammeOwned) {
+    return deck.audio.play().catch((err) => {
+      console.warn("deck.play failed:", err);
+    });
+  }
+  try {
+    return Promise.resolve(deck.audio.play()).then(() => true).catch((err) => {
+      console.warn("deck.play failed:", err);
+      return false;
+    });
+  } catch (err) {
     console.warn("deck.play failed:", err);
-  });
+    return Promise.resolve(false);
+  }
+}
+
+export let localProgrammeOwned = false;
+let _programmeOutput = null;
+
+export function prepareLocalProgramme() {
+  const context = ensureAudioGraph({ sampleRate: 44100 });
+  if (!context || context.sampleRate !== 44100) {
+    throw new Error("Local control requires 44,100 Hz. Reload this page before trying again.");
+  }
+  stopAllDecks();
+  _paused = false;
+  _programTarget = 1;
+  _program.gain.cancelScheduledValues(context.currentTime);
+  _program.gain.setValueAtTime(1, context.currentTime);
+  if (!_programmeOutput) {
+    _programmeOutput = context.createGain();
+    _programmeOutput.gain.value = 1;
+    const sum = _duck || _program;
+    sum.disconnect(_master);
+    sum.connect(_programmeOutput);
+    _programmeOutput.connect(_master);
+  }
+  localProgrammeOwned = true;
+  return _programmeOutput;
+}
+
+export function endLocalProgramme() {
+  localProgrammeOwned = false;
+  stopAllDecks();
 }
 
 // The page's volume as a linear gain, whether mute holds the master at
@@ -507,7 +551,7 @@ export function duckMusic(level, seconds) {
     _duck.gain.value = 1;
     _program.disconnect();
     _program.connect(_duck);
-    _duck.connect(_master);
+    _duck.connect(_programmeOutput || _master);
   }
   const t0 = _ctx.currentTime;
   const gain = _duck.gain;
@@ -2132,6 +2176,7 @@ export function startCrossfade(
 ) {
   if (!_ctx || crossfading || !nextPath) return Promise.resolve(false);
   crossfading = true;
+  const localOwned = localProgrammeOwned;
   const operationGeneration = _playbackGeneration;
   dbg("crossfade ->", nextPath, "| fade=", fadeSec.toFixed(2), "s",
     "| serverLed=", serverLed);
@@ -2181,7 +2226,9 @@ export function startCrossfade(
       cleanupMetadata = () => standby.audio.removeEventListener("loadedmetadata", seekIfReady);
     }
   }
-  playOnDeck(standby);
+  // Ordinary playback schedules against this gesture's audio clock. Media
+  // readiness gating belongs to ProgrammeOwner's local-owned path only.
+  const playing = playOnDeck(standby);
 
   const active = deckActive();
   const ctxNow = _ctx.currentTime;
@@ -2237,13 +2284,15 @@ export function startCrossfade(
   const teardownFx = applyTransitionFx(fxName, effectDur, active, standby, t0);
 
   suppressAdvance = true;
-  // The next track is spoken for: until a state names a newer one, it
-  // must not be faded into a second time (a long outage sends no state).
-  if (_nextTrackPathCache === nextPath) _nextTrackPathCache = null;
-  if (!serverLed) {
-    void requestAdvance(active.path);
+  if (!localOwned) {
+    // Preserve ordinary playback's synchronous accounting and timer finish.
+    // The next track is spoken for: until a state names a newer one, it
+    // must not be faded into a second time (a long outage sends no state).
+    if (_nextTrackPathCache === nextPath) _nextTrackPathCache = null;
+    if (!serverLed) {
+      void requestAdvance(active.path);
+    }
   }
-
   return new Promise((resolve) => {
     const pending = {
       cleanupMetadata,
@@ -2253,7 +2302,7 @@ export function startCrossfade(
       timer: null,
     };
     _pendingCrossfade = pending;
-    pending.timer = setTimeout(() => {
+    const finish = () => {
       if (_pendingCrossfade !== pending || operationGeneration !== _playbackGeneration) {
         resolve(false);
         return;
@@ -2273,7 +2322,41 @@ export function startCrossfade(
       active.path = null;
       try { active.audio.load(); } catch (_) {}
       resolve(true);
+    };
+    if (!localOwned) {
+      pending.timer = setTimeout(finish, effectDur * 1000 + 100);
+      return;
+    }
+    let accepted = false;
+    let elapsed = false;
+    pending.timer = setTimeout(() => {
+      elapsed = true;
+      if (accepted) finish();
     }, effectDur * 1000 + 100);
+    void playing.then(played => {
+      if (_pendingCrossfade !== pending || operationGeneration !== _playbackGeneration) return;
+      if (!played) {
+        _pendingCrossfade = null;
+        clearTimeout(pending.timer);
+        cleanupMetadata();
+        try { teardownFx(); } catch (errorValue) { announceRequestError(errorValue); }
+        const now = _ctx.currentTime;
+        active.gain.gain.cancelScheduledValues(now);
+        active.gain.gain.setValueAtTime(1, now);
+        standby.gain.gain.cancelScheduledValues(now);
+        standby.gain.gain.setValueAtTime(0, now);
+        try { standby.audio.pause(); } catch (_) {}
+        crossfading = false;
+        suppressAdvance = false;
+        resolve(false);
+        return;
+      }
+      accepted = true;
+      // Never account a song whose play request was refused.
+      if (_nextTrackPathCache === nextPath) _nextTrackPathCache = null;
+      if (!serverLed) void requestAdvance(active.path);
+      if (elapsed) finish();
+    });
   });
 }
 

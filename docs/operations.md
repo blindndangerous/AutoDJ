@@ -9,6 +9,13 @@ For architectural constraints and implementation/test links, consult the
 The index also identifies Proposed records for storage, trust, background
 work, scheduling, and recovery; those await maintainer acceptance.
 
+[Local DJ prototype](adr/0020-local-browser-programme-ownership.md)
+records the approved design and phased evidence for issue #541. The TOML-only
+`server.local_programme_enabled` setting defaults off and requires restart.
+The bounded workflow is described in
+[experimental local browser control](reference/operations/server-playback.md#experimental-local-browser-control).
+Disabled installations retain their existing procedures.
+
 Commands labeled Bash require a Linux host or WSL2. Native Windows operators should use the
 PowerShell equivalents below. Run Linux container commands inside WSL2 with the repository on a
 WSL filesystem so user IDs and POSIX modes have their documented meaning.
