@@ -1,7 +1,7 @@
 // ADR-0019-09: native ownership, browser decks, real encoded stream and recovery.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { once } from "node:events";
 import os from "node:os";
 import { resolve } from "node:path";
@@ -43,6 +43,18 @@ try {
   base = `http://127.0.0.1:${port}`;
   report.base = base;
   await until(async () => fetch(`${base}/audit-state`).then(r => r.ok, () => false), "fixture listening");
+  assert.equal(await (await fetch(`${base}/audit`)).text(),
+    await readFile(resolve("src/autodj/static/index.html"), "utf8"));
+  assert.match(await (await fetch(`${base}/app.js`)).text(), /window.audit =/);
+  assert.equal(await (await fetch(`${base}/modules/theme-init.js`)).text(),
+    await readFile(resolve("src/autodj/static/modules/theme-init.js"), "utf8"));
+  for (const name of ["bitcrusher", "stutter", "freeze", "glitch", "programme"]) {
+    assert.equal(await (await fetch(`${base}/${name}-worklet.js`)).text(),
+      await readFile(resolve(`src/autodj/static/${name}-worklet.js`), "utf8"));
+  }
+  for (const name of ["unknown", "PROGRAMME", "..%2Fprogramme"]) {
+    assert.equal((await fetch(`${base}/${name}-worklet.js`)).status, 404);
+  }
   const stream = await fetch(`${base}/stream`);
   assert.equal(stream.status, 200);
   reader = stream.body.getReader();

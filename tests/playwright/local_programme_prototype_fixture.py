@@ -12,7 +12,6 @@ import asyncio
 import faulthandler
 import json
 import os
-import re
 import secrets
 import socket
 import threading
@@ -192,9 +191,17 @@ async def run(root: Path) -> None:
 
         @app.get("/{name}-worklet.js")
         async def effect(name: str):
-            if name not in {"bitcrusher", "stutter", "freeze", "glitch", "programme"}:
+            worklets = {
+                "bitcrusher": STATIC / "bitcrusher-worklet.js",
+                "stutter": STATIC / "stutter-worklet.js",
+                "freeze": STATIC / "freeze-worklet.js",
+                "glitch": STATIC / "glitch-worklet.js",
+                "programme": STATIC / "programme-worklet.js",
+            }
+            path = worklets.get(name)
+            if path is None:
                 raise HTTPException(404)
-            return FileResponse(STATIC / f"{name}-worklet.js", media_type="text/javascript")
+            return FileResponse(path, media_type="text/javascript")
 
         @app.get("/stream")
         async def listen():
@@ -227,15 +234,7 @@ async def run(root: Path) -> None:
 
         @app.get("/audit", response_class=HTMLResponse)
         async def page():
-            html = re.sub(
-                r"<script\b[^>]*>.*?</script>",
-                "",
-                (STATIC / "index.html").read_text(encoding="utf-8"),
-                flags=re.S,
-            )
-            response = HTMLResponse(
-                html.replace("</body>", '<script type="module" src="/audit.js"></script></body>')
-            )
+            response = HTMLResponse((STATIC / "index.html").read_bytes())
             response.set_cookie(COOKIE_NAME, policy.issue_device_session("a" * 32), httponly=True)
             return response
 
@@ -245,7 +244,7 @@ async def run(root: Path) -> None:
             device_active = False
             return {"ok": True}
 
-        @app.get("/audit.js")
+        @app.get("/app.js")
         async def script():
             return Response(
                 """

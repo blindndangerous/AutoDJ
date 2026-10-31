@@ -14,6 +14,15 @@ GRANT = Grant("epoch", 7, "secret", "identity", "socket")
 HEADER = struct.Struct("<4sBBHQQQII8s")
 
 
+def credit_frames(audio):
+    """Available credit from the public cumulative limit and accepted cursor."""
+    return audio.limit_frame - audio.next_sequence * 441
+
+
+def queued_frames(audio):
+    return 8820 - credit_frames(audio)
+
+
 def packet(sequence=0, *, generation=7, rate=44100, frames=441, values=(0.25, -0.5)):
     pcm = np.tile(np.array(values, dtype="<f4"), (frames, 1))
     return (
@@ -113,7 +122,7 @@ def test_prearm_load_failure_completes_from_discarded_silence():
     marker = {"sequence": 0, "kind": "load-failure", "occurrence": "failed", "frame": 0}
     audio.events.submit(marker, 0)
     audio.accept_packet(GRANT, packet(values=(0, 0)), now=0)
-    assert audio.queued_frames == 0
+    assert queued_frames(audio) == 0
     assert audio.events.receipts() == [marker]
     audio.events.complete(marker)
     assert audio.events.submit(marker, 441) == "completed"
@@ -137,18 +146,18 @@ def test_sustained_high_occupancy_returns_before_the_hard_cap():
 def test_framing_credit_and_timeout_bounds():
     """ADR-0019-03: exact stereo frames, bounded credit, consumed spans and stalls."""
     audio = filled(20)
-    assert audio.queued_frames == audio.high_water_frames == 8820
-    assert audio.credit_frames == 0
+    assert queued_frames(audio) == audio.high_water_frames == 8820
+    assert credit_frames(audio) == 0
     with pytest.raises(PCMError, match="credit"):
         audio.accept_packet(GRANT, packet(20), now=0.2)
     block, spans = audio.read_block(7, now=0.2)
     np.testing.assert_array_equal(block, np.tile([0.25, -0.5], (882, 1)))
     assert spans == [(0, 441), (441, 441)]
-    assert audio.credit_frames == 882
+    assert credit_frames(audio) == 882
     audio.accept_packet(GRANT, packet(20), now=0.2)
-    assert audio.queued_frames == 8379
+    assert queued_frames(audio) == 8379
     assert not audio.check(0.7)
-    assert audio.queued_frames == 0
+    assert queued_frames(audio) == 0
     np.testing.assert_array_equal(audio.read_block(7, now=0.7)[0], np.zeros((882, 2)))
 
 
@@ -177,7 +186,7 @@ def test_rejects_malformed_without_advancing(bad):
     audio.arm()
     with pytest.raises(PCMError):
         audio.accept_packet(GRANT, bad, now=0)
-    assert audio.queued_frames == 0
+    assert queued_frames(audio) == 0
     assert audio.next_sequence == 0
 
 
@@ -188,8 +197,8 @@ def test_preparation_silence_rate_flood_and_grant_fence():
         audio.accept_packet(GRANT, packet(), now=0)
     for seq in range(100):
         audio.accept_packet(GRANT, packet(seq, values=(0, 0)), now=seq * 0.01)
-    assert audio.queued_frames == 0
-    assert audio.credit_frames == 8820
+    assert queued_frames(audio) == 0
+    assert credit_frames(audio) == 8820
     assert audio.check(1)
     with pytest.raises(PCMError, match="grant"):
         audio.accept_packet(replace(GRANT, socket_id="other"), packet(100), now=1)
@@ -207,8 +216,8 @@ def test_receive_jitter_batch_keeps_the_same_pcm_credit_bound():
     # A 100 Hz sender can arrive in batches after receiver scheduling delays.
     for seq in range(20):
         audio.accept_packet(GRANT, packet(seq), now=0.2)
-    assert audio.queued_frames == 8820
-    assert audio.credit_frames == 0
+    assert queued_frames(audio) == 8820
+    assert credit_frames(audio) == 0
     with pytest.raises(PCMError, match="credit"):
         audio.accept_packet(GRANT, packet(20), now=0.2)
     assert audio.next_sequence == 20
@@ -222,7 +231,7 @@ def test_receive_jitter_allowance_does_not_expand_one_second_rate_budget():
     with pytest.raises(PCMError, match="rate"):
         audio.accept_packet(GRANT, packet(125, values=(0, 0)), now=0.96)
     assert audio.next_sequence == 125
-    assert audio.queued_frames == 0
+    assert queued_frames(audio) == 0
     audio.accept_packet(GRANT, packet(125, values=(0, 0)), now=1.001)
     assert audio.next_sequence == 126
 
@@ -247,7 +256,7 @@ def test_prefill_underrun_and_revocation_never_replay():
     audio = filled()
     audio.close("revoked")
     assert not audio.read_block(7, now=0.06)[0].any()
-    assert audio.queued_frames == 0
+    assert queued_frames(audio) == 0
 
 
 def test_partial_packet_spans_and_stale_generation():
@@ -261,18 +270,27 @@ def test_partial_packet_spans_and_stale_generation():
 
 def test_selector_holds_automation_and_bypasses_eq_liners():
     """ADR-0019-13: input selector holds automation and retains master/output objects."""
-    bus, started, positions = _bus([_track(0.1, 100000)], gains=(0, 0, 0))
+    bus, started, positions = _bus(
+        [_track(0.1, 100000), _track(0.1, 100000, "prepared return")], gains=(0, 0, 0)
+    )
     bus.start_set()
     bus.render_block()
+    audio = filled(10)
+    audio.clock = lambda: 0.1
+    bus.take_local_programme(audio)
+    bus.render_block()  # Final automation fade-down advances its cursor once.
     position = bus.live_position(bus.current_render())
-    audio = filled()
-    bus._select_local_programme(audio)
+    callbacks = len(positions)
+    bus.render_block()  # Local fade-up; inspect the next full-level block below.
     bus.play_liner(np.ones((10000, 2), np.float32), -12)
     # A controlled test clock avoids mixing this fixture's time with monotonic time.
-    audio.clock = lambda: 0.06
+    audio.clock = lambda: 0.1
     np.testing.assert_array_equal(bus.render_block(), np.tile([0.25, -0.5], (882, 1)))
     assert bus.live_position(bus.current_render()) == position
-    assert len(started) == len(positions) == 1
-    bus._select_local_programme(None)
+    assert len(started) == 1 and len(positions) == callbacks
+    bus.return_local_programme()
     bus.render_block()
-    assert bus.live_position(bus.current_render()) > position
+    returned_position = bus.live_position(bus.current_render())
+    bus.render_block()
+    assert bus.live_position(bus.current_render()) > returned_position
+    assert len(started) == 2

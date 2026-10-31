@@ -332,12 +332,12 @@ async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_pa
             captured.append(block.copy())
             count = len(captured)
             if count == 25:
-                bus._select_local_programme(audio)
-            elif 25 < count < 175:
+                bus.take_local_programme(audio)
+            elif 26 < count < 176:
                 feed()
                 feed()
-            elif count == 175:
-                bus._select_local_programme(None)
+            elif count == 176:
+                bus.return_local_programme()
             elif count == 225:
                 stop.set()
 
@@ -423,7 +423,10 @@ async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_pa
         timeout=20,
     ).stdout
     pcm = np.frombuffer(decoded, dtype="<f4").reshape((-1, 2))
-    result = measure(reference, pcm, 44100)
+    # The production handoff applies a 20 ms fade-up to the first PCM block.
+    expected = reference.copy()
+    expected[:882] *= np.linspace(0, 1, 882, dtype=np.float32)[:, None]
+    result = measure(expected, pcm, 44100)
     assert result["dropouts"] == 0
     assert not result["channel_swap"]
     assert abs(result["drift_ppm"]) < 100

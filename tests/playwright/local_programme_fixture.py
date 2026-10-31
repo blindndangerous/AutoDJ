@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import re
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -29,14 +28,19 @@ def main():
 
         def do_GET(self):
             if urlsplit(self.path).path == "/audit":
-                content = re.sub(
-                    r"<script\b[^>]*>.*?</script>",
-                    "",
-                    (STATIC / "index.html").read_text(encoding="utf-8"),
-                    flags=re.DOTALL,
-                ).encode()
+                content = (STATIC / "index.html").read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+            elif urlsplit(self.path).path == "/app.js":
+                content = (
+                    b'import * as engine from "/modules/audio-engine.js"; '
+                    b"window.auditEngine = engine;"
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/javascript")
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)

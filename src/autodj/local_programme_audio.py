@@ -64,16 +64,6 @@ class LocalPCM:
             return self._consumed_frame
 
     @property
-    def queued_frames(self) -> int:
-        with self._lock:
-            return self._count
-
-    @property
-    def credit_frames(self) -> int:
-        with self._lock:
-            return CAPACITY - self._count
-
-    @property
     def limit_frame(self) -> int:
         """Cumulative credit, read atomically with the accepted frame cursor."""
         with self._lock:

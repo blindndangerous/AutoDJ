@@ -4438,13 +4438,6 @@ class Player:
             raise failed
         return booked
 
-    def return_from_local(self, entry: IndexEntry | None, *, timeout: float) -> bool:
-        """Prepare the next unheard song without invoking external-live discard policy."""
-        ready = self.prepare_local_return(entry, timeout=timeout)
-        if ready and self.bus is not None:
-            self.bus.return_local_programme()
-        return ready
-
     def prepare_local_return(self, entry: IndexEntry | None, *, timeout: float) -> bool:
         """Prepare automation while the local input continues feeding the existing bus."""
         with self._state.queue_lock:

@@ -1224,17 +1224,6 @@ class MixBus:
         self._unreported_holds = 0
         return message
 
-    def _select_local_programme(self, source: LocalPCM | None) -> None:
-        """Select validated browser PCM internally, preserving all output objects.
-
-        No control route calls this in Phase 2a. The later handoff controller must
-        commit queue/history ownership before exposing activation to browsers.
-        """
-        with self._lock:
-            if source is not None:
-                source.start()
-            self._local_programme = source
-
     def take_local_programme(
         self,
         source: LocalPCM,

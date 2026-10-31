@@ -1,7 +1,7 @@
 // Existing-engine measurement, before the ownership UI is connected.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { resolve } from "node:path";
 import { chromium } from "@playwright/test";
@@ -33,6 +33,12 @@ try {
     });
   });
   base = `http://127.0.0.1:${port}`;
+  assert.equal(await (await fetch(`${base}/audit`)).text(),
+    await readFile(resolve("src/autodj/static/index.html"), "utf8"));
+  assert.equal(await (await fetch(`${base}/app.js`)).text(),
+    'import * as engine from "/modules/audio-engine.js"; window.auditEngine = engine;');
+  assert.equal(await (await fetch(`${base}/modules/theme-init.js`)).text(),
+    await readFile(resolve("src/autodj/static/modules/theme-init.js"), "utf8"));
   browser = await chromium.launch({ args: ["--use-fake-ui-for-media-stream",
     "--autoplay-policy=no-user-gesture-required"] });
   report.chromium = browser.version();
@@ -46,7 +52,7 @@ try {
   });
   await page.goto(`http://127.0.0.1:${port}/audit`);
   const measurement = page.evaluate(async () => {
-    const engine = await import("/modules/audio-engine.js");
+    const engine = window.auditEngine;
     const context = engine.ensureAudioGraph();
     if (context.sampleRate !== 44100) throw new Error("Local control requires 44,100 Hz");
     await context.resume();

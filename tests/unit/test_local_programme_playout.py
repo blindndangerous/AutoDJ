@@ -10,7 +10,7 @@ import pytest
 from autodj.config import AdsConfig, BreaksConfig, PlaybackConfig, TimeChecksConfig
 from autodj.live import LiveDesk
 from autodj.local_programme import LocalProgramme, OwnershipError
-from autodj.local_programme_playout import LocalPerformance
+from autodj.local_programme_playout import LocalPerformance, Occurrence
 
 
 def fixture(tmp_path):
@@ -40,7 +40,6 @@ def fixture(tmp_path):
         _pick_next=lambda previous: songs[0],
         _pick_context=lambda **kwargs: None,
         _choose_next=lambda previous, context: (songs[0], "random"),
-        return_from_local=Mock(return_value=True),
         prepare_local_return=Mock(return_value=True),
     )
     bridge = SimpleNamespace(
@@ -184,15 +183,39 @@ def test_settings_owner_cannot_bypass_programming_fence(name, args):
         getattr(settings, name)(*args)
 
 
-def test_real_player_return_keeps_queue_occurrence_until_consumption():
-    """ADR-0019-07: returning an unheard queued song keeps its queue provenance."""
+def real_player_recovery(tmp_path):
+    """Stage a lost local feed, then use the production recovery coordinator."""
+    from tests.unit.test_local_programme_audio import packet
     from tests.unit.test_player_stream_mode import _player
 
-    player = _player(stream_mode=True)
+    host, controller, station, _songs = fixture(tmp_path)
+    host.player = station.player = _player(stream_mode=True)
+    player = host.player
+    player._cfg.playback.liners_enabled = False
+    player._cfg.breaks.enabled = False
+    player._cfg.ads.enabled = False
+    player._cfg.time_checks.enabled = False
     entry = player._sim.entries[0]
     player._state.queue = [entry]
+    grant = controller.claim("user", "socket", 0)
+    audio = host.audio = controller.audio
+    audio.arm()
+    for sequence in range(6):
+        audio.accept_packet(grant, packet(sequence, generation=grant.generation), now=0)
+    host.occurrences = [Occurrence("unheard", entry, (0, 0), True)]
+    host.on_air = True
+    player.bus.take_local_programme(audio)
+    controller.revoke(grant.generation, "lost")
+    return host, player, entry, audio
+
+
+def test_real_player_return_keeps_queue_occurrence_until_consumption(tmp_path):
+    """ADR-0019-07: returning an unheard queued song keeps its queue provenance."""
+    host, player, entry, _audio = real_player_recovery(tmp_path)
     player._playout.wait_rendered = Mock(return_value=True)
-    player.return_from_local(entry, timeout=0)
+    host.recover()
+    assert player.bus._local_programme is None
+    assert not host.busy
     assert player._pending_from_queue is True
     assert player._state.queue == [entry]
 
@@ -246,7 +269,8 @@ def test_voluntary_return_prepares_automation_while_local_input_remains_live(tmp
     controller.revoke(grant.generation, "fade consumed")
     host.recover()
     station.player.bus.return_local_programme.assert_called_once()
-    station.player.return_from_local.assert_not_called()
+    assert not host.busy
+    assert host.reason == "Automation"
 
 
 def test_active_service_uses_cached_admission_and_source_signatures(tmp_path):
@@ -356,28 +380,25 @@ def test_return_timeout_retains_safe_silence_and_reservation_for_retry(tmp_path)
     assert not host.busy
 
 
-def test_real_player_timeout_keeps_local_bus_and_reuses_pending_render():
+def test_real_player_timeout_keeps_local_bus_and_reuses_pending_render(tmp_path):
     """ADR-0019-07: a retry waits for the same cursor instead of restarting decoding."""
-    from tests.unit.test_local_programme_audio import filled
-    from tests.unit.test_player_stream_mode import _player
-
-    player = _player(stream_mode=True)
-    audio = filled()
-    player.bus.take_local_programme(audio)
-    entry = player._sim.entries[0]
+    host, player, entry, audio = real_player_recovery(tmp_path)
     player._playout.wait_rendered = Mock(side_effect=[False, True])
     reset = Mock(wraps=player._playout.reset)
     player._playout.reset = reset
-    assert not player.return_from_local(entry, timeout=0)
+    with pytest.raises(OwnershipError, match="waiting"):
+        host.recover()
     assert player.bus._local_programme is audio
-    assert player.return_from_local(entry, timeout=0)
+    assert host.busy
+    host.recover()
     assert player.bus._local_programme is None
+    assert not host.busy
+    assert player._state.queue == [entry]
     assert reset.call_count == 1
 
 
 def test_stop_during_recovery_wait_does_not_resume_the_bus(tmp_path):
     """ADR-0019-07: Stop wins over automation readiness arriving during recovery."""
-    from autodj.player import Player
     from tests.unit.test_mixbus import _bus
 
     host, controller, station, _songs = fixture(tmp_path)
@@ -394,9 +415,6 @@ def test_stop_during_recovery_wait_does_not_resume_the_bus(tmp_path):
         return True
 
     station.player.prepare_local_return = prepare
-    station.player.return_from_local = lambda entry, **kw: Player.return_from_local(
-        station.player, entry, **kw
-    )
     host.recover()
     assert station.player.bus._local_programme is audio
     assert not host.busy
