@@ -198,7 +198,7 @@ These sections apply to the whole server. `config.local.toml` can hold private s
 
 TOML section: `[library]`.
 
-- `music_dir`. Values: folder path or blank. Default: blank. Names the music folder AutoDJ sees when matching paths stored by beets; in Docker it is usually `/music`.
+- `music_dir`. Values: folder path or blank. Default: blank. Optional compatibility base for relative Beets paths, playlist lines, old DJ cue cache keys, listener-request folder exclusions and explicit legacy index imports. Also checks this folder for DJ cue exports. It does not register a music source or limit the catalog to one folder. Keep an existing value while these uses need it; see [configuration cleanup](guides/operations/catalog-migration.md#clean-up-an-existing-configuration).
 - `beets_db`. Values: SQLite file path or blank. Default: blank. Reads metadata from an optional beets library.
 - `supported_formats`. Values: list of file extensions. Default: `['mp3', 'flac', 'm4a']`. Limits the music formats imported from registered folders.
 - `playlists_folder`. Values: folder path or blank. Default: blank. Holds M3U and M3U8 files used by categories; blank uses index/shared/playlists.
@@ -210,6 +210,12 @@ TOML section: `[index]`.
 - `index_dir`. Values: folder path. Default: `index`. Stores library, shared files, stations, and logs.
 - `model_dir`. Values: folder path. Default: `models`. Caches downloaded analysis model files.
 - `throttle_ms`. Values: number at least 0. Default: 0.0. Pauses this many milliseconds between tracks in long analysis jobs.
+
+The catalog is `<index_dir>/libraries/main/library.db`; the DJ cue cache is
+`<index_dir>/libraries/main/dj_meta.db`. Shared files use `<index_dir>/shared/`, and each
+station uses `<index_dir>/stations/<slug>/`. Registered catalog folders supply the music;
+these storage folders hold AutoDJ's data. `metadata.json` and published index generations
+belong to older formats, not the current storage layout.
 
 ### Model
 

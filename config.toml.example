@@ -30,13 +30,17 @@
 # default/relays.json when the matching relay exists.
 
 [library]
+# Add music folders in Library; registered catalog folders determine available music.
+# music_dir is optional compatibility for relative paths and DJ cue exports, not discovery.
+# See docs/guides/operations/catalog-migration.md before removing an existing value.
 # Full path to a beets SQLite library database (optional).
 # beets_db = "C:/Users/you/.config/beets/library.db"
 supported_formats = ["mp3", "flac", "m4a"]
 # playlists_folder = "/srv/autodj/playlists"
 
 [index]
-# Contains shared library data (library.db and dj_meta.db) and per-station state.
+# Library data: <index_dir>/libraries/main/library.db and dj_meta.db.
+# Shared files: <index_dir>/shared/. Station state: <index_dir>/stations/<slug>/.
 # Keep a separate catalog per machine and register folders using that machine's paths.
 index_dir = "index"
 model_dir = "models"

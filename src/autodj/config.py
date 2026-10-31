@@ -108,18 +108,19 @@ def _optional(convert: Callable[[Any], Any], value: Any) -> Any:
 
 @dataclass
 class LibraryConfig(_Section):
-    """Settings for the music library location and format filtering.
+    """Shared library format filtering and optional path compatibility settings.
 
     Attributes:
-        music_dir: Optional base for legacy relative paths only. New libraries
+        music_dir: Optional base for legacy relative paths and DJ cue exports. New libraries
             start empty; registered folders determine the music available.
             For beets users, this should match the local mount point of the
             beets ``directory`` setting — relative paths stored in the beets
-            database are resolved against ``music_dir``.
+            database are resolved against ``music_dir``. Also used for relative
+            playlist paths, DJ cache keys, request exclusions and explicit index migration.
         beets_db: Optional path to the beets SQLite library database.
         supported_formats: List of audio file extensions to index (without dots).
         playlists_folder: Folder holding the M3U and M3U8 files that rotation
-            categories read; ``None`` means ``<index_dir>/<name>/playlists``.
+            categories read; ``None`` means ``<index_dir>/shared/playlists``.
     """
 
     SECTION: ClassVar[str] = "library"

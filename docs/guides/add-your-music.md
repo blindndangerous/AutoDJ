@@ -175,9 +175,13 @@ If you keep your library in [beets](https://beets.io/), AutoDJ can read it. Set 
 
 Beets is not required. Without it, AutoDJ uses the tags in your files.
 
-Beets' stored music paths must match the folder AutoDJ sees. In Docker, that folder is `/music`.
-AutoDJ reports a mismatch. For relative beets paths, when `music_dir` is unset or names a
-missing folder, AutoDJ suggests a registered music folder and uses it if only one matches.
+Register music folders in Library even when using Beets. Beets metadata does not add music sources.
+Beets' stored music paths must match the paths AutoDJ sees; the default Docker mount is `/music`.
+For relative paths, `[library] music_dir` supplies the Beets base, not the general library location.
+Categories and clock conditions can infer a base when the setting is unset or missing and enough
+paths match uniquely; enrichment, lyrics and tag updates still need the base for relative Beets
+paths. See [Beets path matching](operations/categories.md#beets-paths-and-music_dir) and
+[configuration cleanup](operations/catalog-migration.md#clean-up-an-existing-configuration).
 
 ## From the command line
 

@@ -47,6 +47,15 @@ serving and indexing before accepting this repair. `serve --lan` runs until stop
 change the saved configuration. Doctor redacts both server and Hugging Face tokens in its
 configuration report.
 
+The `configuration` check names the data root, library storage folder, `library.db` catalog
+and `dj_meta.db` cue cache. Available music comes from registered catalog folders, listed by
+`music-path` when readable. With no registered music folders, Doctor tells you to add them in
+Library. A configured `music_dir` appears as `legacy_music_dir`, with its compatibility purposes
+and manual cleanup guidance. It is not the general library location. The `beets-paths` check
+labels its `music_dir` specifically as the base for relative Beets paths. Text and JSON reports
+carry these descriptions. See [clean up an existing configuration](catalog-migration.md#clean-up-an-existing-configuration)
+for old comments and supported settings that must not be removed blindly.
+
 The `index` check reads the current catalog. It reports catalog counts, warns when the library
 is empty, and directs older libraries to `migrate-index`. It does not load old generations. The `dj-meta-db`
 check runs SQLite's integrity check on `dj_meta.db` without changing it. The `beets-db` check
