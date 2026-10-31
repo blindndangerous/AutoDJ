@@ -99,10 +99,10 @@ or evidence limits. Narrative above retains rationale and scope.
 
 ## Amendment, 2026-10-30: local DJ ownership
 
-[Accepted ADR 19](0019-local-browser-programme-ownership.md) designs one local
+[Accepted ADR 20](0020-local-browser-programme-ownership.md) designs one local
 browser's performance feeding an existing streaming station. It preserves
 browser-owned rendering and distinguishes it from legacy browser-only output.
 This adds an opt-in streaming input; legacy browser-only mode still has no bus
 (ADR-0003-01). Phase 2a exposed preparation only. Phase 2b connects the bounded
 owner workflow, independent monitor branch and consumption accounting described
-in ADR 19; broader issue acceptance and hardware evidence remain separate.
+in ADR 20; broader issue acceptance and hardware evidence remain separate.

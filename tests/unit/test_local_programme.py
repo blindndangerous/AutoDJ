@@ -20,7 +20,7 @@ def controller(tmp_path):
 
 
 def test_claim_race_and_stale_grants(controller):
-    """ADR-0019-16: one socket wins, including tabs sharing a session."""
+    """ADR-0020-16: one socket wins, including tabs sharing a session."""
 
     def claim(i):
         try:
@@ -46,7 +46,7 @@ def test_claim_race_and_stale_grants(controller):
 
 
 def test_deadlines_stop_and_preparation_cap(controller):
-    """ADR-0019-16: lease, absolute preparation deadline and stop fence claims."""
+    """ADR-0020-16: lease, absolute preparation deadline and stop fence claims."""
     first = controller.claim("anonymous", "one", 0)
     assert controller.check(2.99)
     assert not controller.check(3)
@@ -62,7 +62,7 @@ def test_deadlines_stop_and_preparation_cap(controller):
 
 
 def test_external_input_exclusion(controller):
-    """ADR-0019-16: local preparation excludes microphone and decoder claims."""
+    """ADR-0020-16: local preparation excludes microphone and decoder claims."""
     grant = controller.claim("user", "socket", 0)
     assert controller.live.claim_mic() is None
     assert controller.live.claim("user", "DJ", "mp3") is None
@@ -104,7 +104,7 @@ def captured(value, **kwargs):
 
 
 def test_locality_requires_raw_loopback_same_origin_and_no_proxy():
-    """ADR-0019-02: no Host, Origin or forwarding header establishes locality."""
+    """ADR-0020-02: no Host, Origin or forwarding header establishes locality."""
     policy = SecurityPolicy(ServerConfig(local_programme_enabled=True))
     assert not locality_allowed(scope(), policy)
     assert locality_allowed(captured(scope()), policy)
@@ -126,7 +126,7 @@ def test_locality_requires_raw_loopback_same_origin_and_no_proxy():
 @pytest.mark.parametrize("trusted", ["127.0.0.1", "192.0.2.1"])
 @pytest.mark.parametrize("kind,scheme", [("http", "http"), ("websocket", "ws")])
 def test_raw_capture_preserves_ordinary_proxy_semantics(trusted, kind, scheme):
-    """ADR-0019-02: ordinary routes retain Uvicorn client/scheme rewriting."""
+    """ADR-0020-02: ordinary routes retain Uvicorn client/scheme rewriting."""
     observations = []
 
     async def app(s, receive, send):
@@ -146,7 +146,7 @@ def test_raw_capture_preserves_ordinary_proxy_semantics(trusted, kind, scheme):
 
 
 def test_opt_in_is_strict_and_off_by_default():
-    """ADR-0019-12: the server setting is strictly boolean and defaults off."""
+    """ADR-0020-12: the server setting is strictly boolean and defaults off."""
     assert ServerConfig().local_programme_enabled is False
     with pytest.raises(TypeError):
         ServerConfig(local_programme_enabled="true")

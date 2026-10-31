@@ -1,4 +1,4 @@
-// ADR-0019-09: native ownership, browser decks, real encoded stream and recovery.
+// ADR-0020-09: native ownership, browser decks, real encoded stream and recovery.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { appendFile, mkdir, readFile } from "node:fs/promises";

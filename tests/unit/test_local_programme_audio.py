@@ -40,7 +40,7 @@ def filled(count=6):
 
 
 def test_public_handoff_ramps_at_boundaries_and_keeps_outputs():
-    """ADR-0019-05: programme handoff uses the existing continuous output chain."""
+    """ADR-0020-05: programme handoff uses the existing continuous output chain."""
     audio = filled(10)
     audio.clock = lambda: 0.1
     bus, _, _ = _bus([_track(0.1, 44100)])
@@ -58,7 +58,7 @@ def test_public_handoff_ramps_at_boundaries_and_keeps_outputs():
 
 
 def test_local_fade_drains_music_and_liner_callbacks_outside_bus_lock():
-    """ADR-0019-05: the last automation block retains its accounting callbacks."""
+    """ADR-0020-05: the last automation block retains its accounting callbacks."""
     audio = filled(10)
     bus, _, _ = _bus([])
     callbacks = []
@@ -80,7 +80,7 @@ def test_local_fade_drains_music_and_liner_callbacks_outside_bus_lock():
 
 
 def test_handoff_prevalidation_runs_outside_bus_lock(tmp_path, monkeypatch):
-    """ADR-0019-05: admission filesystem work cannot stall the render lock."""
+    """ADR-0020-05: admission filesystem work cannot stall the render lock."""
     from pathlib import Path
 
     audio = filled(10)
@@ -100,7 +100,7 @@ def test_handoff_prevalidation_runs_outside_bus_lock(tmp_path, monkeypatch):
 
 
 def test_handoff_starts_pcm_without_holding_bus_lock():
-    """ADR-0019-05: taking local ownership never nests the PCM lock under the bus."""
+    """ADR-0020-05: taking local ownership never nests the PCM lock under the bus."""
     audio = filled(10)
     bus, _, _ = _bus([])
     start = audio.start
@@ -116,7 +116,7 @@ def test_handoff_starts_pcm_without_holding_bus_lock():
 
 
 def test_prearm_load_failure_completes_from_discarded_silence():
-    """ADR-0019-06: failed loads free reservations before an audible start is armed."""
+    """ADR-0020-06: failed loads free reservations before an audible start is armed."""
     audio = LocalPCM(GRANT, now=0)
     audio.events.reserve("failed")
     marker = {"sequence": 0, "kind": "load-failure", "occurrence": "failed", "frame": 0}
@@ -129,7 +129,7 @@ def test_prearm_load_failure_completes_from_discarded_silence():
 
 
 def test_sustained_high_occupancy_returns_before_the_hard_cap():
-    """ADR-0019-03: five seconds outside 20–160 ms is explicit clock-drift failure."""
+    """ADR-0020-03: five seconds outside 20–160 ms is explicit clock-drift failure."""
     audio = filled(18)
     audio.clock = lambda: 0.17
     audio.start()
@@ -144,7 +144,7 @@ def test_sustained_high_occupancy_returns_before_the_hard_cap():
 
 
 def test_framing_credit_and_timeout_bounds():
-    """ADR-0019-03: exact stereo frames, bounded credit, consumed spans and stalls."""
+    """ADR-0020-03: exact stereo frames, bounded credit, consumed spans and stalls."""
     audio = filled(20)
     assert queued_frames(audio) == audio.high_water_frames == 8820
     assert credit_frames(audio) == 0
@@ -181,7 +181,7 @@ def test_framing_credit_and_timeout_bounds():
     ],
 )
 def test_rejects_malformed_without_advancing(bad):
-    """ADR-0019-03: invalid format, generation, sequence and samples never enter the ring."""
+    """ADR-0020-03: invalid format, generation, sequence and samples never enter the ring."""
     audio = LocalPCM(GRANT, now=0)
     audio.arm()
     with pytest.raises(PCMError):
@@ -191,7 +191,7 @@ def test_rejects_malformed_without_advancing(bad):
 
 
 def test_preparation_silence_rate_flood_and_grant_fence():
-    """ADR-0019-03: preparation discards zero PCM; credit cannot excuse a flood."""
+    """ADR-0020-03: preparation discards zero PCM; credit cannot excuse a flood."""
     audio = LocalPCM(GRANT, now=0)
     with pytest.raises(PCMError, match="preparation"):
         audio.accept_packet(GRANT, packet(), now=0)
@@ -210,7 +210,7 @@ def test_preparation_silence_rate_flood_and_grant_fence():
 
 
 def test_receive_jitter_batch_keeps_the_same_pcm_credit_bound():
-    """ADR-0019-03: a bounded arrival batch is not a sustained-rate flood."""
+    """ADR-0020-03: a bounded arrival batch is not a sustained-rate flood."""
     audio = LocalPCM(GRANT, now=0)
     audio.arm()
     # A 100 Hz sender can arrive in batches after receiver scheduling delays.
@@ -224,7 +224,7 @@ def test_receive_jitter_batch_keeps_the_same_pcm_credit_bound():
 
 
 def test_receive_jitter_allowance_does_not_expand_one_second_rate_budget():
-    """ADR-0019-03: silence cannot use burst headroom to evade the rolling cap."""
+    """ADR-0020-03: silence cannot use burst headroom to evade the rolling cap."""
     audio = LocalPCM(GRANT, now=0)
     for seq in range(125):
         audio.accept_packet(GRANT, packet(seq, values=(0, 0)), now=max(0, (seq - 19) * 0.0082))
@@ -237,7 +237,7 @@ def test_receive_jitter_allowance_does_not_expand_one_second_rate_budget():
 
 
 def test_prefill_underrun_and_revocation_never_replay():
-    """ADR-0019-03: 60 ms prefill, zero shortages, third short block fences input."""
+    """ADR-0020-03: 60 ms prefill, zero shortages, third short block fences input."""
     audio = filled(5)
     assert not audio.ready
     with pytest.raises(PCMError, match="prefill"):
@@ -269,7 +269,7 @@ def test_partial_packet_spans_and_stale_generation():
 
 
 def test_selector_holds_automation_and_bypasses_eq_liners():
-    """ADR-0019-13: input selector holds automation and retains master/output objects."""
+    """ADR-0020-13: input selector holds automation and retains master/output objects."""
     bus, started, positions = _bus(
         [_track(0.1, 100000), _track(0.1, 100000, "prepared return")], gains=(0, 0, 0)
     )

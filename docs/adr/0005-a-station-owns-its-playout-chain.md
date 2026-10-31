@@ -12,7 +12,7 @@ See [Several stations](../operations.md#several-stations) for the current config
 > Current scope and implementation evidence are in the dated amendment
 > at the end of this record. Original sections below are retained as history.
 
-Amendment, 2026-10-30: [ADR 19](0019-local-browser-programme-ownership.md)
+Amendment, 2026-10-30: [ADR 20](0020-local-browser-programme-ownership.md)
 places a local browser lease, input and occurrence accounting within each station.
 This accepted extension preserves station ownership and existing output
 configuration. Phase 2a implemented preparation leases and bounded input; Phase 2b

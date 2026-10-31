@@ -74,7 +74,7 @@ def test_close_without_a_stream_is_a_no_op() -> None:
 
 
 def test_local_monitor_gate_preserves_saved_volume_and_mute() -> None:
-    """ADR-0019-04: local ownership gates only the speaker output, not broadcast PCM."""
+    """ADR-0020-04: local ownership gates only the speaker output, not broadcast PCM."""
     state = PlayerState()
     state.volume = 0.5
     out = _output(state)

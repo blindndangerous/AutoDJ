@@ -19,7 +19,7 @@ from tests.unit.test_local_programme_playout import fixture
     "operation", ["enter_handshake", "claim", "prepare", "recover", "leave_handshake"]
 )
 def test_cancelled_control_waits_for_worker_before_cleanup(tmp_path, monkeypatch, operation):
-    """ADR-0019-16: cancellation settles acquisition and cleanup before releasing the socket."""
+    """ADR-0020-16: cancellation settles acquisition and cleanup before releasing the socket."""
     from autodj import local_programme_routes as routes
 
     app, _, _ = fixture_app(tmp_path)
@@ -89,7 +89,7 @@ def test_cancelled_control_waits_for_worker_before_cleanup(tmp_path, monkeypatch
 
 
 def test_cancelled_control_logs_worker_failure_before_reraising(tmp_path, caplog):
-    """ADR-0019-16: cancellation retains diagnostics from a failed control worker."""
+    """ADR-0020-16: cancellation retains diagnostics from a failed control worker."""
     from autodj.local_programme_routes import _settle_control
 
     async def run():
@@ -120,7 +120,7 @@ def test_cancelled_control_logs_worker_failure_before_reraising(tmp_path, caplog
 
 
 def test_queued_return_preparation_blocks_administrative_recovery(tmp_path, monkeypatch):
-    """ADR-0019-07: Return reserves preparation before its worker can be scheduled."""
+    """ADR-0020-07: Return reserves preparation before its worker can be scheduled."""
     from autodj import local_programme_routes as routes
 
     app, _, _ = fixture_app(tmp_path)
@@ -197,7 +197,7 @@ def test_queued_return_preparation_blocks_administrative_recovery(tmp_path, monk
 
 
 def test_delayed_administrative_recovery_preserves_replacement_owner(tmp_path, monkeypatch):
-    """ADR-0019-01: delayed recovery cannot mutate a replacement generation."""
+    """ADR-0020-01: delayed recovery cannot mutate a replacement generation."""
     from autodj import local_programme_routes as routes
 
     app, _, _ = fixture_app(tmp_path)

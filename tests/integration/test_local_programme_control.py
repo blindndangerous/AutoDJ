@@ -23,7 +23,7 @@ from tests.integration.test_local_programme import (
 
 
 def test_nested_control_closes_with_unsupported_data(tmp_path, monkeypatch):
-    """ADR-0019-03: recursion-limited parsers reject nested controls with 1003."""
+    """ADR-0020-03: recursion-limited parsers reject nested controls with 1003."""
     from autodj import local_programme_routes as routes
 
     app, _, _ = fixture_app(tmp_path)
@@ -43,7 +43,7 @@ def test_nested_control_closes_with_unsupported_data(tmp_path, monkeypatch):
 
 
 def test_handshake_cleanup_covers_cookie_failure(tmp_path, monkeypatch):
-    """ADR-0019-16: admission slots survive exceptions before socket acceptance."""
+    """ADR-0020-16: admission slots survive exceptions before socket acceptance."""
     from autodj import local_programme_routes as routes
 
     app, _, stations = fixture_app(tmp_path)
@@ -62,7 +62,7 @@ def test_handshake_cleanup_covers_cookie_failure(tmp_path, monkeypatch):
 
 
 def test_control_bucket_survives_reconnect(tmp_path, monkeypatch):
-    """ADR-0019-03: reconnecting does not refill the station's control budget."""
+    """ADR-0020-03: reconnecting does not refill the station's control budget."""
     from autodj import local_programme_routes as routes
 
     app, _, stations = fixture_app(tmp_path)
@@ -80,7 +80,7 @@ def test_control_bucket_survives_reconnect(tmp_path, monkeypatch):
 
 
 def test_pcm_packet_rate_does_not_drive_service(tmp_path, monkeypatch):
-    """ADR-0019-06: PCM ingress does not multiply receipt service work."""
+    """ADR-0020-06: PCM ingress does not multiply receipt service work."""
     from autodj import local_programme_routes as routes
 
     app, _, stations = fixture_app(tmp_path)
@@ -152,7 +152,7 @@ def test_pcm_packet_rate_does_not_drive_service(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("operation", ["claim", "marker"])
 def test_blocking_control_leaves_event_loop_responsive(tmp_path, monkeypatch, operation):
-    """ADR-0019-16: lock-taking control operations run outside the ASGI loop."""
+    """ADR-0020-16: lock-taking control operations run outside the ASGI loop."""
     from autodj import local_programme_routes as routes
 
     app, _, stations = fixture_app(tmp_path)
@@ -224,7 +224,7 @@ def test_blocking_control_leaves_event_loop_responsive(tmp_path, monkeypatch, op
 
 
 def test_review_mutation_is_fenced_without_a_live_placement_guard():
-    """ADR-0019-01: review writes require returning to automation first."""
+    """ADR-0020-01: review writes require returning to automation first."""
     from fastapi import HTTPException
     from starlette.requests import Request
 
@@ -242,7 +242,7 @@ def test_review_mutation_is_fenced_without_a_live_placement_guard():
 
 
 def test_slow_return_does_not_block_other_requests(tmp_path):
-    """ADR-0019-07: an automation render wait does not stall the event loop."""
+    """ADR-0020-07: an automation render wait does not stall the event loop."""
     app, _, stations = fixture_app(tmp_path)
     controller = stations["default"].local_programme
     grant = controller.claim("user", "socket", time.monotonic())

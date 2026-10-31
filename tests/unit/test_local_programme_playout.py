@@ -64,7 +64,7 @@ def fixture(tmp_path):
 
 
 def test_reservations_do_not_dequeue_and_consumption_counts_once(tmp_path):
-    """ADR-0019-06: one queue, two occurrences, durable idempotent consumption."""
+    """ADR-0020-06: one queue, two occurrences, durable idempotent consumption."""
     host, controller, station, songs = fixture(tmp_path)
     grant = controller.claim("user", "socket", 0)
     views = host.prepare(grant)
@@ -84,7 +84,7 @@ def test_reservations_do_not_dequeue_and_consumption_counts_once(tmp_path):
 
 
 def test_recovery_preserves_unheard_next_and_blocks_claim_on_ledger_failure(tmp_path):
-    """ADR-0019-07: unstarted reservations survive, heard audio never replays."""
+    """ADR-0020-07: unstarted reservations survive, heard audio never replays."""
     host, controller, station, songs = fixture(tmp_path)
     grant = controller.claim("user", "socket", 0)
     views = host.prepare(grant)
@@ -106,7 +106,7 @@ def test_recovery_preserves_unheard_next_and_blocks_claim_on_ledger_failure(tmp_
 
 
 def test_unsupported_features_and_changed_source_fail_closed(tmp_path):
-    """ADR-0019-07: scheduled insert features and replaced sources cannot enter local air."""
+    """ADR-0020-07: scheduled insert features and replaced sources cannot enter local air."""
     host, controller, station, songs = fixture(tmp_path)
     station.player._cfg.ads.enabled = True
     with pytest.raises(OwnershipError, match="Ads"):
@@ -130,7 +130,7 @@ def test_unsupported_features_and_changed_source_fail_closed(tmp_path):
     ],
 )
 def test_internal_bridge_mutations_are_fenced(name, args):
-    """ADR-0019-01: an internal caller cannot race browser-owned programming."""
+    """ADR-0020-01: an internal caller cannot race browser-owned programming."""
     from autodj._bridge import PlayerBridge
 
     bridge = object.__new__(PlayerBridge)
@@ -140,7 +140,7 @@ def test_internal_bridge_mutations_are_fenced(name, args):
 
 
 def test_queue_edits_preserve_reserved_prefix_but_allow_unreserved_tail(tmp_path):
-    """ADR-0019-06: queue edits cannot replace either reserved occurrence."""
+    """ADR-0020-06: queue edits cannot replace either reserved occurrence."""
     host, controller, _station, songs = fixture(tmp_path)
     host.prepare(controller.claim("user", "socket", 0))
     host.validate_queue(None, [songs[1], songs[2], songs[0]])
@@ -149,7 +149,7 @@ def test_queue_edits_preserve_reserved_prefix_but_allow_unreserved_tail(tmp_path
 
 
 def test_automation_advance_invalidates_preparation_even_for_identical_queue_objects(tmp_path):
-    """ADR-0019-01: render generation fences a queue of repeated identical entries."""
+    """ADR-0020-01: render generation fences a queue of repeated identical entries."""
     host, controller, station, songs = fixture(tmp_path)
     station.player._state.queue = [songs[1]] * 3
     host.prepare(controller.claim("user", "socket", 0))
@@ -160,7 +160,7 @@ def test_automation_advance_invalidates_preparation_even_for_identical_queue_obj
 
 
 def test_loss_keeps_live_reservation_until_recovery_finishes(tmp_path):
-    """ADR-0019-01: external inputs cannot acquire during local recovery."""
+    """ADR-0020-01: external inputs cannot acquire during local recovery."""
     host, controller, _station, _songs = fixture(tmp_path)
     grant = controller.claim("user", "socket", 0)
     host.prepare(grant)
@@ -174,7 +174,7 @@ def test_loss_keeps_live_reservation_until_recovery_finishes(tmp_path):
     "name,args", [("set_transition", ("none",)), ("set_eq", ()), ("set_playback_settings", (None,))]
 )
 def test_settings_owner_cannot_bypass_programming_fence(name, args):
-    """ADR-0019-01: internal settings callers use the same programming fence."""
+    """ADR-0020-01: internal settings callers use the same programming fence."""
     from autodj.station_settings import StationSettings
 
     settings = object.__new__(StationSettings)
@@ -210,7 +210,7 @@ def real_player_recovery(tmp_path):
 
 
 def test_real_player_return_keeps_queue_occurrence_until_consumption(tmp_path):
-    """ADR-0019-07: returning an unheard queued song keeps its queue provenance."""
+    """ADR-0020-07: returning an unheard queued song keeps its queue provenance."""
     host, player, entry, _audio = real_player_recovery(tmp_path)
     player._playout.wait_rendered = Mock(return_value=True)
     host.recover()
@@ -221,7 +221,7 @@ def test_real_player_return_keeps_queue_occurrence_until_consumption(tmp_path):
 
 
 def test_real_player_reservation_never_pops_the_only_queued_song(tmp_path):
-    """ADR-0019-06: selecting the second reservation cannot consume the first."""
+    """ADR-0020-06: selecting the second reservation cannot consume the first."""
     from autodj.local_programme_audio import LocalPCM
     from tests.unit.test_player_stream_mode import _player
 
@@ -240,7 +240,7 @@ def test_real_player_reservation_never_pops_the_only_queued_song(tmp_path):
 
 
 def test_voluntary_return_prepares_automation_while_local_input_remains_live(tmp_path):
-    """ADR-0019-07: decode the next unheard song before fencing the owner's PCM."""
+    """ADR-0020-07: decode the next unheard song before fencing the owner's PCM."""
     host, controller, station, songs = fixture(tmp_path)
     grant = controller.claim("user", "socket", 0)
     views = host.prepare(grant)
@@ -274,7 +274,7 @@ def test_voluntary_return_prepares_automation_while_local_input_remains_live(tmp
 
 
 def test_active_service_uses_cached_admission_and_source_signatures(tmp_path):
-    """ADR-0019-06: receipt polling does not repeat source IO or admission scans."""
+    """ADR-0020-06: receipt polling does not repeat source IO or admission scans."""
     host, controller, _station, _songs = fixture(tmp_path)
     host.prepare(controller.claim("user", "socket", 0))
     host.on_air = True
@@ -284,7 +284,7 @@ def test_active_service_uses_cached_admission_and_source_signatures(tmp_path):
 
 
 def test_source_signatures_are_read_without_holding_queue_lock(tmp_path):
-    """ADR-0019-06: source IO does not prevent station queue access."""
+    """ADR-0020-06: source IO does not prevent station queue access."""
     host, controller, station, _songs = fixture(tmp_path)
     signature = host._signature
 
@@ -298,7 +298,7 @@ def test_source_signatures_are_read_without_holding_queue_lock(tmp_path):
 
 
 def test_handoff_rechecks_generation_after_prevalidation(tmp_path):
-    """ADR-0019-01: automation advancing after IO validation invalidates takeover."""
+    """ADR-0020-01: automation advancing after IO validation invalidates takeover."""
     from tests.unit.test_local_programme_audio import packet
     from tests.unit.test_mixbus import _bus
 
@@ -324,7 +324,7 @@ def test_handoff_rechecks_generation_after_prevalidation(tmp_path):
 
 
 def test_recovery_render_wait_releases_performance_lock_and_serializes_retries(tmp_path):
-    """ADR-0019-07: blocked automation rendering cannot block other station controls."""
+    """ADR-0020-07: blocked automation rendering cannot block other station controls."""
     host, controller, station, _songs = fixture(tmp_path)
     grant = controller.claim("user", "socket", 0)
     host.prepare(grant)
@@ -363,7 +363,7 @@ def test_recovery_render_wait_releases_performance_lock_and_serializes_retries(t
 
 
 def test_return_timeout_retains_safe_silence_and_reservation_for_retry(tmp_path):
-    """ADR-0019-07: an unready renderer cannot acquire the bus or release ownership."""
+    """ADR-0020-07: an unready renderer cannot acquire the bus or release ownership."""
     host, controller, station, _songs = fixture(tmp_path)
     grant = controller.claim("user", "socket", 0)
     host.prepare(grant)
@@ -381,7 +381,7 @@ def test_return_timeout_retains_safe_silence_and_reservation_for_retry(tmp_path)
 
 
 def test_real_player_timeout_keeps_local_bus_and_reuses_pending_render(tmp_path):
-    """ADR-0019-07: a retry waits for the same cursor instead of restarting decoding."""
+    """ADR-0020-07: a retry waits for the same cursor instead of restarting decoding."""
     host, player, entry, audio = real_player_recovery(tmp_path)
     player._playout.wait_rendered = Mock(side_effect=[False, True])
     reset = Mock(wraps=player._playout.reset)
@@ -398,7 +398,7 @@ def test_real_player_timeout_keeps_local_bus_and_reuses_pending_render(tmp_path)
 
 
 def test_stop_during_recovery_wait_does_not_resume_the_bus(tmp_path):
-    """ADR-0019-07: Stop wins over automation readiness arriving during recovery."""
+    """ADR-0020-07: Stop wins over automation readiness arriving during recovery."""
     from tests.unit.test_mixbus import _bus
 
     host, controller, station, _songs = fixture(tmp_path)
@@ -421,7 +421,7 @@ def test_stop_during_recovery_wait_does_not_resume_the_bus(tmp_path):
 
 
 def test_recovery_retry_reuses_picked_song_without_unstarted_occurrences(tmp_path):
-    """ADR-0019-07: retries retain a picked target after all reservations started."""
+    """ADR-0020-07: retries retain a picked target after all reservations started."""
     host, controller, station, songs = fixture(tmp_path)
     grant = controller.claim("user", "socket", 0)
     host.prepare(grant)

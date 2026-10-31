@@ -6,7 +6,7 @@ import { ProgrammeTransport } from "../../src/autodj/static/modules/programme-tr
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("local programme browser performance", () => {
-  // ADR-0019-01
+  // ADR-0020-01
   it("ignores an old worklet load failure after acquisition was replaced", async () => {
     let failModule;
     const engine = { prepareLocalProgramme: vi.fn(), endLocalProgramme: vi.fn(),
@@ -20,7 +20,7 @@ describe("local programme browser performance", () => {
     failModule(new Error("Old module request failed"));
     await expect(taking).resolves.toBeUndefined();
   });
-  // ADR-0019-04
+  // ADR-0020-04
   it("renews the monitor watchdog for at most 750 milliseconds", async () => {
     const owner = new ProgrammeOwner();
     owner.node = { port: { postMessage: vi.fn() } };
@@ -29,7 +29,7 @@ describe("local programme browser performance", () => {
     expect(owner.node.port.postMessage).toHaveBeenCalledWith({ type: "watch", frames: 33075 });
     expect(owner.node.port.postMessage).toHaveBeenCalledTimes(1);
   });
-  // ADR-0019-01
+  // ADR-0020-01
   it("cancels acquisition when the station changes during context preparation", async () => {
     vi.stubGlobal("AudioWorkletNode", vi.fn(function () { return { port: {} }; }));
     vi.stubGlobal("WebSocket", vi.fn(function () { return { close: vi.fn() }; }));
@@ -47,7 +47,7 @@ describe("local programme browser performance", () => {
     selectStation("default");
     vi.unstubAllGlobals();
   });
-  // ADR-0019-01
+  // ADR-0020-01
   it("serializes pause markers and cancels the old pause timer before resume", async () => {
     vi.useFakeTimers();
     const audio = new window.EventTarget();
@@ -68,7 +68,7 @@ describe("local programme browser performance", () => {
     expect(audio.pause).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
-  // ADR-0019-04
+  // ADR-0020-04
   it("waits for an observed render clock before preparing the first audible marker", async () => {
     const owner = new ProgrammeOwner();
     let ready = false;
@@ -79,7 +79,7 @@ describe("local programme browser performance", () => {
     await waiting;
     expect(ready).toBe(true);
   });
-  // ADR-0019-01
+  // ADR-0020-01
   it("does not apply old render acknowledgements to a replacement owner", async () => {
     const audio = new window.EventTarget();
     Object.assign(audio, { readyState: 3, play: vi.fn().mockResolvedValue(), pause: vi.fn() });
@@ -94,7 +94,7 @@ describe("local programme browser performance", () => {
     expect(audio.pause).not.toHaveBeenCalled();
     expect(owner.current.id).toBe("new");
   });
-  // ADR-0019-01
+  // ADR-0020-01
   it("does not report an old pause failure against a replacement owner", async () => {
     const owner = new ProgrammeOwner({ engine: { _ctx: { currentTime: 1 },
       decks: [{ audio: {}, gain: { gain: {} } }] } });
@@ -102,7 +102,7 @@ describe("local programme browser performance", () => {
     owner.marker = vi.fn(async () => { owner.run++; throw new Error("Old marker cancelled"); });
     await expect(owner.togglePause()).resolves.toBe(false);
   });
-  // ADR-0019-17
+  // ADR-0020-17
   it("rewinds a reused media deck for a new occurrence of the same song", async () => {
     vi.useFakeTimers();
     const audio = new window.EventTarget();
@@ -124,7 +124,7 @@ describe("local programme browser performance", () => {
     await vi.advanceTimersByTimeAsync(600);
     vi.useRealTimers();
   });
-  // ADR-0019-17
+  // ADR-0020-17
   it("does not start media after its ownership operation was cancelled", async () => {
     const abort = new window.AbortController(); abort.abort();
     const audio = new window.EventTarget();
@@ -132,7 +132,7 @@ describe("local programme browser performance", () => {
     await expect(mediaReady(audio, abort.signal)).rejects.toThrow();
     expect(audio.play).not.toHaveBeenCalled();
   });
-  // ADR-0019-14
+  // ADR-0020-14
   it("catches up after timer quantization without exceeding a two packet sender burst", () => {
     let now = 0, timer = null;
     vi.spyOn(globalThis.performance, "now").mockImplementation(() => now);
@@ -157,7 +157,7 @@ describe("local programme browser performance", () => {
     expect(sent.map(item => item.frame)).toEqual(Array.from({length:sent.length}, (_, i) => i * 441));
   });
 
-  // ADR-0019-14
+  // ADR-0020-14
   it("paces batched render messages within the 32 buffer pool", async () => {
     vi.useFakeTimers();
     const owner = new ProgrammeOwner({engine: { endLocalProgramme: vi.fn(), _master: {} }});
@@ -175,7 +175,7 @@ describe("local programme browser performance", () => {
     vi.useRealTimers();
   });
 
-  // ADR-0019-14
+  // ADR-0020-14
   it("ends the session without stranded live loans on every sender failure path", () => {
     for (const failure of ["send throws", "socket closed", "backpressure", "credit", "invalid frame", "invalid buffer", "already failed", "sender missing", "recycle throws"]) {
       vi.useFakeTimers();
@@ -210,7 +210,7 @@ describe("local programme browser performance", () => {
       vi.useRealTimers();
     }
   });
-  // ADR-0019-17
+  // ADR-0020-17
   it("rejects failed play and requires observed media readiness", async () => {
     const audio = new window.EventTarget();
     audio.readyState = 0;
@@ -227,7 +227,7 @@ describe("local programme browser performance", () => {
     expect(ready).toBe(true);
   });
 
-  // ADR-0019-04
+  // ADR-0020-04
   it("does not open a deck or emit started when play rejects", async () => {
     const gain = { cancelScheduledValues: vi.fn(), setValueAtTime: vi.fn(),
       linearRampToValueAtTime: vi.fn(), value: 0 };

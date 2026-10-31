@@ -131,7 +131,7 @@ afterEach(() => {
 });
 
 describe("audio engine request recovery", () => {
-  // ADR-0019-17
+  // ADR-0020-17
   it("schedules local-owned crossfade ramps in the initiating tick and cancels rejected play without advance", async () => {
     vi.useFakeTimers();
     const fetcher = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
@@ -159,7 +159,7 @@ describe("audio engine request recovery", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  // ADR-0019-17
+  // ADR-0020-17
   it("does not finish or advance a local-owned crossfade while play is unsettled", async () => {
     vi.useFakeTimers();
     const fetcher = vi.fn();
@@ -213,17 +213,17 @@ describe("audio engine request recovery", () => {
     play.resolve();
   }
 
-  // ADR-0019-12 ADR-0019-17
+  // ADR-0020-12 ADR-0020-17
   it("preserves ordinary crossfade ordering with pending play", async () => {
     await checkOrdinaryCrossfadeOrdering("pending");
   });
 
-  // ADR-0019-12 ADR-0019-17
+  // ADR-0020-12 ADR-0020-17
   it("preserves ordinary crossfade ordering with rejected play", async () => {
     await checkOrdinaryCrossfadeOrdering("rejected");
   });
 
-  // ADR-0019-04
+  // ADR-0020-04
   it("uses 44100 Hz for the first shared context when local programme is enabled", async () => {
     document.documentElement.dataset.localProgrammeEnabled = "true";
     try {
@@ -233,7 +233,7 @@ describe("audio engine request recovery", () => {
     } finally { delete document.documentElement.dataset.localProgrammeEnabled; }
   });
 
-  // ADR-0019-12
+  // ADR-0020-12
   it("preserves default context construction when local programme is disabled", async () => {
     const { engine } = await importEngine();
     engine.ensureAudioGraph();
@@ -1229,7 +1229,7 @@ describe("browser playback robustness", () => {
   });
 });
 
-// ADR-0019-17
+// ADR-0020-17
 it("ignores stale play completion after the standby deck was reused", async () => {
   const { engine, context } = await importEngine();
   context.sampleRate = 44100;
@@ -1248,7 +1248,7 @@ it("ignores stale play completion after the standby deck was reused", async () =
   expect(standby.audio.pause).not.toHaveBeenCalled();
 });
 
-// ADR-0019-04
+// ADR-0020-04
 it("clears the legacy programme pause when local ownership starts", async () => {
   const { engine, context } = await importEngine();
   context.sampleRate = 44100;
@@ -1259,7 +1259,7 @@ it("clears the legacy programme pause when local ownership starts", async () => 
   expect(programme.gain.setValueAtTime).toHaveBeenLastCalledWith(1, context.currentTime);
 });
 
-// ADR-0019-17
+// ADR-0020-17
 it("does not advance either deck when incoming play rejects", async () => {
   vi.useFakeTimers();
   const { engine, context } = await importEngine();
@@ -1275,7 +1275,7 @@ it("does not advance either deck when incoming play rejects", async () => {
   expect(engine.crossfading).toBe(false);
 });
 
-// ADR-0019-04
+// ADR-0020-04
 it("creates a 44100 Hz programme context and leaves monitor gain after capture", async () => {
   const { engine, context } = await importEngine();
   context.sampleRate = 44100;

@@ -19,7 +19,7 @@ Set `local_programme_enabled = true` under `[server]` in the server TOML and
 restart to expose **Take local control** and **Return to automation** on a
 streaming station. The default is false: existing installations show neither
 control and install no local programme routes. This is a bounded prototype;
-[ADR 19](../../adr/0019-local-browser-programme-ownership.md) records its limits.
+[ADR 20](../../adr/0020-local-browser-programme-ownership.md) records its limits.
 
 Use Chromium through a direct native loopback connection. Reverse proxies,
 forwarded headers, remote browsers and non-native authentication are refused.

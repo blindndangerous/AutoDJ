@@ -25,7 +25,7 @@ from ._helpers import _make_entry, patch_station_settings
 
 
 def test_index_bootstraps_local_programme_rate_before_scripts(bridge) -> None:
-    """ADR-0019-04: Opt-in is available before any browser audio initializer."""
+    """ADR-0020-04: Opt-in is available before any browser audio initializer."""
     from fastapi.testclient import TestClient
 
     bridge.player._cfg.server.local_programme_enabled = True
@@ -37,7 +37,7 @@ def test_index_bootstraps_local_programme_rate_before_scripts(bridge) -> None:
 
 
 def test_index_preserves_opt_out_audio_bootstrap(client) -> None:
-    """ADR-0019-12: Default-off leaves ordinary AudioContext construction alone."""
+    """ADR-0020-12: Default-off leaves ordinary AudioContext construction alone."""
     page = client.get("/")
     assert page.status_code == 200
     assert 'data-local-programme-enabled="true"' not in page.text

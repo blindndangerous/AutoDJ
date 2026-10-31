@@ -9,7 +9,7 @@ For architectural constraints and implementation/test links, consult the
 The index also identifies Proposed records for storage, trust, background
 work, scheduling, and recovery; those await maintainer acceptance.
 
-[Local DJ prototype](adr/0019-local-browser-programme-ownership.md)
+[Local DJ prototype](adr/0020-local-browser-programme-ownership.md)
 records the approved design and phased evidence for issue #541. The TOML-only
 `server.local_programme_enabled` setting defaults off and requires restart.
 The bounded workflow is described in

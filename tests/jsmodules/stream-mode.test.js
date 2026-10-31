@@ -57,7 +57,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
 describe("stream mode", () => {
   beforeEach(() => vi.useRealTimers());
 
-  // ADR-0019-04
+  // ADR-0020-04
   it("does not start encoded monitoring while the browser owns the programme", async () => {
     const { mode, audio, fetchInfo } = setup({ canListen: () => false });
     await mode.toggleListen();

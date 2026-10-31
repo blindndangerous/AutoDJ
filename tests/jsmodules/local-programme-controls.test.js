@@ -26,7 +26,7 @@ describe("local control accessibility", () => {
     expect(document.activeElement).toBe(take);
   }
 
-  // ADR-0019-08
+  // ADR-0020-08
   it("keeps Preparing while the server still reports automation before the claim lands", () => {
     const owner = { owned: false, acquiring: false, take: vi.fn(), release: vi.fn(), stop: vi.fn() };
     const { status, apply, announce } = setup(owner);
@@ -37,17 +37,17 @@ describe("local control accessibility", () => {
     expect(announce).not.toHaveBeenCalled();
   });
 
-  // ADR-0019-08
+  // ADR-0020-08
   it("explains why Take is unavailable while preparing", () => {
     checkTakeUnavailable("preparing", "Local control is being prepared. Wait or select Return to automation to cancel.");
   });
 
-  // ADR-0019-08
+  // ADR-0020-08
   it("explains why Take is unavailable while returning", () => {
     checkTakeUnavailable("returning", "Wait for the return to automation to finish.");
   });
 
-  // ADR-0019-08
+  // ADR-0020-08
   it("explains why Take is unavailable while recovering", () => {
     checkTakeUnavailable("recovering", "Wait for automation to recover before taking local control.");
   });
@@ -86,17 +86,17 @@ describe("local control accessibility", () => {
     }
   }
 
-  // ADR-0019-08
+  // ADR-0020-08
   it("refreshes authoritative local state after Return is refused", async () => {
     await checkReturnRefusal("local");
   });
 
-  // ADR-0019-08
+  // ADR-0020-08
   it("refreshes authoritative automation state after Return is refused", async () => {
     await checkReturnRefusal("automation");
   });
 
-  // ADR-0019-08
+  // ADR-0020-08
   it("announces only the final ownership state during a clean return", async () => {
     vi.useFakeTimers();
     const { owner, apply, returnButton, announce, status } = setup();
@@ -116,7 +116,7 @@ describe("local control accessibility", () => {
     expect(document.activeElement).toBe(returnButton);
   });
 
-  // ADR-0019-08
+  // ADR-0020-08
   it("reports a disconnected return once and confirms the final server state", async () => {
     vi.useFakeTimers();
     const { owner, apply, returnButton, announce, status } = setup();
@@ -138,7 +138,7 @@ describe("local control accessibility", () => {
     expect(announce).toHaveBeenCalledTimes(2);
   });
 
-  // ADR-0019-08
+  // ADR-0020-08
   it("explains unavailable local control actions when activated", () => {
     const { take, returnButton, apply, announce } = setup();
     returnButton.click();
@@ -148,7 +148,7 @@ describe("local control accessibility", () => {
     expect(announce).toHaveBeenLastCalledWith("Return to automation before taking local control.");
   });
 
-  // ADR-0019-08
+  // ADR-0020-08
   it("announces an acquisition refusal once without intermediate state messages", async () => {
     const engine = { prepareLocalProgramme: () => { throw new Error("Audio is unavailable"); }, endLocalProgramme: vi.fn() };
     const { take, announce, status } = setup(new ProgrammeOwner({ engine }));
@@ -160,7 +160,7 @@ describe("local control accessibility", () => {
     expect(document.activeElement).not.toBe(status);
   });
 
-  // ADR-0019-08
+  // ADR-0020-08
   it("hides disabled installations and announces each change once without moving focus", async () => {
     document.body.innerHTML = `<section id="controls" hidden><button id="take">Take local control</button>
       <button id="return">Return to automation</button><p id="status"></p></section>`;

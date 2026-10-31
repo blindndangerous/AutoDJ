@@ -6,7 +6,7 @@ function fixture() {
   return { socket, sender: new ProgrammeTransport(socket, { generation: 7, limit_frame: 8820 }) };
 }
 
-// ADR-0019-14
+// ADR-0020-14
 it("encodes exactly one little endian stereo packet and never overspends credit", () => {
   const { socket, sender } = fixture();
   for (let i = 0; i < 20; i++) expect(sender.send(new Float32Array(882).buffer, i * 441)).toBe(true);
@@ -19,7 +19,7 @@ it("encodes exactly one little endian stereo packet and never overspends credit"
   expect(socket.close).toHaveBeenCalledOnce();
 });
 
-// ADR-0019-14
+// ADR-0020-14
 it("uses cumulative consumption credit and stops on socket backpressure", () => {
   const { socket, sender } = fixture();
   sender.credit({ type: "credit", limit_frame: 9261 });

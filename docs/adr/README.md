@@ -34,7 +34,7 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | [16: Updates and restart](0016-update-and-restart-from-the-web.md) | Proposed | Update channels, the update check and notice, restart from the web page, the launcher restart loop, published container images and the CUDA image |
 | [17: Explicit settings saves](0017-save-settings-through-one-draft-boundary.md) | Proposed | Shared drafts, revision conflicts, separate storage owners and removal of superseded writes |
 | [18: Profile overrides](0018-profiles-store-overrides-of-station-defaults.md) | Proposed | Station-owned profile overrides, defaults inheritance, activation and startup resolution |
-| [19: Local browser programme](0019-local-browser-programme-ownership.md) | Accepted; bounded prototype implemented, Chromium endurance checked, hardware evidence pending | Single local browser ownership, stereo programme input, direct monitoring, occurrence accounting and bounded prototype recovery |
+| [20: Local browser programme](0020-local-browser-programme-ownership.md) | Accepted; bounded prototype implemented, Chromium endurance checked, hardware evidence pending | Single local browser ownership, stereo programme input, direct monitoring, occurrence accounting and bounded prototype recovery |
 
 [ADR 13](0013-produce-speech-outside-playout.md) describes selected
 Showcraft-inspired speech capabilities inside AutoDJ. Its contract table records

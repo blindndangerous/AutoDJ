@@ -72,7 +72,7 @@ def control(grant, kind):
 
 
 def test_administrative_return_rejects_an_old_observed_generation(tmp_path):
-    """ADR-0019-01: a delayed Return cannot revoke a replacement owner."""
+    """ADR-0020-01: a delayed Return cannot revoke a replacement owner."""
     app, _, stations = fixture_app(tmp_path)
     controller = stations["default"].local_programme
     first = controller.claim("user", "first", time.monotonic())
@@ -95,7 +95,7 @@ def test_administrative_return_rejects_an_old_observed_generation(tmp_path):
     ["/api/recording/stop", "/api/recording/split"],
 )
 def test_local_ownership_preserves_private_review_and_recording_controls(path):
-    """ADR-0019-04: private review and recording do not change programme ownership."""
+    """ADR-0020-04: private review and recording do not change programme ownership."""
     from starlette.requests import Request
 
     from autodj.station_routes import _fence_local_programming
@@ -110,7 +110,7 @@ def test_local_ownership_preserves_private_review_and_recording_controls(path):
 
 
 def test_competing_tabs_station_isolation_release_and_stale_owner(tmp_path):
-    """ADR-0019-16: socket identity wins over shared cookie; stations stay separate."""
+    """ADR-0020-16: socket identity wins over shared cookie; stations stay separate."""
     app, _, stations = fixture_app(tmp_path)
     client = client_for(app)
     with client.websocket_connect(WS + PATH, headers={"Origin": BASE}) as one:
@@ -138,7 +138,7 @@ def test_competing_tabs_station_isolation_release_and_stale_owner(tmp_path):
 
 
 def test_revocation_without_incoming_messages_and_stop(tmp_path):
-    """ADR-0019-16: a silent socket cannot keep a revoked session or stopped station."""
+    """ADR-0020-16: a silent socket cannot keep a revoked session or stopped station."""
     app, policy, stations = fixture_app(tmp_path)
     client = client_for(app)
     with client.websocket_connect(WS + PATH, headers={"Origin": BASE}) as ws:
@@ -150,7 +150,7 @@ def test_revocation_without_incoming_messages_and_stop(tmp_path):
 
 
 def test_revocation_while_receive_waits_cannot_claim(tmp_path, monkeypatch):
-    """ADR-0019-16: revalidate authorization after receive, before any mutation."""
+    """ADR-0020-16: revalidate authorization after receive, before any mutation."""
     from fastapi import WebSocket
 
     app, policy, stations = fixture_app(tmp_path)
@@ -183,7 +183,7 @@ def test_revocation_while_receive_waits_cannot_claim(tmp_path, monkeypatch):
     ],
 )
 def test_socket_denies_forged_locality(tmp_path, header, value):
-    """ADR-0019-02: forwarded loopback claims and cross-origin handshakes fail."""
+    """ADR-0020-02: forwarded loopback claims and cross-origin handshakes fail."""
     app, _, _ = fixture_app(tmp_path)
     with (
         disconnected(4403),
@@ -193,7 +193,7 @@ def test_socket_denies_forged_locality(tmp_path, header, value):
 
 
 def test_disabled_has_no_routes_and_missing_provenance_fails_closed(tmp_path):
-    """ADR-0019-12: opt-out installs no routes; unsupported ASGI deployments fail closed."""
+    """ADR-0020-12: opt-out installs no routes; unsupported ASGI deployments fail closed."""
     app = FastAPI()
     before = list(app.routes)
     install_local_programme_routes(app, SecurityPolicy(ServerConfig()))
@@ -219,7 +219,7 @@ def test_authenticated_admission_and_public_activation_unavailable(tmp_path):
 
 
 def test_preparation_pcm_credit_stall_and_malformed_release(tmp_path):
-    """ADR-0019-03: zero PCM earns credit; malformed and stalled sockets release reservations."""
+    """ADR-0020-03: zero PCM earns credit; malformed and stalled sockets release reservations."""
     from tests.unit.test_local_programme_audio import packet
 
     app, _, stations = fixture_app(tmp_path)
@@ -251,7 +251,7 @@ def test_control_protocol_unknown_fields_and_version_are_refused(tmp_path):
 
 
 def test_consumption_credit_arrives_without_another_packet(tmp_path):
-    """ADR-0019-03: draining an internally armed input grants credit without inbound traffic."""
+    """ADR-0020-03: draining an internally armed input grants credit without inbound traffic."""
     from tests.unit.test_local_programme_audio import packet
 
     app, _, stations = fixture_app(tmp_path)
@@ -268,7 +268,7 @@ def test_consumption_credit_arrives_without_another_packet(tmp_path):
 
 
 async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_path):
-    """ADR-0019-13: real encoder and one HTTP response survive internal input selection.
+    """ADR-0020-13: real encoder and one HTTP response survive internal input selection.
 
     Synthetic Python PCM isolates the new receiver/bus seam. This is not evidence
     of browser feed delay, the future queue handoff or third-party mastering.
@@ -436,7 +436,7 @@ async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_pa
 
 
 def test_real_socket_locality_and_proxy_refusal(tmp_path):
-    """ADR-0019-02: actual TCP peer captured outside proxy rewriting admits only direct access."""
+    """ADR-0020-02: actual TCP peer captured outside proxy rewriting admits only direct access."""
     import json
 
     from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware

@@ -12,7 +12,7 @@ beforeEach(async () => {
 });
 
 describe("programme capture", () => {
-  // ADR-0019-04
+  // ADR-0020-04
   it("samples the capture clock at a render boundary instead of a port callback", () => {
     vi.stubGlobal("currentTime", 1);
     const p = new Processor();
@@ -24,7 +24,7 @@ describe("programme capture", () => {
       type: "clock", frame: 0, time: 1 + 128 / 44100,
     });
   });
-  // ADR-0019-14
+  // ADR-0020-14
   it("waits for a fresh grant before starting its capture clock", () => {
     const p = new Processor({ processorOptions: { waitForStart: true } });
     const channels = [new Float32Array(128), new Float32Array(128)];
@@ -34,7 +34,7 @@ describe("programme capture", () => {
     for (let i = 0; i < 4; i++) p.process([channels], []);
     expect(p.port.postMessage.mock.calls[0][0].firstFrame).toBe(0);
   });
-  // ADR-0019-04
+  // ADR-0020-04
   it("acknowledges future markers before PCM and silences only monitor on watchdog expiry", () => {
     vi.stubGlobal("currentTime", 0);
     const p = new Processor();
@@ -51,7 +51,7 @@ describe("programme capture", () => {
     expect(p.port.postMessage.mock.calls.filter(c => c[0].type === "failed")).toHaveLength(1);
   });
 
-  // ADR-0019-14
+  // ADR-0020-14
   it("frames stereo without gain and bounds outstanding transfers to 32", () => {
     const p = new Processor();
     const left = new Float32Array(128).fill(0.25);
@@ -68,7 +68,7 @@ describe("programme capture", () => {
     expect(p.port.postMessage.mock.calls.filter(c => c[0].type === "failed")).toHaveLength(1);
   });
 
-  // ADR-0019-14
+  // ADR-0020-14
   it("recycles only loaned slots and rejects unsupported rates", () => {
     vi.stubGlobal("sampleRate", 48000);
     expect(() => new Processor()).toThrow("44,100");
@@ -83,7 +83,7 @@ describe("programme capture", () => {
     expect(p.port.postMessage.mock.calls.at(-1)[0].firstFrame).toBe(1323);
   });
 
-  // ADR-0019-14
+  // ADR-0020-14
   it("survives 200 milliseconds of delayed recycling without growing or losing stereo frames", () => {
     const p = new Processor();
     const channels = [new Float32Array(441).fill(.25), new Float32Array(441).fill(-.5)];

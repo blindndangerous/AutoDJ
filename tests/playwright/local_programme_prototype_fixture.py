@@ -181,9 +181,11 @@ async def run(root: Path) -> None:
 
         @app.get("/api/audio")
         async def audio(path: str):
-            if path not in {e.path for e in entries}:
+            # Serve the catalog's own path, never the request's string.
+            entry = {e.path: e for e in entries}.get(path)
+            if entry is None:
                 raise HTTPException(404)
-            return FileResponse(path, media_type="audio/wav")
+            return FileResponse(entry.path, media_type="audio/wav")
 
         @app.get("/app.css")
         async def css():

@@ -8,7 +8,7 @@ from tests.playwright.local_programme_measure import measure, signal
 
 
 def test_detector_measures_injected_delay_and_gain():
-    """ADR-0019-15: calibration detects injected signal changes."""
+    """ADR-0020-15: calibration detects injected signal changes."""
     source = signal(8000, 4)
     received = np.pad(source * 0.4, ((800, 0), (0, 0)))
     result = measure(source, received, 8000)
@@ -19,7 +19,7 @@ def test_detector_measures_injected_delay_and_gain():
 
 @pytest.mark.parametrize("missing_seconds", [1, 2.5])
 def test_detector_finds_dropout_and_reversed_channels(missing_seconds):
-    """ADR-0019-15: calibration detects injected signal changes."""
+    """ADR-0020-15: calibration detects injected signal changes."""
     source = signal(8000, 4)
     received = source[:, ::-1].copy()
     received[8000 : 8000 + int(8000 * missing_seconds)] = 0
@@ -29,7 +29,7 @@ def test_detector_finds_dropout_and_reversed_channels(missing_seconds):
 
 
 def test_detector_measures_clock_error():
-    """ADR-0019-15: calibration detects injected signal changes."""
+    """ADR-0020-15: calibration detects injected signal changes."""
     source = signal(8000, 8)
     received = resample_poly(source, 1001, 1000)
     result = measure(source, received, 8000)
@@ -37,7 +37,7 @@ def test_detector_measures_clock_error():
 
 
 def test_detector_finds_one_missing_ten_ms_packet():
-    """ADR-0019-15: a missing PCM packet cannot hide in a correlated long window."""
+    """ADR-0020-15: a missing PCM packet cannot hide in a correlated long window."""
     source = signal(44100, 3)
     received = source.copy()
     received[44100:44541] = 0
@@ -47,7 +47,7 @@ def test_detector_finds_one_missing_ten_ms_packet():
 
 
 def test_private_marker_detector_rejects_injected_audition():
-    """ADR-0019-15: the private marker sits outside the programme code's passband."""
+    """ADR-0020-15: the private marker sits outside the programme code's passband."""
     from tests.playwright.local_programme_prototype_measure import private_energy
 
     source = signal(44100, 1)
@@ -57,7 +57,7 @@ def test_private_marker_detector_rejects_injected_audition():
 
 
 def test_occurrence_measurement_does_not_jump_to_a_later_repeated_song():
-    """ADR-0019-15: align the first occurrence when later audio repeats its codes."""
+    """ADR-0020-15: align the first occurrence when later audio repeats its codes."""
     from tests.playwright.local_programme_prototype_measure import measure_first
 
     reference = signal(8000, 2)
@@ -69,7 +69,7 @@ def test_occurrence_measurement_does_not_jump_to_a_later_repeated_song():
 
 
 def test_streaming_detector_covers_every_chunk_and_missing_packet(tmp_path):
-    """ADR-0019-15: bounded-memory endurance analysis retains dropout evidence."""
+    """ADR-0020-15: bounded-memory endurance analysis retains dropout evidence."""
     import soundfile as sf
 
     from tests.playwright.local_programme_measure import measure_files
@@ -88,7 +88,7 @@ def test_streaming_detector_covers_every_chunk_and_missing_packet(tmp_path):
 
 
 def test_streaming_detector_measures_accumulating_clock_error(tmp_path):
-    """ADR-0019-15: local chunk alignment must not erase long-run drift."""
+    """ADR-0020-15: local chunk alignment must not erase long-run drift."""
     import soundfile as sf
 
     from tests.playwright.local_programme_measure import measure_files

@@ -10,7 +10,7 @@ def event(sequence=0, kind="started", occurrence="one", frame=441):
 
 
 def test_consumption_receipts_survive_revocation_and_retry():
-    """ADR-0019-06: unheard markers never count, consumed markers survive loss."""
+    """ADR-0020-06: unheard markers never count, consumed markers survive loss."""
     events = ProgrammeEvents()
     events.reserve("one")
     events.submit(event(), 0)
@@ -27,7 +27,7 @@ def test_consumption_receipts_survive_revocation_and_retry():
 
 
 def test_only_reserved_occurrences_ordered_future_frames_and_bounded_pending():
-    """ADR-0019-06: occurrence identities and bounded ordered markers fence reports."""
+    """ADR-0020-06: occurrence identities and bounded ordered markers fence reports."""
     events = ProgrammeEvents()
     with pytest.raises(ValueError):
         events.submit(event(), 0)
@@ -47,7 +47,7 @@ def test_only_reserved_occurrences_ordered_future_frames_and_bounded_pending():
 
 
 def test_same_song_occurrences_are_distinct_and_ended_releases_slot():
-    """ADR-0019-06: A/B/A uses occurrence IDs, never path-based deduplication."""
+    """ADR-0020-06: A/B/A uses occurrence IDs, never path-based deduplication."""
     events = ProgrammeEvents()
     for occurrence in ("a-first", "b", "a-again"):
         events.reserve(occurrence)
@@ -64,7 +64,7 @@ def test_same_song_occurrences_are_distinct_and_ended_releases_slot():
 
 
 def test_skipped_marker_fails_without_silently_losing_receipt():
-    """ADR-0019-06: a missing audio span cannot erase an accepted start."""
+    """ADR-0020-06: a missing audio span cannot erase an accepted start."""
     events = ProgrammeEvents()
     events.reserve("one")
     marker = event(frame=0)

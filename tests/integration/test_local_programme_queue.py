@@ -26,7 +26,7 @@ from tests._server import create_app
     ],
 )
 def test_every_queue_write_preserves_local_reservations(bridge, prefix, action, expected):
-    """ADR-0019-06: exempt queue routes reach the bridge guard before mutation."""
+    """ADR-0020-06: exempt queue routes reach the bridge guard before mutation."""
     bridge.player._cfg.server.local_programme_enabled = True
     app = create_app(bridge)
     station = app.state.stations.default

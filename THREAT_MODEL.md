@@ -1533,5 +1533,5 @@ occurrences, 64 pending/heard events and 256 cached acknowledgements. Programmin
 and reserved queue edits are fenced, including internal settings callers. A
 storage failure keeps recovery busy rather than granting another performance.
 Crash-atomic audio/accounting and long-run clock correction remain deferred.
-See [ADR 19](docs/adr/0019-local-browser-programme-ownership.md) for the prototype
+See [ADR 20](docs/adr/0020-local-browser-programme-ownership.md) for the prototype
 boundary, tests and remaining evidence limits.
