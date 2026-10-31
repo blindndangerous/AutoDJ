@@ -4,6 +4,7 @@ import struct
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 
 import numpy as np
 
@@ -57,6 +58,8 @@ class LocalPCM:
         self._arm_frame = 0
         self._consumed_frame = 0
         self._occupancy_since: float | None = None
+        self._credit_callback: Callable[[], None] | None = None
+        self._credit_pending = False
 
     @property
     def consumed_frame(self) -> int:
@@ -78,6 +81,23 @@ class LocalPCM:
     def failed(self) -> str:
         with self._lock:
             return self._failed
+
+    def set_credit_callback(self, callback: Callable[[], None] | None) -> None:
+        """Attach one nonblocking socket wakeup; detach before its loop closes."""
+        with self._lock:
+            self._credit_callback = callback
+            self._credit_pending = False
+
+    def acknowledge_credit_wakeup(self) -> None:
+        with self._lock:
+            self._credit_pending = False
+
+    def _notify_credit(self) -> None:
+        # Called under the PCM lock. Coalesce while the event loop is delayed,
+        # so a busy render thread cannot enqueue unbounded loop callbacks.
+        if self._credit_callback is not None and not self._credit_pending:
+            self._credit_pending = True
+            self._credit_callback()
 
     def begin_capture(self) -> None:
         """Start the first-packet deadline when the server issues the capture grant."""
@@ -220,6 +240,8 @@ class LocalPCM:
             block[tail:count] = self._ring[: count - tail]
             self._read = (self._read + count) % CAPACITY
             self._count -= count
+            if count:
+                self._notify_credit()
             remaining = count
             while remaining:
                 first, length = self._spans.popleft()

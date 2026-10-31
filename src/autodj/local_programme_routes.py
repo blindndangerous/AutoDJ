@@ -188,6 +188,50 @@ def install_local_programme_routes(app: FastAPI, policy: SecurityPolicy) -> None
         return_frame = None
         return_task = None
         return_deadline = None
+        credit_event = asyncio.Event()
+        send_lock = asyncio.Lock()
+        credit_task = None
+        loop = asyncio.get_running_loop()
+
+        async def send_control(data: dict[str, Any]) -> None:
+            async with send_lock:
+                await websocket.send_json(data)
+
+        async def send_credit(*, force: bool = False) -> None:
+            nonlocal last_credit_limit
+            async with send_lock:
+                if audio is None or audio.failed:
+                    return
+                limit = audio.limit_frame
+                if force or limit > last_credit_limit:
+                    last_credit_limit = limit
+                    await websocket.send_json(
+                        {
+                            "type": "credit",
+                            "limit_frame": limit,
+                            "state": "local"
+                            if getattr(performance, "on_air", False)
+                            else "preparing",
+                        }
+                    )
+
+        def wake_credit() -> None:
+            loop.call_soon_threadsafe(credit_event.set)
+
+        async def publish_credit() -> None:
+            assert audio is not None and grant is not None
+            while True:
+                await credit_event.wait()
+                credit_event.clear()
+                audio.acknowledge_credit_wakeup()
+                if (
+                    station.stopped
+                    or audio.failed
+                    or not policy.socket_session_is_valid(cookie, accepted)
+                    or not controller.check(time.monotonic())
+                ):
+                    return
+                await send_credit()
 
         async def enter_handshake() -> bool:
             nonlocal admitted
@@ -201,6 +245,11 @@ def install_local_programme_routes(app: FastAPI, policy: SecurityPolicy) -> None
             return await asyncio.to_thread(performance.prepare, grant) if performance else []
 
         async def cleanup() -> None:
+            if audio is not None:
+                audio.set_credit_callback(None)
+            if credit_task is not None:
+                credit_task.cancel()
+                await asyncio.gather(credit_task, return_exceptions=True)
             try:
                 if grant is not None:
                     await asyncio.to_thread(
@@ -234,12 +283,14 @@ def install_local_programme_routes(app: FastAPI, policy: SecurityPolicy) -> None
             next_service = time.monotonic()
             await websocket.accept()
             while True:
+                if credit_task is not None and credit_task.done():
+                    await credit_task
                 if return_task is not None and return_task.done():
                     ready = await return_task
                     return_task = None
                     if not ready:
                         raise OwnershipError("Automation did not become ready; recovering")
-                    await websocket.send_json({"type": "return-ready"})
+                    await send_control({"type": "return-ready"})
                 now = time.monotonic()
                 if return_deadline is not None and now >= return_deadline:
                     raise OwnershipError("Local return timed out; recovering automation")
@@ -259,23 +310,21 @@ def install_local_programme_routes(app: FastAPI, policy: SecurityPolicy) -> None
                 ):
                     await websocket.close(code=1000, reason="Returned to automation")
                     break
-                if performance is not None and grant is not None and now >= next_service:
+                if (
+                    performance is not None
+                    and grant is not None
+                    and (
+                        now >= next_service
+                        or (
+                            not getattr(performance, "on_air", False)
+                            and audio is not None
+                            and audio.ready
+                        )
+                    )
+                ):
                     next_service = now + 0.1
                     for acknowledgement in await asyncio.to_thread(performance.service):
-                        await websocket.send_json(acknowledgement)
-                if audio is not None and audio.limit_frame > last_credit_limit:
-                    # Consumption can free space after the sender used all its
-                    # credit. Do not require another packet to acknowledge it.
-                    last_credit_limit = audio.limit_frame
-                    await websocket.send_json(
-                        {
-                            "type": "credit",
-                            "limit_frame": last_credit_limit,
-                            "state": "local"
-                            if getattr(performance, "on_air", False)
-                            else "preparing",
-                        }
-                    )
+                        await send_control(acknowledgement)
                 try:
                     message = await asyncio.wait_for(websocket.receive(), 0.1)
                 except TimeoutError:
@@ -290,16 +339,7 @@ def install_local_programme_routes(app: FastAPI, policy: SecurityPolicy) -> None
                         raise OwnershipError("Local programme input is no longer available")
                     controller.validate(grant, time.monotonic())
                     audio.accept_packet(grant, message["bytes"])
-                    last_credit_limit = audio.limit_frame
-                    await websocket.send_json(
-                        {
-                            "type": "credit",
-                            "limit_frame": last_credit_limit,
-                            "state": "local"
-                            if getattr(performance, "on_air", False)
-                            else "preparing",
-                        }
-                    )
+                    await send_credit(force=True)
                     continue
                 text = message.get("text")
                 if not isinstance(text, str) or len(text.encode()) > 4096:
@@ -320,7 +360,7 @@ def install_local_programme_routes(app: FastAPI, policy: SecurityPolicy) -> None
                     assert grant is not None and audio is not None
                     audio.begin_capture()
                     last_credit_limit = 8820
-                    await websocket.send_json(
+                    await send_control(
                         {
                             "type": "granted",
                             "epoch": grant.epoch,
@@ -331,6 +371,8 @@ def install_local_programme_routes(app: FastAPI, policy: SecurityPolicy) -> None
                             **({"occurrences": occurrences} if performance else {}),
                         }
                     )
+                    audio.set_credit_callback(wake_credit)
+                    credit_task = asyncio.create_task(publish_credit())
                     continue
                 controller.validate(grant, now)
                 if (
@@ -356,7 +398,7 @@ def install_local_programme_routes(app: FastAPI, policy: SecurityPolicy) -> None
                     await asyncio.to_thread(controller.renew, grant, now)
                     state = await asyncio.to_thread(controller.status)
                     occurrences = await asyncio.to_thread(performance.views) if performance else []
-                    await websocket.send_json(
+                    await send_control(
                         {
                             "type": "renewed",
                             "state": state["state"],
@@ -368,9 +410,7 @@ def install_local_programme_routes(app: FastAPI, policy: SecurityPolicy) -> None
                         raise ValueError("Invalid occurrence marker")
                     result = await asyncio.to_thread(performance.marker, data["event"])
                     next_service = now
-                    await websocket.send_json(
-                        {"type": result, "sequence": data["event"]["sequence"]}
-                    )
+                    await send_control({"type": result, "sequence": data["event"]["sequence"]})
                 elif data.get("type") == "prepare-return" and performance is not None:
                     if (
                         return_task is None

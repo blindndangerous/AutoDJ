@@ -73,6 +73,20 @@ async def run(root: Path) -> None:
         cfg.server.allowed_hosts = ["127.0.0.1"]
         cfg.server.allowed_origins = [f"http://127.0.0.1:{port}"]
         player = Player(cfg, source.player._sim, stream_mode=True)
+        return_attempts = []
+        original_return = player.prepare_local_return
+
+        def prepare_return(entry, *, timeout):
+            started = time.monotonic()
+            ready = original_return(entry, timeout=timeout)
+            return_attempts.append(
+                {"started": started, "seconds": time.monotonic() - started, "ready": ready}
+            )
+            if not ready:
+                faulthandler.dump_traceback()
+            return ready
+
+        player.prepare_local_return = prepare_return
         player._library = source.library
         store = StationStore(root / "ledger.db", "default")
         ledger = StationLedger(store, source.library.entry_for_path)
@@ -90,6 +104,8 @@ async def run(root: Path) -> None:
                         root / f"feed-{grant.generation}.wav", "w", 44100, 2, subtype="FLOAT"
                     ),
                     "times": [],
+                    "reads": [],
+                    "credits": [],
                     "audio": self.audio,
                 }
                 captures.append(capture)
@@ -125,6 +141,20 @@ async def run(root: Path) -> None:
                     capture["times"].append(time.monotonic())
 
                 self.audio.accept_packet = accept
+                original_read = self.audio.read_block
+
+                def read(*args, **kwargs):
+                    result = original_read(*args, **kwargs)
+                    capture["reads"].append(
+                        [
+                            time.monotonic(),
+                            capture["audio"].consumed_frame,
+                            capture["audio"].limit_frame,
+                        ]
+                    )
+                    return result
+
+                self.audio.read_block = read
                 return grant
 
         station = SimpleNamespace(
@@ -280,9 +310,26 @@ engine.setVolume(1);
             server.should_exit = True
             return {"ok": True}
 
+        async def traced_app(scope, receive, send):
+            active_capture = None
+
+            async def traced_send(message):
+                nonlocal active_capture
+                if message["type"] == "websocket.send" and message.get("text"):
+                    data = json.loads(message["text"])
+                    if data.get("type") == "granted":
+                        active_capture = next(
+                            c for c in captures if c["generation"] == data["generation"]
+                        )
+                    elif data.get("type") == "credit" and active_capture is not None:
+                        active_capture["credits"].append([time.monotonic(), data["limit_frame"]])
+                await send(message)
+
+            await app(scope, receive, traced_send)
+
         server = uvicorn.Server(
             uvicorn.Config(
-                RawPeerMiddleware(app),
+                RawPeerMiddleware(traced_app),
                 proxy_headers=False,
                 lifespan="off",
                 log_level="warning",
@@ -311,7 +358,11 @@ engine.setVolume(1);
             ledger.flush()
             store.close()
             bus_capture.close()
-            metadata = {"block_times": block_times, "captures": []}
+            metadata = {
+                "block_times": block_times,
+                "captures": [],
+                "return_attempts": return_attempts,
+            }
             for capture in captures:
                 name = f"feed-{capture['generation']}.wav"
                 capture["writer"].close()
@@ -319,6 +370,8 @@ engine.setVolume(1);
                     {
                         "file": name,
                         "times": capture["times"],
+                        "reads": capture["reads"],
+                        "credits": capture["credits"],
                         "high_water_frames": capture["audio"].high_water_frames,
                     }
                 )

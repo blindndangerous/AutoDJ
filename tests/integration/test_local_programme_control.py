@@ -305,3 +305,117 @@ def test_slow_preparation_grants_before_capture_and_reports_on_air_credit(tmp_pa
         performance.on_air = True
         ws.send_bytes(packet(1, generation=grant["generation"], values=(0, 0)))
         assert ws.receive_json() == {"type": "credit", "limit_frame": 9702, "state": "local"}
+
+
+async def test_consumption_credit_is_sent_while_control_worker_is_blocked(tmp_path, monkeypatch):
+    """ADR-0020-03: render consumption wakes credit without waiting for control IO."""
+    from autodj import local_programme_routes as routes
+    from tests.integration.test_local_programme import control
+    from tests.unit.test_local_programme_audio import packet
+
+    app, _, stations = fixture_app(tmp_path)
+    controller = stations["default"].local_programme
+    entered, release = threading.Event(), threading.Event()
+    incoming, outgoing = asyncio.Queue(), asyncio.Queue()
+
+    def marker(_event):
+        entered.set()
+        assert release.wait(3)
+        return "accepted"
+
+    controller.performance = SimpleNamespace(
+        busy=False,
+        on_air=True,
+        admit=lambda: None,
+        prepare=lambda _grant: [],
+        service=lambda: [],
+        marker=marker,
+        recover=lambda **_kwargs: None,
+    )
+
+    class Socket:
+        scope: ClassVar = {"type": "websocket"}
+        cookies: ClassVar = {}
+
+        async def accept(self):
+            pass
+
+        async def close(self, **kwargs):
+            await outgoing.put(kwargs)
+
+        async def send_json(self, data):
+            await outgoing.put(data)
+
+        async def receive(self):
+            return await incoming.get()
+
+    monkeypatch.setattr(routes, "locality_allowed", lambda *_args: True)
+    monkeypatch.setattr(routes, "resolve_station", lambda _socket: stations["default"])
+    endpoint = next(route.endpoint for route in app.routes if route.path == PATH)
+    task = asyncio.create_task(endpoint(Socket()))
+    try:
+        await incoming.put(
+            {
+                "type": "websocket.receive",
+                "text": json.dumps({"type": "claim", "version": 1, "rate": 44100}),
+            }
+        )
+        grant = await asyncio.wait_for(outgoing.get(), 1)
+        audio = controller.audio
+        audio.arm()
+        for sequence in range(6):
+            await incoming.put(
+                {
+                    "type": "websocket.receive",
+                    "bytes": packet(sequence, generation=grant["generation"]),
+                }
+            )
+            assert (await asyncio.wait_for(outgoing.get(), 1))["limit_frame"] == 8820
+        event = {**control(grant, "marker"), "event": {"sequence": 0}}
+        await incoming.put({"type": "websocket.receive", "text": json.dumps(event)})
+        assert await asyncio.to_thread(entered.wait, 1)
+        await asyncio.to_thread(audio.read_block, grant["generation"])
+        credit = await asyncio.wait_for(outgoing.get(), 1)
+        assert credit == {"type": "credit", "limit_frame": 9702, "state": "local"}
+        assert not release.is_set()
+    finally:
+        release.set()
+        await incoming.put({"type": "websocket.disconnect"})
+        await asyncio.wait_for(task, 3)
+
+
+def test_ready_prefill_does_not_wait_for_the_service_poll(tmp_path, monkeypatch):
+    """ADR-0020-03: 60 ms prefill activates before another 100 ms poll elapses."""
+    from autodj import local_programme_routes as routes
+    from tests.integration.test_local_programme import control
+    from tests.unit.test_local_programme_audio import packet
+
+    app, _, stations = fixture_app(tmp_path)
+    controller = stations["default"].local_programme
+    now = time.monotonic()
+    monkeypatch.setattr(routes, "time", SimpleNamespace(monotonic=lambda: now))
+
+    def service():
+        if controller.audio.ready:
+            performance.on_air = True
+        return []
+
+    performance = SimpleNamespace(
+        busy=False,
+        on_air=False,
+        returning=False,
+        admit=lambda: None,
+        prepare=lambda _grant: [],
+        service=service,
+        views=lambda: [],
+        recover=lambda **_kwargs: None,
+    )
+    controller.performance = performance
+    with client_for(app).websocket_connect(WS + PATH, headers={"Origin": BASE}) as ws:
+        grant = claim(ws)
+        controller.audio.arm()
+        for sequence in range(6):
+            ws.send_bytes(packet(sequence, generation=grant["generation"]))
+            assert ws.receive_json()["limit_frame"] == 8820
+        ws.send_json(control(grant, "heartbeat"))
+        assert ws.receive_json()["state"] == "local"

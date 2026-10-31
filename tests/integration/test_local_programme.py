@@ -414,10 +414,11 @@ async def test_internal_selector_keeps_master_encoder_and_http_connection(tmp_pa
                 while not server.started:
                     await asyncio.sleep(0.01)
                 async with (
-                    httpx.AsyncClient() as client,
+                    httpx.AsyncClient(timeout=httpx.Timeout(None)) as client,
                     client.stream("GET", f"http://127.0.0.1:{port}/stream") as response,
                 ):
                     assert response.status_code == 200
+                    assert client.timeout.read is None
                     bus.start_set()
                     worker = threading.Thread(target=bus.run, args=(stop,), daemon=True)
                     worker.start()

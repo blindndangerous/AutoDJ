@@ -3,7 +3,7 @@ import { afterEach, expect, it } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { finalizePrototypeReport } from "../playwright/local_programme_report.mjs";
+import { finalizePrototypeReport, programmeFailure } from "../playwright/local_programme_report.mjs";
 
 const roots = [];
 afterEach(async () => {
@@ -91,4 +91,14 @@ it("persists a measurement failure after successful conversion", async () => {
   expect(saved.status).toBe("failed");
   expect(saved.failure).toBe("Error: signal dropout");
   expect(saved.finalization_errors).toEqual([{ stage: "measurement", error: "Error: signal dropout" }]);
+});
+
+it("reports session loss instead of a later null transport error", () => {
+  const state = { changes: [{ state: "preparing", reason: "Preparing" },
+    { state: "local", reason: "Local control" },
+    { state: "recovering", reason: "Programme credit exhausted" }] };
+  expect(programmeFailure(new TypeError("Cannot read properties of null"), state))
+    .toBe("Local programme session lost: Programme credit exhausted");
+  expect(programmeFailure(new Error("Other audit failure"), { changes: [] }))
+    .toBe("Error: Other audit failure");
 });

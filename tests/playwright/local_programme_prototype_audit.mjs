@@ -6,7 +6,7 @@ import { once } from "node:events";
 import os from "node:os";
 import { resolve } from "node:path";
 import { chromium } from "@playwright/test";
-import { finalizePrototypeReport } from "./local_programme_report.mjs";
+import { finalizePrototypeReport, programmeFailure } from "./local_programme_report.mjs";
 
 const root = resolve(process.env.LOCAL_PROGRAMME_AUDIT_ROOT || "test-results/local-programme-prototype");
 await mkdir(root, { recursive: true });
@@ -134,6 +134,11 @@ try {
   // Private audition is attached after the feed split, exactly as playBrowserClip.
   report.monitor = await page.evaluate(async () => {
     const { engine, owner } = window.audit;
+    const frame = () => {
+      if (!owner.transport) throw new Error("Local programme session lost during monitor audit");
+      return owner.transport.nextFrame;
+    };
+    frame();
     const context = engine._ctx;
     const analyser = context.createAnalyser(); analyser.fftSize = 2048;
     engine._master.connect(analyser);
@@ -144,17 +149,17 @@ try {
       return Math.sqrt(samples.reduce((sum, x) => sum + x*x, 0) / samples.length);
     };
     const before = await rms();
-    const previewFrame = owner.transport.nextFrame;
+    const previewFrame = frame();
     const preview = context.createOscillator(); preview.frequency.value = 5000;
     const gain = context.createGain(); gain.gain.value = .2;
     preview.connect(gain).connect(engine._master); preview.start();
     const previewLevel = await rms();
     await new Promise(done => setTimeout(done, 1000)); preview.stop();
-    const muteFrame = owner.transport.nextFrame;
+    const muteFrame = frame();
     engine.setMuted(true);
     const muted = await rms();
     await new Promise(done => setTimeout(done, 1000));
-    const muteEnd = owner.transport.nextFrame;
+    const muteEnd = frame();
     engine.setMuted(false);
     const pings = [];
     for (let i = 0; i < 7; i++) {
@@ -164,6 +169,7 @@ try {
       pings.push({ rtt: after - before, offset: remote.monotonic_ms - (before + after) / 2 });
     }
     pings.sort((a, b) => a.rtt - b.rtt);
+    frame();
     const audioClock = { frame: owner.clock.frame,
       monotonic_ms: window.performance.now() + pings[0].offset - (context.currentTime - owner.clock.time) * 1000,
       uncertainty_ms: pings[0].rtt / 2 + 128 / 44.1 + context.baseLatency * 1000 };
@@ -249,8 +255,11 @@ try {
   if (base) report.last_state = await state().catch(() => null);
   if (page && !page.isClosed()) report.browser_state = await page.evaluate(() => ({
     changes: window.audit?.changes, reason: window.audit?.owner.transport?.reason,
+    has_transport: Boolean(window.audit?.owner.transport),
     status: document.getElementById("local-programme-status")?.textContent,
   })).catch(() => null);
+  report.failure_detail = String(error);
+  report.failure = programmeFailure(error, report.browser_state);
 } finally {
   await finalizePrototypeReport({ root, report, encoded, cleanup: async () => {
     await browser?.close();

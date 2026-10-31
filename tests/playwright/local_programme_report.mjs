@@ -40,3 +40,10 @@ export async function finalizePrototypeReport({ root, report, encoded, cleanup, 
     await writeFile(resolve(root, "audit.json"), JSON.stringify(report, null, 2));
   }
 }
+
+// Preserve the ownership failure when a later audit operation discovers the loss.
+export function programmeFailure(error, state) {
+  const last = state?.changes?.at(-1);
+  const reason = state?.reason || (!state?.has_transport && last?.state === "recovering" ? last.reason : "");
+  return reason ? `Local programme session lost: ${reason}` : String(error);
+}

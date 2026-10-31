@@ -306,3 +306,19 @@ def test_capture_grant_starts_the_unchanged_stall_deadline():
     assert "stalled" in audio.failed
     with pytest.raises(PCMError, match="no longer pending"):
         audio.begin_capture()
+
+
+def test_consumption_wakeups_coalesce_and_detach():
+    """ADR-0020-03: a stalled socket loop cannot build a render notification queue."""
+    audio = filled(20)
+    notices = []
+    audio.set_credit_callback(lambda: notices.append(audio.limit_frame))
+    for _ in range(5):
+        audio.read_block(GRANT.generation, now=0.2)
+    assert len(notices) == 1
+    audio.acknowledge_credit_wakeup()
+    audio.read_block(GRANT.generation, now=0.2)
+    assert len(notices) == 2
+    audio.set_credit_callback(None)
+    audio.read_block(GRANT.generation, now=0.2)
+    assert len(notices) == 2
