@@ -3655,6 +3655,48 @@ class TestPostQueueSeed:
 
 
 class TestMisc:
+    @pytest.mark.parametrize("path_flavor", ["posix", "windows"])
+    @pytest.mark.parametrize(
+        "requested_path",
+        ["Z:/Music/song.flac", "/music/song.flac", "~/song.flac", "Music/song.flac"],
+    )
+    def test_lyrics_lookup_keeps_request_spelling_and_reads_authorized_path(
+        self, bridge, monkeypatch, path_flavor, requested_path
+    ) -> None:
+        import ntpath
+        import posixpath
+
+        from fastapi.testclient import TestClient
+
+        path_api = posixpath if path_flavor == "posix" else ntpath
+        working_directory = "/srv/autodj" if path_flavor == "posix" else "C:/autodj"
+        home_directory = "/home/operator" if path_flavor == "posix" else "C:/Users/operator"
+
+        def normalize(path):
+            if path.startswith("~/"):
+                path = path_api.join(home_directory, path[2:])
+            return path_api.normcase(path_api.normpath(path_api.join(working_directory, path)))
+
+        monkeypatch.setattr("autodj.server.normalize_path", normalize)
+        entry = _make_entry(99)
+        entry.path = path_api.join(working_directory, "catalog", "authorized.flac")
+        bridge.sim.entry_for_path.side_effect = lambda path: (
+            entry if path == requested_path else None
+        )
+        app = create_app(bridge)
+        read_lyrics = MagicMock(return_value=[{"time_s": 1.0, "text": "Authorized lyrics"}])
+        app.state.library_services.lyrics_for = read_lyrics
+
+        response = TestClient(app).get("/api/lyrics", params={"path": requested_path})
+
+        assert response.status_code == 200
+        assert response.json() == {"path": requested_path, "lyrics": read_lyrics.return_value}
+        assert [call.args for call in bridge.sim.entry_for_path.call_args_list] == [
+            (requested_path,),
+            (requested_path,),
+        ]
+        read_lyrics.assert_called_once_with(entry.path)
+
     def test_advance_skips(self, bridge) -> None:
         from fastapi.testclient import TestClient
 

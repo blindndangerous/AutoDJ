@@ -2185,15 +2185,16 @@ def create_app(
     @app.get("/api/lyrics")
     async def api_lyrics(path: str) -> dict[str, object]:
         """Return timed lyric lines for one exact indexed track path."""
-        # Normalize aliases before both authorization and reading, preserving
-        # equivalent spelling. The entry is the token for the ownership recheck.
-        normalized = normalize_path(path)
-        read_path = path if Path(path) == Path(normalized) else normalized
-        authorized_entry = shared.entry_for_path(read_path)
+        authorized_entry = shared.entry_for_path(path)
         if authorized_entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
+        # Keep lookup keys opaque; read the authorized entry's filesystem path.
+        # Identity-only entries use the normalized, already-authorized key.
+        read_path = getattr(authorized_entry, "path", None)
+        if read_path is None:
+            read_path = normalize_path(path)
         lyrics = await _read_lyrics_owned(read_path)
-        if shared.entry_for_path(read_path) != authorized_entry:
+        if shared.entry_for_path(path) != authorized_entry:
             raise HTTPException(status_code=409, detail="Track index changed")
         return {"path": path, "lyrics": lyrics}
 
