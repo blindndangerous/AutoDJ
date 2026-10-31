@@ -777,6 +777,32 @@ def _network_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
+def _acme_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Read saved public ACME status without starting a worker or contacting DNS."""
+    from autodj.acme_service import public_task
+    from autodj.acme_worker import AcmeManager
+    from autodj.certificates import CertificateStore
+
+    try:
+        tasks = AcmeManager(CertificateStore(Path(cfg.index.index_dir) / ".tls")).tasks()
+        problems = [
+            public_task(t)
+            for t in tasks
+            if t.get("error")
+            or t.get("cleanup_pending")
+            or t.get("cleanup_released")
+            or t.get("removal_pending")
+        ]
+        return DoctorCheck(
+            "acme",
+            CheckStatus.WARN if problems else CheckStatus.PASS,
+            "ACME needs attention" if problems else "No saved ACME failures",
+            {"operations": problems},
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return DoctorCheck("acme", CheckStatus.WARN, "ACME saved state could not be read")
+
+
 def _update_check(cfg: AutoDJConfig, *, network: bool = True) -> DoctorCheck:
     """Whether a newer AutoDJ is available on this installation's channel.
 
@@ -1008,6 +1034,8 @@ def run_doctor(
         _network_check(cfg),
         _update_check(cfg, network=check_updates),
     ]
+    if (Path(cfg.index.index_dir) / ".tls" / "acme").exists():
+        checks.append(_acme_check(cfg))
     if default:
         checks += [_stream_check(cfg), *_speaker_checks(cfg), *_relay_checks(cfg)]
     checks += [_related_artists_check(cfg), _related_tracks_check(cfg)]

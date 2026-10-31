@@ -38,6 +38,8 @@ dependencies = [
     "tzdata>=2026.1", # IANA time zones on Windows
     "tzlocal>=5.3.1", # detect the system IANA zone, including on Windows
     "cryptography>=46.0.0",
+    "acme>=5.9.0", # ACME client for Let's Encrypt DNS-01 issuance
+    "dnspython>=2.9.1", # bounded DNS name checks before certificate issuance
 ]
 
 [project.optional-dependencies]
