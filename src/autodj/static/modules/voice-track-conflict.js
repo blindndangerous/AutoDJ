@@ -1,4 +1,4 @@
-import { chooseAction } from "./confirm-dialog.js";
+import { chooseAction, confirmAction } from "./confirm-dialog.js";
 
 export function voiceTrackConflict(errorValue) {
   const detail = errorValue?.detail;
@@ -10,9 +10,19 @@ export function voiceTrackConflict(errorValue) {
 export async function chooseVoiceTrackAction(doc, errorValue) {
   if (!voiceTrackConflict(errorValue)) return null;
   const detail = errorValue.detail;
-  const message = [detail.message, "Keep the voice track with this change?"]
+  const pairs = (detail.affected || []).map((item) => {
+    const next = item.proposed_pair?.join(" into ");
+    return `${item.label || "Voice track"}: ${item.old_pair?.join(" into ") || "previous song change"}. ${next ? `Proposed: ${next}.` : "No replacement pair."}`;
+  });
+  const message = [detail.message, ...pairs, detail.can_keep === false ? detail.keep_reason : "Keep the voice track with this change?"]
     .filter((part) => typeof part === "string" && part.trim())
     .join(" ");
+  if (detail.can_keep === false) {
+    const discard = await confirmAction(doc, {
+      title: "Upcoming voice track", message, confirmLabel: "Discard voice track",
+    });
+    return discard ? { voice_action: "discard", voice_revision: detail.revision } : null;
+  }
   const choice = await chooseAction(doc, {
     title: "Upcoming voice track",
     message,

@@ -15,8 +15,8 @@ In streaming mode, external announcer uploads target the currently airing song c
 selected successor, like browser voice tracks. AutoDJ checks the handoff again after decoding and
 preparing the upload, and installs it only if the same change is still open and within its outro
 cutoff and applicable scheduled boundary. Scheduled ads/news keep their independent due/expiry
-tick and retry if a handoff changes during booking. Local server output continues to pin a booked
-pair. Streaming queue edits that affect associated speech offer keep, discard, or cancel.
+tick and retry if a handoff changes during booking. Server audio and streaming use the same
+live handoff. Queue edits that affect associated speech offer Keep, Discard, or Cancel.
 
 ## Turning breaks on
 
@@ -112,15 +112,14 @@ browser sends, is refused: these routes are for programs only.
 ## Voice tracking from the browser
 
 The **Voice tracks** tab records a DJ break with your microphone, using the same booking desk as
-announcer breaks (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)). In stream
-mode it targets the currently airing song and its selected successor. The booking window stays open
+announcer breaks (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)).
+The current handoff targets the currently airing song and its selected successor. The booking window stays open
 until the current song's Outro, or closes earlier if existing speech or a tail begins before it.
 AutoDJ calculates the cutoff after decoding and checks it again atomically when it installs the
-take. Local server output retains its advance slot and render deadline.
+take. The same live handoff lifecycle serves server audio and streaming.
 It works with server audio or stream output and saved-point transitions, even when external
 announcer uploads are off. Browser playback and stopped stations cannot render these tracks.
-In stream mode the playout controller maintains the live handoff; local output plans an advance
-slot while the voice-tracking tab is open. No token is needed: the tab uses your signed-in browser.
+The playout controller maintains the current handoff. No token is needed: the tab uses your signed-in browser.
 
 The browser lets a page use the microphone only over a secure connection: open AutoDJ over HTTPS,
 or at `http://localhost:<port>` on the station's own computer. On a plain `http://` address from
@@ -129,6 +128,60 @@ another computer the tab says so instead of recording.
 The tab shows the open song change: the ending song, its selected successor, how long
 the next song's intro is, the time left to book it and roughly when it airs. The time left counts
 down on the page; it is not read out on its own.
+
+### Choose and confirm a future song change
+
+Under **Upcoming song changes**, Tab to the native **Song change** select. Use
+arrow keys to choose a future pair. Each option names both songs and its position;
+repeated songs have separate occurrences. Selection alone does not queue or record.
+**Selection: Predicted** describes a forecast. **Estimated airtime** is a separate
+estimate and never proves that speech aired.
+
+For a predicted pair, review the number of songs shown, Tab to **Confirm songs**,
+and press Enter or Space. Confirmation queues the forecast through that pair as
+ordinary music choices. Overlapping confirmations reuse existing occurrences.
+**Selection: Confirmed** permits recording; the time remains an estimate. The
+current handoff remains directly recordable without this confirmation step.
+
+Targets cover up to 15 minutes of the available preview. Unknown durations,
+programme or clock boundaries, unqueued Show tails and prepared-edition items
+limit eligibility. Unavailable rows give a reason. Use **Prepared editions** for
+advance production outside this near-air workflow. Pause preserves the chosen
+songs but makes their airtime unknown; resume and refresh before booking.
+
+Refresh preserves the selected occurrence and keyboard focus. If the occurrence
+disappears, its unavailable placeholder stays selected. Choose another explicitly.
+A schedule change can flag an existing target as at risk; upload and promotion
+check the latest revision and complete-chain timing again.
+
+Recording stays bound to its starting occurrence even while you inspect another.
+A failed upload keeps the local take and cached WAV. For the same occurrence,
+review the refreshed information and press **Book voice track** again. For another
+occurrence, including another play of the same song, select it, listen back, then
+press **Book voice track**. Discarding or abandoning a browser take leaves the
+confirmed music queued and creates no speech booking.
+
+Queue and manual Show changes remain available. If a change splits a booked pair,
+use the shared **Keep voice track**, **Discard voice track**, or **Cancel change**
+dialog. Keep prefers the original ending song and its new successor; if the ending
+song leaves, it uses the original incoming song and its new predecessor. Keep is
+unavailable when there is no eligible pair, capacity is exhausted, or merging
+frozen chains would lose their content or order. Cancel makes no queue change.
+Moving an intact pair needs no speech choice.
+
+A future take stays queued until its exact handoff becomes current. Cancellation
+before that claim removes only speech. After installation, the existing unheard
+boundary applies. Hard scheduled actions and live takeover have priority: unheard
+speech can be dropped with a reason; interrupted speech is marked cut short.
+Soft actions and ordinary Show feeding defer a conflict instead of silently
+moving speech. A hard event retains priority after waiting for the current song.
+
+These recordings belong to the current station run. Stop, a new set, a jump or
+restart invalidates old targets. Live recordings are not restored after restart;
+previous airtime is unknown. Saved editions, source files and approvals retain
+their separate recovery rules.
+
+### Record and book
 
 Choose **Microphone** before recording. The choice is remembered in this browser;
 **System default** forgets it. **Refresh microphones** updates the list; names may
@@ -186,15 +239,12 @@ A standalone voice track cannot run across a hard scheduled event or a clockwhee
 refuses it at booking when the timing is known, and checks again before rendering in case the
 schedule changed; a conflicting queued track is dropped whole rather than cut off.
 
-If the song change moves on before you book, the tab says which change is open now. When the open
-change has the same two songs (it was planned again), **Book voice track** books the take there.
-When it has other songs, the take is not booked: record again for those songs, or, if what you
-said still fits, use **Listen back** and then choose **Book voice track** again. Errors, such as a
-blocked or missing microphone or a Cancel that failed, are shown under the Record heading and
-linked to the control they are about.
+If the song change moves on before you book, keep the recording and explicitly
+choose an available occurrence. Errors, such as a blocked microphone or refused
+cancellation, appear under Record and are linked to the relevant control.
 
 **Booked voice tracks** lists what became of each voice track (waiting, mixed in, on the air,
-aired, dropped or expired, with the reason). **Cancel** drops a waiting recording. In stream mode,
+aired, dropped or expired, with the reason). **Cancel** drops a waiting recording. In server audio and streaming,
 it can also remove a recording installed in the current or ready handoff before that recording
 starts. The server checks this again when applying the cancellation; other speech and approved
 assets are preserved, and audio already heard is unchanged. Voice tracks share the queue,
@@ -206,7 +256,11 @@ For scripts and other stations, the routes are `GET`, `POST` and `DELETE` under
 `/api/voice-tracks` and `/api/stations/<slug>/voice-tracks`. They take the browser session and the
 page's `Origin`, never an announcer token. `POST` takes the announcer upload's fields (`slot_id`,
 `ending_id`, `upcoming_id`, `placement`, `allow_outro` and `file`), with no `kind`: a voice track is
-always a DJ break.
+always a DJ break. Future uploads also carry `target_id`, `run_id` and the selected
+`transition_revision`. `GET /voice-tracks?target_id=...` inspects a target;
+`POST /voice-tracks/targets/confirm` confirms its server-owned snapshot using
+`target_id` and `revision`, with optional shared `voice_action`/`voice_revision`
+when resolving a conflict. These routes also have station-scoped forms.
 
 
 ## Related tasks and contracts

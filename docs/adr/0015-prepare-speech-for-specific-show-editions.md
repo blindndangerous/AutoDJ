@@ -231,6 +231,16 @@ protection, source recordings and saved approval retain their existing ownership
 Private review/export still uses the isolated offline renderer under ADR 14.
 See [ADR 4](0004-server-mix-bus-and-stream-mode.md) for the shared engine boundary.
 
+## Related amendment, 2026-10-30: future live voice targets (#524)
+
+The [ADR 4 commitment amendment](0004-server-mix-bus-and-stream-mode.md#amendment-2026-10-30-confirmed-future-voice-targets-524)
+extends the live queue choice to confirmed future recordings. Its implementation
+is pending. ADR-0015-09 continues to govern saved source/approval ownership and
+the existing current handoff; the future extension's pending evidence is
+ADR-0004-24/26. Confirming live music does not create an edition or approve a
+saved take. Whole-show review, unqueued prepared production, immutable sources
+and explicit interrupted-edition resume retain this record's accepted rules.
+
 ## Current contracts
 
 Automated selectors identify behavioral checks, not completed execution or ADR

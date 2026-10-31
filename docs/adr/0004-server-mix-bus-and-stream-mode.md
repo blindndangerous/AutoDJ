@@ -6,6 +6,10 @@ Status: Accepted. Supersedes part of [ADR 3](0003-browser-driven-playback.md).
 > Current scope and implementation evidence are in the dated amendment
 > at the end of this record. Original sections below are retained as history.
 
+The 2026-10-30 amendment decides #524's future-selection contract under
+delegated owner authority. Its implementation and new behavioral evidence are
+pending; it does not describe a feature already available in the application.
+
 ## Context
 
 ADR 3 made the browser the default audio host and kept `--server-audio`
@@ -257,6 +261,14 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0004-19` | A file deck seek decodes up to 100 ms before its target and drops it, so a sought deck starts on decoded audio rather than decoder-delay silence. | automated | `tests/unit/test_stream_decode.py::test_lead_in_is_decoded_before_the_start_and_dropped`; `tests/unit/test_stream_decode.py::test_real_mp3_seek_with_lead_in_starts_on_audio`; `tests/unit/test_live_audio.py::test_buffered_file_seeks_asynchronously_and_closes_decoders` |
 | `ADR-0004-20` | Closing a decoder stops a producer waiting for buffer room, then closes its stdout before stopping FFmpeg, so a writer blocked on a full pipe exits on EPIPE without the SIGTERM wait; pipes close only after their readers leave or a short grace. A stopped mastering pipeline is killed. | automated | `tests/unit/test_stream_decode.py::test_close_ends_a_decoder_blocked_on_a_full_pipe_without_a_kill`; `tests/unit/test_stream_decode.py::test_closing_a_decoder_blocked_on_a_full_pipe_is_quick`; `tests/unit/test_stream_decode.py::test_closing_a_running_decoder_raises_in_no_reader_thread`; `tests/unit/test_mastering.py::test_output_limiter_start_failure_cleans_up_stereotool` |
 | `ADR-0004-21` | After a set's first track, every block the bus fills with held silence because the audio due is not ready is counted, and a rate-limited warning (one a minute per bus) names its cause, length and track, and `/api/status` reports the count as `playout.held_blocks`; a hold reaching 10 s is reported once while it lasts, outside that limit. | automated | `tests/unit/test_mixbus.py::test_held_silence_between_tracks_is_counted_and_named`; `tests/unit/test_mixbus.py::test_silence_before_the_first_track_is_not_a_hold`; `tests/unit/test_mixbus.py::test_hold_warnings_are_limited_to_one_a_minute`; `tests/unit/test_mixbus.py::test_a_long_hold_is_reported_while_it_lasts`; `tests/unit/test_mixbus.py::test_a_long_hold_is_reported_even_just_after_another_warning`; `tests/unit/test_mixbus.py::test_a_deck_still_seeking_is_counted_as_held`; `tests/unit/test_mixbus.py::test_master_warmup_after_a_track_started_is_counted_as_held`; `tests/integration/test_bridge.py::test_state_reports_the_mix_bus_held_silence_count` |
+| `ADR-0004-22` | Confirming a future target materializes its music prefix in the ordinary station queue, with distinct occurrence identities; viewing or refreshing never confirms or reserves anything. | automated | `tests/unit/test_hour_preview.py::test_future_targets_are_read_only_and_distinguish_repeated_occurrences`; `tests/unit/test_hour_preview.py::test_future_preview_fill_keeps_target_identity_and_transition_metadata`; `tests/unit/test_live_queue_replan.py::test_repeated_occurrence_edit_never_consumes_its_sibling`; `tests/unit/test_live_queue_replan.py::test_confirmation_materializes_prefix_once_without_replacing_owned_entries`; `tests/unit/test_live_queue_replan.py::test_confirmation_revalidates_entire_prefix_before_mutating`; `tests/unit/test_live_queue_replan.py::test_two_confirmation_editors_cannot_install_the_same_prefix_twice`; `tests/unit/test_live_queue_replan.py::test_confirmation_counts_only_new_songs_not_owned_music_or_liners`; `tests/unit/test_live_queue_replan.py::test_confirmation_catalog_reads_precede_bus_guard`; `tests/unit/test_voice_tracks_api.py::test_repeated_play_next_after_consumption_uses_a_new_occurrence`; `tests/unit/test_live_voice.py::test_catalog_snapshot_window_ends_before_refresh_or_promotion`; `tests/unit/test_live_queue_replan.py::test_proposal_revision_change_prunes_cache_before_allocating`; `tests/unit/test_live_queue_replan.py::test_proposal_cache_is_bounded_and_retains_recent_conflict_retries`. |
+| `ADR-0004-23` | Explicit confirmation precedes future recording; abandon/discard of a browser take leaves confirmed music but no speech booking. Upload admission rechecks the station run, exact pair and revision and leaves a refused take available for explicit retry. | automated | `tests/unit/test_voice_tracks_api.py::test_future_upload_rechecks_target_after_decode`; `tests/unit/test_voice_tracks_api.py::test_selected_future_slot_carries_exact_occurrence_binding`; `tests/jsmodules/voice-tracker.test.js::distinguishes repeated song occurrences and requires listen-back before retargeting`; `tests/jsmodules/voice-tracker.test.js::abandoning a take leaves confirmed songs and no speech`; `tests/unit/test_live_voice.py::test_future_upload_catalog_reads_precede_bus_guard`. |
+| `ADR-0004-24` | Queue replace/remove/reorder/Play next resolves every affected future speech association through one revision-bound keep/discard/cancel decision; inserting between a bound pair is a conflict, and unchanged pairs keep their speech. | automated | `tests/unit/test_live_queue_replan.py::test_future_pair_edits_require_one_fresh_voice_choice`; `tests/unit/test_live_queue_replan.py::test_intact_future_pair_move_needs_no_voice_choice`; `tests/unit/test_live_queue_replan.py::test_removing_both_future_endpoints_disables_keep`; `tests/unit/test_live_queue_replan.py::test_combined_current_and_future_conflict_names_every_take`; `tests/unit/test_live_queue_replan.py::test_merging_frozen_future_chains_requires_discard`; `tests/unit/test_live_voice.py::test_rebind_cap_counts_independent_speech_and_upload_reservations`; `tests/unit/test_shows.py::test_manual_show_preflight_preserves_runner_until_voice_choice`; `tests/unit/test_shows.py::test_manual_immediate_show_still_requires_voice_choice`; `tests/unit/test_live_voice.py::test_queue_conflict_catalog_reads_precede_bus_guard`. |
+| `ADR-0004-25` | Future speech stays queued until its exact handoff is selected, then enters the existing live admission and heard-only lifecycle once; cancellation uses #523 boundaries and preserves music and sibling speech. | automated | `tests/unit/test_live_voice.py::test_future_voice_promotes_once_only_for_its_exact_pair`; `tests/unit/test_live_voice.py::test_future_claim_survives_stale_preparation_and_retries_once`; `tests/unit/test_live_voice.py::test_failed_future_claim_keeps_the_current_liner_reservation`; `tests/unit/test_live_voice.py::test_future_upload_promoted_during_decode_obeys_current_cutoff`; `tests/unit/test_live_voice.py::test_future_promotion_refuses_unavailable_frozen_liner`; `tests/unit/test_live_voice.py::test_future_cancel_serializes_with_desk_take_and_removes_installed_audio`; `tests/unit/test_live_voice.py::test_waiting_future_voice_prevents_competing_automatic_choice`; `tests/unit/test_live_voice.py::test_future_promotion_adopts_its_existing_intro_reservation`; `tests/unit/test_live_voice.py::test_failed_live_booking_returns_claimed_siblings`; `tests/unit/test_live_voice.py::test_failed_future_install_restores_cached_plan`; `tests/unit/test_live_voice.py::test_expired_future_intro_measurement_leaves_no_reservation_or_cooldown`; `tests/unit/test_live_voice.py::test_catalog_snapshot_window_ends_before_refresh_or_promotion`. |
+| `ADR-0004-26` | Hard interruptions and live takeover may end unheard bookings with reasons; ordinary automatic edits defer conflicts. Stop/restart never restores live speech or a stale target; saved edition assets, approvals and resume rules remain separate. | automated | `tests/integration/test_live_source.py::test_takeover_drops_future_voice_and_return_does_not_replay_it`; `tests/unit/test_live_voice.py::test_future_bindings_end_with_the_station_run`; `tests/unit/test_live_voice.py::test_schedule_change_marks_confirmed_target_at_risk`; `tests/unit/test_live_voice.py::test_future_promotion_rechecks_schedule_at_final_install`; `tests/unit/test_live_voice.py::test_crash_style_recreation_does_not_restore_future_bindings`; `tests/unit/test_scheduler.py::test_hard_event_wait_preserves_priority_without_fading`; `tests/unit/test_shows.py::test_hard_show_releases_future_bindings_before_queue_cleanup`; `tests/unit/test_voice_tracks_api.py::test_future_upload_rejects_lifecycle_changes_during_decode`; `tests/unit/test_voice_tracks_api.py::test_future_context_explains_run_local_recovery`; `tests/jsmodules/voice-tracker.test.js::marks lost bookings unknown after a run change and preserves cancellation focus fallback`; `tests/integration/test_stations.py::test_live_dj_title_reaches_extra_mounts`; `tests/unit/test_live_voice.py::test_paused_future_target_has_unknown_airtime_without_schedule_risk`. |
+| `ADR-0004-27` | Eligible targets are bounded near-air adjacent music occurrences with known timing and ownership; selection certainty, estimated airtime and unavailability are independent fields. | automated | `tests/unit/test_hour_preview.py::test_future_target_horizon_and_programme_boundaries`; `tests/unit/test_hour_preview.py::test_ineligible_future_row_remains_inspectable_with_reason`; `tests/unit/test_live_voice.py::test_pause_past_future_expiry_drops_speech_without_replay`; `tests/unit/test_voice_tracks_api.py::test_paused_future_target_retains_selection_with_unknown_airtime`; `tests/unit/test_voice_tracks_api.py::test_future_target_cannot_be_confirmed_or_uploaded_during_takeover_or_stop`; `tests/unit/test_live_queue_replan.py::test_confirmation_refuses_missing_duration_without_type_error`; `tests/unit/test_voice_tracks_api.py::test_confirmation_missing_duration_returns_conflict`; `tests/unit/test_live_voice.py::test_future_booking_refuses_unplayable_liner_without_partial_changes`. |
+| `ADR-0004-28` | Target refresh preserves the selected identity and focus; a vanished target never selects another implicitly, and actions have one announcement path. | automated | `tests/jsmodules/voice-tracker.test.js::confirms explicitly with a labelled native select and preserves focus on refresh`; `tests/jsmodules/voice-tracker.test.js::retains an unavailable selected occurrence and take without choosing a replacement`; `tests/jsmodules/voice-tracker.test.js::moves focus to the target selector when a transition control disappears`; `tests/jsmodules/voice-tracker.test.js::announces confirmation once and keeps passive airtime refresh quiet`; `tests/jsmodules/voice-tracker.test.js::describes selection and debounces arrow browsing announcements while refresh stays quiet`; `tests/jsmodules/voice-tracker.test.js::explains every disabled confirmation state and counts only the supplied new songs`. |
+| `ADR-0004-29` | Future-target selection, confirmation, recording, conflict resolution and cancellation work with keyboard and screen reader and retain audible handoff continuity on the candidate. | manual | Focused Chromium keyboard/axe fixture audit: `tests/playwright/voice_target_audit.mjs`, both themes. Pending #524: rehearse the five actions, repeated songs, refresh, expiry, promotion and takeover on Windows with NVDA in Chrome and Firefox; record revision, versions, focus, speech and audible joins using docs/accessibility-testing.md. Fixture browser tests and structural validation do not establish real speech or output continuity. |
 
 ## Related proposal — 2026-10-17
 
@@ -424,3 +436,363 @@ A mastering pipeline is killed (ADR-0004-20).
 Held silence is now counted and logged with its cause (ADR-0004-21). This makes
 the remaining causes of dead air visible in the station log. It does not change
 ADR-0004-13: zero-gap behaviour still needs listening and soak evidence.
+
+## Amendment, 2026-10-30: confirmed future voice targets (#524)
+
+Decision status: Accepted under the project owner's explicit delegation of the
+five commitment decisions in the Phase 1 task on 2026-10-30. Implementation is
+pending a separate Phase 2 request after review. No maintainer review, runtime
+implementation or behavioral verification is claimed by this amendment.
+
+Requirements: [#524](https://github.com/blindndangerous/AutoDJ/issues/524).
+Prerequisites: [#519](https://github.com/blindndangerous/AutoDJ/issues/519),
+[PR #520](https://github.com/blindndangerous/AutoDJ/pull/520), and
+[#521](https://github.com/blindndangerous/AutoDJ/issues/521),
+[#522](https://github.com/blindndangerous/AutoDJ/issues/522),
+[#523](https://github.com/blindndangerous/AutoDJ/issues/523), merged together in
+[PR #525](https://github.com/blindndangerous/AutoDJ/pull/525).
+Discovery used repository revision `52c9bc9dfad4130f319b399f5d5aa7924b2d1d94`.
+The subsequent #537, #538 and #591 amendments above govern the current engine:
+both server outputs use live playout, and a playable continuation selects its
+successor only at promotion. Future confirmation must not prepare another
+handoff, open future decoders or revive the old slot worker.
+
+This extends the current/imminent scope of ADR-0004-09/11 and ADR-0015-09 to
+explicitly confirmed future music and queued browser speech. ADR-0004-10's
+future **timing** remains estimated; a confirmed **selection** is distinguishable
+from a prediction. Implementation evidence is mapped under ADR-0004-22 through ADR-0004-28;
+manual screen-reader and audible continuity evidence remains under ADR-0004-29. The
+retrospective [ADR 9](0009-share-picking-rules-with-isolated-previews.md),
+[ADR 10](0010-preserve-state-through-atomic-writes-and-recovery.md) and
+[ADR 11](0011-verify-accessibility-with-browser-and-speech-evidence.md) remain
+Proposed. Station ownership remains under
+[ADR 5](0005-a-station-owns-its-playout-chain.md); isolated review and saved
+production remain under [ADR 14](0014-isolate-programme-review-and-export.md)
+and [ADR 15](0015-prepare-speech-for-specific-show-editions.md).
+
+### 1. Confirm a queue prefix; bind speech to an adjacent pair
+
+**Decision.** Confirm the ordered music prefix from the station's existing
+selected successor through the target's incoming song. Materialize missing
+predicted music as ordinary queue occurrences; retain existing queued entries,
+request/show ownership and queued liners in their positions, and never enqueue
+the audible current occurrence again. Preserve the already selected successor
+and its live source. Overlapping confirmations reuse occurrences instead of
+copying the prefix. Confirmation is an explicit queue selection, not a promise
+of airtime or a ban on edits. Only the selected outgoing/incoming occurrence
+pair owns the recording, not every earlier join in the prefix.
+
+Every queue placement gets its own opaque run-scoped occurrence ID, even two
+placements of the same catalog object. Reorder preserves it; replacement or
+re-add creates another. Preserve prepared occurrence IDs and ownership as
+separate source metadata. A target identifies station run plus outgoing and
+incoming occurrence IDs, never song paths, row numbers or ETA. Forecast-only
+references identify rows of an immutable preview snapshot; they become live
+occurrences only on explicit confirmation. An expired or changed snapshot is
+refused, never guessed from matching song names. Reads may retain bounded
+preview data, but cannot assign IDs to live entries, consume RNG/cursors,
+reserve speech or mutate the queue.
+
+An edit before an intact pair may move its estimated airtime without changing
+its speech binding. Moving the intact pair also preserves the binding. Replacing
+or removing either endpoint, reversing them, or inserting music between them
+requires the existing voice choice. Independent liners/ads/news between music
+occurrences remain transition content; changing them revalidates placement and
+speech revision rather than inventing another music occurrence.
+
+**Reason and alternatives.** Pair-only confirmation of a dry-run prediction
+does not say how it reaches that position after earlier picks change. Freezing
+the prefix in the ordinary queue supplies that order using existing precedence.
+Freezing the whole forecast unnecessarily restricts later programming. A new
+reservation queue would duplicate selection and editing policy. `SlotPlan.pinned`
+is expressly rejected: its old meaning keeps a pair regardless of queue edits,
+its cursor lifetime is unsuitable for multiple future targets, and live playout
+no longer claims future slot plans. `SlotPlan` may still describe the current
+handoff; its flag is not this contract.
+
+Converting automatic forecast songs to queue choices deliberately has ordinary
+manual-queue semantics. It does not commit forecast clockwheel instructions,
+advance the simulated clock cursor or reserve predicted liners/ads. Existing
+queue/request clock metadata remains intact; after the queue, automation resumes
+through the existing post-queue policy. The confirmation names how many songs
+will become queue choices. This tradeoff avoids a second executable clock plan.
+
+**Owners.** [hour_preview.py](../../src/autodj/hour_preview.py): `Item`,
+`read_station`, `Decided.signature`, `HourPreviews._signature/get` and `_item_view`
+own snapshot references and certainty/timing presentation.
+[_bridge.py](../../src/autodj/_bridge.py): queue insertion, `play_next_entry`,
+`queue_reorder` and `_queue_mutation_lock` preserve occurrence ownership.
+[live_queue.py](../../src/autodj/live_queue.py): `_same_occurrence`,
+`_occurrence_key`, `_revision` and `plan_queue_edit` own pair comparison and
+atomic prefix preflight. [player.py](../../src/autodj/player.py):
+`_station_queue`, `_peek_user_queue`, `_commit_queue_pick`,
+`_discard_failed_queue_pick`, `_queue_pick_is_stale` and `accept_live_queue_edit`
+must carry and consume exact occurrences instead of the current path fallbacks.
+
+### 2. Confirm explicitly before recording; book only a completed take
+
+**Decision.** Selecting a future row only inspects it. **Confirm songs** submits
+that snapshot and revision, validates the complete prefix, and applies the queue
+change atomically. Only then can **Record** target it. Already confirmed pairs
+need no second confirmation. The existing current-handoff recording route stays
+available with its current Outro/earlier-speech cutoff and controls.
+
+Confirmation reserves no speech, upload capacity, liner or intro. Starting,
+stopping, abandoning, denying microphone access or discarding a take leaves the
+deliberately confirmed music queued and leaves no server recording. **Book voice
+track** uses the existing bounded upload/decode/reservation path. A future
+booking adds a `Break` in `queued` state bound to the exact pair. Its stable
+target ID can reuse `slot_id`; add explicit occurrence references and a
+revision rather than overloading the path-derived `ending_id`/`upcoming_id`.
+
+Reuse `TransitionItem` and the existing Before/After/Replace choices for the
+future chain. Inspect them without reservation; booking freezes the chosen
+content and order, not its future PCM. At promotion, reserve only eligible
+frozen candidates through existing liner/intro owners; never reroll a different
+clip under an old choice. Independent due ads/news retain their admission rules.
+Revalidate the combined chain and report a refusal when its constraints cannot
+be satisfied rather than silently moving or omitting the booked voice.
+
+The server checks run identity, pair adjacency, queue/target revision, relevant
+schedule/settings/media inputs, expiry and transition choices before processing,
+after decode and at atomic admission. Preparation runs outside queue/audio
+locks; installation uses existing control serialization and bus-before-queue
+lock order. A changed state returns 409 without a partial queue/speech change.
+No upload can recreate a cancelled booking using its old revision. Promotion
+during processing either admits to that same current handoff before its cutoff,
+or refuses; it cannot fall through to another pair. Unrelated revisions may
+conservatively require retry, but never erase an existing confirmed selection.
+
+Keep the browser's Blob/WAV after refusal and clean the rejected server upload.
+Retry to the same occurrences requires a fresh explicit Book; choosing different
+occurrences, even identical song names, requires selection, listen-back and Book.
+Change `samePair` accordingly; matching catalog IDs is insufficient.
+
+**Reason and alternatives.** Confirmation before recording makes the music
+stable during a take longer than the preview's 45-second cache lifetime.
+Confirmation only on upload allows routine reprediction to invalidate that work.
+Automatic confirmation on selection or microphone access would turn browsing or
+a failed take into an undisclosed queue edit. Temporary recording leases would
+need another expiry/ownership mechanism and would not fit ordinary queue editing.
+
+**Owners.** Add `Player.confirm_voice_target` through the existing queue guard
+and an operator-only `POST /voice-tracks/targets/confirm` in
+[breaks_api.py](../../src/autodj/breaks_api.py): `install_breaks`, `receive`,
+`_VoiceFields` and `_voice_context`. Use the station router's default/named
+aliases, browser session/Origin rules and existing rate/body caps; announcer
+tokens gain no future-selection authority. [breaks.py](../../src/autodj/breaks.py):
+`Break`, `BreakDesk.reserve/add/release` retain file and quota ownership.
+[live_voice.py](../../src/autodj/live_voice.py): `book_voice` dispatches exact
+future/current admission; `book_live_breaks` remains the current install path.
+[voice-tracker.js](../../src/autodj/static/modules/voice-tracker.js): `start`,
+`showTake`, `target`, `samePair`, `moved`, `book` and `discard` own browser state.
+
+### 3. End speech and music choices separately through existing lifecycles
+
+**Decision.** Cancel removes only the chosen speech association, including a
+future queued booking, and increments the target revision. Confirmed music
+remains queued, as required by #523. There is no extra music-lock release API:
+ordinary remove/replace/reorder/Clear queue releases or changes those choices.
+If speech is still associated, that operation first resolves its conflict.
+Expiry or failed final admission also ends speech without undoing music choices.
+
+As the outgoing occurrence becomes current, the worker claims its exact queued
+speech and carries its identity into the normal handoff. No future PCM, decoder
+or speculative speech reservation is created. Queued cancellation and claim
+share control serialization, fixing the race between `desk.cancel` and
+`desk.take`. Once installed, reuse `_cancel_window` and `_install_handoff` with
+the final #523 checks; speech/ducking already started is protected. Claim,
+replacement and discard must not install twice or orphan a rendered take on a
+retry. On actual playback, queue consumption and break on-air/aired events end
+their respective obligations once; never infer an aired take from an elapsed ETA.
+
+A pause retains choices, while ordinary expiry still runs and airtime becomes
+unknown. A playout reset/set end releases live target bindings and drops unaired
+speech with its reason (or `cut short` when already on air). Ordinary queued
+music survives a set reset where it does today, but an old run token cannot book
+speech again. Full station destruction/process restart restores neither these
+run-scoped confirmations nor temporary live recordings. Ordinary Show resume,
+prepared-edition explicit resume and the validated single restored clock pick
+retain their existing, separate rules; none resurrects a live voice binding.
+
+Within a running process, Booked voice tracks retains terminal reasons under
+the existing bounded history policy. After restart, report **Live recordings
+from the previous run were not restored; prior airtime is unknown**, rather
+than asserting cancelled, unheard or aired. A browser holding old rows marks
+them no longer booked when the run changes; a fresh browser receives that
+run-lifetime limitation too. Existing station logs remain the historical
+diagnostic source. This does not add durable transmission receipts, replay
+state, a backup member or new source-audio storage. Temporary uploads keep the
+desk's cleanup rules; saved prepared-edition recordings are never deleted.
+
+**Reason and alternatives.** Cancelling speech must not silently remove music.
+Automatic release on closing the page makes programming depend on browser
+lifetime. Persisting a replayable live queue and takes would duplicate prepared
+editions and risk re-airing speech after an uncertain crash. A separate release
+button would add a second way to edit the same queue.
+
+**Owners.** `live_voice.can_cancel/cancel/_cancel_window`,
+`Player._next_rendered_serial/_refresh_live_queue/_discard_render/_settle_breaks`,
+`reset_playout/end_set/stop`, and [LivePlayout](../../src/autodj/live_playout.py)
+`_run_prepare/reset/stop` own claims, cancellation, stale work and generations.
+`BreakDesk.take/drop/drop_unaired/maintain` owns terminal states and cleanup;
+[stations.py](../../src/autodj/stations.py) `StationRuntime.start/stop` and
+`_voice_context` expose run changes and recovery limits. `renderTracks/apply`
+in the voice tracker preserve terminal status and focus.
+
+### 4. Make edits explicit; retain hard-event and live-input priority
+
+**Decision.** Extend `plan_queue_edit` to inspect all booked future pairs as
+well as current speech. One conflict response lists affected recordings, old
+pairs and proposed replacement pairs, with a revision covering the entire edit.
+**Keep voice track** authorizes those replacements for this airing only;
+**Discard voice track** removes the affected playout associations;
+**Cancel change**, a missing choice or a stale revision changes nothing.
+**Play next** then takes effect normally. Started speech keeps its original
+layers/timing and heard music cannot be replaced.
+
+Keep uses a deterministic proposed pair: anchor to the surviving outgoing
+occurrence and its new next song; if it was removed, use the surviving incoming
+occurrence and its new predecessor. Explicit endpoint replacement occupies the
+same place for this calculation. Thus A/X/B insertion proposes A-to-X for
+speech formerly on A-to-B. Show the resulting pair before accepting Keep.
+If neither anchor/replacement supplies an eligible pair, Keep is unavailable
+with a reason; Discard and Cancel still allow the edit to be resolved. Do not
+guess another occurrence with the same path. Rebind/drop all affected takes and
+the queue in one revision, preserving unaffected recordings and independent
+ads/news. Multiple bookings may share a pair only within existing desk caps;
+merging pairs cannot bypass those caps.
+
+Manual show replacement/stop participates in this preflight as one proposed
+queue operation, before changing ShowRunner state; thread the same choice
+through its API/UI. Soft scheduled changes and ordinary automatic feeds have
+no operator choice: defer on conflict and report the affected recording/required
+action. They must not mark the show replaced or spin silently in a removal loop.
+
+Hard scheduled actions (including a hard Show replacement) and live takeover
+retain their existing priority. Before applying their queue/reset operation,
+invalidate displaced target bindings and mark unaired recordings dropped with
+the event/takeover reason. This explicit priority exception must run before
+ShowRunner's conflict-sensitive cleanup, so protected speech cannot prevent a
+hard event. Takeover ends all waiting live voice bookings as today; return
+refreshes through `prepare_live_return`, with no replay. Report speech already
+started as cut short when interrupted, not safely cancelled. Report affected
+recordings in Booked voice tracks and the station event/log; do not retarget them.
+
+Schedule edits alone re-evaluate eligibility, invalidate in-flight revisions
+and flag booked targets now at risk, without silently rebinding or deleting
+them. Recheck actual chain fit at promotion and final installation. A conflict
+then drops the whole unheard take with its reason; music and scheduled priority
+continue. Unknown timing or unavailable media likewise never authorizes a
+substitute song-specific recording. Clock restart fitting, daypart/DMCA refusal
+and decoder skips cannot leave speech attached to a replacement occurrence.
+
+**Reason and alternatives.** An uneditable prefix would defeat #519's Play next
+contract. Silently keeping/discarding on ordinary edits would bypass operator
+intent. Blocking hard events behind a dialogue would violate scheduler priority;
+retargeting on takeover/return could air stale speech in another programme.
+The explicit hard-interruption rule is a narrow extension of reset/takeover
+behavior, not permission for every automatic caller to discard recordings.
+
+**Owners.** `live_queue.plan_queue_edit/QueueEdit/_revision`,
+`Player.accept_live_queue_edit/_refresh_live_queue/voice_track_crosses_hard_boundary`,
+and bridge queue mutators own one edit. [shows.py](../../src/autodj/shows.py)
+`ShowRunner.start/start_edition/stop/_clear_blocking/_feed_blocking`,
+[shows_api.py](../../src/autodj/shows_api.py),
+[scheduler.py](../../src/autodj/scheduler.py) `Scheduler.run/tick`, and
+`StationRuntime._live_started/_ready_automation` own manual/soft/hard distinctions.
+Reuse [voice-track-conflict.js](../../src/autodj/static/modules/voice-track-conflict.js)
+and the shared dialog guard. `prepared_entry/prepared_handoff` and
+[prepared_editions.py](../../src/autodj/prepared_editions.py)
+`Occurrence/Take/EditionStore.runtime_plan` retain source identity and approval;
+the live edit may use the existing operator-kept copy but cannot rewrite them.
+
+### 5. Bound eligibility and expose a native target choice
+
+**Decision.** Offer the current handoff plus upcoming adjacent music changes
+within the next **15 minutes**, using the existing preview worker and its
+80-song work cap, not a second simulation. This is an initial admission bound,
+not a timing guarantee. Use the shorter available span when prediction is
+partial. Confirm only a complete prefix with known durations and playable
+library music, within the station's existing speech expiry allowance. After
+decoding, the complete chain must still fit before expiry and every applicable
+hard boundary. A delayed confirmed target can remain visible beyond the initial
+horizon; its expiry remains authoritative.
+
+Eligibility stops before a clockwheel restart or a scheduled show, profile or
+wheel change, even when soft; before unknown source duration; and before an
+unqueued Show tail. Already queued ordinary Show occurrences may be selected
+without changing their ownership. Future prepared-edition occurrences, primary
+speech segments, skipped/missing songs and simulated future shows are not
+confirmation targets in this workflow: use Prepared editions for that advance
+production. Browser output, stopped stations, live takeover and unsupported
+transition modes expose reasons. The existing current-handoff workflow is not
+removed by these future-list restrictions.
+
+The Voice tracks page gains **Upcoming song changes**, a native labelled
+**Song change** select with both titles and a repeated-occurrence ordinal in
+each option. Tab reaches it; arrows choose; Tab reaches **Confirm songs** and
+Enter/Space confirms. Selection alone neither confirms nor records. Adjacent
+text names **Selection: Predicted / Confirmed** independently of **Estimated
+airtime**, plus one short eligibility reason. An unconfirmed current selection
+can say **Current handoff** without claiming an operator confirmation. Never
+label an estimate as a guaranteed start, or treat a passed ETA as on-air evidence.
+Show unavailable rows with reasons; inspectability need not imply eligibility.
+
+Preserve the selected ID, native control node and focus across passive refresh;
+update options in place. If the target disappears, keep a selected unavailable
+placeholder and the take rather than selecting the first row. Record stays
+bound to its starting pair when a user inspects another row. An action announces
+its result once via `announceStatus`; countdowns and passive ETA updates stay
+quiet. Keep Alt+R and existing recording, listen-back, placement, retry and
+Cancel controls. When an action control disappears, focus goes directly to the
+target selector or the existing next-row/heading fallback, never page body.
+Use the repository dialog guard for speech conflicts, with Cancel last.
+
+**Reason and alternatives.** A short near-air horizon reuses current resource
+and expiry bounds; a whole hour or tomorrow belongs to the separate prepared
+production workflow. Restricting everything to the current handoff would not
+solve #524. Confirming unqueued show tails would need new feeder/progress
+semantics, so those rows remain explicitly ineligible. A custom grid/listbox or
+one button per forecast row adds focus handling that a native select already
+provides. Color-only certainty and a combined “fixed time” label are misleading.
+
+**Owners.** `hour_preview.read_station/build_preview/HourPreviews/_item_view`
+and `breaks_api._voice_context` supply one authoritative target list, eligibility
+and estimates. `voice-tracker.js` `apply/refresh/renderSlot/renderTracks/start`
+and [index.html](../../src/autodj/static/index.html) own native selection and
+focus. Phase 2 updates the [spoken-breaks workflow](../guides/operations/spoken-breaks.md),
+[preview guide](../guides/operations/rotation-preview.md), queue/show guidance
+and [accessibility rehearsal](../accessibility-testing.md). Some current guide
+text still describes local pinned slots; reconcile that known prose drift with
+the already accepted #538 amendment, not by restoring the retired behavior.
+
+### Consequences, verification and revisit conditions
+
+No new dependency, durable queue, commitment worker or approval service is
+required. Confirmation foundations and the UI are ordered steps within #524;
+the UI must consume the same target/revision contract rather than shipping a
+parallel provisional mechanism. Phase 1 recorded the new contracts as evidence
+gaps. Phase 2 implements all six plan steps; rows 22 through 28 now map to
+passing occurrence, confirmation, upload, conflict, lifecycle and browser-state
+regressions. Hard scheduled authority is separate from manual Play now timing;
+a completed hard wait preserves priority without an extra fade. Frozen candidate
+ownership is adopted without a second random choice or self-cooldown refusal.
+Keep is unavailable when merged frozen chains cannot preserve their content and
+order. These are applications of the accepted contracts, not new commitment modes.
+
+The focused Chromium audit uses production markup, styles and controls with
+deterministic API responses. Keyboard focus, native confirmation, target sizing
+and axe scans cover both themes. Real microphone/output continuity and Windows
+NVDA speech in Chrome and Firefox remain separate manual evidence under row 29.
+Run reset and crash-style recreation report unknown old airtime without restoring
+temporary speech. Ordinary Show/prepared resume and saved source ownership remain
+covered by their existing suites.
+
+Revisit the horizon or unqueued-show exclusion only with an explicit requirement
+and ownership design. Revisit manual-queue conversion if preserving future
+clock instructions becomes required. Session-only recordings can be lost on
+restart and crash history is uncertain by design; durable advance production
+continues to use prepared editions. Concurrency tests must cover duplicate
+paths, two editors, upload/cancel/promotion races and hard-show cleanup before
+the implementation is considered complete.

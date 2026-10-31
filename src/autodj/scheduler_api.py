@@ -251,6 +251,7 @@ def build_scheduler(
     )
     if bridge.player is not None:
         bridge.player._hour_fit_events = scheduler.hard_events
+        bridge.player._voice_schedule_events = scheduler.voice_events
         bridge.player._hour_fit_timezone = timezone
     for action in _builtin_actions(
         bridge, apply_profile, profile_names, liner_names, clock_names, select_clock

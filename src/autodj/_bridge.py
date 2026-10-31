@@ -12,7 +12,6 @@ server stack.
 
 from __future__ import annotations
 
-import copy
 import itertools
 import logging
 import os
@@ -30,6 +29,7 @@ from autodj.audience import StreamAudience
 from autodj.history_kinds import INSERT_KINDS
 from autodj.history_pages import AIRED_ROWS, VIEW_ROWS, history_page
 from autodj.identity_map import attached
+from autodj.live_queue import proposed_occurrence, queue_occurrence
 
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
@@ -1657,12 +1657,19 @@ class PlayerBridge(LibraryAccess):
     @contextmanager
     def _queue_mutation_lock(self) -> Iterator[bool]:
         """Hold the live bus boundary, when present, then the queue lock."""
+        from autodj.live_queue import occurrence_proposals
+
         state = self.player._state
         if getattr(self.player, "live_mixing", False):
-            with self.player.live_queue_guard(), state.queue_lock:
+            with (
+                self.player._clock_selection_lock,
+                self.player.live_queue_guard(),
+                state.queue_lock,
+                occurrence_proposals(self.player),
+            ):
                 yield True
         else:
-            with state.queue_lock:
+            with state.queue_lock, occurrence_proposals(self.player):
                 yield False
 
     def _plan_live_queue_edit(
@@ -1762,7 +1769,11 @@ class PlayerBridge(LibraryAccess):
         if entry is None:
             return False
         return self.play_next_entry(
-            entry, now, voice_action=voice_action, voice_revision=voice_revision
+            entry,
+            now,
+            voice_action=voice_action,
+            voice_revision=voice_revision,
+            new_placement=True,
         )
 
     def play_next_entry(
@@ -1772,9 +1783,13 @@ class PlayerBridge(LibraryAccess):
         *,
         voice_action: str | None = None,
         voice_revision: str | None = None,
+        new_placement: bool = False,
     ) -> bool:
         """Queue this exact owned occurrence, preserving prepared-edition identity."""
         if now and (self.stream_mode or self._bus_mode()):
+            if new_placement:
+                entry = queue_occurrence(entry)
+
             # Play now on the mix bus: render *entry* from its start and fade
             # the playing track out.  queued_next is left alone so the track
             # does not also play a second time later, and anything queued
@@ -1792,6 +1807,8 @@ class PlayerBridge(LibraryAccess):
                 play()
             return True
         with self._queue_mutation_lock() as live:
+            if new_placement or not getattr(entry, "occurrence_id", None):
+                entry = proposed_occurrence(self.player, entry, "play_next")
             state = self.player._state
             decision = (
                 self._plan_live_queue_edit(
@@ -1841,7 +1858,7 @@ class PlayerBridge(LibraryAccess):
             self.player.play_now(chosen, pick_mode="seed")
             return True
         with self.player._state.queue_lock:
-            self.player._state.queued_next = chosen
+            self.player._state.queued_next = queue_occurrence(chosen)
         self.skip()
         return True
 
@@ -1922,6 +1939,7 @@ class PlayerBridge(LibraryAccess):
         if entry is None:
             return False
         with self._queue_mutation_lock() as live:
+            entry = proposed_occurrence(self.player, entry, "queue_add")
             state = self.player._state
             decision = (
                 self._plan_live_queue_edit(
@@ -2220,8 +2238,11 @@ class PlayerBridge(LibraryAccess):
                 # Each queued item is its own copy, so the request's marks and
                 # bridges belong to it alone, never to a same-path song the
                 # operator queued.
-                request = copy.copy(entry)
-                bridges = [copy.copy(song) for song in plan.bridges]
+                request = proposed_occurrence(self.player, entry, "request")
+                bridges = [
+                    proposed_occurrence(self.player, song, f"request_bridge:{index}")
+                    for index, song in enumerate(plan.bridges)
+                ]
                 proposed = [*state.queue[:position], *bridges, request, *state.queue[position:]]
                 decision = (
                     self._plan_live_queue_edit(
@@ -2304,7 +2325,14 @@ class PlayerBridge(LibraryAccess):
                 return found
         return UTC
 
-    def queue_insert_if(self, entry: IndexEntry, position: int, view: QueueView) -> bool:
+    def queue_insert_if(
+        self,
+        entry: IndexEntry,
+        position: int,
+        view: QueueView,
+        *,
+        raise_voice_conflict: bool = False,
+    ) -> bool:
         """Put *entry* at *position* of the user queue if the queue still matches *view*.
 
         For callers that worked out the place from *view* with no lock held
@@ -2328,11 +2356,15 @@ class PlayerBridge(LibraryAccess):
                 self._sync_next_for_prefetch()
                 self._accept_live_queue_edit(decision)
         except VoiceQueueConflict:
+            if raise_voice_conflict:
+                raise
             # This internal show feed has no operator choice; leave the queue untouched.
             return False
         return True
 
-    def queue_remove_if(self, position: int, view: QueueView) -> bool:
+    def queue_remove_if(
+        self, position: int, view: QueueView, *, raise_voice_conflict: bool = False
+    ) -> bool:
         """Remove the user queue's item at *position* if the queue still matches *view*."""
         state = self.player._state
         from autodj.live_queue import VoiceQueueConflict
@@ -2351,6 +2383,8 @@ class PlayerBridge(LibraryAccess):
                 self._sync_next_for_prefetch()
                 self._accept_live_queue_edit(decision)
         except VoiceQueueConflict:
+            if raise_voice_conflict:
+                raise
             # Internal show cleanup has no operator choice; keep its entry queued for retry.
             return False
         return True

@@ -23,6 +23,7 @@ import { reconcileRows } from "./dom-helpers.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
 import { announceStatus, sayIfStillPending } from "./live-region.js";
 import { clearFieldError, fmtTime, placeRows, selectOnFocus, showFieldError } from "./dom-helpers.js";
 import { installPreparedEditions } from "./prepared-editions.js";
@@ -70,6 +71,7 @@ export function describeOnAir(onAir) {
     `${number(onAir.to_come)} to come`,
   ];
   let text = `${onAir.name} is on the air: ${parts.join(", ")}.`;
+  if (onAir.deferred_reason) text += ` ${onAir.deferred_reason}`;
   const skipped = onAir.skipped || [];
   if (onAir.skipped_count) {
     const shown = skipped.slice(0, 3).map((item) => `${item.title} (${item.reason})`);
@@ -736,7 +738,11 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     try {
       await saving;
-      const answer = await send(url(open.id, "/start"), "POST");
+        const target = url(open.id, "/start");
+        const result = await sendWithVoiceTrackConflict(doc, (voice) => current(epoch, mine)
+          ? send(target, "POST", Object.keys(voice).length ? voice : undefined) : undefined);
+        if (!result) return;
+        const answer = result.value;
       if (!current(epoch, mine)) return;
       await load();
       say(answer.message || "The show started.");
@@ -749,7 +755,10 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     try {
       const wasResuming = Boolean(data.on_air?.pending_resume);
-      const answer = await send("/api/shows/on-air", "DELETE");
+        const result = await sendWithVoiceTrackConflict(doc, (voice) => current(epoch, mine)
+          ? send("/api/shows/on-air", "DELETE", Object.keys(voice).length ? voice : undefined) : undefined);
+        if (!result) return;
+        const answer = result.value;
       if (!current(epoch, mine)) return;
       // Focus moves to Add show only if Stop show is hidden (renderOnAir).
       await load();

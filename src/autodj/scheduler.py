@@ -559,6 +559,8 @@ class Action:
     interrupt: Literal["before", "after", "none"] = "after"
     hard: Callable[[dict[str, str]], Awaitable[None]] | None = None
     soft_waits: bool = True
+    # A completed hard wait suppresses the fade, but retains hard priority.
+    hard_waited: Callable[[dict[str, str]], Awaitable[None]] | None = None
 
     def metadata(self) -> dict[str, Any]:
         """Describe the action for the web form (reads ``names`` lists)."""
@@ -930,8 +932,11 @@ class Scheduler:
             # A hard event that waited for its song runs at the song change
             # as a soft one would, without a fade.
             hard = interrupt and event.timing == "hard"
-            if hard and action.hard is not None:
-                await action.hard(dict(event.params))
+            hard_handler = (
+                action.hard if hard else action.hard_waited if event.timing == "hard" else None
+            )
+            if hard_handler is not None:
+                await hard_handler(dict(event.params))
                 logger.info("Scheduled event %r ran: %s", event.name, summary)
                 return await self._record(event, "ok", "", deferred)
             play = await action.handle(dict(event.params))
@@ -943,6 +948,26 @@ class Scheduler:
                 self._interrupt()
         except Exception as exc:
             message = str(exc) or type(exc).__name__
+            from autodj.live_queue import VoiceQueueConflict
+
+            if isinstance(exc, VoiceQueueConflict) and event.timing == "soft":
+                if event.id not in self.pending:
+                    self.pending.append(event.id)
+                names = ", ".join(
+                    item.get("label") or "Voice track" for item in exc.detail.get("affected", ())
+                )
+                message = f"Deferred: {names or 'booked speech'}. Resolve the voice track conflict in the queue; this event waits for a later song."
+                previous = next(
+                    (record for record in reversed(self.runs) if record.event_id == event.id), None
+                )
+                if (
+                    previous is not None
+                    and previous.result == "error"
+                    and previous.message == message
+                ):
+                    return previous
+                logger.warning("Scheduled event %r: %s", event.name, message)
+                return await self._record(event, "error", message, deferred)
             logger.warning("Scheduled event %r (%s) failed: %s", event.name, summary, message)
             logger.debug("Scheduled event failure", exc_info=True)
             return await self._record(event, "error", message, deferred)
@@ -1056,6 +1081,13 @@ class Scheduler:
                         await self._publish({"type": "schedule_changed"})
                 await self.run(event, interrupt=not no_skip, deferred=deferred)
         return disabled
+
+    def voice_events(self) -> tuple[ScheduledEvent, ...]:
+        """Snapshot programme boundaries for run-local voice target revisions."""
+        with self.lock:
+            return tuple(
+                event.model_copy(deep=True) for event in self.events.values() if event.enabled
+            )
 
     def hard_events(self) -> tuple[ScheduledEvent, ...]:
         """The enabled hard events, copied under :attr:`lock` (any thread; hour fitting)."""

@@ -328,6 +328,38 @@ def test_station_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
 # -- the scheduler --------------------------------------------------------------
 
 
+def test_soft_voice_conflict_waits_for_a_later_song_and_reports_the_take(tmp_path):
+    from autodj.live_queue import VoiceQueueConflict
+
+    rig = Rig(tmp_path / "schedule.json", playing=True)
+    event = stored("a" * 32, timing="soft")
+    rig.schedule.events[event.id] = event
+    rig.fail = VoiceQueueConflict(
+        {"message": "This change affects a voice track.", "affected": [{"label": "Waiting take"}]}
+    )
+    result = asyncio.run(rig.schedule.run(event))
+    assert rig.schedule.pending == [event.id]
+    assert "Deferred" in result.message and "Waiting take" in result.message
+    rig.fail = None
+    asyncio.run(rig.schedule._run_pending())
+    assert not rig.schedule.pending
+    assert rig.schedule.runs[-1].result == "ok"
+
+
+def test_repeated_soft_voice_conflict_records_one_identical_deferral(tmp_path):
+    from autodj.live_queue import VoiceQueueConflict
+
+    rig = Rig(tmp_path / "schedule.json", playing=True)
+    event = stored("a" * 32, timing="soft")
+    rig.schedule.events[event.id] = event
+    rig.fail = VoiceQueueConflict({"message": "Waiting for a voice choice"})
+    asyncio.run(rig.schedule.run(event))
+    for _ in range(3):
+        asyncio.run(rig.schedule._run_pending())
+    assert len(rig.schedule.runs) == 1
+    assert rig.schedule.pending == [event.id]
+
+
 class Rig:
     """A scheduler with a settable clock that records what it does."""
 
@@ -934,3 +966,38 @@ def test_a_known_action_with_bad_settings_is_set_aside_as_before(tmp_path: Path)
     assert list(rig.schedule.events) == ["a" * 32]
     assert rig.schedule.kept == []
     assert len(list(tmp_path.glob("schedule.json.bad-*"))) == 1
+
+
+def test_hard_event_wait_preserves_priority_without_fading(tmp_path):
+    """ADR-0004-26: a completed hard wait retains the action's priority policy."""
+    from datetime import UTC, datetime, time
+
+    from autodj.scheduler import Action, ScheduledEvent, Scheduler
+
+    calls = []
+
+    async def soft(params):
+        calls.append("soft")
+
+    async def hard(params):
+        calls.append("hard")
+
+    async def waited(params):
+        calls.append("waited")
+
+    async def publish(event):
+        pass
+
+    scheduler = Scheduler(
+        tmp_path / "schedule.json", "UTC", publish, interrupt=lambda: calls.append("fade")
+    )
+    scheduler.register(Action("show", "Show", soft, hard=hard, hard_waited=waited))
+    event = ScheduledEvent(
+        id="d" * 32, name="Priority", action="show", timing="hard", repeat="daily", time=time(12)
+    )
+    scheduler.events[event.id] = event
+    scheduler.pending = [event.id]
+    scheduler._pending_hard_deadline[event.id] = datetime.now(UTC)
+    asyncio.run(scheduler._run_pending())
+    assert calls == ["waited"]
+    assert scheduler.runs[-1].result == "ok"

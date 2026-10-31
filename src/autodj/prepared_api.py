@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
 from autodj.breaks_api import BODY_DEADLINE_SECONDS, MIN_BODY_BYTES_PER_SECOND, decode_gate
+from autodj.live_queue import VoiceQueueConflict
 from autodj.prepared_editions import (
     ID,
     MAX_UPLOAD_BYTES,
@@ -50,6 +51,8 @@ class StartBody(_Body):
     now: StrictBool = False
     confirm_reair: StrictBool = False
     from_occurrence: ID | None = None
+    voice_action: Literal["keep", "discard"] | None = None
+    voice_revision: StrictStr | None = Field(default=None, max_length=64)
 
 
 class ApproveBody(_Body):
@@ -262,7 +265,14 @@ def install_prepared(
                 now=body.now,
                 confirm_reair=body.confirm_reair,
                 from_occurrence=body.from_occurrence,
+                **{
+                    key: value
+                    for key, value in body.model_dump().items()
+                    if key.startswith("voice_") and value is not None
+                },
             )
+        except VoiceQueueConflict as exc:
+            raise HTTPException(status_code=409, detail=exc.detail) from None
         except EditionError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from None
         except ValueError as exc:

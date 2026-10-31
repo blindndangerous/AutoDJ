@@ -765,7 +765,9 @@ class _OnAir:
     prepared_entries: tuple[Any, ...] = ()
     confirm_reair: bool = False
     marked_started: bool = False
+    deferred_reason: str | None = None
     committed_audio_notice: str | None = None
+    prequeued: bool = False
     # The saved show whose station name applies (#472): the show itself, or
     # the show a prepared edition was made from; and that name, read when the
     # show starts and again whenever the show is saved (see show_saved).
@@ -907,6 +909,7 @@ class ShowRunner:
                 else None,
                 "interrupted_edition": copy.deepcopy(self._interrupted),
                 "committed_audio_notice": air.committed_audio_notice,
+                "deferred_reason": air.deferred_reason,
             }
 
     def upcoming(self) -> tuple[str, tuple[str, ...]] | None:
@@ -1404,6 +1407,9 @@ class ShowRunner:
         now: bool = False,
         confirm_reair: bool = False,
         from_occurrence: str | None = None,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
+        hard_interrupt: bool = False,
     ) -> str:
         """Queue a frozen local edition; restart resumption always names an item."""
         if self._edition_store is None or not self._plays_now_on_bus():
@@ -1443,9 +1449,18 @@ class ShowRunner:
         for omission in plan.omissions:
             air.skip("", "Prepared speech", str(omission))
         async with self._turn:
-            await asyncio.to_thread(self._interrupt_edition)
-            if not await asyncio.to_thread(self._clear_blocking):
-                raise ValueError("The previous show is still being taken out of the queue")
+            prepared_queue = await asyncio.to_thread(
+                self._replace_live_show,
+                air,
+                voice_action,
+                voice_revision,
+                asyncio.get_running_loop(),
+                hard_interrupt,
+            )
+            if not prepared_queue:
+                await asyncio.to_thread(self._interrupt_edition)
+                if not await asyncio.to_thread(self._clear_blocking):
+                    raise ValueError("The previous show is still being taken out of the queue")
             with self._state_lock:
                 self._resume = None
                 if (
@@ -1453,28 +1468,37 @@ class ShowRunner:
                     and self._interrupted.get("edition_id") == edition_id
                 ):
                     self._interrupted = None
-            attached(self._bridge.player, "_edition_occurrences", create=True).clear()
-            self._prepared_signature = self._plan_signature(plan)
-            self._prepared_loop = asyncio.get_running_loop()
-            self._bridge.player.request_prepared_refresh = self.request_prepared_refresh
-            self._bridge.player.prepared_render_token = self.prepared_render_token
-            self._bridge.player.prepared_plan = self.prepared_plan
-            self._bridge.player.prepared_plan_valid = self.prepared_plan_valid
-            self._bridge.player.prepared_render_guard = self.prepared_render_guard
-            self._bridge.player.prepared_primary_valid = self.prepared_primary_valid
-            self._bridge.player.prepared_render_committed = self.prepared_render_committed
-            self._bridge.player.prepared_handoff = self.prepared_handoff
-            self._bridge.player.prepared_preview_handoff = partial(
-                self.prepared_handoff, report_omissions=False
-            )
-            self._bridge.player.prepared_speech_failed = self.prepared_speech_failed
-            self._bridge.player.prepared_audio_committed = self.prepared_audio_committed
+            if not prepared_queue:
+                self._activate_prepared_air(air, asyncio.get_running_loop())
             queued, _skipped = await self._begin(
                 air, now=now or self._bridge.player._state.current_track is None
             )
         await self._tell_started(plan.name)
         await self._publish()
         return f"Prepared edition {plan.name} queued ({queued} items)"
+
+    def _activate_prepared_air(self, air: _OnAir, loop: Any) -> None:
+        attached(self._bridge.player, "_edition_occurrences", create=True).clear()
+        if air.prequeued:
+            for entry in air.waiting:
+                attached(self._bridge.player, "_edition_occurrences", create=True)[entry] = (
+                    air.prepared.items[air.places[id(entry)]]
+                )
+        self._prepared_signature = self._plan_signature(air.prepared)
+        self._prepared_loop = loop
+        self._bridge.player.request_prepared_refresh = self.request_prepared_refresh
+        self._bridge.player.prepared_render_token = self.prepared_render_token
+        self._bridge.player.prepared_plan = self.prepared_plan
+        self._bridge.player.prepared_plan_valid = self.prepared_plan_valid
+        self._bridge.player.prepared_render_guard = self.prepared_render_guard
+        self._bridge.player.prepared_primary_valid = self.prepared_primary_valid
+        self._bridge.player.prepared_render_committed = self.prepared_render_committed
+        self._bridge.player.prepared_handoff = self.prepared_handoff
+        self._bridge.player.prepared_preview_handoff = partial(
+            self.prepared_handoff, report_omissions=False
+        )
+        self._bridge.player.prepared_speech_failed = self.prepared_speech_failed
+        self._bridge.player.prepared_audio_committed = self.prepared_audio_committed
 
     def _interrupt_edition(self) -> None:
         with self._state_lock:
@@ -1503,7 +1527,9 @@ class ShowRunner:
         return air.prepared_entries[index]
 
     def _own_entry(self, air: _OnAir, entry: Any, index: int) -> Any:
-        own = copy.copy(entry)
+        from autodj.live_queue import queue_occurrence
+
+        own = queue_occurrence(entry)
         if air.edition_id is not None:
             attached(self._bridge.player, "_edition_occurrences", create=True)[own] = (
                 air.prepared.items[index]
@@ -1514,7 +1540,15 @@ class ShowRunner:
         bridge = self._bridge
         return bool(getattr(bridge, "stream_mode", False) or bridge._bus_mode())
 
-    async def start(self, show_id: str, *, now: bool = False) -> str:
+    async def start(
+        self,
+        show_id: str,
+        *,
+        now: bool = False,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
+        hard_interrupt: bool = False,
+    ) -> str:
         """Put the show on the air: its first songs go to the front of the queue.
 
         With *now* (a hard event) its first song plays at once, fading out
@@ -1552,14 +1586,17 @@ class ShowRunner:
             station_name=show.station_name,
         )
         async with self._turn:
-            await asyncio.to_thread(self._interrupt_edition)
-            with self._state_lock:
-                self._resume = None
-            if not await asyncio.to_thread(self._clear_blocking):
-                raise ValueError(
-                    f"Show {show.name} did not start: the show before it is still being "
-                    "taken out of the queue. Try again in a moment."
-                )
+            if not await asyncio.to_thread(
+                self._replace_live_show, air, voice_action, voice_revision, None, hard_interrupt
+            ):
+                await asyncio.to_thread(self._interrupt_edition)
+                with self._state_lock:
+                    self._resume = None
+                if not await asyncio.to_thread(self._clear_blocking):
+                    raise ValueError(
+                        f"Show {show.name} did not start: the show before it is still being "
+                        "taken out of the queue. Try again in a moment."
+                    )
             queued, skipped = await self._begin(air, now=now)
         await self._publish()
         if not queued:
@@ -1587,7 +1624,13 @@ class ShowRunner:
         first = None
         on_bus = now and self._plays_now_on_bus()
         if on_bus:
-            first = await asyncio.to_thread(self._first_now_blocking, air)
+            if air.prequeued and air.waiting:
+                first = air.waiting.pop(0)
+                air.places.pop(id(first), None)
+                with self._bridge._queue_mutation_lock():
+                    self._bridge.player._commit_queue_pick(first)
+            else:
+                first = await asyncio.to_thread(self._first_now_blocking, air)
         # The songs after the first are queued before it starts, so its
         # render is followed by the show's second song.
         await asyncio.to_thread(self._feed_blocking)
@@ -1615,7 +1658,9 @@ class ShowRunner:
         await asyncio.to_thread(self._write_state, None if ended else air)
         return queued, skipped
 
-    async def stop(self) -> dict[str, Any] | None:
+    async def stop(
+        self, *, voice_action: str | None = None, voice_revision: str | None = None
+    ) -> dict[str, Any] | None:
         """Take the show off the air, or forget one waiting to resume.
 
         Its own waiting entries leave the queue.  One that cannot be taken
@@ -1626,6 +1671,13 @@ class ShowRunner:
             ``{"name", "done"}``, or ``None`` when there was no show.
         """
         async with self._turn:
+            with self._state_lock:
+                current_air = self._on_air
+            if current_air is not None and await asyncio.to_thread(
+                self._replace_live_show, None, voice_action, voice_revision
+            ):
+                await self._publish()
+                return {"name": current_air.name, "done": True}
             with self._state_lock:
                 interrupted = self._interrupted
                 air = self._on_air
@@ -1796,6 +1848,92 @@ class ShowRunner:
         with self._state_lock:
             return not air.waiting
 
+    def _replace_live_show(
+        self,
+        air: _OnAir | None,
+        voice_action: str | None,
+        voice_revision: str | None,
+        prepared_loop: Any = None,
+        hard_interrupt: bool = False,
+    ) -> bool:
+        """Preflight and apply one live show change before changing runner state."""
+        from autodj.live_queue import proposed_occurrence
+
+        bridge = self._bridge
+        player = bridge.player
+        if not getattr(player, "live_mixing", False):
+            return False
+        view = bridge._queue_view()
+        with self._state_lock:
+            old = self._on_air
+        kept = [entry for entry in view.queue if old is None or not old.holds(entry)]
+        next_entry = view.queued_next
+        if old is not None and old.holds(next_entry):
+            next_entry = None
+        additions: list[Any] = []
+        if air is not None:
+            while air.next_index < len(air.songs) and len(additions) < AHEAD:
+                index = air.next_index
+                entry = self._entry_at(air, index)
+                air.next_index += 1
+                if entry is None:
+                    air.skip(
+                        air.songs[index], _file_name(air.songs[index]), "it is not in the library"
+                    )
+                    continue
+                proposed_view = replace(view, queued_next=next_entry, queue=(*additions, *kept))
+                broken = (
+                    ()
+                    if getattr(entry, "_prepared_clip", False)
+                    else dmca_limits_at(bridge, entry, proposed_view, len(additions))
+                )
+                if broken:
+                    air.skip(
+                        entry.path,
+                        song_title(entry),
+                        "it would break the DMCA limit: " + "; ".join(broken),
+                    )
+                    continue
+                own = proposed_occurrence(player, entry, f"show:{air.show_id}:{index}")
+                additions.append(own)
+                air.places[id(own)] = index
+            if not additions:
+                raise ValueError(
+                    f"Show {air.name} did not start: none of its songs could be queued"
+                )
+        proposed = [*additions, *kept]
+        with bridge._queue_mutation_lock():
+            if bridge._queue_view_unlocked() != view or self._on_air is not old:
+                raise ValueError("The queue changed while preparing the show; try again")
+            if hard_interrupt:
+                player.invalidate_voice_targets()
+                if player.break_desk is not None:
+                    player.break_desk.drop_unaired("a hard scheduled show interrupted automation")
+                decision = None
+            else:
+                decision = bridge._plan_live_queue_edit(
+                    next_entry, proposed, voice_action=voice_action, voice_revision=voice_revision
+                )
+            if air is not None:
+                self._interrupt_edition()
+            bridge._capture_pre_queue_seed()
+            player._state.queued_next = next_entry
+            player._state.queue[:] = proposed
+            with self._state_lock:
+                self._on_air = air
+                self._resume = None
+                if air is not None:
+                    air.waiting = additions
+                    air.prequeued = True
+            if air is not None and air.edition_id is not None:
+                self._activate_prepared_air(air, prepared_loop)
+            bridge._forget_queue_marks()
+            bridge._refresh_bus_queue()
+            bridge._sync_next_for_prefetch()
+            bridge._accept_live_queue_edit(decision)
+        self._write_state(air)
+        return True
+
     def _clear_blocking(self) -> bool:
         """Take the show off the air once its own entries are out of the queue.
 
@@ -1831,6 +1969,22 @@ class ShowRunner:
                 air.places.pop(id(gone), None)
         air.waiting = kept
         return changed
+
+    def _feed_queue_change(self, air: _OnAir, change: Any, *args: Any) -> bool | None:
+        from autodj.live_queue import VoiceQueueConflict
+
+        options = {"raise_voice_conflict": True} if self._bridge.player.live_mixing else {}
+        try:
+            result = change(*args, **options)
+        except VoiceQueueConflict as exc:
+            names = ", ".join(
+                item.get("label") or "Voice track" for item in exc.detail.get("affected", ())
+            )
+            air.deferred_reason = f"Show feed deferred: {names or 'booked speech'}. Resolve the voice track conflict in the queue."
+            return None
+        if result:
+            air.deferred_reason = None
+        return result
 
     def _feed_blocking(self) -> bool:
         """Bring the show's waiting songs up to :data:`AHEAD`; whether anything changed.
@@ -1877,7 +2031,11 @@ class ShowRunner:
             )
             if recheck is not None:
                 index, entry, broken = recheck
-                if bridge.queue_remove_if(index, view):
+                removed = self._feed_queue_change(air, bridge.queue_remove_if, index, view)
+                if removed is None:
+                    changed = True
+                    break
+                if removed:
                     reason = "it would break the DMCA limit: " + "; ".join(broken)
                     logger.warning("Show %r: %s skipped: %s", air.name, entry.display_name, reason)
                     with self._state_lock:
@@ -1916,7 +2074,11 @@ class ShowRunner:
             # The show's own copy, so it is told apart from a listener's
             # request or the operator's song for the same file.
             own = self._own_entry(air, entry, air.next_index)
-            if bridge.queue_insert_if(own, position, view):
+            inserted = self._feed_queue_change(air, bridge.queue_insert_if, own, position, view)
+            if inserted is None:
+                changed = True
+                break
+            if inserted:
                 with self._state_lock:
                     air.places[id(own)] = air.next_index
                     air.next_index += 1
@@ -1975,20 +2137,26 @@ def show_action(runner: ShowRunner, store: ShowStore, editions: Any = None) -> A
                     )
         return sorted(found, key=lambda pair: pair[1].casefold())
 
-    async def start(value: str, *, now: bool = False) -> None:
+    async def start(value: str, *, now: bool = False, hard_interrupt: bool = False) -> None:
         prefix, _, identity = value.partition(":")
         if prefix in {"edition", "edition-confirmed"}:
             await runner.start_edition(
-                identity, now=now, confirm_reair=prefix == "edition-confirmed"
+                identity,
+                now=now,
+                confirm_reair=prefix == "edition-confirmed",
+                hard_interrupt=hard_interrupt,
             )
         else:
-            await runner.start(value, now=now)
+            await runner.start(value, now=now, hard_interrupt=hard_interrupt)
 
     async def play(params: dict[str, str]) -> None:
         await start(params["show"])
 
     async def play_now(params: dict[str, str]) -> None:
-        await start(params["show"], now=True)
+        await start(params["show"], now=True, hard_interrupt=True)
+
+    async def play_after_wait(params: dict[str, str]) -> None:
+        await start(params["show"], hard_interrupt=True)
 
     return Action(
         "show",
@@ -1998,6 +2166,7 @@ def show_action(runner: ShowRunner, store: ShowStore, editions: Any = None) -> A
         "none",
         hard=play_now,
         soft_waits=False,
+        hard_waited=play_after_wait,
     )
 
 

@@ -114,6 +114,95 @@ def test_times_and_lengths_read_well() -> None:
     assert length_text(1) == "0:01"
 
 
+def test_future_targets_are_read_only_and_distinguish_repeated_occurrences(tmp_path):
+    """ADR-0004-22: future targets are read only and distinguish repeated occurrences."""
+    from autodj.live_queue import capture_voice_targets
+
+    source, power, _ = _station(tmp_path)
+    player = source.player
+    player.live_mixing = True
+    current, following = power[:2]
+    player._state.current_track = current
+    before = list(player._state.queue)
+    rows = tuple(
+        Item("song", NOW + i * 100, 100, "predicted", entry)
+        for i, entry in enumerate((current, following, following, following))
+    )
+    targets = capture_voice_targets(player, rows, now=NOW)
+    assert len(targets) == 2
+    assert len({target.target_id for target in targets}) == 2
+    assert targets[0].outgoing_id != targets[0].incoming_id
+    assert player._state.queue == before
+    assert not hasattr(following, "occurrence_id")
+
+
+def test_future_target_horizon_and_programme_boundaries(tmp_path):
+    """ADR-0004-27: eligibility stops at the horizon, programme boundaries and unknown duration."""
+    from autodj.live_queue import capture_voice_targets
+
+    source, power, _ = _station(tmp_path)
+    player = source.player
+    player.live_mixing = True
+    player._state.current_track = power[0]
+    rows = tuple(
+        Item("song", NOW + i * 240, 240, "predicted", entry) for i, entry in enumerate(power)
+    )
+    targets = capture_voice_targets(player, rows, now=NOW, boundary=NOW + 600)
+    assert len(targets) == 1 and targets[0].estimated_airtime == NOW + 480
+    assert len(capture_voice_targets(player, rows, now=NOW)) == 2
+    unknown = (*rows[:2], replace(rows[2], duration_unknown=True), *rows[3:])
+    assert not capture_voice_targets(player, unknown, now=NOW)
+
+
+def test_forecast_repeat_of_current_is_a_new_unconfirmed_occurrence(tmp_path):
+    from autodj.live_queue import capture_voice_targets
+
+    source, power, _ = _station(tmp_path)
+    player = source.player
+    player.live_mixing = True
+    player._state.current_track = power[0]
+    player._state.queue[:] = [power[1]]
+    rows = (
+        Item("song", NOW, 100, "on_air", power[0]),
+        Item("song", NOW + 100, 100, "queued", power[1]),
+        Item("song", NOW + 200, 100, "predicted", power[0]),
+        Item("song", NOW + 300, 100, "predicted", power[1]),
+    )
+    targets = capture_voice_targets(player, rows, now=NOW)
+    assert len(targets) == 2
+    assert all(target.selection == "predicted" for target in targets)
+    assert targets[0].incoming is not power[0]
+    assert targets[1].incoming is not power[1]
+
+
+def test_future_preview_fill_keeps_target_identity_and_transition_metadata(tmp_path, monkeypatch):
+    """ADR-0004-22: future preview fill keeps target identity and transition metadata."""
+    from autodj.player import Player
+
+    source, power, gold = _station(tmp_path)
+    _playing(source, gold[0], NOW - 50)
+    source.player.live_mixing = True
+    source.player._cfg.playback.transition_mode = "saved_points"
+    monkeypatch.setattr(
+        Player, "_transition_voice", lambda self, *args: ([(power[0], False)], "frozen", None)
+    )
+    captured = []
+    fill = []
+    first = build_preview(source, 15, now=NOW, budget=0, keep_going=fill.append)
+    assert first["filling"] and fill
+    fill[0].run(2)
+    view = fill[0].view(filling=True, on_items=captured.extend)
+    targets = view["voice_targets"]
+    assert targets
+    assert any(row.incoming_handoff and row.incoming_handoff.transition_items for row in captured)
+    assert all(source.player._voice_targets[row["target_id"]].transition_items for row in targets)
+    again = fill[0].view(filling=True)
+    assert [row["target_id"] for row in again["voice_targets"]] == [
+        row["target_id"] for row in targets
+    ]
+    assert not source.player._state.queue
+
+
 def test_preview_lrp_preference_breaks_only_a_best_choice_tie() -> None:
     from autodj.clockwheel import least_recent
 
@@ -2529,3 +2618,22 @@ def test_filling_ends_within_the_keep_and_the_page_asks_often_enough() -> None:
     found = re.search(r"const FILLING_REFRESH_MS = (\d+);", script)
     assert found is not None
     assert int(found[1]) / 1000 < hour_preview.FILL_IDLE_SECONDS / 2
+
+
+def test_ineligible_future_row_remains_inspectable_with_reason(tmp_path):
+    """ADR-0004-27: unknown-duration music is inspectable but cannot be confirmed."""
+    from autodj.breaks_api import _voice_target_views
+    from autodj.live_queue import capture_voice_targets
+
+    source, power, _ = _station(tmp_path)
+    player = source.player
+    player.live_mixing = True
+    player._state.current_track = power[0]
+    rows = tuple(
+        Item("song", NOW + i * 60, 60, "predicted", entry) for i, entry in enumerate(power[:3])
+    )
+    capture_voice_targets(player, (*rows[:2], replace(rows[2], duration_unknown=True)), now=NOW)
+    targets = _voice_target_views(player)
+    assert len(targets) == 1
+    assert targets[0]["eligible"] is False
+    assert "duration" in targets[0]["reason"]
