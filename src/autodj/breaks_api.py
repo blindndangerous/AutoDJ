@@ -61,6 +61,7 @@ import threading
 import time
 import weakref
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -90,7 +91,7 @@ from autodj.breaks import (
 from autodj.liner_files import LinerTooLargeError, store_liner_upload
 from autodj.machine_tokens import SCOPE_ANNOUNCER, MachineToken
 from autodj.settings_bodies import PAGE_SAVED_BREAKS, BreakSettingsBody
-from autodj.station_routes import SavedStationDep, StationDep, StationRouter
+from autodj.station_routes import SavedStationDep, StationDep, StationRouter, VoiceTargetConfirmBody
 from autodj.stereo import SAMPLE_RATE
 from autodj.worker_api import RateLimiter
 
@@ -264,8 +265,13 @@ def _slot_view(
             if item["kind"] in {"booked_voice", "booked_break"}
         ]
         transition_order = [*candidate_order[:split], *booked, *candidate_order[split:]]
+    from autodj.live_queue import occurrence_ref
+
     return {
         "slot_id": plan.slot_id,
+        "run_id": player._voice_run_id,
+        "outgoing_occurrence_id": occurrence_ref(player, plan.ending),
+        "incoming_occurrence_id": occurrence_ref(player, plan.upcoming),
         "ending": songs.view(plan.ending),
         "upcoming": songs.view(plan.upcoming),
         "closes_in_s": round(closes_in, 1),
@@ -666,8 +672,16 @@ def install_breaks(router: StationRouter) -> None:
         """
         is_voice_track = source == VOICE_TRACK
         live_voice_track = bool(is_voice_track and getattr(station.player, "live_mixing", False))
+        selected_target: str | None = None
 
         async def current_slot() -> dict[str, Any] | None:
+            if selected_target is not None:
+                if station.player._state.is_paused:
+                    return None
+                try:
+                    return await asyncio.to_thread(_future_slot, station, selected_target)
+                except BreakError:
+                    return None
             return await asyncio.to_thread(_current_slot, station, voice_track=is_voice_track)
 
         if source == ANNOUNCER:
@@ -696,7 +710,23 @@ def install_breaks(router: StationRouter) -> None:
         deadline = loop.time() + BODY_DEADLINE_SECONDS + size / MIN_BODY_BYTES_PER_SECOND
         try:
             fields, upload = await _within(deadline, _read_form(request, form))
+            if isinstance(fields, _VoiceFields) and fields.target_id is not None:
+                selected_target = fields.target_id
             try:
+                if selected_target is not None and (
+                    not live_voice_track
+                    or (
+                        not isinstance(fields, _VoiceFields)
+                        or fields.run_id != station.player._voice_run_id
+                    )
+                    or selected_target != fields.slot_id
+                ):
+                    return refused(
+                        409,
+                        "That target belongs to a different station run",
+                        "target_changed",
+                        None,
+                    )
                 suffix = Path(upload.filename or "").suffix.lower()
                 if suffix not in EXTENSIONS:
                     raise HTTPException(
@@ -824,7 +854,16 @@ def install_breaks(router: StationRouter) -> None:
                     )
                 slot = checked_slot
                 chain_plan = None
-                if live_voice_track:
+                if selected_target is not None:
+                    from autodj.live_voice import future_plan
+
+                    try:
+                        chain_plan, _target = await asyncio.to_thread(
+                            future_plan, station.player, selected_target
+                        )
+                    except BreakError as exc:
+                        return refused(exc.status, exc.detail, exc.reason, checked_slot)
+                elif live_voice_track:
                     chain_plan, _closes_in, _airs_in = await asyncio.to_thread(
                         _voice_slot_status, station.player
                     )
@@ -897,6 +936,9 @@ def install_breaks(router: StationRouter) -> None:
                 expires_at=now + (fields.expires_s or config.default_expires_seconds),
                 source=source,
                 limit_s=max_seconds if source == VOICE_TRACK else None,
+                run_id=fields.run_id
+                if isinstance(fields, _VoiceFields) and selected_target is not None
+                else None,
             )
             try:
                 if source == VOICE_TRACK and not station.player.request_voice_track_slot():
@@ -1008,11 +1050,13 @@ def install_breaks(router: StationRouter) -> None:
     @router.get("/voice-tracks")
     async def voice_tracks(
         station: SavedStationDep,
+        request: Request,
         speech_s: float | None = Query(default=None, ge=0.5, le=MAX_FORECAST_SECONDS),
         tail_s: float = Query(default=0.0, ge=0.0, le=MAX_FORECAST_SECONDS),
         placement: Literal["auto", "talk_up", "standalone"] = "auto",
         transition_revision: str | None = Query(default=None, max_length=64),
         transition_choices: str | None = Query(default=None, max_length=8192),
+        target_id: str | None = Query(default=None, pattern=r"^[0-9a-f]{32}$"),
     ) -> JSONResponse:
         """The open song change, the limits, and this station's voice tracks."""
         if speech_s is not None and speech_s + tail_s > MAX_FORECAST_SECONDS:
@@ -1058,6 +1102,26 @@ def install_breaks(router: StationRouter) -> None:
                 },
                 headers=_NO_STORE,
             )
+        if getattr(station.player, "live_mixing", False) and station.bridge.library is not None:
+            from autodj.hour_preview import PreviewBusy, PreviewsClosed, _previews, _source
+
+            # Confirmed pairs remain inspectable while the worker is busy.
+            with contextlib.suppress(PreviewsClosed, PreviewBusy):
+                source = _source(station)
+                if getattr(station, "shows", None) is not None:
+                    from autodj.shows import preview_shows
+
+                    source = replace(
+                        source,
+                        shows=await asyncio.to_thread(
+                            preview_shows,
+                            station.shows,
+                            getattr(station, "show_runner", None),
+                            source.events,
+                            station.bridge.entry_for_path,
+                        ),
+                    )
+                await asyncio.wrap_future(_previews(request).submit(source, 15, desk=desk))
         return JSONResponse(
             await asyncio.to_thread(
                 _voice_context,
@@ -1067,6 +1131,7 @@ def install_breaks(router: StationRouter) -> None:
                 placement,
                 transition_revision,
                 parsed_choices,
+                target_id,
             ),
             headers=_NO_STORE,
         )
@@ -1076,6 +1141,31 @@ def install_breaks(router: StationRouter) -> None:
         """Book a browser voice track under its own duration/upload caps."""
         desk = voice_desk(station)
         return await receive(station, request, desk, _VoiceFields, "the voice tracker", VOICE_TRACK)
+
+    @router.post("/voice-tracks/targets/confirm")
+    async def voice_target_confirm(
+        station: StationDep, body: VoiceTargetConfirmBody
+    ) -> JSONResponse:
+        voice_desk(station)
+        if reason := _future_unavailable(station):
+            raise HTTPException(status_code=409, detail=reason)
+        if not station.player.live_mixing or not station.player.request_voice_track_slot():
+            raise HTTPException(status_code=409, detail=VOICE_TRACK_NEEDS_RENDERER)
+        try:
+            from autodj.live_queue import VoiceQueueConflict
+
+            target = await asyncio.to_thread(
+                station.player.confirm_voice_target,
+                body.target_id,
+                body.revision,
+                voice_action=body.voice_action,
+                voice_revision=body.voice_revision,
+            )
+        except VoiceQueueConflict as exc:
+            raise HTTPException(status_code=409, detail=exc.detail) from None
+        except BreakError as exc:
+            return refused(exc.status, exc.detail, exc.reason, None)
+        return JSONResponse(target.view(), headers=_NO_STORE)
 
     @router.delete("/voice-tracks/{break_id}")
     async def voice_track_cancel(station: SavedStationDep, break_id: str) -> JSONResponse:
@@ -1172,6 +1262,7 @@ def _voice_context(
     placement: str = "auto",
     transition_revision: str | None = None,
     transition_choices: list[dict[str, str]] | None = None,
+    target_id: str | None = None,
 ) -> dict[str, Any]:
     """What the voice tracker shows (blocking: it reads the catalog).
 
@@ -1194,12 +1285,33 @@ def _voice_context(
     desk: BreakDesk = station.breaks
     config = desk.config
     slot = context["slot"]
+    if target_id is not None:
+        try:
+            slot = _future_slot(station, target_id)
+            context["accepting"] = (
+                slot["selection"] == "confirmed" and not station.player._state.is_paused
+            )
+            context["reason"] = (
+                "The station is paused; estimated airtime is unknown"
+                if station.player._state.is_paused
+                else None
+                if context["accepting"]
+                else "Confirm songs before recording"
+            )
+        except BreakError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
     if transition_choices is not None and slot is None:
         raise HTTPException(status_code=409, detail="No song change is open for this forecast")
+    plan: SlotPlan | None
     if slot is not None:
         slot["auto_placement"] = "talk_up"
         slot["auto_note"] = None
-        plan, _closes_in, _airs_in = _voice_slot_status(station.player)
+        if target_id is not None:
+            from autodj.live_voice import future_plan
+
+            plan, _target = future_plan(station.player, target_id)
+        else:
+            plan, _closes_in, _airs_in = _voice_slot_status(station.player)
         queued = (
             _active_voice_chain(desk, plan)
             if plan is not None and plan.slot_id == slot["slot_id"]
@@ -1227,7 +1339,9 @@ def _voice_context(
                             status_code=409,
                             detail="This transition plan cannot be forecast; refresh and try again",
                         )
-                    if revision_for(plan) != transition_revision:
+                    if (
+                        slot["transition_revision"] if target_id is not None else revision_for(plan)
+                    ) != transition_revision:
                         raise HTTPException(
                             status_code=409,
                             detail="The planned transition changed; refresh and choose again",
@@ -1254,6 +1368,9 @@ def _voice_context(
                 )
     return {
         "station": context["station"],
+        "run_id": getattr(station.player, "_voice_run_id", None),
+        "targets": _voice_target_views(station.player),
+        "recovery_notice": "Live recordings are not restored after a station restart. Previous airtime is unknown.",
         "accepting": context["accepting"],
         "reason": context["reason"],
         "now": context["now"],
@@ -1274,6 +1391,71 @@ def _voice_context(
             if item.source == VOICE_TRACK
         ],
     }
+
+
+def _future_unavailable(station: StationRuntime) -> str | None:
+    player = station.player
+    if player is None or player._state.should_stop or player._state.current_track is None:
+        return "The station is stopped."
+    live = getattr(station, "live", None)
+    if live is not None and live.status() is not None:
+        return "A live presenter is on air; future automation targets are unavailable."
+    if not player.live_mixing:
+        return "Future voice targets require server audio or streaming."
+    return None
+
+
+def _future_slot(station: StationRuntime, target_id: str) -> dict[str, Any]:
+    from autodj.live_voice import future_plan
+
+    if reason := _future_unavailable(station):
+        raise BreakError(409, reason, "target_unavailable")
+    plan, target = future_plan(station.player, target_id)
+    airs = (
+        max(0.0, target.estimated_airtime - time.time())
+        if target.estimated_airtime is not None
+        else 0.0
+    )
+    view = _slot_view(station, _Songs(station), plan, airs, airs)
+    view.update(
+        target_id=target.target_id,
+        run_id=target.run_id,
+        outgoing_occurrence_id=target.outgoing_id,
+        incoming_occurrence_id=target.incoming_id,
+        transition_revision=target.revision,
+        selection=target.selection,
+        estimated_airtime=target.estimated_airtime,
+    )
+    if station.player._state.is_paused:
+        view.update(estimated_airtime=None, airs_in_s=None, closes_in_s=None)
+    return view
+
+
+def _voice_target_views(player: Any) -> list[dict[str, Any]]:
+    from autodj.live_queue import resolve_voice_target, target_revision, target_schedule_risk
+
+    if player is None:
+        return []
+    result = []
+    with player._state.queue_lock:
+        for identity in tuple(getattr(player, "_voice_targets", ())):
+            try:
+                stored = player._voice_targets[identity]
+                if not stored.eligible:
+                    if (
+                        stored.revision == target_revision(player)
+                        and time.monotonic() < stored.expires
+                    ):
+                        result.append(stored.view())
+                    continue
+                target = resolve_voice_target(player, identity)
+                risk = target_schedule_risk(player, target)
+                result.append(
+                    {**target.view(), "at_risk": bool(risk), "reason": risk or target.reason}
+                )
+            except BreakError:
+                continue
+    return result
 
 
 def _decode_cues(path: Path, max_seconds: float) -> BreakCues:
@@ -1404,6 +1586,8 @@ class _VoiceFields(_UploadFields):
     """The form fields of a voice track: a DJ break, so ``kind`` may be left out."""
 
     kind: Literal["dj"] = "dj"
+    target_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    run_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
     transition_revision: str | None = Field(
         default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
     )

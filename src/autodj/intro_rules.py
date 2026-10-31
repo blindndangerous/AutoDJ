@@ -414,7 +414,7 @@ class IntroRules:
             self._drain()
             self._reserved.pop(key, None)
 
-    def reserve_chosen(self, key: str, at: float) -> bool:
+    def reserve_chosen(self, key: str, at: float, *, owned: bool = False) -> bool:
         """Reserve a frozen rule choice without drawing a different clip."""
         with self._lock:
             self._drain()
@@ -422,10 +422,16 @@ class IntroRules:
             rule = rules.get(key)
             if rule is None or rule.dates.refusal(self._day_at(at)):
                 return False
+            if owned and key not in self._reserved:
+                return False
             last = max(
                 (
                     value
-                    for value in (rule.last_aired, self._aired.get(key), self._reserved.get(key))
+                    for value in (
+                        rule.last_aired,
+                        self._aired.get(key),
+                        None if owned else self._reserved.get(key),
+                    )
                     if value is not None
                 ),
                 default=None,

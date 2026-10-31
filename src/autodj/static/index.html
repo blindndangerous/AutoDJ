@@ -3168,11 +3168,23 @@
     <h2 id="voice-heading">Voice tracks</h2>
     <div id="voice-tracker">
       <p id="vt-help">
-        Record a DJ break for the open song change, listen back, then book it.
+        Choose a song change, confirm predicted songs, record a DJ break, listen back, then book it.
       </p>
 
       <section class="card">
-        <h3 id="vt-slot-heading">Open song change</h3>
+        <h3 id="vt-slot-heading">Upcoming song changes</h3>
+        <div class="settings-row">
+          <label for="vt-target">Song change</label>
+          <select id="vt-target" aria-describedby="vt-selection vt-estimated-airtime vt-confirm-count vt-target-reason">
+            <option value="">Current handoff</option>
+          </select>
+          <button type="button" id="vt-confirm" aria-disabled="true" aria-describedby="vt-confirm-count">Confirm songs</button>
+        </div>
+        <p id="vt-selection">Selection: Current handoff</p>
+        <p id="vt-estimated-airtime">Estimated airtime: unavailable</p>
+        <p id="vt-confirm-count">Choose a predicted song change first.</p>
+        <p id="vt-target-reason"></p>
+        <p id="vt-recovery"></p>
         <p id="vt-unavailable">Loading the open song change.</p>
         <dl id="vt-slot" class="vt-facts" hidden>
           <dt>Ending song</dt><dd id="vt-ending"></dd>

@@ -15,6 +15,32 @@ const edition = {
 const take = { id: "take", asset_id: "asset", label: "Introduction", position: "transition",
   before_id: "first", after_id: "second", placement: "auto", status: "needs_review" };
 async function settle() { for (let i = 0; i < 30; i += 1) await Promise.resolve(); }
+
+it("resolves a prepared start conflict without changing the saved edition", async () => {
+  const attempts = [];
+  const request = vi.fn(async (url, options) => {
+    if (url.endsWith("/start")) {
+      const body = JSON.parse(options.body); attempts.push(body);
+      if (!body.voice_action) throw Object.assign(new Error("Voice choice needed"), {
+        status: 409, detail: { code: "voice_track_conflict", revision: "edition-choice" },
+      });
+      return { message: "Started" };
+    }
+    return url.includes("?") ? { editions: [edition] } : edition;
+  });
+  const { controls } = harness({ request });
+  await controls.openShow(show); get("load").click(); await settle();
+  const dialog = document.getElementById("confirm-dialog");
+  dialog.show = () => { dialog.open = true; };
+  dialog.close = () => { dialog.open = false; dialog.dispatchEvent(new Event("close")); };
+  get("start").focus(); get("start").click();
+  await vi.waitFor(() => expect(dialog.open).toBe(true));
+  expect(document.activeElement).toBe(document.getElementById("confirm-cancel"));
+  document.getElementById("confirm-accept").click();
+  await vi.waitFor(() => expect(attempts).toHaveLength(2));
+  expect(attempts[1]).toMatchObject({ voice_action: "keep", voice_revision: "edition-choice" });
+  expect(request.mock.calls.some(([, options]) => options?.method === "PUT")).toBe(false);
+});
 function harness(options = {}) {
   const request = vi.fn(async (url, init) => {
     if (url.startsWith("/api/editions?")) return { editions: [edition] };

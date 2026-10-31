@@ -10,6 +10,7 @@ a session cookie, never a machine token.
 from __future__ import annotations
 
 import json
+import time
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
@@ -54,6 +55,218 @@ def voice(station: Station, path: str = "/api/voice-tracks") -> dict:
 @pytest.fixture
 def station(tmp_path):
     return Station(tmp_path)
+
+
+def test_queue_placements_of_one_catalog_song_have_distinct_identity(station, monkeypatch):
+    from autodj._bridge import PlayerBridge
+
+    bridge = PlayerBridge(station.player, station.player._sim, library=station.player._library)
+    song = station.entries[-1]
+    monkeypatch.setattr(bridge, "entry_for_path", lambda path: song)
+    station.player._state.queue.clear()
+    assert bridge.queue_add(song.path)
+    assert bridge.queue_add(song.path)
+    first, second = station.player._state.queue
+    assert first is not second and first is not song
+    assert first.occurrence_id != second.occurrence_id
+
+
+def test_concurrent_queue_adds_create_distinct_occurrences(station, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    from threading import Barrier
+
+    from autodj._bridge import PlayerBridge
+
+    bridge = PlayerBridge(station.player, station.player._sim, library=station.player._library)
+    song = station.entries[-1]
+    barrier = Barrier(2)
+    guard = bridge._queue_mutation_lock
+
+    @contextmanager
+    def synchronized_guard():
+        barrier.wait(timeout=5)
+        with guard() as live:
+            yield live
+
+    monkeypatch.setattr(bridge, "_queue_mutation_lock", synchronized_guard)
+    monkeypatch.setattr(bridge, "entry_for_path", lambda _path: song)
+    station.player._state.queue.clear()
+    with ThreadPoolExecutor(2) as pool:
+        assert all(pool.map(bridge.queue_add, (song.path, song.path)))
+    first, second = station.player._state.queue
+    assert first.occurrence_id != second.occurrence_id
+    station.player._commit_queue_pick(second)
+    assert station.player._state.queue == [first]
+
+
+def test_confirm_voice_target_route_is_strict_and_station_scoped(station):
+    from autodj.hour_preview import Item
+    from autodj.live_queue import capture_voice_targets
+    from tests.unit.test_breaks_api import install_live_pair
+
+    install_live_pair(station)
+    player = station.player
+    player._state.queue.clear()
+    rows = tuple(
+        Item("song", i * 100.0, 100, "predicted", entry) for i, entry in enumerate(station.entries)
+    )
+    target = capture_voice_targets(player, rows, now=0.0)[-1]
+    body = {"target_id": target.target_id, "revision": target.revision}
+    route = "/api/stations/default/voice-tracks/targets/confirm"
+    assert station.client.post(route, json={**body, "paths": []}, headers=ORIGIN).status_code == 422
+    assert station.call("POST", route, json=body).status_code == 403
+    reply = station.client.post(route, json=body, headers=ORIGIN)
+    assert reply.status_code == 200, reply.text
+    assert reply.json()["selection"] == "confirmed"
+
+
+def _future_target(station):
+    from autodj.hour_preview import Item
+    from autodj.live_queue import capture_voice_targets
+    from tests.unit.test_breaks_api import install_live_pair
+
+    install_live_pair(station)
+    rows = tuple(
+        Item("song", time.time() + i * 20, 20, "queued", entry)
+        for i, entry in enumerate(station.entries)
+    )
+    return capture_voice_targets(station.player, rows, now=time.time())[-1]
+
+
+@pytest.mark.parametrize("choice", (None, "keep", "discard", "cancel"))
+def test_confirmation_resolves_existing_voice_conflict(station, choice):
+    from autodj.hour_preview import Item
+    from autodj.live_queue import capture_voice_targets
+    from tests.unit._fakes import make_entry
+
+    target = _future_target(station)
+    slot = voice(station, f"/api/voice-tracks?target_id={target.target_id}")["slot"]
+    booked = book(
+        station,
+        slot,
+        target_id=target.target_id,
+        run_id=target.run_id,
+        transition_revision=slot["transition_revision"],
+    ).json()
+    a, b, c, d = station.entries
+    rows = tuple(
+        Item("song", time.time() + i * 20, 20, status, entry)
+        for i, (entry, status) in enumerate(
+            (
+                (a, "on_air"),
+                (b, "picked"),
+                (c, "queued"),
+                (make_entry(55), "predicted"),
+                (d, "queued"),
+            )
+        )
+    )
+    target = capture_voice_targets(station.player, rows, now=time.time())[-1]
+    body = {"target_id": target.target_id, "revision": target.revision}
+    before = list(station.player._state.queue)
+    route = "/api/voice-tracks/targets/confirm"
+    conflict = station.client.post(route, json=body, headers=ORIGIN)
+    assert conflict.status_code == 409
+    detail = conflict.json()["detail"]
+    assert detail["code"] == "voice_track_conflict"
+    assert station.player._state.queue == before
+    if choice in (None, "cancel"):
+        assert station.desk.get(booked["break_id"]).state == QUEUED
+        if choice == "cancel":
+            assert (
+                station.client.post(
+                    route, json={**body, "voice_action": "cancel"}, headers=ORIGIN
+                ).status_code
+                == 422
+            )
+        return
+    retry = station.client.post(
+        route,
+        json={**body, "voice_action": choice, "voice_revision": detail["revision"]},
+        headers=ORIGIN,
+    )
+    assert retry.status_code == 200, retry.text
+    assert station.desk.get(booked["break_id"]).state == (QUEUED if choice == "keep" else DROPPED)
+
+
+def test_owned_play_next_stamps_an_unidentified_catalog_entry(station):
+    from autodj._bridge import PlayerBridge
+
+    bridge = PlayerBridge(station.player, station.player._sim, library=station.player._library)
+    song = station.entries[-1]
+    assert bridge.play_next_entry(song)
+    first = station.player._state.queued_next
+    assert bridge.play_next_entry(song)
+    second = station.player._state.queued_next
+    assert first.occurrence_id != second.occurrence_id
+    assert not hasattr(song, "occurrence_id")
+
+
+def test_browser_reseed_stamps_a_distinct_queue_occurrence(station, monkeypatch):
+    from autodj._bridge import PlayerBridge
+
+    bridge = PlayerBridge(station.player, station.player._sim, library=station.player._library)
+    song = station.entries[-1]
+    monkeypatch.setattr(bridge, "_bus_mode", lambda: False)
+    monkeypatch.setattr(bridge, "skip", lambda: None)
+    monkeypatch.setattr(station.player, "_random_start_entry", lambda: song)
+    assert bridge.reseed_random()
+    first = station.player._state.queued_next
+    assert bridge.reseed_random()
+    second = station.player._state.queued_next
+    assert first.occurrence_id != second.occurrence_id
+    assert not hasattr(song, "occurrence_id")
+
+
+def test_future_booking_stays_queued_and_cancel_preserves_music(station):
+    target = _future_target(station)
+    queue = list(station.player._state.queue)
+    context = voice(station, f"/api/voice-tracks?target_id={target.target_id}")
+    slot = context["slot"]
+    assert slot["slot_id"] == target.target_id
+    response = book(
+        station,
+        slot,
+        target_id=target.target_id,
+        run_id=target.run_id,
+        transition_revision=slot["transition_revision"],
+    )
+    assert response.status_code == 201, response.text
+    item = station.desk.get(response.json()["break_id"])
+    assert item.state == QUEUED
+    assert not station.player._playing_render.break_events
+    cancelled = station.client.delete(f"/api/voice-tracks/{item.break_id}", headers=ORIGIN)
+    assert cancelled.status_code == 200
+    assert station.player._state.queue == queue
+    assert not station.player._playing_render.break_events
+
+
+def test_future_upload_rechecks_target_after_decode(station, monkeypatch):
+    """ADR-0004-23: changed revisions refuse an upload without keeping its file."""
+    from autodj import breaks_api
+
+    target = _future_target(station)
+    slot = voice(station, f"/api/voice-tracks?target_id={target.target_id}")["slot"]
+    original = breaks_api._decode_cues
+
+    def edit_during_decode(path, limit):
+        cues = original(path, limit)
+        station.player._live_queue_revision += 1
+        return cues
+
+    monkeypatch.setattr(breaks_api, "_decode_cues", edit_during_decode)
+    response = book(
+        station,
+        slot,
+        target_id=target.target_id,
+        run_id=target.run_id,
+        transition_revision=slot["transition_revision"],
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["reason"] == "transition_changed"
+    assert not station.desk.listing()
+    assert files(station.desk) == []
 
 
 def test_the_tracker_shows_the_open_slot_its_placement_and_the_limits(station):
@@ -918,3 +1131,172 @@ def test_real_overlong_wav_header_is_rejected_before_decode(station):
     assert reply.status_code == 422, reply.text
     assert files(station.desk) == []
     assert voice(station)["tracks"] == []
+
+
+@pytest.mark.parametrize("change", ["stop", "reset", "schedule"])
+def test_future_upload_rejects_lifecycle_changes_during_decode(station, monkeypatch, change):
+    """ADR-0004-26: stop, reset and schedule edits reject an in-flight future upload."""
+    from datetime import UTC, datetime, timedelta
+
+    from autodj import breaks_api
+    from autodj.scheduler import ScheduledEvent
+
+    target = _future_target(station)
+    slot = voice(station, f"/api/voice-tracks?target_id={target.target_id}")["slot"]
+    original = breaks_api._decode_cues
+    monkeypatch.setattr(station.player._playout, "stop", lambda **kwargs: None, raising=False)
+
+    def change_during_decode(path, limit):
+        cues = original(path, limit)
+        if change == "stop":
+            station.player.stop()
+        elif change == "reset":
+            station.player.reset_playout(None)
+        else:
+            station.player._voice_schedule_events = lambda: (
+                ScheduledEvent(
+                    id="a" * 32,
+                    name="Boundary",
+                    action="show",
+                    repeat="once",
+                    timing="hard",
+                    date=(datetime.now(UTC) + timedelta(minutes=1)).date(),
+                    time=(datetime.now(UTC) + timedelta(minutes=1))
+                    .time()
+                    .replace(second=0, microsecond=0),
+                ),
+            )
+        return cues
+
+    monkeypatch.setattr(breaks_api, "_decode_cues", change_during_decode)
+    response = book(
+        station,
+        slot,
+        target_id=target.target_id,
+        run_id=target.run_id,
+        transition_revision=slot["transition_revision"],
+    )
+    assert response.status_code == 409, response.text
+    assert not station.desk.listing()
+    assert files(station.desk) == []
+
+
+def test_future_context_explains_run_local_recovery(station):
+    """ADR-0004-26: a fresh context explains non-restoration and uncertain old airtime."""
+    context = voice(station)
+    assert "not restored" in context["recovery_notice"]
+    assert "unknown" in context["recovery_notice"]
+
+
+def test_selected_future_slot_carries_exact_occurrence_binding(station):
+    """ADR-0004-23: browser takes receive the run and occurrence pair, not only catalog IDs."""
+    target = _future_target(station)
+    slot = voice(station, f"/api/voice-tracks?target_id={target.target_id}")["slot"]
+    assert slot["run_id"] == target.run_id
+    assert slot["outgoing_occurrence_id"] == target.outgoing_id
+    assert slot["incoming_occurrence_id"] == target.incoming_id
+
+
+def test_current_slot_also_distinguishes_repeated_occurrences(station):
+    from autodj.live_queue import occurrence_ref
+    from tests.unit.test_breaks_api import install_live_pair
+
+    install_live_pair(station)
+    plan, _, _ = station.player.voice_slot_status()
+    slot = voice(station)["slot"]
+    assert slot["run_id"] == station.player._voice_run_id
+    assert slot["outgoing_occurrence_id"] == occurrence_ref(station.player, plan.ending)
+    assert slot["incoming_occurrence_id"] == occurrence_ref(station.player, plan.upcoming)
+
+
+def test_paused_future_target_retains_selection_with_unknown_airtime(station):
+    """ADR-0004-27: pause preserves confirmed music while making airtime unknown."""
+    target = _future_target(station)
+    station.player._state.is_paused = True
+    context = voice(station, f"/api/voice-tracks?target_id={target.target_id}")
+    assert context["slot"]["selection"] == "confirmed"
+    assert context["slot"]["estimated_airtime"] is None
+    assert context["slot"]["airs_in_s"] is None
+    assert not context["accepting"]
+    assert "paused" in context["reason"].lower()
+    assert target.target_id in station.player._voice_targets
+
+
+@pytest.mark.parametrize("reason", ["stopped", "live"])
+def test_future_target_cannot_be_confirmed_or_uploaded_during_takeover_or_stop(station, reason):
+    """ADR-0004-27: stored preview content never bypasses station availability."""
+    target = _future_target(station)
+    slot = voice(station, f"/api/voice-tracks?target_id={target.target_id}")["slot"]
+    runtime = station.client.app.state.stations.default
+    if reason == "stopped":
+        station.player._state.should_stop = True
+    else:
+        runtime.live.status = lambda: {"dj": "Live presenter"}
+    response = station.client.post(
+        "/api/voice-tracks/targets/confirm",
+        json={"target_id": target.target_id, "revision": target.revision},
+        headers=ORIGIN,
+    )
+    assert response.status_code == 409
+    response = book(
+        station,
+        slot,
+        target_id=target.target_id,
+        run_id=target.run_id,
+        transition_revision=slot["transition_revision"],
+    )
+    assert response.status_code == 409
+    assert not station.desk.listing()
+    assert files(station.desk) == []
+
+
+def test_paused_future_upload_refuses_without_a_timing_estimate(station):
+    target = _future_target(station)
+    station.player._state.is_paused = True
+    slot = voice(station, f"/api/voice-tracks?target_id={target.target_id}")["slot"]
+    response = book(
+        station,
+        slot,
+        target_id=target.target_id,
+        run_id=target.run_id,
+        transition_revision=slot["transition_revision"],
+    )
+    assert response.status_code == 409, response.text
+    assert files(station.desk) == []
+    assert not station.desk.listing()
+
+
+def test_repeated_play_next_after_consumption_uses_a_new_occurrence(station):
+    """ADR-0004-22: repeated play next after consumption uses a new occurrence."""
+    from autodj._bridge import PlayerBridge
+
+    player = station.player
+    player.live_mixing = False
+    bridge = PlayerBridge(player, player._sim, library=player._library)
+    song = station.entries[-1]
+    bridge.play_next_entry(song, new_placement=True)
+    first = player._state.queued_next
+    # Consume the placement; browser mode leaves the live queue revision unchanged.
+    player._state.queued_next = None
+    bridge.play_next_entry(song, new_placement=True)
+    second = player._state.queued_next
+    assert first.occurrence_id != second.occurrence_id
+
+
+def test_confirmation_missing_duration_returns_conflict(station):
+    """ADR-0004-27: confirmation missing duration returns conflict."""
+    from dataclasses import replace
+
+    target = _future_target(station)
+    target = replace(target, selection="predicted")
+    station.player._voice_targets[target.target_id] = target
+    object.__setattr__(target.prefix[-1], "length", None)
+    before = list(station.player._state.queue)
+    reply = station.client.post(
+        "/api/voice-tracks/targets/confirm",
+        json={"target_id": target.target_id, "revision": target.revision},
+        headers=ORIGIN,
+    )
+    assert reply.status_code == 409
+    assert "no longer playable" in reply.text
+    assert station.player._state.queue == before

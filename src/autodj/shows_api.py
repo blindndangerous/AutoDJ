@@ -41,6 +41,7 @@ from fastapi import Body, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
+from autodj.live_queue import VoiceQueueConflict
 from autodj.shows import (
     MAX_SHOWS,
     MAX_SONGS,
@@ -58,7 +59,7 @@ from autodj.shows import (
     with_songs,
     with_spec,
 )
-from autodj.station_routes import SavedStationDep, StationDep, StationRouter
+from autodj.station_routes import SavedStationDep, StationDep, StationRouter, VoiceChoiceBody
 
 if TYPE_CHECKING:
     from autodj.stations import StationRuntime
@@ -277,14 +278,23 @@ def install_shows(router: StationRouter) -> None:
             ) from exc
 
     @router.delete("/shows/on-air")
-    async def shows_stop(station: StationDep) -> dict[str, Any]:
+    async def shows_stop(
+        station: StationDep, body: VoiceChoiceBody = Body(default=VoiceChoiceBody())
+    ) -> dict[str, Any]:
         """Take the show on the air off (or forget one waiting to resume).
 
         ``done`` is false while some of its songs could not be taken out of the
         queue yet; that is tried again at each song change.
         """
         runner = getattr(station, "show_runner", None)
-        stopped = await runner.stop() if runner is not None else None
+        try:
+            stopped = (
+                await runner.stop(**body.model_dump(exclude_none=True))
+                if runner is not None
+                else None
+            )
+        except VoiceQueueConflict as exc:
+            raise HTTPException(status_code=409, detail=exc.detail) from None
         if stopped is None:
             raise HTTPException(status_code=409, detail="No show is on the air")
         return {"stopped": stopped["name"], "done": stopped["done"]}
@@ -429,14 +439,18 @@ def install_shows(router: StationRouter) -> None:
         return {**view, "seed": seed}
 
     @router.post("/shows/{show_id}/start")
-    async def shows_start(station: StationDep, show_id: str) -> dict[str, Any]:
+    async def shows_start(
+        station: StationDep, show_id: str, body: VoiceChoiceBody = Body(default=VoiceChoiceBody())
+    ) -> dict[str, Any]:
         """Put a show on the air after the song playing."""
         _check_id(show_id)
         runner = getattr(station, "show_runner", None)
         if runner is None:
             raise HTTPException(status_code=503, detail="Shows are not available on this station")
         try:
-            message = await runner.start(show_id)
+            message = await runner.start(show_id, **body.model_dump(exclude_none=True))
+        except VoiceQueueConflict as exc:
+            raise HTTPException(status_code=409, detail=exc.detail) from None
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
         return {"message": message}

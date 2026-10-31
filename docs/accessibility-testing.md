@@ -622,3 +622,31 @@ application startup or screen-reader speech. NVDA capture for this prototype is
 assigned to the reviewer; no speech result is inferred from axe or DOM checks.
 
 Do not claim support or verified behavior for NVDA, JAWS, VoiceOver, screen readers generally, or assistive technology generally unless the exact screen-reader/browser pairing and flow named in the claim were tested and recorded. Results from one pairing or flow do not transfer to another.
+
+
+## Confirmed future voice targets (#524)
+
+Run `node tests/playwright/voice_target_audit.mjs` for the focused Chromium audit.
+It serves production markup, styles and the voice tracker with deterministic API
+fixtures. It checks Tab to Song change, arrow selection, Tab/Enter confirmation,
+refresh focus, reachable Record, 24-pixel target sizing, and axe WCAG 2.2 AA tags
+in both themes. The JSON report is `.codex-tmp/voice-target-browser.json`.
+This establishes browser interaction evidence, not live audio or NVDA speech.
+
+For the Windows NVDA review in Chrome and Firefox, record versions and the exact
+candidate revision. Check these flows with the real station:
+
+1. Select a repeated song occurrence; hear both titles and its ordinal. Confirm
+   songs without starting recording. Read Selection separately from Estimated airtime.
+2. Record with Alt+R, inspect another target, and refresh. Confirm the take remains
+   bound to its starting occurrence. Disappear a target while its transition selector
+   has focus; focus must move directly to Song change, never the page body.
+3. Resolve each shared conflict choice. Cancel is last; each action has one status
+   announcement. Passive estimates stay quiet and focused native controls stay put.
+4. Reject an upload through a concurrent edit. Retain and listen to the take, then
+   explicitly retry or select another occurrence and listen before booking.
+5. Cancel before and during promotion. Check sibling speech and music continuity.
+   Pause, expire, stop/restart, and take over/return; dropped speech must not replay.
+
+Capture NVDA speech, keyboard focus and actual heard joins separately. Do not
+infer an aired take from an estimate or a previous run's lost temporary booking.

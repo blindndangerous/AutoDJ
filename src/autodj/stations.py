@@ -1165,6 +1165,7 @@ class StationRuntime:
         next song rather than the rest of that one.
         """
         player = self.player
+        player._voice_live_takeover = False
         if self.stopped or player.bus is None or not player.bus.playing:
             return  # no set is held under the DJ: the station goes back to idle
         from autodj.stereo import SAMPLE_RATE
@@ -1211,6 +1212,8 @@ class StationRuntime:
         logger.info("Live DJ %s is on the air", status["dj"])
         # A voice break waiting for the next song change misses its slot (#88);
         # the missed and late rules of #215 will decide this in time.
+        self.player._voice_live_takeover = True
+        self.player.invalidate_voice_targets()
         desk = getattr(self.player, "break_desk", None)
         if desk is not None:
             try:

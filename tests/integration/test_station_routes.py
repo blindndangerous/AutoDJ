@@ -235,6 +235,7 @@ STATION = frozenset(
         "/announcer/breaks/{break_id}",
         # The voice tracker (#128): browser routes, by station.
         "/voice-tracks",
+        "/voice-tracks/targets/confirm",
         "/voice-tracks/{break_id}",
         # Settings, Breaks (#88): whether the station takes breaks, and how.
         "/breaks/settings",

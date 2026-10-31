@@ -35,6 +35,7 @@ from ._helpers import _make_player_mock, _make_sim_mock
 
 
 def test_live_dj_title_reaches_extra_mounts() -> None:
+    """A live DJ retitles every mount and ends future voice targets (ADR-0004-26)."""
     history: list[dict] = []
     bridge = SimpleNamespace(
         _history_lock=threading.Lock(),
@@ -51,11 +52,12 @@ def test_live_dj_title_reaches_extra_mounts() -> None:
         live=live,
         ledger=None,
         _live_row=None,
-        player=SimpleNamespace(break_desk=None),
+        player=SimpleNamespace(break_desk=None, invalidate_voice_targets=MagicMock()),
         public_state_changed=lambda: None,
     )
     StationRuntime._live_started(runtime)
     bridge.mounts.set_title.assert_called_once_with("DJ Kay", "Friday Mix")
+    runtime.player.invalidate_voice_targets.assert_called_once_with()
     assert [row["kind"] for row in history] == ["live"]
 
 

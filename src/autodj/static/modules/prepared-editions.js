@@ -3,6 +3,7 @@ import {
   captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, withDisabled,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
 import { fmtTime } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { stationApi, stationEpoch } from "./stations.js";
@@ -378,7 +379,11 @@ export function installPreparedEditions({
     const confirmed = !edition.previously_started || await confirm({ title: "Air this edition again?", message: "This edition has started before. Its speech may refer to an earlier date.", confirmLabel: "Air again" });
     if (!current(ticket) || !confirmed) return;
     try {
-      await send(endpoint("/start"), "POST", { now, confirm_reair: Boolean(edition.previously_started), from_occurrence: resume ? get("resume-item").value : null });
+      const target = endpoint("/start");
+      const body = { now, confirm_reair: Boolean(edition.previously_started), from_occurrence: resume ? get("resume-item").value : null };
+      const result = await sendWithVoiceTrackConflict(doc, (voice) => current(ticket)
+        ? send(target, "POST", { ...body, ...voice }) : undefined);
+      if (!result) return;
       if (current(ticket)) { say(resume ? "Explicit edition resumption requested." : "Edition start requested."); await load({ preserveRecording: true }); }
     } catch (error) { fail(error, ticket); }
   }

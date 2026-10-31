@@ -28,6 +28,7 @@
 import { requestJson, withDisabled } from "./api-client.js";
 import { fmtTime, nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
+import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
 import { defaultStorage, readStorage, removeStorage, writeStorage } from "./safe-storage.js";
 
 const POLL_TICKS = 5;
@@ -215,6 +216,8 @@ function stateWords(track, slot, wallNow) {
       return "aired";
     case "dropped":
       return `dropped: ${track.reason || "it will not air"}`;
+    case "not_restored":
+      return "no longer booked; prior airtime is unknown";
     case "expired":
       return `expired: ${track.reason || "it was too late to air"}`;
     default:
@@ -240,6 +243,11 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const panel = root.closest("[role='tabpanel']") || root;
   const unavailable = el("vt-unavailable");
   const slotList = el("vt-slot");
+  const targetSelect = el("vt-target");
+  const confirmButton = el("vt-confirm");
+  let selectedTarget = "";
+  let confirming = false;
+  let selectionAnnouncement = null;
   const ending = el("vt-ending");
   const upcoming = el("vt-upcoming");
   const intro = el("vt-intro");
@@ -293,17 +301,21 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   let linked = null;
   let wasShown = false;
   const rows = new Map();
+  const lostTracks = new Map();
   const transitionChoices = new Map();
   let transitionSlotId = null;
 
   const shown = () => !panel.hidden;
   // The tracker's own region while its tab shows; the page-wide one when
   // the tab has been left, since a region inside a hidden panel says nothing.
-  const say = (message, { tone = "info", mirror = true } = {}) => announceStatus(
-    shown() ? status : (doc.getElementById("sr-status") || status),
-    message,
-    { force: true, tone, mirror, dwellMs: 5000 },
-  );
+  const say = (message, { tone = "info", mirror = true } = {}) => {
+    clearTimeout(selectionAnnouncement);
+    return announceStatus(
+      shown() ? status : (doc.getElementById("sr-status") || status),
+      message,
+      { force: true, tone, mirror, dwellMs: 5000 },
+    );
+  };
 
   function afterFocus() {
     const view = doc.defaultView;
@@ -467,6 +479,65 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     if (node && node.textContent !== value) node.textContent = value;
   }
 
+  function renderTargets() {
+    if (!targetSelect) return;
+    const targets = data?.targets || [];
+    const options = [{ target_id: "", label: "Current handoff" }, ...targets.map((row, index) => ({
+      ...row, label: `${index + 1}. ${pairWords(row)}; ${row.selection === "confirmed" ? "Confirmed" : "Predicted"}${row.eligible === false ? "; unavailable" : ""}`,
+    }))];
+    if (selectedTarget && !targets.some((row) => row.target_id === selectedTarget)) {
+      options.push({ target_id: selectedTarget, label: "Unavailable song change: choose another explicitly" });
+    }
+    const wanted = new Set(options.map((row) => row.target_id));
+    for (const option of [...targetSelect.options]) if (!wanted.has(option.value)) option.remove();
+    for (const [index, row] of options.entries()) {
+      let option = [...targetSelect.options].find((item) => item.value === row.target_id);
+      if (!option) { option = doc.createElement("option"); option.value = row.target_id; }
+      setText(option, row.label);
+      if (targetSelect.options[index] !== option) targetSelect.insertBefore(option, targetSelect.options[index] || null);
+    }
+    targetSelect.value = selectedTarget;
+    const row = targets.find((item) => item.target_id === selectedTarget);
+    const selection = selectedTarget ? row?.selection === "confirmed" ? "Confirmed" : row ? "Predicted" : "Unavailable" : "Current handoff";
+    setText(el("vt-selection"), `Selection: ${selection}`);
+    const estimate = row?.estimated_airtime;
+    setText(el("vt-estimated-airtime"), `Estimated airtime: ${estimate != null ? new Date(estimate * 1000).toLocaleTimeString() : !selectedTarget && data?.slot ? `in about ${roughly(data.slot.airs_in_s)}` : "unavailable"}`);
+    const targetReason = row?.reason || (selectedTarget && !row ? "This occurrence is no longer available. Your recording remains here." : "");
+    const disabledReason = confirming ? "Confirming songs. Please wait."
+      : !row ? targetReason || "Choose a predicted song change first."
+        : row.selection === "confirmed" ? "These songs are already confirmed."
+          : row.eligible === false ? row.reason || "This song change cannot be confirmed." : "";
+    setText(el("vt-confirm-count"), disabledReason || `Confirm songs queues ${row.songs_to_queue} ${row.songs_to_queue === 1 ? "song" : "songs"} through this change. Discarding a recording leaves these songs queued.`);
+    setText(el("vt-target-reason"), targetReason);
+    setText(el("vt-recovery"), data?.recovery_notice || "");
+    confirmButton?.setAttribute("aria-disabled", String(Boolean(disabledReason)));
+  }
+
+  async function confirmSongs() {
+    const row = data?.targets?.find((item) => item.target_id === selectedTarget);
+    if (confirming || !row || row.selection !== "predicted" || row.eligible === false) return;
+    const asked = generation;
+    clearTimeout(selectionAnnouncement);
+    confirming = true; renderTargets(); clearError();
+    try {
+      const reply = await sendWithVoiceTrackConflict(doc, (voice) => {
+        if (asked !== generation) throw new Error("The station changed.");
+        return requestJson("/api/voice-tracks/targets/confirm", {
+          method: "POST", body: JSON.stringify({ target_id: row.target_id, revision: row.revision, ...voice }),
+        });
+      });
+      if (asked !== generation) return;
+      if (!reply) { say("Song confirmation cancelled."); return; }
+      if (selectedTarget === row.target_id) selectedTarget = reply.value.target_id;
+      await refresh();
+      if (asked === generation) say("Songs confirmed. Record when ready; airtime remains an estimate.");
+    } catch (problem) {
+      if (asked === generation) { await refresh(); fail(confirmButton, `Could not confirm songs. ${problem.message}`); }
+    } finally {
+      if (asked === generation) { confirming = false; renderTargets(); }
+    }
+  }
+
   function renderSlot() {
     const slot = data?.slot;
     renderTransition(slot);
@@ -560,7 +631,10 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
         next = row;
       }
     }
-    if (hadFocus && doc.activeElement !== active && active.isConnected) active.focus();
+    if (hadFocus && doc.activeElement !== active) {
+      if (active.isConnected) active.focus();
+      else targetSelect?.focus();
+    }
     updateTransitionSummary(slot);
   }
 
@@ -608,9 +682,9 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     const slot = data?.slot;
     if (!slot) return;
     const left = closesLeft();
-    setText(closes, left > 0 ? clock(left) : "Closing now");
+    setText(closes, slot.closes_in_s == null ? "Unknown" : left > 0 ? clock(left) : "Closing now");
     const elapsed = (now() - fetchedAt) / 1000;
-    setText(airs, clock(Math.max(0, slot.airs_in_s - elapsed)));
+    setText(airs, slot.airs_in_s == null ? "Unknown" : clock(Math.max(0, slot.airs_in_s - elapsed)));
   }
 
   function renderPlacement() {
@@ -696,14 +770,32 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   function apply(response) {
     const before = data?.slot?.slot_id;
+    if (data?.run_id && response.run_id && data.run_id !== response.run_id) {
+      const retained = new Set((response.tracks || []).map((track) => track.break_id));
+      for (const track of data.tracks || []) {
+        if (!retained.has(track.break_id) && ["queued", "rendered", "on_air"].includes(track.state)) {
+          lostTracks.set(track.break_id, { ...track, state: "not_restored", cancellable: false, eta: null });
+        }
+      }
+      while (lostTracks.size > MAX_LISTED) lostTracks.delete(lostTracks.keys().next().value);
+    }
+    for (const track of response.tracks || []) lostTracks.delete(track.break_id);
     data = response;
+    if (selectedTarget && (!response.targets?.some((row) => row.target_id === selectedTarget)
+        || response.slot?.target_id !== selectedTarget)) {
+      data = { ...response, slot: null, accepting: false, reason: "The selected occurrence is unavailable. Choose another song change explicitly." };
+    }
+    if (take && selectedTarget && data.slot && !samePair(data.slot) && take.retarget?.slot_id !== data.slot.slot_id) {
+      take.retarget = data.slot; take.heard = false;
+    }
+    renderTargets();
     fetchedAt = now();
     renderSlot();
     renderTimer();
-    renderTracks(response.tracks || []);
+    renderTracks([...(response.tracks || []), ...lostTracks.values()]);
     const after = data.slot?.slot_id;
     // Someone with a recording on the go hears that the change moved on.
-    if (before && after && before !== after && (session || take)) {
+    if (!selectedTarget && before && after && before !== after && (session || take)) {
       say(`The open song change is now ${pairWords(data.slot)}.`);
     }
   }
@@ -737,11 +829,12 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       }
       url += `?${query}`;
     }
+    if (selectedTarget) url += `${url.includes("?") ? "&" : "?"}target_id=${encodeURIComponent(selectedTarget)}`;
     try {
       const response = await requestJson(url);
       if (epoch === requestEpoch) apply(response);
     } catch (problem) {
-      if (epoch === requestEpoch && transitionForecast && problem.status === 409) {
+      if (epoch === requestEpoch && (transitionForecast || selectedTarget) && problem.status === 409) {
         const latestEpoch = ++requestEpoch;
         try {
           const latest = await requestJson("/api/voice-tracks");
@@ -794,7 +887,14 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       });
   }
 
-  const samePair = (open) => open.ending?.id === take.endingId && open.upcoming?.id === take.upcomingId;
+  const samePair = (open) => {
+    if (open.run_id || take.slot.run_id || open.outgoing_occurrence_id || take.slot.outgoing_occurrence_id) {
+      return open.run_id === take.slot.run_id
+        && open.outgoing_occurrence_id === take.slot.outgoing_occurrence_id
+        && open.incoming_occurrence_id === take.slot.incoming_occurrence_id;
+    }
+    return open.ending?.id === take.endingId && open.upcoming?.id === take.upcomingId;
+  };
 
   // The take's song change has gone and *open* is the one open now: say why
   // the take is not booked.  The same two songs only need Book again.
@@ -812,7 +912,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   // The song change the take may be booked for now, or null after saying why not.
   function target(open) {
-    if (open.slot_id === take.slot.slot_id) return open;
+    if (open.slot_id === take.slot.slot_id && samePair(open)) return open;
     if (samePair(open)) {
       take.slot = open;
       return open;
@@ -885,6 +985,10 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       return;
     }
     const slot = data?.slot;
+    if (selectedTarget && (!data?.accepting || slot?.selection !== "confirmed")) {
+      fail(recordButton, "Confirm songs before recording for this change, or select an available change.");
+      return;
+    }
     if (!slot) {
       fail(recordButton, data?.reason
         ? closedWords(data.reason)
@@ -1104,6 +1208,10 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       fail(bookButton, "No song change is open now. Keep the recording and try again in a moment.");
       return;
     }
+    if (selectedTarget && (!data?.accepting || open.selection !== "confirmed")) {
+      fail(bookButton, "Confirm songs before booking this recording.");
+      return;
+    }
     const slot = target(open);
     if (!slot) return;
     booking = true;
@@ -1131,6 +1239,10 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       }
       const form = new FormData();
       form.append("slot_id", slot.slot_id);
+      if (slot.target_id) {
+        form.append("target_id", slot.target_id);
+        form.append("run_id", slot.run_id);
+      }
       form.append("ending_id", slot.ending.id);
       form.append("upcoming_id", slot.upcoming.id);
       form.append("placement", placement.value);
@@ -1284,6 +1396,20 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   microphoneSelect?.addEventListener("change", () => saveMicrophone(microphoneSelect.value));
   microphoneRefresh?.addEventListener("click", () => void refreshMicrophones());
   testButton?.addEventListener("click", () => void toggleMicrophoneTest());
+  targetSelect?.addEventListener("change", () => {
+    clearTimeout(selectionAnnouncement);
+    const asked = generation;
+    selectedTarget = targetSelect.value;
+    if (data) data = { ...data, slot: null, accepting: false };
+    renderTargets(); renderSlot();
+    void refresh();
+    selectionAnnouncement = setTimeout(() => {
+      if (asked === generation && root.isConnected && shown()) {
+        say(`${el("vt-selection").textContent}. ${el("vt-estimated-airtime").textContent}.`);
+      }
+    }, 500);
+  });
+  confirmButton?.addEventListener("click", () => void confirmSongs());
   listenButton.addEventListener("click", () => void listen());
   playback.addEventListener("ended", () => listenButton.setAttribute("aria-pressed", "false"));
   bookButton.addEventListener("click", (event) => void book(event.currentTarget));
@@ -1320,6 +1446,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     // drops either, so the page asks first.
     hasUnsavedWork: () => Boolean(session || take),
     clear() {
+      clearTimeout(selectionAnnouncement);
       requestEpoch += 1;
       generation += 1;
       starting = false;
@@ -1336,8 +1463,12 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       dropTake();
       clearError();
       data = null;
+      selectedTarget = "";
+      confirming = false;
+      renderTargets();
       for (const row of rows.values()) row.item.remove();
       rows.clear();
+      lostTracks.clear();
       none.hidden = false;
       status.textContent = "";
       renderSlot();

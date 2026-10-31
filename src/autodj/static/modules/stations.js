@@ -149,6 +149,7 @@ export const STATION_ROUTES = Object.freeze([
   "/time-checks/packs/{name}",
   "/time-checks/clips",
   "/voice-tracks",
+  "/voice-tracks/targets/confirm",
   "/voice-tracks/{break_id}",
   "/ads",
   "/ads/spots",

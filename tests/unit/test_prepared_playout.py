@@ -101,6 +101,37 @@ def setup(tmp_path, entries=None, *, omissions=()):
     return runner, source, bridge, editions, station
 
 
+def test_live_prepared_start_installs_ownership_before_waking_playout(tmp_path, monkeypatch):
+    runner, source, bridge, editions, _station = setup(tmp_path)
+    source.player.live_mixing = True
+    observed = []
+
+    def inspect_publication():
+        queue = source.player._state.queue
+        if queue:
+            mappings = attached(source.player, "_edition_occurrences")
+            assert all(mappings.get(entry) is not None for entry in queue)
+            assert source.player.prepared_handoff == runner.prepared_handoff
+            observed.append(True)
+
+    monkeypatch.setattr(bridge, "_refresh_bus_queue", inspect_publication)
+    asyncio.run(runner.start_edition(editions.plan.edition_id))
+    assert observed
+
+
+def test_explicit_live_edition_stop_does_not_create_an_interrupted_resume(tmp_path):
+    import json
+
+    runner, source, _bridge, editions, _station = setup(tmp_path)
+    source.player.live_mixing = True
+    asyncio.run(runner.start_edition(editions.plan.edition_id))
+    asyncio.run(runner.stop())
+    assert runner.status() is None
+    assert runner._interrupted is None
+    state = tmp_path / "show_on_air.json"
+    assert not state.exists() or not json.loads(state.read_text())["interrupted_edition"]
+
+
 def test_repeated_song_occurrences_bind_only_their_exact_transition(tmp_path):
     runner, source, _bridge, editions, _station = setup(tmp_path)
     first = source.library.entries_snapshot()[0]
@@ -460,7 +491,8 @@ def test_existing_show_scheduler_action_dispatches_prepared_editions(tmp_path, c
     runner, _source, _bridge, editions, _station = setup(tmp_path)
     calls = []
 
-    async def start(identity, *, now=False, confirm_reair=False):
+    async def start(identity, *, now=False, confirm_reair=False, hard_interrupt=False):
+        assert hard_interrupt is True
         calls.append((identity, now, confirm_reair))
 
     runner.start_edition = start
