@@ -174,7 +174,11 @@ def _open(path: Path, kind: Callable[..., Any] | None = None) -> Any:
     try:
         audio = kind(str(path)) if kind is not None else mutagen.File(str(path))
     except mutagen.MutagenError as exc:
-        raise TagError(f"AutoDJ could not read the tags of this file: {exc}") from exc
+        logger.exception("Could not read tags from %s", path)
+        raise TagError(
+            "AutoDJ could not read the tags of this file. "
+            "Check the file and the server log before trying again."
+        ) from exc
     if audio is None:
         raise TagError("AutoDJ cannot edit the tags of this kind of file.")
     if audio.tags is None:
@@ -359,7 +363,11 @@ def _os_message(exc: OSError) -> str:
         )
     if exc.errno == errno.ENOSPC:
         return "The disk is full, so the tags were not changed."
-    return f"The tags could not be written, so the file was not changed: {exc.strerror or exc}"
+    return (
+        "The tags could not be written, so the file was not changed. "
+        "Check whether the file is open in another program, the disk or share is disconnected, "
+        "or the file is damaged, then try again. See the server log for more details."
+    )
 
 
 def temp_path(target: Path) -> Path:
@@ -466,6 +474,7 @@ def write_tags(
             try:
                 writable = bool(target.stat().st_mode & stat.S_IWRITE)
             except OSError as exc:
+                logger.exception("Could not inspect %s before writing tags", target)
                 raise TagError(_os_message(exc)) from exc
             if not writable:
                 raise TagError(
@@ -492,14 +501,20 @@ def write_tags(
                 _flush(temp)
                 _verify(_open(temp, kind).tags, family, values)
             except OSError as exc:
+                logger.exception("Could not write tags to the working copy of %s", target)
                 raise TagError(_os_message(exc)) from exc
             except mutagen.MutagenError as exc:
+                logger.exception("Could not encode tags in the working copy of %s", target)
                 raise TagError(
-                    f"The tags could not be written, so the file was not changed: {exc}"
+                    "The tags could not be written, so the file was not changed. "
+                    "Check whether the file is open in another program, the disk or share is "
+                    "disconnected, or the file is damaged, then try again. "
+                    "See the server log for more details."
                 ) from exc
             try:
                 _replace(temp, target, guard)
             except OSError as exc:
+                logger.exception("Could not replace %s after writing tags", target)
                 raise TagError(_os_message(exc)) from exc
             # The file is changed now: a failed folder flush (some network
             # shares refuse it) must not be reported as an unchanged file.

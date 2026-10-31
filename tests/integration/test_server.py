@@ -3998,6 +3998,39 @@ class TestMisc:
         assert picked.path in calls
         assert nxt2.path in calls
 
+    def test_lyrics_uses_indexed_path_when_request_normalizes_differently(
+        self, tmp_path, bridge, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.catalog import _path
+
+        home = tmp_path / "home"
+        home.mkdir()
+        indexed = home / "song.wav"
+        indexed.write_bytes(wav_bytes())
+        indexed.with_suffix(".lrc").write_text("[00:01.00]Indexed lyrics", encoding="utf-8")
+        literal = tmp_path / "~"
+        literal.mkdir()
+        (literal / "song.wav").write_bytes(wav_bytes())
+        (literal / "song.lrc").write_text("[00:01.00]Not indexed", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        entry = _make_entry(99)
+        entry.path = str(indexed)
+        bridge.sim.entry_for_path.side_effect = lambda path: (
+            entry if _path(path) == _path(indexed) else None
+        )
+
+        response = TestClient(create_app(bridge)).get("/api/lyrics", params={"path": "~/song.wav"})
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "path": "~/song.wav",
+            "lyrics": [{"time_s": 1.0, "text": "Indexed lyrics"}],
+        }
+
     def test_lyrics_endpoint_reads_each_requested_index_path(self, bridge, monkeypatch) -> None:
         from fastapi.testclient import TestClient
 
@@ -4196,6 +4229,34 @@ class TestMisc:
 
 
 class TestAudioEndpoint:
+    def test_audio_uses_indexed_path_when_request_normalizes_differently(
+        self, tmp_path, bridge, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.catalog import _path
+
+        home = tmp_path / "home"
+        home.mkdir()
+        indexed = home / "song.mp3"
+        indexed.write_bytes(b"indexed audio")
+        literal = tmp_path / "~"
+        literal.mkdir()
+        (literal / "song.mp3").write_bytes(b"not indexed")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        entry = _make_entry(99)
+        entry.path = str(indexed)
+        # The production library normalizes paths before its index lookup.
+        bridge.sim.entry_for_path.side_effect = lambda path: (
+            entry if _path(path) == _path(indexed) else None
+        )
+        tc = TestClient(create_app(bridge))
+        response = tc.get("/api/audio", params={"path": "~/song.mp3"})
+        assert response.status_code == 200
+        assert response.content == b"indexed audio"
+
     def test_audio_unknown_path_404(self, client) -> None:
         resp = client.get("/api/audio?path=Z:/not/in/index.flac")
         assert resp.status_code == 404
@@ -4893,6 +4954,41 @@ class TestStaticAssets:
 
 
 class TestCoverArt:
+    def test_art_uses_indexed_path_when_request_normalizes_differently(
+        self, tmp_path, bridge, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+        from mutagen.id3 import APIC
+        from mutagen.wave import WAVE
+
+        from autodj.catalog import _path
+
+        home = tmp_path / "home"
+        home.mkdir()
+        indexed = home / "song.wav"
+        literal = tmp_path / "~"
+        literal.mkdir()
+        for path, art in ((indexed, b"indexed cover"), (literal / "song.wav", b"not indexed")):
+            path.write_bytes(wav_bytes())
+            audio = WAVE(path)
+            audio.add_tags()
+            audio.tags.add(APIC(mime="image/png", type=3, data=art))
+            audio.save()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        entry = _make_entry(99)
+        entry.path = str(indexed)
+        bridge.sim.entry_for_path.side_effect = lambda path: (
+            entry if _path(path) == _path(indexed) else None
+        )
+
+        response = TestClient(create_app(bridge)).get("/api/art", params={"path": "~/song.wav"})
+
+        assert response.status_code == 200
+        assert response.content == b"indexed cover"
+        assert response.headers["content-type"] == "image/png"
+
     def test_art_unknown_path_404(self, client) -> None:
         resp = client.get("/api/art?path=Z:/nope.flac")
         assert resp.status_code == 404

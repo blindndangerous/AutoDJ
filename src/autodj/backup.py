@@ -436,16 +436,17 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
             copy = snapshot / member
             copy.parent.mkdir(parents=True, exist_ok=True)
             # With its permission bits, so a private file is restored private.
-            shutil.copy(original, copy)
             if original.name == "live_djs.json":
                 # The DJ accounts without their password hashes (#48).
                 from autodj.live import strip_secrets
 
-                stripped = strip_secrets(copy.read_bytes())
+                stripped = strip_secrets(original.read_bytes())
                 if not stripped:
-                    copy.unlink()
                     continue
                 copy.write_bytes(stripped)
+                shutil.copymode(original, copy)
+            else:
+                shutil.copy(original, copy)
             members[member] = copy
     for name in ("dj_meta.db", "library.db", "related-artists.toml", "related-tracks.toml"):
         root = _index_root(roots, name)
