@@ -263,6 +263,11 @@
            page controls another station this says which, and describes
            Listen here.  Plain text, not live. -->
       <p id="listen-station" class="stream-detail" hidden></p>
+      <div id="local-programme-controls" role="group" aria-label="Local programme" hidden>
+        <button type="button" id="take-local-control" aria-describedby="local-programme-status">Take local control</button>
+        <button type="button" id="return-to-automation" aria-describedby="local-programme-status" aria-disabled="true">Return to automation</button>
+        <p id="local-programme-status">Automation</p>
+      </div>
       <!-- Browser talkover (#48), shown while the station can go live.
            Hold to talk; a quick press latches it on until the next press.
            A fixed name: aria-pressed says whether this page is talking.

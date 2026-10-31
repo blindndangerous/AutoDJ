@@ -96,3 +96,13 @@ or evidence limits. Narrative above retains rationale and scope.
 | --- | --- | --- | --- |
 | `ADR-0003-01` | Browser output constructs no server mix bus; explicit server-audio output does. | automated | `tests/unit/test_player_stream_mode.py::test_server_audio_builds_the_bus_up_front_and_browser_mode_has_none` |
 | `ADR-0003-02` | Native browser playback/device behavior needs supported browser/device evidence. | manual | Exercise browser playback and device selection on the affected engine/device; unit audio-context doubles are insufficient. |
+
+## Amendment, 2026-10-30: local DJ ownership
+
+[Accepted ADR 20](0020-local-browser-programme-ownership.md) designs one local
+browser's performance feeding an existing streaming station. It preserves
+browser-owned rendering and distinguishes it from legacy browser-only output.
+This adds an opt-in streaming input; legacy browser-only mode still has no bus
+(ADR-0003-01). Phase 2a exposed preparation only. Phase 2b connects the bounded
+owner workflow, independent monitor branch and consumption accounting described
+in ADR 20; broader issue acceptance and hardware evidence remain separate.
