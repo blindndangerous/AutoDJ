@@ -3536,8 +3536,11 @@ describe("stream mode", () => {
     // its own Volume slider.  A new play() must be added here on purpose.
     expect(found.plays.map((line) => line.replace(/^([^:]+):.*\| /, "$1: "))).toEqual([
       "modules/audio-engine.js: return deck.audio.play().catch((err) => {",
+      // Local control (#541) plays the same decks, through the master.
+      "modules/audio-engine.js: return Promise.resolve(deck.audio.play()).then(() => true).catch((err) => {",
       "modules/audio-engine.js: await deck.audio.play();",
       "modules/library-folders.js: await preview.play();",
+      "modules/local-programme.js: Promise.resolve().then(() => audio.play()).then(() => {",
       // Track info, Matched intros, Listen: a preview in the page, like Listen back.
       "modules/matched-intros.js: await playback.play();",
       "modules/player-page.js: playing = audio.play();",

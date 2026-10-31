@@ -81,7 +81,7 @@ class SoundDeviceOutput:
                 self._head_pos += take
                 filled += take
         outdata[filled:frames] = 0.0
-        if self._state.is_muted:
+        if self._state.is_muted or self._state.local_monitor_owned:
             outdata[:frames] = 0.0
         elif self._state.volume < 1.0:
             outdata[:frames] *= self._state.volume

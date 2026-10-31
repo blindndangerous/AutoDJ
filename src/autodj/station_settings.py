@@ -320,6 +320,9 @@ class StationSettings:
                 refresh_playout()
 
     def set_preset(self, name: str | None, *, refresh: bool = True) -> None:
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         if not name:
             self._preset = None
         else:
@@ -339,6 +342,9 @@ class StationSettings:
             refresh_playout()
 
     def set_transition(self, effect: str) -> None:
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         from autodj.transitions import TRANSITION_EFFECT_NAMES
 
         name = effect.lower()
@@ -347,6 +353,9 @@ class StationSettings:
         self.cfg.transitions.effect = name
 
     def set_djmix(self, **flags: Any) -> None:
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         from autodj.dj_meta import HARMONIC_MODES
 
         for key, value in flags.items():
@@ -370,6 +379,9 @@ class StationSettings:
         restoring: bool = False,
         refresh: bool = True,
     ) -> None:
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         values = body.model_dump(exclude_none=True)
         legacy_shuffle = values.pop("pure_shuffle", None)
         if legacy_shuffle is not None and "pick_mode" not in values:
@@ -500,11 +512,17 @@ class StationSettings:
         return related, problem
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         self._bpm_range = None if lo is None or hi is None or lo >= hi else (lo, hi)
 
     def set_discovery_every(
         self, every: int | None, *, restoring: bool = False, refresh: bool = True
     ) -> None:
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         self._discovery_every = None if every is None or every <= 0 else int(every)
         if every is not None and every > 0:
             self._discovery_enabled = True
@@ -538,6 +556,9 @@ class StationSettings:
     def set_eq(
         self, low: float | None = None, mid: float | None = None, high: float | None = None
     ) -> dict[str, float]:
+        from autodj.local_programme_playout import require_automation
+
+        require_automation(self.player)
         if low is not None:
             self._eq_low = max(0.0, min(2.0, low))
         if mid is not None:

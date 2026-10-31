@@ -337,6 +337,11 @@ jobs:
           version: v1
           execute_install_scripts: true
       - run: npx --no-install playwright install chromium
+      - name: Run Chromium local programme prototype audit
+        timeout-minutes: 8
+        run: node tests/playwright/local_programme_prototype_audit.mjs
+        env:
+          LOCAL_PROGRAMME_AUDIT_ROOT: ${{ runner.temp }}/local-programme-prototype
       - name: Start stream-mode server
         shell: bash
         run: |
@@ -390,3 +395,4 @@ jobs:
           path: |
             *_audit*.json
             ${{ runner.temp }}/autodj-stream.log
+            ${{ runner.temp }}/local-programme-prototype/
