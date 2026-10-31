@@ -18,27 +18,28 @@ export function clockText(when, { seconds = false, locale = undefined, ...option
 
 // A compact relative date for dates shown to people. The reference time is
 // injectable so callers and tests can use a stable clock. Invalid dates return
-// an empty string; intervals under half a minute round to "now".
+// an empty string; short intervals follow Intl's rounded-minute wording.
 function relativeParts(when, reference, maxUnit, dayAfterHours) {
+  if (when == null || reference == null) return null;
   const instant = when instanceof Date ? when.getTime() : new Date(when).getTime();
   const baseline = reference instanceof Date ? reference.getTime() : new Date(reference).getTime();
   if (!Number.isFinite(instant) || !Number.isFinite(baseline)) return null;
   const delta = instant - baseline;
-  const seconds = delta / 1000;
-  const minutes = Math.round(seconds / 60);
-  const hours = Math.round(seconds / 3600);
-  const days = Math.round(seconds / 86400);
-  const months = Math.round(seconds / (86400 * 30.4375));
-  const years = Math.round(seconds / (86400 * 365.25));
+  // Scheduler thresholds and values are based on rounded minutes. Keeping the
+  // choice and rounding together preserves its minute/hour/day transitions.
+  const minutes = Math.round(delta / 60_000);
+  const hours = Math.round(minutes / 60);
+  const days = Math.round(minutes / 1440);
+  const months = Math.round(minutes / (1440 * 30.4375));
+  const years = Math.round(minutes / (1440 * 365.25));
   const order = ["minute", "hour", "day", "month", "year"];
   const limit = Math.max(0, order.indexOf(maxUnit));
   let unit;
   let value;
-  if (Math.abs(seconds) < 30) { unit = "second"; value = 0; }
-  else if (Math.abs(seconds) < 60 * 60) { unit = "minute"; value = minutes; }
-  else if (Math.abs(seconds) < dayAfterHours * 3600) { unit = "hour"; value = hours; }
-  else if (Math.abs(seconds) < 30.4375 * 86400) { unit = "day"; value = days; }
-  else if (Math.abs(seconds) < 365.25 * 86400) { unit = "month"; value = months; }
+  if (Math.abs(minutes) < 60) { unit = "minute"; value = minutes; }
+  else if (Math.abs(minutes) < dayAfterHours * 60) { unit = "hour"; value = hours; }
+  else if (Math.abs(minutes) < 30.4375 * 1440) { unit = "day"; value = days; }
+  else if (Math.abs(minutes) < 365.25 * 1440) { unit = "month"; value = months; }
   else { unit = "year"; value = years; }
   const selected = order.indexOf(unit);
   if (selected > limit) {
@@ -58,8 +59,7 @@ export function relativeTimeText(when, { reference = Date.now(), locale = undefi
 export function approximateDurationText(when, { reference = Date.now(), locale = undefined } = {}) {
   const parts = relativeParts(when, reference, "year", 24);
   if (!parts) return "";
-  const unitText = new Intl.RelativeTimeFormat(locale, { numeric: "always" })
-    .format(Math.abs(parts.value), parts.unit).replace(/^in /, "").replace(/ ago$/, "");
-  if (parts.value === 0) return "about now";
-  return parts.value < 0 ? `about ${unitText} ago` : `in about ${unitText}`;
+  const numberAndUnit = new Intl.NumberFormat(locale, { style: "unit", unit: parts.unit, unitDisplay: "long" })
+    .format(Math.abs(parts.value));
+  return `about ${numberAndUnit}`;
 }
