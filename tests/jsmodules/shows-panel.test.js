@@ -8,12 +8,26 @@ import { fmtTime } from "../../src/autodj/static/modules/dom-helpers.js";
 
 const byId = (id) => document.getElementById(id);
 const copy = (value) => JSON.parse(JSON.stringify(value));
-const status = () => byId("shows-status").textContent;
-const items = () => [...byId("shows-list").querySelectorAll("li[data-id]")];
+const status = () => (byId("shows-form-dialog")?.open ? byId("shows-form-status") : byId("shows-status")).textContent;
+const items = () => [...byId("shows-list").querySelectorAll("tbody tr[data-row-key]")];
 const rowButton = (index, action) => items()[index].querySelector(`button[data-action="${action}"]`);
-const songRows = () => [...byId("shows-songs").querySelectorAll("li[data-index]")];
+const songRows = () => [...byId("shows-songs").querySelectorAll("tbody tr[data-row-key]")];
 const songButton = (index, action) => songRows()[index].querySelector(`button[data-action="${action}"]`);
-const songTitles = () => songRows().map((row) => row.querySelector(".show-song").textContent.split(",").slice(0, 2).join(","));
+const songTitles = () => songRows().map((row) => row.querySelector('[data-action="title"]').textContent);
+
+
+const songOptions = (index) => songRows()[index].querySelector('td[data-action="options"]');
+function clickAction(row, action) {
+  const options = row.querySelector('button[aria-haspopup="menu"]');
+  if (options.getAttribute("aria-expanded") !== "true") options.click();
+  row.querySelector(`button[data-action="${action}"]`).click();
+}
+async function removeAt(index) {
+  clickAction(songRows()[index], "remove");
+  expect(byId("confirm-dialog").open).toBe(true);
+  byId("confirm-accept").click();
+  await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
+}
 
 const ID = "a".repeat(32);
 it("shows a deferred feed reason in the ordinary on-air description", () => {
@@ -115,6 +129,52 @@ async function openList(server) {
 beforeEach(installIndex);
 afterEach(() => { controls?.destroy(); controls = null; });
 
+it("renders a shared empty row before the first shows load finishes", async () => {
+  let finish;
+  const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+  controls = installShowsPanel({ document, request });
+  const table = byId("shows-list").querySelector("table.collection-table");
+  const empty = table.querySelector("tbody td.no-results");
+  expect(empty).not.toBeNull();
+  expect(empty.colSpan).toBe(table.querySelectorAll("thead th").length);
+  expect(empty.textContent).toBe("No shows yet. Press Add show to plan one.");
+  expect(table.querySelectorAll('tbody [tabindex="0"]')).toHaveLength(1);
+  expect(status()).toBe("");
+  finish(await fakeServer().request("/api/shows"));
+  await vi.waitFor(() => expect(items()).toHaveLength(1));
+  expect(table.querySelector("td.no-results")).toBeNull();
+});
+
+// ADR-0021-10
+it("uses shared show, song and search tables with one primary action", async () => {
+  const server = fakeServer();
+  controls = installShowsPanel({ document, request: server.request });
+  await vi.waitFor(() => expect(byId("shows-list").textContent).toContain(SHOW.name));
+  const table = byId("shows-list").querySelector("table.collection-table");
+  expect(table).not.toBeNull();
+  const row = table.querySelector("tbody tr");
+  expect(row.querySelectorAll('button:not([role="menuitem"])')).toHaveLength(2);
+  expect(row.querySelector('button[data-action="open"]').textContent).toBe("Open list");
+  row.querySelector('button[aria-haspopup="menu"]').click();
+  row.querySelector('[data-action="edit"]').click();
+  expect(byId("shows-form").closest("dialog").open).toBe(true);
+  byId("shows-cancel").click();
+  await vi.waitFor(() => expect(byId("shows-form").closest("dialog").open).toBe(false));
+  row.querySelector('button[data-action="open"]').click();
+  await vi.waitFor(() => expect(byId("shows-editor").hidden).toBe(false));
+  expect(byId("shows-songs").querySelector("table.collection-table")).not.toBeNull();
+  const songRow = songRows()[0];
+  expect(songRow.querySelectorAll('button:not([role="menuitem"])')).toHaveLength(2);
+  expect(songRow.querySelector('button[data-action="info"]').textContent).toBe("Track info");
+  expect([...songRow.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent))
+    .toEqual(["Move up", "Move down", "Remove"]);
+  byId("shows-search").value = "nine";
+  byId("shows-search-run").click();
+  await vi.waitFor(() => expect(byId("shows-results").querySelector('button[data-action="add"]')).not.toBeNull());
+  expect(byId("shows-results").querySelector("table.collection-table")).not.toBeNull();
+  expect(document.querySelectorAll('#shows-list [role="rowheader"], #shows-songs [role="rowheader"], #shows-results [role="rowheader"]')).toHaveLength(0);
+});
+
 describe("shows markup", () => {
   it("is its own card in Library tools, after Clockwheels, with labelled native controls", () => {
     const section = byId("shows-heading").closest("details");
@@ -131,9 +191,9 @@ describe("shows markup", () => {
     }
     const fieldsets = [...section.querySelectorAll("fieldset")];
     expect(fieldsets.map((set) => set.querySelector(":scope > legend")?.textContent)).toEqual(["Add show", "Songs come from", "Record or import speech"]);
-    expect(byId("shows-songs").tagName).toBe("OL");
-    expect(byId("shows-songs").getAttribute("aria-labelledby")).toBe("shows-editor-heading");
-    expect(byId("shows-results").getAttribute("aria-labelledby")).toBe("shows-add-heading");
+    expect(byId("shows-songs").tagName).toBe("DIV");
+    // Collection hosts are neutral; their generated tables carry their names.
+    expect(byId("shows-results").tagName).toBe("DIV");
     expect(byId("shows-start").getAttribute("type")).toBe("datetime-local");
     expect(byId("shows-start-help").textContent).toMatch(/^Optional\./);
     expect(byId("shows-form").hasAttribute("novalidate")).toBe(true);
@@ -170,13 +230,14 @@ describe("show list keyboard navigation", () => {
     expect(attempts[1]).toEqual({ voice_action: "keep", voice_revision: "choice-1" });
   });
 
-  it("keeps one tab stop and moves between the saved show's actions", async () => {
+  it("keeps one table tab stop and moves between data cells", async () => {
     await open();
-    const actions = [...byId("shows-list").querySelectorAll("button")];
-    expect(actions.filter((item) => item.tabIndex === 0)).toHaveLength(1);
-    actions[0].focus();
-    actions[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    expect(document.activeElement).toBe(actions[1]);
+    const cells = [...byId("shows-list").querySelectorAll("tbody td")];
+    expect(cells.filter((item) => item.tabIndex === 0)).toHaveLength(1);
+    expect([...byId("shows-list").querySelectorAll("button")].every((button) => button.tabIndex === -1)).toBe(true);
+    cells[0].focus();
+    cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(cells[1]);
   });
 });
 
@@ -201,6 +262,35 @@ describe("shows use numeric durations", () => {
 });
 
 describe("planning a show", () => {
+  it("asks before discarding an edited show and returns directly to its Options cell", async () => {
+    await open();
+    clickAction(items()[0], "edit");
+    byId("shows-name").value = "Changed show";
+    byId("shows-cancel").click();
+    expect(byId("confirm-dialog").open).toBe(true);
+    byId("confirm-cancel").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
+    expect(byId("shows-form-dialog").open).toBe(true);
+    expect(byId("shows-name").value).toBe("Changed show");
+    byId("shows-cancel").click();
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(byId("shows-form-dialog").open).toBe(false));
+    expect(document.activeElement.closest("td")).toBe(items()[0].querySelector('td[data-action="options"]'));
+    expect(items()[0].textContent).toContain(SHOW.name);
+  });
+
+  it("confirms deleting a show and returns to Add show when none remain", async () => {
+    const server = await open();
+    clickAction(items()[0], "delete");
+    expect(byId("confirm-dialog").open).toBe(true);
+    expect(server.calls.some((call) => call.method === "DELETE")).toBe(false);
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(items()).toHaveLength(0));
+    await vi.waitFor(() => expect(document.activeElement).toBe(byId("shows-add")));
+    expect(byId("shows-list").querySelector("td.no-results").colSpan).toBe(10);
+    await vi.waitFor(() => expect(status()).toContain(`Deleted ${SHOW.name}.`));
+  });
+
   it("keeps one save pending and ignores a duplicate submit", async () => {
     const server = fakeServer();
     const original = server.request;
@@ -219,7 +309,7 @@ describe("planning a show", () => {
     await vi.waitFor(() => expect(form.hidden).toBe(true));
   });
 
-  it("does not close a newer draft when a cancelled save finishes", async () => {
+  it("keeps a pending editor open until the save completes", async () => {
     const server = fakeServer();
     const original = server.request;
     let finish;
@@ -230,12 +320,12 @@ describe("planning a show", () => {
     byId("shows-name").value = "First draft";
     byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
     byId("shows-cancel").click();
-    byId("shows-add").click();
-    byId("shows-name").value = "Newer draft";
+    expect(byId("shows-form-dialog").open).toBe(true);
+    expect(byId("confirm-dialog").open).toBe(false);
+    expect(byId("shows-name").value).toBe("First draft");
     finish({ ...SHOW, name: "First draft", id: "b".repeat(32), events: [] });
-    await vi.waitFor(() => expect(status()).toContain("Saved First draft."));
-    expect(byId("shows-form").hidden).toBe(false);
-    expect(byId("shows-name").value).toBe("Newer draft");
+    await vi.waitFor(() => expect(byId("shows-form-dialog").open).toBe(false));
+    expect(status()).toContain("Saved First draft.");
   });
 
   it("adds a show, refusing an empty name with the error linked and focused", async () => {
@@ -247,6 +337,7 @@ describe("planning a show", () => {
     expect(byId("shows-name").getAttribute("aria-describedby")).toContain("shows-form-error");
     expect(byId("shows-form-error").textContent).toBe("Enter a name for the show.");
     expect(document.activeElement).toBe(byId("shows-name"));
+    await vi.waitFor(() => expect(byId("shows-form").hasAttribute("aria-busy")).toBe(false));
     byId("shows-name").value = "Throwback hour";
     byId("shows-name").dispatchEvent(new Event("input"));
     expect(byId("shows-name").hasAttribute("aria-invalid")).toBe(false);
@@ -254,6 +345,7 @@ describe("planning a show", () => {
     byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
     expect(document.activeElement).toBe(byId("shows-target"));
     expect(byId("shows-form-error").textContent).toBe("Target length must be a whole number of minutes from 5 to 360.");
+    await vi.waitFor(() => expect(byId("shows-form").hasAttribute("aria-busy")).toBe(false));
     byId("shows-target").value = "45";
     byId("shows-source-clockwheel").checked = true;
     byId("shows-source-clockwheel").dispatchEvent(new Event("change"));
@@ -266,7 +358,7 @@ describe("planning a show", () => {
       station_name: "",
     });
     expect(byId("shows-form").hidden).toBe(true);
-    await vi.waitFor(() => expect(document.activeElement).toBe(rowButton(1, "open")));
+    await vi.waitFor(() => expect(document.activeElement).toBe(rowButton(1, "open").closest("td")));
     await vi.waitFor(() => expect(status()).toContain("Saved Throwback hour."));
   });
 
@@ -277,7 +369,7 @@ describe("planning a show", () => {
     expect(document.querySelector('label[for="shows-station-name"]').textContent).toBe("Station name while active");
     expect(field.maxLength).toBe(100);
     expect(field.getAttribute("aria-describedby")).toBe("shows-station-name-help");
-    rowButton(0, "edit").click();
+    clickAction(items()[0], "edit");
     expect(field.value).toBe("");
     field.value = "Live\tnow";
     byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
@@ -286,15 +378,16 @@ describe("planning a show", () => {
     expect(byId("shows-form-error").textContent).toBe("Station name while active cannot contain tabs, line breaks or other control characters.");
     expect(document.activeElement).toBe(field);
     expect(server.calls.some((call) => call.method === "PUT")).toBe(false);
+    await vi.waitFor(() => expect(byId("shows-form").hasAttribute("aria-busy")).toBe(false));
     field.value = " Example FM Live ";
     field.dispatchEvent(new Event("input"));
     expect(field.hasAttribute("aria-invalid")).toBe(false);
     byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(status()).toContain("Saved Remembering the 2000s."));
     expect(server.calls.find((call) => call.method === "PUT").body.station_name).toBe("Example FM Live");
-    expect(items()[0].firstElementChild.textContent).toContain("Station name while on the air: Example FM Live.");
+    expect(items()[0].querySelector('[data-action="station"]').textContent).toBe("Example FM Live");
     // The server names the field it refuses; the page marks and focuses it.
-    rowButton(0, "edit").click();
+    clickAction(items()[0], "edit");
     expect(field.value).toBe("Example FM Live");
     server.refuse = new FieldError("Station name while active can be at most 100 characters", "station_name");
     byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
@@ -324,13 +417,13 @@ describe("planning a show", () => {
     await vi.waitFor(() => expect(status()).toContain("Saved Throwback hour."));
     expect(reloads).toEqual([{ focused: byId("shows-save"), formHidden: false }]);
     expect(byId("shows-form").hidden).toBe(true);
-    expect(document.activeElement).toBe(rowButton(1, "open"));
+    expect(document.activeElement).toBe(rowButton(1, "open").closest("td"));
   });
 
   it("puts a field the server refuses in words, linked and focused", async () => {
     const server = await open();
     server.refuse = new FieldError("That category no longer exists; choose another", "category");
-    rowButton(0, "edit").click();
+    clickAction(items()[0], "edit");
     byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(byId("shows-category").getAttribute("aria-invalid")).toBe("true"));
     expect(document.activeElement).toBe(byId("shows-category"));
@@ -340,13 +433,58 @@ describe("planning a show", () => {
 });
 
 describe("editing a list", () => {
+  it("confirms removal and preserves the song and menu focus when cancelled", async () => {
+    const server = await open();
+    await openList(server);
+    clickAction(songRows()[1], "remove");
+    expect(byId("confirm-dialog").open).toBe(true);
+    expect(songRows()).toHaveLength(3);
+    expect(server.calls.filter((call) => call.url.endsWith("/songs"))).toHaveLength(0);
+    byId("confirm-cancel").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
+    expect(songRows()).toHaveLength(3);
+    expect(document.activeElement).toBe(songOptions(1));
+  });
+
+  it("reorders with Alt arrows and opens track info with the correct return control", async () => {
+    const server = await open();
+    await openList(server);
+    const original = songRows()[1];
+    const title = original.querySelector('[data-action="title"]');
+    title.focus();
+    title.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true }));
+    expect(songRows()[0]).toBe(original);
+    expect(document.activeElement).toBe(songOptions(0));
+    const events = [];
+    const listener = (event) => events.push(event.detail);
+    document.addEventListener("autodj:edit-points", listener);
+    const info = original.querySelector('button[data-action="info"]');
+    info.click();
+    document.removeEventListener("autodj:edit-points", listener);
+    expect(events).toEqual([{ path: "/music/2.flac", kind: "music", opener: info }]);
+    await vi.waitFor(() => expect(server.calls.some((call) => call.url.endsWith("/songs"))).toBe(true));
+  });
+
+  it("keeps unavailable track info reachable and explains its reason", async () => {
+    const server = fakeServer();
+    server.songs[ID][0].missing = true;
+    await open(server);
+    await openList(server);
+    const info = songRows()[0].querySelector('button[data-action="info"]');
+    expect(info.getAttribute("aria-disabled")).toBe("true");
+    expect(info.disabled).toBe(false);
+    expect(byId(info.getAttribute("aria-describedby")).textContent).toBe("This song is no longer in the library.");
+    info.click();
+    await vi.waitFor(() => expect(status()).toBe("This song is no longer in the library."));
+  });
+
   it("shows numeric durations without hidden spoken alternatives, including hours", async () => {
     const server = fakeServer();
     server.songs[ID][0] = { ...song(1, 3725), length_text: "1:02:05" };
     await open(server);
     await openList(server);
-    expect(songRows()[0].querySelector(".show-song").textContent).toBe("Artist 1, Song 1, 1:02:05");
-    expect(songRows()[0].querySelector(".show-song .visually-hidden")).toBeNull();
+    expect(songRows()[0].querySelector('[data-action="length"]').textContent).toBe("1:02:05");
+    expect(songRows()[0].querySelector(".visually-hidden")).toBeNull();
     expect(byId("shows-summary").textContent).toContain("1:08:05");
   });
 
@@ -356,41 +494,41 @@ describe("editing a list", () => {
     expect(document.activeElement).toBe(byId("shows-editor-heading"));
     expect(songButton(0, "up").getAttribute("aria-disabled")).toBe("true");
     expect(songButton(2, "down").getAttribute("aria-disabled")).toBe("true");
-    // The visible word starts the button's name; the song says which.
-    expect(songButton(1, "up").getAttribute("aria-label")).toBe("Move up Artist 2, Song 2");
-    songButton(1, "up").click();
+    // The menu is named for its song; each choice has a concise label.
+    expect(songButton(1, "up").getAttribute("aria-label")).toBe("Move up");
+    clickAction(songRows()[1], "up");
     expect(songTitles()).toEqual(["Artist 2, Song 2", "Artist 1, Song 1", "Artist 3, Song 3"]);
-    expect(document.activeElement).toBe(songButton(0, "up"));
+    expect(document.activeElement).toBe(songOptions(0));
     await vi.waitFor(() => expect(status()).toBe("Moved Artist 2, Song 2 to number 1 of 3. 3 songs, 9:00; target 60 minutes."));
     expect(server.calls.filter((call) => call.method === "PUT").at(-1).body.songs)
       .toEqual(["/music/2.flac", "/music/1.flac", "/music/3.flac"]);
     // At the top, Move up stays focusable and says why it does nothing.
-    songButton(0, "up").click();
+    clickAction(songRows()[0], "up");
     await vi.waitFor(() => expect(status()).toBe("Already the first song."));
-    songButton(0, "down").click();
-    expect(document.activeElement).toBe(songButton(1, "down"));
+    clickAction(songRows()[0], "down");
+    expect(document.activeElement).toBe(songOptions(1));
   });
 
   it("removes a song, moving focus to the next one, and adds one from a search", async () => {
     const server = await open();
     await openList(server);
-    songButton(1, "remove").click();
+    await removeAt(1);
     expect(songTitles()).toEqual(["Artist 1, Song 1", "Artist 3, Song 3"]);
-    expect(document.activeElement).toBe(songButton(1, "remove"));
+    expect(document.activeElement).toBe(songOptions(1));
     await vi.waitFor(() => expect(status()).toContain("Removed Artist 2, Song 2."));
     byId("shows-search").value = "nine";
     byId("shows-search-run").click();
-    await vi.waitFor(() => expect(byId("shows-results").querySelectorAll("button")).toHaveLength(1));
+    await vi.waitFor(() => expect(byId("shows-results").querySelectorAll('button[data-action="add"]')).toHaveLength(1));
     expect(status()).toBe("1 song found.");
     const add = byId("shows-results").querySelector("button");
     expect(add.getAttribute("aria-label")).toBe("Add Artist 9, Song 9");
     add.focus();
     add.click();
     expect(songTitles().at(-1)).toBe("Artist 9, Song 9");
-    expect(document.activeElement).toBe(add);
+    expect(document.activeElement).toBe(add.closest("td"));
     await vi.waitFor(() => expect(status()).toContain("Added Artist 9, Song 9 as number 3."));
     // Removing every song leaves focus in the search box.
-    for (let i = 0; i < 3; i += 1) songButton(0, "remove").click();
+    for (let i = 0; i < 3; i += 1) await removeAt(0);
     expect(document.activeElement).toBe(byId("shows-search"));
   });
 
@@ -404,20 +542,19 @@ describe("editing a list", () => {
     document.addEventListener("focusout", (event) => {
       if (!event.relatedTarget) left.push(event.target);
     });
-    songButton(1, "down").focus();
-    songButton(1, "down").click();
+    songOptions(1).focus();
+    clickAction(songRows()[1], "down");
     // The same rows, moved around the focused one, renumbered in place.
     expect(songRows()).toEqual([first, third, second]);
-    expect(document.activeElement).toBe(second.querySelector('[data-action="down"]'));
+    expect(document.activeElement).toBe(second.querySelector('td[data-action="options"]'));
     expect(second.querySelector('[data-action="down"]').getAttribute("aria-disabled")).toBe("true");
-    expect(third.querySelector('[data-action="down"]').hasAttribute("aria-disabled")).toBe(false);
+    expect(third.querySelector('[data-action="down"]').getAttribute("aria-disabled")).toBe("false");
     await vi.waitFor(() => expect(status()).toContain("Moved Artist 2, Song 2 to number 3 of 3."));
-    // Remove: the next row's Remove has focus before the row goes.
-    third.querySelector('[data-action="remove"]').focus();
-    third.querySelector('[data-action="remove"]').click();
+    // Confirmed removal returns directly to the next row's Options cell.
+    await removeAt(1);
     expect(songRows()).toEqual([first, second]);
-    expect(document.activeElement).toBe(second.querySelector('[data-action="remove"]'));
-    expect(second.querySelector('[data-action="up"]').getAttribute("aria-label")).toBe("Move up Artist 2, Song 2");
+    expect(document.activeElement).toBe(second.querySelector('td[data-action="options"]'));
+    expect(second.querySelector('[data-action="up"]').getAttribute("aria-label")).toBe("Move up");
     await vi.waitFor(() => expect(status()).toContain("Removed Artist 3, Song 3."));
     expect(left).toEqual([]);
   });
@@ -432,18 +569,17 @@ describe("editing a list", () => {
     expect(first.textContent).toContain("also number 3");
     expect(copyRow.textContent).toContain("also number 1");
     // Move the first copy down: the same rows, the warnings renumbered.
-    first.querySelector('[data-action="down"]').focus();
-    first.querySelector('[data-action="down"]').click();
+    first.querySelector('td[data-action="options"]').focus();
+    clickAction(first, "down");
     expect(songRows()).toEqual([middle, first, copyRow]);
-    expect(document.activeElement).toBe(first.querySelector('[data-action="down"]'));
+    expect(document.activeElement).toBe(first.querySelector('td[data-action="options"]'));
     expect(first.textContent).toContain("also number 3");
     expect(copyRow.textContent).toContain("also number 2");
     await vi.waitFor(() => expect(status()).toContain("Moved Artist 1, Song 1 to number 2 of 3."));
     // Remove the second copy: the first keeps its row and loses its warning.
-    copyRow.querySelector('[data-action="remove"]').focus();
-    copyRow.querySelector('[data-action="remove"]').click();
+    await removeAt(2);
     expect(songRows()).toEqual([middle, first]);
-    expect(document.activeElement).toBe(first.querySelector('[data-action="remove"]'));
+    expect(document.activeElement).toBe(first.querySelector('td[data-action="options"]'));
     expect(first.textContent).not.toContain("also number");
     await vi.waitFor(() => expect(server.calls.filter((call) => call.method === "PUT")).toHaveLength(2));
     expect(server.calls.filter((call) => call.method === "PUT").at(-1).body.songs)
@@ -482,11 +618,45 @@ describe("editing a list", () => {
     await openList(server);
     byId("shows-close").click();
     await vi.waitFor(() => expect(byId("shows-editor").hidden).toBe(true));
-    expect(document.activeElement).toBe(rowButton(0, "open"));
+    expect(document.activeElement).toBe(rowButton(0, "open").closest("td"));
   });
 });
 
 describe("review fixes", () => {
+  it("keeps a refreshed show's menu and focus while updating its edit action", async () => {
+    const server = await open();
+    const row = items()[0];
+    row.querySelector('button[aria-haspopup="menu"]').click();
+    const edit = row.querySelector('button[data-action="edit"]');
+    edit.focus();
+    server.shows[0].name = "Updated show";
+    await controls.refresh();
+    expect(items()[0]).toBe(row);
+    expect(document.activeElement).toBe(edit);
+    expect(row.querySelector('button[aria-haspopup="menu"]').getAttribute("aria-expanded")).toBe("true");
+    edit.click();
+    expect(byId("shows-name").value).toBe("Updated show");
+  });
+
+  it("discards protected editor state and ignores an in-flight save after sign-out", async () => {
+    const server = fakeServer();
+    const original = server.request;
+    let finish;
+    server.request = vi.fn((url, options = {}) => options.method === "PUT"
+      ? new Promise((resolve) => { finish = resolve; }) : original(url, options));
+    await open(server);
+    clickAction(items()[0], "edit");
+    byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    controls.clearProtectedData();
+    expect(byId("shows-form-dialog").open).toBe(false);
+    expect(items()).toHaveLength(0);
+    finish({ ...SHOW, name: "Stale save" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(items()).toHaveLength(0);
+    expect(byId("shows-name").value).toBe("");
+    expect(status()).toBe("");
+  });
+
   it("marks list edits unavailable while the list is generated, and says why", async () => {
     const server = await open();
     await openList(server);
@@ -508,13 +678,13 @@ describe("review fixes", () => {
     expect(byId("shows-generate").hasAttribute("aria-disabled")).toBe(false);
     expect(byId("shows-generate").classList.contains("is-pending")).toBe(true);
     expect(byId("shows-generate").getAttribute("aria-busy")).toBe("true");
-    songButton(1, "remove").click();
+    clickAction(songRows()[1], "remove");
     await vi.waitFor(() => expect(status()).toBe("The list is being generated; change it when that is done."));
     expect(songRows()).toHaveLength(3);
     expect(server.calls.filter((call) => call.url.endsWith("/songs"))).toHaveLength(0);
     finish();
     await vi.waitFor(() => expect(songRows()).toHaveLength(2));
-    expect(songButton(0, "remove").hasAttribute("aria-disabled")).toBe(false);
+    expect(songButton(0, "remove").getAttribute("aria-disabled")).toBe("false");
     expect(byId("shows-generate").classList.contains("is-pending")).toBe(false);
     expect(byId("shows-generate").hasAttribute("aria-busy")).toBe(false);
   });
@@ -538,7 +708,7 @@ describe("review fixes", () => {
   it("says an error that names no field without marking one", async () => {
     const server = await open();
     server.refuse = new FieldError("The shows file could not be saved", null);
-    rowButton(0, "edit").click();
+    clickAction(items()[0], "edit");
     byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(status()).toBe("The shows file could not be saved"));
     expect(byId("shows-name").hasAttribute("aria-invalid")).toBe(false);
@@ -549,10 +719,10 @@ describe("review fixes", () => {
     const server = await open();
     server.songs[ID] = [song(1), song(2), song(1)];
     await openList(server);
-    expect(songRows()[0].querySelector(".show-song").textContent).toContain("warning: also number 3 in the list");
+    expect(songRows()[0].querySelector('[data-action="repeated"]').textContent).toContain("Warning: also number 3 in the list");
     expect(byId("shows-summary").textContent).toContain("Warning: 1 song is in the list more than once");
-    songButton(2, "remove").click();
-    expect(document.activeElement).toBe(songButton(1, "remove"));
+    await removeAt(2);
+    expect(document.activeElement).toBe(songOptions(1));
     expect(byId("shows-summary").textContent).not.toContain("Warning");
   });
 });

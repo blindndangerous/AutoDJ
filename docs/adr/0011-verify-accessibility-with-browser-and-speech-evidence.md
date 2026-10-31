@@ -83,6 +83,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0011-07` | With NVDA in browse mode, Enter on a newly opened confirmation cancels it, and closing it reads the control focus returns to, not the top of the page. | manual | Open and close a confirmation such as Restart AutoDJ in Settings, Updates with NVDA in Chrome and Firefox; record the revision, versions, flows, speech, and whether a person listened. |
 | `ADR-0011-08` | Every other dialog the page opens (editors, Browse…, Track info's unsaved changes, device Rename, the keyboard shortcuts list, pairing) opens the same way through `modules/dialog-guard.js`: `show()` and `aria-modal`, not `showModal()`, unless a modal dialog is open; a backdrop takes clicks; Tab and Shift+Tab go round the top dialog's controls; focus or a press aimed at the page, or at a dialog under it, does not reach it; Escape fires the dialog's cancel event; its safe button is last; and closing moves focus straight to the opener or the action's target, never through the page body. | automated | `tests/jsmodules/dialog-guard.test.js::opens with show() and aria-modal, with the backdrop shown until it closes`, `tests/jsmodules/dialog-guard.test.js::keeps Tab, Shift+Tab and focus in the dialog, past controls Tab cannot reach`, `tests/jsmodules/dialog-guard.test.js::stops a page control activated while it is open, as a screen reader may`, `tests/jsmodules/dialog-guard.test.js::fires cancel on Escape and closes with focus straight back on the opener`, `tests/jsmodules/dialog-guard.test.js::moves focus straight to a target, the opener inert while the dialog closes`, `tests/jsmodules/dialog-guard.test.js::stacks a dialog opened from another: only the top one guards`, `tests/jsmodules/path-picker.test.js::opens with show() and aria-modal, Cancel last, and keeps Tab and Escape in the dialog` |
 | `ADR-0011-09` | With NVDA in browse mode, Enter on a newly opened Browse… dialog does not choose the folder, and closing each dialog in `ADR-0011-08` reads the control focus returns to, not the top of the page. | manual | Open and close each dialog listed in docs/accessibility-testing.md with NVDA in Chrome and Firefox; record the revision, versions, flows, speech, and whether a person listened. |
+| `ADR-0011-10` | Outside non-pointer focus enters each tablist on its selected tab, or its first visible tab when none is selected. Internal movement, pointer clicks and browse-mode focus-then-click activation remain available. | automated | `tests/jsmodules/tabs.test.js::redirects outside focus to the selected main tab without blocking activation`, `tests/jsmodules/subtabs.test.js::uses the selected or first visible entry in every Settings tab group` |
 
 ## Amendment 2026-10-27: dialog focus never rests on the page body
 
@@ -142,6 +143,31 @@ one another stack, and only the top one guards, so a confirmation over an
 editor now opens with `show()` as well. Browse… and device Rename put
 Cancel last. None of these dialogs lets go of focus before it closes any
 more. `ADR-0011-09` is the NVDA check; it has no recorded evidence yet.
+
+## Amendment 2026-10-31: browse-mode tab entry
+
+The owner requires the shared main and Settings tablists to redirect outside
+focus from an unselected tab to the selected tab in that group. If the group has
+no selected tab, its first visible tab remains the entry point. This explicitly
+authorized correction does not accept the rest of this retrospective Proposed
+record. ADR disposition: `update_existing_adr`.
+
+NVDA 2026.2 browse-mode Ctrl+Home then Tab can target a negative-tabindex tab
+from its buffer. Native browser Tab already enters correctly; testing only that
+path missed the defect. The shared [tablist helper](../../src/autodj/static/modules/tablist.js),
+[main router](../../src/autodj/static/modules/tabs.js) and
+[Settings groups](../../src/autodj/static/modules/subtabs.js) apply the entry
+guard. Focus from inside the same tablist and pointer presses remain unchanged.
+Do not intercept click: browse-mode Enter focuses then clicks the original tab,
+and that original click must still select it after a focus redirect.
+
+The [visual audit](../../tests/playwright/visual_audit.mjs) exercises direct
+outside `element.focus()`, pointer clicks, focus-then-click activation and group
+navigation in Chromium and Firefox. Follow the
+[NVDA procedure](../accessibility-testing.md#tab-entry-with-nvda) for actual speech.
+The known repeated editor title/help/form speech is recorded separately in the
+accessibility guide; one DOM focus and one NVDA event do not justify another
+editor runtime change.
 
 ## Verification
 

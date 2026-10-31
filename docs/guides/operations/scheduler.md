@@ -18,6 +18,8 @@ action to change it. Open **Options for <event name>** for **Run now**,
 **Enable** or **Disable**, and **Delete**. Delete asks for confirmation; its
 past runs remain in **Recent runs**. **Next events** and **Recent runs** are
 read-only tables. Each table uses one Tab stop and arrow-key cell navigation;
+Escape from Options and Cancel in its Delete confirmation return to the Options
+cell, so arrow navigation continues immediately;
 see the [keyboard guide](../keyboard-and-screen-reader.md).
 
 Any repeating event can have a **Date range**: an optional start date, end date, or both. A

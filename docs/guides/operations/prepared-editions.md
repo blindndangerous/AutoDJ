@@ -7,11 +7,12 @@ In **Library tools**, open **Shows**, open a saved show list, then expand
 from show**. The edition starts with its own copy of the song order. Each repeated
 song is a separate occurrence. Editing the reusable Show later does not replace
 this production's list or recordings. Keep one active take at each opening, closing,
-transition or segment position; use **Re-record** to replace its audio while
+transition or segment position; choose **Re-record** from the take's **Options** menu to replace its audio while
 retaining the previous source asset.
 
-Use **Move up**, **Move down**, **Remove**, and the library search's **Add to
-edition** to edit that production. Changes use a revision check: if another page
+The occurrence table shows Position, Item and Kind. Use its row's **Options** menu for
+**Move up**, **Move down** or **Remove**. Remove asks for confirmation. To add a song,
+search the library above and choose **Add to edition** from the result's **Options** menu. Changes use a revision check: if another page
 saved first, reload rather than overwriting its work. Read the estimated duration
 and any likely-overrun warning. Estimates do not guarantee a finish time; scheduler
 hard events retain priority and can interrupt the edition.
@@ -38,13 +39,20 @@ Station playout can stay stopped throughout preparation.
    leave the saved edition intact. Larger uploads get more time: 60 seconds plus
    one second per 256 KiB of declared data, or the 512 MiB cap when the size is
    unknown. Decoding runs after the upload deadline ends. There is no interview editor here.
-5. From the saved take, explicitly review pending speech. AutoDJ opens the shared
+5. In the saved take's **Options** menu, choose **Review** to review pending speech. AutoDJ opens the shared
    [Programme review](programme-review.md) controls. Its approval-target
    review retains the entire take, including long interviews, while music middles
    can shorten. Listen and navigate; neither action approves the take.
-6. Return to the edition and explicitly approve using that completed review. The
+6. Return to the edition, open the take's **Options** menu and choose **Approve** using that completed review. The
    server checks the exact source asset, adjacent occurrences, cues and applicable
    mixing inputs. A missing, shortened or placeholder target cannot approve speech.
+
+The takes table shows Name, Placement and Status. **Listen** loads a saved take into the
+private player. Its **Options** menu contains **Re-record**, **Review**, **Approve**, **Reattach**
+and **Remove**.
+Remove asks for confirmation. While an edition save is pending, Remove stays
+reachable and explains that you must wait; it cannot start another change.
+Unavailable actions remain reachable and explain their restriction.
 
 **Review edition** follows broadcast eligibility and excludes unapproved speech.
 Pending review is an explicit separate request. Ordinary programme reviews still
@@ -62,9 +70,10 @@ songs continue without generating a replacement take.
 A standalone segment follows its occurrence when you move it, add a song after
 it or remove a neighbour. Changed neighbours require review and approval again.
 If an edit separates a transition's pair, its take shows **Unattached**. In that
-take's **Position for** list, choose the new adjacent pair and press **Reattach**.
+take's **Options** menu, choose **Reattach**. In the dialog, select the new adjacent pair
+in **Position** and press **Reattach**. Focus returns to the take's Options cell.
 Then review and approve it again. Reattaching keeps the saved audio. An unattached
-opening or closing take offers the current first or last item in the same control.
+opening or closing take offers the current first or last item in the same dialog.
 
 Edits refresh uncommitted prepared audio. The playout commit boundary is the
 first affected speech duck ramp or incoming overlap; a primary speech occurrence

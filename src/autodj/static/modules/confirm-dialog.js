@@ -1,8 +1,9 @@
-import { openDialog, otherModalOpen } from "./dialog-guard.js";
+import { closeDialog, openDialog, otherModalOpen } from "./dialog-guard.js";
 import {
   dialogReturnPlace, dialogStatusLine, focusAfterDialog, focusSteadyPlace, releaseDialogFocus,
 } from "./dom-helpers.js";
 import { sayIfStillPending } from "./live-region.js";
+import { tableFocusTarget } from "./table-row.js";
 
 // Shared "are you sure" step for actions that cannot be undone: Clear
 // queue, Replace profile, Delete profile, Delete liner, Sign out and Revoke
@@ -132,7 +133,7 @@ function ask(doc, {
   text.textContent = message;
   confirmButton.textContent = confirmLabel;
   dialog.returnValue = "";
-  const opener = doc.activeElement === doc.body ? null : doc.activeElement;
+  const opener = doc.activeElement === doc.body ? null : tableFocusTarget(doc.activeElement);
   // Where focus goes if the opener is gone when the dialog closes.
   const place = dialogReturnPlace(opener);
   const modal = otherModalOpen(doc, dialog);
@@ -192,6 +193,7 @@ function ask(doc, {
     // Answer, then close the dialog with focus going straight to *target*,
     // or back to the opener when there is none.
     function finish(answer, target) {
+      target = tableFocusTarget(target);
       settle(answer);
       // A later opening has the dialog now: this one only answers.
       if (!showing()) return;
@@ -206,18 +208,8 @@ function ask(doc, {
         if (answer === "confirm" && !(target?.isConnected && focusAfterDialog(target))) returnFocus();
         return;
       }
-      const elsewhere = target?.isConnected && target !== opener;
-      // The browser would put focus back on the opener first; an inert
-      // control cannot take it.
-      const hold = elsewhere && opener?.isConnected && !opener.hasAttribute("inert");
-      if (hold) opener.setAttribute("inert", "");
-      try {
-        dialog.close(answer);
-      } finally {
-        if (hold) opener.removeAttribute("inert");
-      }
+      closeDialog(dialog, { opener, target, place, value: answer });
       if (closing) state.checks.push(() => checkFocus(false));
-      if (!(elsewhere && focusAfterDialog(target))) returnFocus();
     }
     async function accept(event) {
       event.preventDefault();

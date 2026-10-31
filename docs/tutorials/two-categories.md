@@ -85,8 +85,9 @@ again, and save. This is why checking counts comes before hearing the rotation.
 
 ## Build the alternating wheel
 
-1. Expand **Clockwheels** and press **Create**. In the dialog, enter
-   `Practice alternating` in **Name**, then press **Create**.
+1. Expand **Clockwheels**, enter `Practice alternating` in **New clockwheel name**,
+   and press **Create**. Check **Name** in the dialog, then press **Create**.
+   Opening or saving a wheel leaves the panel's new-name field as you typed it.
 2. Press **New step**. Set **Step type** to **Music matching conditions**.
 3. Set **Condition 1** to **Category**, **Music category** to
    **Practice anchor**, and **Operator** to **is**.

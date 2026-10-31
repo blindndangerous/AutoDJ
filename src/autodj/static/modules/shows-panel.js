@@ -1,31 +1,20 @@
 // Shows (#106): a list of songs prepared ahead that a schedule event airs.
 //
 // The server keeps them in shows.json and generates a list with a dry run of
-// the station's picker.  This module lists the shows (plain text), adds,
-// edits and deletes them through one form, and opens one show's list to
+// the station's picker. This module lists shows in a shared table, adds,
+// edits and deletes them through a dialog, and opens one show's list to
 // generate it again, move songs up and down, remove them and add songs from
 // a library search.  Each change to the list is saved at once.
 //
-// Speech: each result of a button is said once through #shows-status; the
-// lists, the totals and the on-air line are never live regions, so polling
-// says nothing.  Focus: Add and Edit move it to Name; Save to the saved
-// show's Open list button; Cancel back to the button that opened the form;
-// Open list to the list's heading; Move up and Move down keep it on the
-// same button of the moved song; Remove moves it to the next song's
-// Remove, or the previous song's when it was the last (the search box when
-// none is left); Close list to the show's Open list button; Delete to the
-// next show (or Add show).  A field the server names gets aria-invalid, the
-// error text as part of its description, and focus; an error that names no
-// field is only said.  While the list is being generated, Move up, Move
-// down, Remove and Add stay in the tab order but are marked unavailable and
-// say why.  A refresh that fails is said once, until one succeeds again.
-import { reconcileRows } from "./dom-helpers.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
+// Collection rows share cell navigation, menus and focus recovery. Metadata
+// edits use the guarded editor dialog; song changes save immediately.
+import { createCollectionTable } from "./collection-table.js";
+import { deleteCollectionItem } from "./collection-delete.js";
+import { createEditorDialog } from "./editor-dialog.js";
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
-import { confirmAction } from "./confirm-dialog.js";
 import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
 import { announceStatus, sayIfStillPending } from "./live-region.js";
-import { clearFieldError, fmtTime, placeRows, selectOnFocus, showFieldError } from "./dom-helpers.js";
+import { clearFieldError, fmtTime, selectOnFocus, showFieldError } from "./dom-helpers.js";
 import { installPreparedEditions } from "./prepared-editions.js";
 import { checkStationName } from "./station-name-field.js";
 
@@ -40,7 +29,6 @@ const FIELD_IDS = {
 const number = (n) => Number(n || 0).toLocaleString("en-US");
 const plural = (n, one, many) => `${number(n)} ${n === 1 ? one : many}`;
 
-// What one saved show is, for its list item.
 export function describeShow(show) {
   const sentences = [`${show.name}: ${plural(show.count, "song", "songs")}, ${show.count ? show.total_text : "no list yet"}.`];
   sentences.push(`From ${show.source_text}, target ${plural(show.target_minutes, "minute", "minutes")}.`);
@@ -103,7 +91,6 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   const el = (id) => doc.getElementById(id);
   const panel = el("panel-library");
   const list = el("shows-list");
-  const listNavigation = installActionListNavigation(list);
   const status = el("shows-status");
   const form = el("shows-form");
   const addButton = el("shows-add");
@@ -129,7 +116,6 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   const empty = () => ({ shows: [], categories: [], clockwheels: [], on_air: null, problem: null, limits: {} });
   let data = empty();
   let editing = null; // the show ID the form edits, or null when adding
-  let opener = null; // the button that opened the form
   let open = null; // the show whose list is open, with its songs
   let songs = []; // the open list's songs, as shown
   let listSignature = "";
@@ -145,73 +131,96 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   let suspended = false;
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
-  const say = (message, error = false) => announceStatus(status, message, { force: true, tone: error ? "error" : "info" });
-  const listFocusLost = ({ target }) => {
-    if (!listFocusAnnouncementSuppressed) say(`The show list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Add show"}.`);
-  };
+  const say = (message, error = false) => announceStatus(metadataEditor.region(status), message, { force: true, tone: error ? "error" : "info" });
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const source = () => (el("shows-source-clockwheel")?.checked ? "clockwheel" : "category");
   const byId = (id) => data.shows.find((show) => show.id === id);
   const url = (id, tail = "") => `/api/shows/${encodeURIComponent(id)}${tail}`;
   const editions = installPreparedEditions({ doc, request, onChange: updateEditionSearch });
 
-  function updateEditionSearch() {
-    for (const add of results.querySelectorAll("button[data-action='add']")) {
-      const existing = add.parentElement.querySelector("[data-edition-add]");
-      if (!editions.active()) { existing?.remove(); continue; }
-      if (existing) continue;
-      const control = namedButton("edition-add", "Add to edition", add.dataset.title);
-      control.dataset.editionAdd = "";
-      control.addEventListener("click", () => void editions.addSong({ path: add.dataset.path, title: add.dataset.title }));
-      add.parentElement.append(control);
-    }
-  }
+  const metadataEditor = createEditorDialog({
+    form, heading: legend, cancel: el("shows-cancel"), fallback: addButton, save,
+    onCancel: () => { editing = null; clearErrors(); say("Cancelled. Nothing was saved."); },
+  });
+  const showTable = createCollectionTable({
+    host: list, label: "Shows", status, fallback: addButton,
+    keyOf: (show) => show.id, nameOf: (show) => show.name,
+    emptyText: "No shows yet. Press Add show to plan one.",
+    columns: [
+      { key: "name", label: "Name", value: (show) => show.name },
+      { key: "source", label: "Source", value: (show) => show.source_text },
+      { key: "count", label: "Songs", value: (show) => number(show.count) },
+      { key: "length", label: "Length", value: (show) => show.count ? show.total_text : "No list yet" },
+      { key: "target", label: "Target", value: (show) => plural(show.target_minutes, "minute", "minutes") },
+      { key: "missing", label: "Missing", value: (show) => number(show.missing) },
+      { key: "station", label: "Station name while active", value: (show) => show.station_name || "Unchanged" },
+      { key: "events", label: "Schedule events", value: (show) => show.events?.join(", ") || "None" },
+    ],
+    primary: (show) => ({ id: "open", label: "Open list", run: () => void openEditor(show.id) }),
+    actions: (show) => [
+      { id: "edit", label: "Edit", run: (button) => openForm(show, button) },
+      { id: "delete", label: "Delete", run: () => void remove(show.id) },
+    ],
+  });
+  showTable.update([], { announceFocus: false });
+  const songKeys = new WeakMap();
+  let nextSongKey = 0;
+  const songKey = (song) => {
+    if (!songKeys.has(song)) songKeys.set(song, String(++nextSongKey));
+    return songKeys.get(song);
+  };
+  const generationReason = () => generating ? "The list is being generated; change it when that is done." : "";
+  const songTable = createCollectionTable({
+    host: songsList, label: "Show songs", status, fallback: searchInput,
+    keyOf: songKey, nameOf: (song) => song.title,
+    emptyText: "No songs yet. Press Generate list, or add songs below.", nameIndex: 1,
+    columns: [
+      { key: "number", label: "Number", value: (_song, index) => number(index + 1) },
+      { key: "title", label: "Song", value: (song) => song.title },
+      { key: "length", label: "Length", value: (song) => song.missing ? "Unknown" : song.length_text },
+      { key: "availability", label: "Availability", value: (song) => song.missing ? "Not in the library; skipped on the air" : "Available" },
+      { key: "repeated", label: "Repeated", value: (song, index) => {
+        const others = (repeated.get(song.path) || []).filter((place) => place !== index + 1);
+        return others.length ? `Warning: also number ${others.join(" and ")} in the list` : "No";
+      } },
+    ],
+    primary: (song) => ({ id: "info", label: "Track info",
+      disabledReason: song.missing ? "This song is no longer in the library." : "",
+      run: (button) => doc.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: song.path, kind: "music", opener: button } })),
+    }),
+    actions: (song, index) => [
+      { id: "up", label: "Move up", disabledReason: generationReason() || (index === 0 ? "Already the first song." : ""), run: () => move(index, -1) },
+      { id: "down", label: "Move down", disabledReason: generationReason() || (index === songs.length - 1 ? "Already the last song." : ""), run: () => move(index, 1) },
+      { id: "remove", label: "Remove", disabledReason: generationReason(), run: () => void removeSong(song) },
+    ],
+  });
+  let searchSongs = [];
+  const searchTable = createCollectionTable({
+    host: results, label: "Show search results", status, fallback: searchInput,
+    keyOf: (song) => song.path, nameOf: (song) => song.title,
+    emptyText: "No songs found.",
+    columns: [
+      { key: "title", label: "Song", value: (song) => song.title },
+      { key: "length", label: "Length", value: (song) => song.length_text },
+    ],
+    primary: (song) => ({ id: "add", label: "Add", disabledReason: generationReason(), run: () => addSong(song) }),
+    actions: (song) => [{ id: "edition-add", label: "Add to edition",
+      disabledReason: editions.active() ? "" : "Open a prepared edition first.",
+      run: () => void editions.addSong({ path: song.path, title: song.title }),
+    }],
+  });
 
-  // A button whose visible word starts its name; the hidden words say which.
-  function namedButton(action, title, which, extra = {}) {
-    const button = doc.createElement("button");
-    button.type = "button";
-    button.dataset.action = action;
-    for (const [key, value] of Object.entries(extra)) button.dataset[key] = value;
-    button.textContent = title;
-    button.setAttribute("aria-label", `${title} ${which}`);
-    return button;
-  }
+  function updateEditionSearch() { searchTable.update(searchSongs); }
 
-  // ---- The shows -------------------------------------------------------
   function renderList() {
     const signature = JSON.stringify(data.shows);
     if (signature === listSignature) return;
     listSignature = signature;
-    if (!data.shows.length) {
-      const none = doc.createElement("li");
-      none.textContent = "No shows yet. Press Add show to plan one.";
-      reconcileRows(list, [], () => "", () => null, () => {}, { fallback: addButton, onFocusLost: listFocusLost });
-      list.append(none);
-      return;
-    }
-    reconcileRows(list, data.shows, (show) => show.id, () => {
-      const item = doc.createElement("li");
-      item.append(doc.createElement("span"), " ", namedButton("open", "Open list", ""), " ",
-        namedButton("edit", "Edit", ""), " ", namedButton("delete", "Delete", ""));
-      return item;
-    }, (item, show) => {
-      if (item.dataset.id !== show.id) item.dataset.id = show.id;
-      if (item.dataset.name !== show.name) item.dataset.name = show.name;
-      const description = describeShow(show);
-      if (item.firstElementChild.textContent !== description) item.firstElementChild.textContent = description;
-      for (const button of item.querySelectorAll("button")) {
-        if (button.dataset.id !== show.id) button.dataset.id = show.id;
-        const label = `${button.textContent} ${show.name}`;
-        if (button.getAttribute("aria-label") !== label) button.setAttribute("aria-label", label);
-      }
-    }, { fallback: addButton, onFocusLost: listFocusLost });
-    listNavigation.refresh();
+    showTable.update(data.shows, { announceFocus: !listFocusAnnouncementSuppressed });
   }
 
-  function rowFor(id, action = "open") {
-    return [...list.querySelectorAll("button[data-action]")]
-      .find((button) => button.dataset.id === id && button.dataset.action === action) || null;
+  function rowFor(id) {
+    return showTable.target(id);
   }
 
   function renderOnAir() {
@@ -265,7 +274,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     if (field === "clockwheel") el("shows-source-clockwheel").checked = true;
     showSource();
     const target = el(FIELD_IDS[field] || FIELD_IDS.name);
-    showFieldError(target, message, errorText, status);
+    showFieldError(target, message, errorText, metadataEditor.region(status));
   }
 
   function body() {
@@ -305,7 +314,6 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   function openForm(show, from) {
     formGeneration += 1;
     editing = show ? show.id : null;
-    opener = from;
     clearErrors();
     nameInput.value = show?.name || "";
     targetInput.value = String(show?.target_minutes || 60);
@@ -314,13 +322,12 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     renderSources(show);
     showSource();
     if (legend) legend.textContent = show ? `Edit show ${show.name}` : "Add show";
-    form.hidden = false;
-    nameInput.focus();
+    metadataEditor.open(nameInput, from);
   }
 
   function closeForm() {
     formGeneration += 1;
-    form.hidden = true;
+    metadataEditor.close();
     editing = null;
     clearErrors();
   }
@@ -355,15 +362,13 @@ export function installShowsPanel({ document: doc = document, request = requestJ
           : `Saved ${show.name}.`);
         return;
       }
-      // The list is drawn again while focus is still on Save show, and focus
-      // moves to the saved show before the form is hidden.  Hiding the form
-      // first dropped focus to the page for the reload, and NVDA then read
-      // the whole Shows card before the Open list button.
+      // Keep the editor open through the reload. The shared dialog guard
+      // hands focus directly to the saved show when the editor closes.
       try { await load(); } catch (_) { /* the next refresh draws the list */ }
       if (!current(epoch, mine) || formMine !== formGeneration) return;
       if (open?.id === show.id) applyOpen(show);
-      (rowFor(show.id) || addButton).focus();
       closeForm();
+      (rowFor(show.id) || addButton).focus();
       say(added ? `Saved ${show.name}. Press Open list, then Generate list, to pick its songs.` : `Saved ${show.name}.`);
     } catch (error) {
       if (!current(epoch, mine)) return;
@@ -387,7 +392,8 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     if (open?.id === id && !await editions.confirmLeave()) return;
     const events = show.events || [];
     let done = false;
-    await confirmAction(doc, {
+    let destination = "Add show";
+    await deleteCollectionItem(doc, {
       title: `Delete show ${show.name}?`,
       message: events.length
         ? `${events.join(", ")} ${events.length === 1 ? "plays" : "play"} it; those events fail until you change them.`
@@ -404,6 +410,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
           try { await load(); } finally { listFocusAnnouncementSuppressed = false; }
           done = true;
           const next = data.shows[Math.min(index, data.shows.length - 1)];
+          destination = next ? `Open list ${next.name}` : "Add show";
           return (next && rowFor(next.id)) || addButton;
         } catch (error) {
           if (current(epoch, mine)) say(`Could not delete ${show.name}: ${error.message}`, true);
@@ -411,110 +418,25 @@ export function installShowsPanel({ document: doc = document, request = requestJ
         }
       },
     });
-    if (done) say(`Deleted ${show.name}.`);
+    if (done) say(`Deleted ${show.name}. Focus moved to ${destination}.`);
   }
 
   // ---- The open list ---------------------------------------------------
-  // A song's row is built once and then changed in place: a list drawn
-  // again from scratch destroyed the focused button, and NVDA read a cut-off
-  // line of the list after Move up, Move down, Remove and Add (#328).
-  function songRow() {
-    const item = doc.createElement("li");
-    const row = doc.createElement("div");
-    row.className = "show-row";
-    row.append(
-      doc.createElement("span"),
-      namedButton("up", "Move up", ""),
-      namedButton("down", "Move down", ""),
-      namedButton("remove", "Remove", ""),
-    );
-    item.append(row);
-    return item;
-  }
-
-  // Changes only what differs, so a row that stays says nothing new.
-  function fillSongRow(item, song, index) {
-    if (item.dataset.index !== String(index)) item.dataset.index = String(index);
-    const [text, ...buttons] = item.firstElementChild.children;
-    const className = song.missing ? "show-song show-missing" : "show-song";
-    if (text.className !== className) text.className = className;
-    let words = song.missing
-      ? `${song.title}, not in the library; skipped on the air`
-      : `${song.title}, ${song.length_text}`;
-    const others = (repeated.get(song.path) || []).filter((place) => place !== index + 1);
-    if (others.length) words += `; warning: also number ${others.join(" and ")} in the list`;
-    if (text.textContent !== words) text.textContent = words;
-    for (const button of buttons) {
-      const name = `${button.textContent} ${song.title}`;
-      if (button.getAttribute("aria-label") !== name) button.setAttribute("aria-label", name);
-      if (button.dataset.index !== String(index)) button.dataset.index = String(index);
-      // At the ends, and while the list is generated, the buttons stay in the
-      // tab order and say why they do nothing.
-      const action = button.dataset.action;
-      const off = generating || (action === "up" && index === 0)
-        || (action === "down" && index === songs.length - 1);
-      if (off && button.getAttribute("aria-disabled") !== "true") button.setAttribute("aria-disabled", "true");
-      else if (!off && button.hasAttribute("aria-disabled")) button.removeAttribute("aria-disabled");
-    }
-  }
-
   let repeated = new Map();
 
-  // Focus goes to its button before a row goes, so it never sits on the page.
   function renderSongs(focus = null) {
     const signature = JSON.stringify([songs, generating]);
     if (signature === songsSignature && !focus) return;
     songsSignature = signature;
     repeated = repeatedPlaces(songs);
-    if (!songs.length) {
-      let none = songsList.querySelector(":scope > li.no-results");
-      if (!none) {
-        none = doc.createElement("li");
-        none.className = "no-results";
-        none.textContent = "No songs yet. Press Generate list, or add songs below.";
-      }
-      if (focus) searchInput.focus();
-      placeRows(songsList, [none]);
-      return;
-    }
-    // The rows already drawn, by song and which copy of it.
-    const drawn = new Map();
-    const seen = new Map();
-    const keyOf = (path) => {
-      const copy = seen.get(path) || 0;
-      seen.set(path, copy + 1);
-      return JSON.stringify([path, copy]);
-    };
-    for (const item of songsList.querySelectorAll(":scope > li[data-path]")) {
-      drawn.set(keyOf(item.dataset.path), item);
-    }
-    seen.clear();
-    const rows = songs.map((song, index) => {
-      const path = String(song.path ?? "");
-      const item = drawn.get(keyOf(path)) || songRow();
-      if (item.dataset.path !== path) item.dataset.path = path;
-      fillSongRow(item, song, index);
-      return item;
-    });
-    const target = focus
-      ? rows[Number(focus.index)]?.querySelector(`button[data-action="${focus.action}"]`) || null
-      : null;
-    if (target?.isConnected) target.focus();
-    placeRows(songsList, rows);
-    if (focus && doc.activeElement !== (target || searchInput)) (target || searchInput).focus();
+    songTable.update(songs, { announceFocus: !focus });
+    if (focus) (songTable.target(songKeys.get(songs[Number(focus.index)]), "options") || searchInput).focus();
   }
 
-  // Draws the list again, keeping focus on the same button when it was in it.
   function redrawSongs() {
-    const focused = doc.activeElement;
-    const place = songsList.contains(focused) && focused.dataset?.action
-      ? { action: focused.dataset.action, index: focused.dataset.index } : null;
     songsSignature = "";
-    renderSongs(place);
-    for (const add of results.querySelectorAll("button[data-action='add']")) {
-      if (generating) add.setAttribute("aria-disabled", "true");
-      else add.removeAttribute("aria-disabled");
-    }
+    renderSongs();
+    searchTable.update(searchSongs);
   }
 
   // While the list is generated, an edit would be overwritten: it is refused, in words.
@@ -540,7 +462,13 @@ export function installShowsPanel({ document: doc = document, request = requestJ
 
   function applyOpen(show) {
     open = show;
+    const previous = new Map();
+    for (const song of songs) previous.set(song.path, [...(previous.get(song.path) || []), songKey(song)]);
     songs = show.songs || [];
+    for (const song of songs) {
+      const key = previous.get(song.path)?.shift();
+      if (key) songKeys.set(song, key);
+    }
     const name = el("shows-editor-name");
     if (name) name.textContent = show.name;
     redrawSongs();
@@ -554,7 +482,8 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       if (!current(epoch, mine)) return;
       if (await editions.openShow(show, { refresh: false }) === false || !current(epoch, mine)) return;
       songsSignature = "";
-      results.replaceChildren();
+      searchSongs = [];
+      searchTable.clear();
       applyOpen(show);
       editor.hidden = false;
       el("shows-editor-heading")?.focus();
@@ -570,7 +499,9 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     open = null;
     songs = [];
     songsSignature = "";
-    results.replaceChildren();
+    searchSongs = [];
+    searchTable.clear();
+    songTable.clear();
   }
 
   // Saves the list as it is now; changes made meanwhile wait their turn,
@@ -595,7 +526,8 @@ export function installShowsPanel({ document: doc = document, request = requestJ
           const show = await request(url(id));
           if (current(epoch, mine) && open?.id === id) {
             const focused = doc.activeElement;
-            const place = songsList.contains(focused) ? { action: focused.dataset.action, index: focused.dataset.index } : null;
+            const focusedRow = focused.closest?.("tr[data-row-key]");
+            const place = songsList.contains(focused) ? { index: songs.findIndex((song) => songKey(song) === focusedRow?.dataset.rowKey) } : null;
             applyOpen(show);
             if (place) renderSongs(place);
           }
@@ -622,15 +554,28 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     void saveSongs(`Moved ${moved.title} to number ${target + 1} of ${songs.length}.`);
   }
 
-  function removeSong(index) {
-    if (refusedWhileGenerating()) return;
-    const gone = songs[index];
-    if (!gone) return;
-    songs = songs.filter((_song, i) => i !== index);
-    const next = Math.min(index, songs.length - 1);
-    renderSongs(next >= 0 ? { action: "remove", index: String(next) } : { action: "none", index: "-1" });
-    renderSummary();
-    void saveSongs(`Removed ${gone.title}.`);
+  async function removeSong(gone) {
+    if (refusedWhileGenerating() || !open || !songs.includes(gone)) return;
+    const id = open.id, epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+    let removed = false;
+    let destination = "Search for songs";
+    await deleteCollectionItem(doc, {
+      title: `Remove ${gone.title}?`, message: "This removes the song from this show's list. The library file is kept.",
+      confirmLabel: "Remove song",
+      onConfirm: () => {
+        if (!current(epoch, mine) || open?.id !== id || refusedWhileGenerating()) return null;
+        const index = songs.indexOf(gone);
+        if (index < 0) return null;
+        songs = songs.filter((song) => song !== gone);
+        const next = Math.min(index, songs.length - 1);
+        renderSongs();
+        renderSummary();
+        removed = true;
+        destination = next >= 0 ? `Options for ${songs[next].title}` : "Search for songs";
+        return next >= 0 ? songTable.target(songKey(songs[next]), "options") : searchInput;
+      },
+    });
+    if (removed) void saveSongs(`Removed ${gone.title}. Focus moved to ${destination}.`);
   }
 
   async function generate() {
@@ -692,26 +637,11 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       const answer = await request(`/api/search?q=${encodeURIComponent(query)}&limit=${SEARCH_LIMIT}`);
       if (!current(epoch, mine)) return;
       const found = answer.results || [];
-      results.replaceChildren(...found.map((song, index) => {
-        const item = doc.createElement("li");
-        const row = doc.createElement("div");
-        row.className = "show-row";
-        const text = doc.createElement("span");
-        text.className = "show-song";
+      searchSongs = found.map((song) => {
         const title = song.artist ? `${song.artist}, ${song.title || song.display_name}` : (song.title || song.display_name);
         const seconds = Math.max(0, Math.round(Number(song.length) || 0));
-        const shown = fmtTime(seconds);
-        text.textContent = `${title}, ${shown}`;
-        const add = namedButton("add", "Add", title, { index: String(index) });
-        if (generating) add.setAttribute("aria-disabled", "true");
-        add.dataset.path = song.path;
-        add.dataset.title = title;
-        add.dataset.seconds = String(seconds);
-        add.dataset.shown = shown;
-        row.append(text, add);
-        item.append(row);
-        return item;
-      }));
+        return { path: song.path, title, seconds, length_text: fmtTime(seconds), missing: false };
+      });
       updateEditionSearch();
       say(found.length ? `${plural(found.length, "song", "songs")} found${found.length === SEARCH_LIMIT ? `; the first ${SEARCH_LIMIT} are listed` : ""}.` : `No songs match ${query}.`);
     } catch (error) {
@@ -719,18 +649,14 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     }
   }
 
-  function addSong(button) {
+  function addSong(song) {
     if (!open || refusedWhileGenerating()) return;
     const max = data.limits?.max_songs || 500;
     if (songs.length >= max) { say(`A show holds at most ${max} songs.`, true); return; }
-    const seconds = Number(button.dataset.seconds) || 0;
-    songs = [...songs, {
-      path: button.dataset.path, title: button.dataset.title, missing: false, seconds,
-      length_text: button.dataset.shown,
-    }];
+    songs = [...songs, { ...song }];
     renderSongs();
     renderSummary();
-    void saveSongs(`Added ${button.dataset.title} as number ${songs.length}.`);
+    void saveSongs(`Added ${song.title} as number ${songs.length}.`);
   }
 
   async function startNow() {
@@ -772,35 +698,17 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   }
 
   // ---- Events ----------------------------------------------------------
-  list.addEventListener("click", (event) => {
-    const button = event.target.closest?.("button[data-action]");
-    if (!button) return;
-    const show = byId(button.dataset.id);
-    if (!show) return;
-    if (button.dataset.action === "open") void openEditor(show.id);
-    else if (button.dataset.action === "edit") openForm(show, button);
-    else if (button.dataset.action === "delete") void remove(show.id);
+  songsList.addEventListener("keydown", (event) => {
+    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+    if (event.target.closest('[role="menu"]')) return;
+    const row = event.target.closest("tr[data-row-key]");
+    const index = songs.findIndex((song) => songKey(song) === row?.dataset.rowKey);
+    if (index < 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    move(index, event.key === "ArrowUp" ? -1 : 1);
   });
-  songsList.addEventListener("click", (event) => {
-    const button = event.target.closest?.("button[data-action]");
-    if (!button) return;
-    const index = Number(button.dataset.index);
-    if (button.dataset.action === "up") move(index, -1);
-    else if (button.dataset.action === "down") move(index, 1);
-    else if (button.dataset.action === "remove") removeSong(index);
-  });
-  results.addEventListener("click", (event) => {
-    const button = event.target.closest?.("button[data-action='add']");
-    if (button) addSong(button);
-  });
-  addButton.addEventListener("click", () => openForm(null, addButton));
-  form.addEventListener("submit", (event) => void save(event));
-  el("shows-cancel")?.addEventListener("click", () => {
-    const back = editing ? rowFor(editing, "edit") : null;
-    closeForm();
-    (back || (opener?.isConnected ? opener : addButton)).focus();
-    say("Cancelled. Nothing was saved.");
-  });
+  addButton.addEventListener("click", () => { if (!savingForm) openForm(null, addButton); });
   for (const id of ["shows-source-category", "shows-source-clockwheel"]) el(id)?.addEventListener("change", showSource);
   for (const field of [nameInput, categorySelect, clockSelect, targetInput, stationNameInput].filter(Boolean)) {
     field.addEventListener("input", () => {
@@ -874,7 +782,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     data = empty();
     listSignature = "";
     listFocusAnnouncementSuppressed = true;
-    try { reconcileRows(list, [], (show) => show.id, () => null, () => {}, { fallback: addButton, onFocusLost: listFocusLost }); }
+    try { showTable.clear(); }
     finally { listFocusAnnouncementSuppressed = false; }
     closeForm();
     closeEditor();

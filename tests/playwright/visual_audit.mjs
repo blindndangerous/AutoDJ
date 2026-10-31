@@ -166,6 +166,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { expect } from "@playwright/test";
 import { runAudit } from "./audit_helpers.mjs";
 
 const BASE = process.env.AUTODJ_URL || "http://localhost:8080";
@@ -211,10 +212,10 @@ const ROTATION_SECTIONS = [
   { title: "Songs", lines: [
     "The library has 77,000 songs; 2,604 played and 74,396 never played.",
   ] },
-  { title: "Top 20 songs", lines: Array.from({ length: 20 }, (_, i) => `Artist ${i + 1} — Song ${i + 1}, ${100 - i} times.`) },
+  { title: "Top 20 songs", lines: Array.from({ length: 20 }, (_, i) => `Artist ${i + 1} â€” Song ${i + 1}, ${100 - i} times.`) },
   { title: "Songs never played, first 2", lines: [
-    "Example Artist — An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001",
-    "Another Example — Song 2",
+    "Example Artist â€” An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001",
+    "Another Example â€” Song 2",
   ] },
   { title: "Top 20 artists", lines: Array.from({ length: 20 }, (_, i) => `Artist ${i + 1}, ${100 - i} times.`) },
   { title: "Categories", lines: [
@@ -600,15 +601,15 @@ const REQUESTS = {
     {
       id: "a".repeat(32), title: "Slow Ballad", artist: "Example Singer", name: "Sam",
       requested_at: 1767268800, status: "pending", bridges: [],
-      fit: "Fits after Example Artist — Song 3. It is far from the songs around it, so approving it looks for up to three bridge songs to lead into it first.",
-      reason: "Fits after Example Artist — Song 3. It is far from the songs around it, so approving it looks for up to three bridge songs to lead into it first.",
+      fit: "Fits after Example Artist â€” Song 3. It is far from the songs around it, so approving it looks for up to three bridge songs to lead into it first.",
+      reason: "Fits after Example Artist â€” Song 3. It is far from the songs around it, so approving it looks for up to three bridge songs to lead into it first.",
       can_approve: true,
     },
     {
       id: "b".repeat(32), title: "An_Exceptionally_Long_Request_Title_Without_Any_Spaces_0001",
       artist: "Another Example", name: "", requested_at: 1767269100, status: "pending", bridges: [],
-      fit: "Fits after Example Artist — Song 4: 30 BPM apart. No smooth spot within the next 30 minutes. Approving it uses the best legal spot.",
-      reason: "Fits after Example Artist — Song 4: 30 BPM apart. No smooth spot within the next 30 minutes. Approving it uses the best legal spot.",
+      fit: "Fits after Example Artist â€” Song 4: 30 BPM apart. No smooth spot within the next 30 minutes. Approving it uses the best legal spot.",
+      reason: "Fits after Example Artist â€” Song 4: 30 BPM apart. No smooth spot within the next 30 minutes. Approving it uses the best legal spot.",
       can_approve: true,
     },
   ],
@@ -616,9 +617,9 @@ const REQUESTS = {
     {
       id: "c".repeat(32), title: "Quiet Song", artist: "Example Band", name: "Alex",
       requested_at: 1767265200, status: "queued", decided_at: 1767265260,
-      note: "Bridge to Example Band — Quiet Song through Example Artist — Song 2.",
-      reason: "Bridge to Example Band — Quiet Song through Example Artist — Song 2.",
-      bridges: ["Example Artist — Song 2"],
+      note: "Bridge to Example Band â€” Quiet Song through Example Artist â€” Song 2.",
+      reason: "Bridge to Example Band â€” Quiet Song through Example Artist â€” Song 2.",
+      bridges: ["Example Artist â€” Song 2"],
     },
   ],
 };
@@ -632,19 +633,22 @@ async function standInForRequests(page) {
     : route.continue()));
 }
 
-// Two queue rows that lead into a request, drawn by the page's own queue
-// module.  Only the drawing: the queue the server pushes is unchanged, so
-// it does not redraw over them.
+// Two queue rows that lead into a request, applied through the page's queue
+// state entry point. This does not mutate the backend queue.
 async function showBridgedQueue(page) {
+  const queue = [
+    { path: "/audit/bridge-1.mp3", artist: "Example Artist", title: "Song 2", bridge_to: "Example Band â€” Quiet Song" },
+    { path: "/audit/bridge-2.mp3", artist: "Example Artist", title: "An_Exceptionally_Long_Bridge_Title_Without_Spaces_0002", bridge_to: "Example Band â€” An_Exceptionally_Long_Request_Title_Without_Spaces" },
+    { path: "/audit/request.mp3", artist: "Example Band", title: "Quiet Song" },
+  ];
+  // Keep subsequent stood-in status pushes consistent with this visible state.
+  livePages.get(page).queue = queue;
   // The page's own module URL, passed in so the import is the page's.
-  await page.evaluate(async (moduleUrl) => {
-    const { renderQueue } = await import(moduleUrl);
-    renderQueue([
-      { path: "/audit/bridge-1.mp3", artist: "Example Artist", title: "Song 2", bridge_to: "Example Band — Quiet Song" },
-      { path: "/audit/bridge-2.mp3", artist: "Example Artist", title: "An_Exceptionally_Long_Bridge_Title_Without_Spaces_0002", bridge_to: "Example Band — An_Exceptionally_Long_Request_Title_Without_Spaces" },
-      { path: "/audit/request.mp3", artist: "Example Band", title: "Quiet Song" },
-    ], { queueList: document.getElementById("queue-list"), queueCount: document.getElementById("queue-count") });
-  }, "/modules/queue.js");
+  await page.evaluate(async ({ moduleUrl, queue }) => {
+    const { applyQueueState } = await import(moduleUrl);
+    applyQueueState(queue, { queueList: document.getElementById("queue-list"), queueCount: document.getElementById("queue-count") });
+  }, { moduleUrl: "/modules/queue.js", queue });
+  await page.waitForFunction(() => document.querySelectorAll('#queue-list tbody tr[data-row-key]').length === 3);
 }
 
 // Smooth transitions: a Roughness limit out of range is refused in the
@@ -915,6 +919,8 @@ async function inspectEditorModal(page, formId, visit, target) {
   if (!name.open || name.modal || name.ariaModal !== "true" || !name.backdrop || !name.labelled) {
     throw new Error(`${formId} is not an accessible dialog kept modal without showModal(): ${JSON.stringify(name)}`);
   }
+  await expect(dialog).toHaveAccessibleName(await dialog.evaluate((element) => document.getElementById(element.getAttribute("aria-labelledby")).textContent.trim()));
+  await expect(dialog).toHaveAccessibleDescription("Use Tab to move between fields and actions.");
   const viewport = page.viewportSize() || { width: 1280, height: 800 };
   await page.setViewportSize({ width: 320, height: 640 });
   await settle(page);
@@ -1155,11 +1161,31 @@ async function standInForShows(page) {
 // Shows: one list open with a search result, then Save show refused by the
 // server with its error on the page, linked to Name and focused.
 async function openShowStates(page, visit) {
-  await page.locator("#shows-list button[data-action='open']").first().click();
-  await page.locator("#shows-songs li[data-index]").first().waitFor({ state: "visible" });
+  const replies = [];
+  const record = (response) => {
+    if (/\/api\/(shows|editions)/.test(response.url())) replies.push({ url: response.url(), status: response.status() });
+  };
+  page.on("response", record);
+  try {
+    await page.locator("#shows-list button[data-action='open']").first().click();
+    await page.locator("#shows-songs tbody tr[data-row-key]").first().waitFor({ state: "visible" });
+  } catch (error) {
+    const state = await page.evaluate(() => {
+      const ancestors = [];
+      for (let element = document.getElementById("shows-songs"); element; element = element.parentElement) {
+        ancestors.push({ id: element.id, tag: element.tagName, hidden: element.hidden,
+          open: element.open, display: window.getComputedStyle(element).display });
+      }
+      return { width: window.innerWidth, font: window.getComputedStyle(document.documentElement).fontSize,
+        theme: document.documentElement.dataset.theme, rows: document.querySelectorAll('#shows-songs tbody tr[data-row-key]').length,
+        showStatus: document.getElementById("shows-status")?.textContent,
+        editionStatus: document.getElementById("edition-status")?.textContent, ancestors };
+    });
+    throw new Error(`${error}\nShows state: ${JSON.stringify({ ...state, replies })}`, { cause: error });
+  } finally { page.off("response", record); }
   await page.locator("#shows-search").fill("example");
   await page.locator("#shows-search-run").click();
-  await page.locator("#shows-results li").first().waitFor({ state: "visible" });
+  await page.locator("#shows-results tbody tr[data-row-key]").first().waitFor({ state: "visible" });
   await visit("library/show-list");
   await page.locator("#shows-close").click();
   await page.locator("#shows-add").click();
@@ -1290,8 +1316,14 @@ async function openVoiceStates(page, visit) {
   await visit("voice/recording");
   await record.click();
   await page.waitForFunction(() => /^Recorded/.test(document.getElementById("vt-timer").textContent));
-  await page.waitForFunction(() => document.getElementById("vt-fit").textContent.includes("Full chain speech"));
-  const forecast = await page.locator("#vt-fit").textContent();
+  // Polling can clear the forecast between a readiness check and a second DOM
+  // read. Assert the completed snapshot returned by the readiness check itself.
+  const ready = await page.waitForFunction(() => {
+    const text = document.getElementById("vt-fit").textContent;
+    return text.includes("Full chain speech") ? text : null;
+  });
+  const forecast = await ready.jsonValue();
+  await ready.dispose();
   if (!forecast.includes("Full chain speech") || !forecast.includes("tail")) {
     throw new Error(`prepared voice forecast is missing queued speech or cue tail: ${forecast}`);
   }
@@ -1372,6 +1404,7 @@ async function standInForLiveDj(page) {
           if (hourFitPages.has(page) && parsed.settings?.playback) {
             parsed.settings.playback.hour_fit = true;
           }
+          if (state.queue) parsed.queue = state.queue;
           data = JSON.stringify({ ...parsed, live: state.live, talkover: false });
         }
       } catch { /* not JSON: passed on as it is */ }
@@ -1947,6 +1980,12 @@ function controlBoundaryProblems(page) {
     ].join(", "));
     for (const control of controls) {
       if (!control.getClientRects().length || control.closest("[hidden], [aria-hidden='true']")) continue;
+      if (control.matches('.collection-table button, .row-actions-menu [role="menuitem"]')) {
+        const rect = control.getBoundingClientRect();
+        if (rect.width < 24 || rect.height < 44) {
+          problems.push(`${control.getAttribute("aria-label") || control.textContent.trim()} target ${rect.width}x${rect.height}, needs 24px width and 44px height`);
+        }
+      }
       // A busy (.is-pending) control is still active, so it is measured.
       if (control.disabled || control.getAttribute("aria-disabled") === "true") continue;
       const style = window.getComputedStyle(control);
@@ -3297,6 +3336,68 @@ async function auditStatusPages(browser, out) {
   }
 }
 
+async function selectedTabEntryProblems(page) {
+  const problems = [];
+  const expectFocus = async (id, context) => {
+    const active = await page.evaluate(() => document.activeElement.id);
+    if (active !== id) problems.push(`${context}: focused ${active}, expected ${id}`);
+  };
+  for (const view of ["library", "settings"]) {
+    await page.goto(`${BASE}/#${view}`);
+    await page.locator(`#tab-${view}[aria-selected="true"]`).waitFor();
+    await page.locator(".skip-link").focus();
+    await page.keyboard.press("Tab");
+    await expectFocus(`tab-${view}`, `${view}: native Tab entry`);
+    await page.locator(".skip-link").focus();
+    // NVDA's browse buffer can focus a negative-tabindex object directly.
+    await page.locator("#tab-now").evaluate((tab) => tab.focus());
+    await expectFocus(`tab-${view}`, `${view}: browse-mode focus entry`);
+    await page.locator("#tab-now").evaluate((tab) => tab.click());
+    await expectFocus("tab-now", `${view}: browse-mode focus then click`);
+    await page.locator(`#tab-${view}`).click();
+    await page.locator(".skip-link").focus();
+    await page.locator("#tab-now").click();
+    await expectFocus("tab-now", `${view}: pointer click`);
+  }
+  await page.goto(`${BASE}/#settings`);
+  await page.locator('#tab-settings[aria-selected="true"]').waitFor();
+  for (const [group, selected, first, other] of [
+    ["Profile", "stab-sound", "stab-mixing", "stab-stations"],
+    ["Station", "stab-schedule", "stab-stations", "stab-sound"],
+    ["Global", "stab-display", "stab-server", "stab-sound"],
+  ]) {
+    await page.locator(`#${selected}`).click();
+    await page.locator(".skip-link").focus();
+    await page.locator(`#${first}`).evaluate((tab) => tab.focus());
+    await expectFocus(selected, `${group}: outside focus entry`);
+    await page.locator(`#${first}`).evaluate((tab) => tab.click());
+    if (await page.locator(`#${first}`).getAttribute("aria-selected") !== "true") problems.push(`${group}: browse-mode click did not select`);
+    await page.locator(`#${selected}`).click();
+    await page.locator(".skip-link").focus();
+    await page.locator(`#${first}`).click();
+    if (await page.locator(`#${first}`).getAttribute("aria-selected") !== "true") problems.push(`${group}: pointer click did not select`);
+    await page.locator(`#${other}`).click();
+    await page.locator(`#${selected}`).evaluate((tab) => tab.focus());
+    await expectFocus(first, `${group}: group without selection`);
+    await page.keyboard.press("End");
+    const last = await page.locator(`#${first}`).evaluate((tab) => [...tab.closest('[role="tablist"]').querySelectorAll('[role="tab"]')].filter((each) => !each.hidden).at(-1).id);
+    await expectFocus(last, `${group}: End`);
+    await page.keyboard.press("Home");
+    await expectFocus(first, `${group}: Home`);
+    await page.keyboard.press("ArrowRight");
+    const second = await page.locator(`#${first}`).evaluate((tab) => [...tab.closest('[role="tablist"]').querySelectorAll('[role="tab"]')].filter((each) => !each.hidden)[1].id);
+    await expectFocus(second, `${group}: ArrowRight`);
+  }
+  problems.push(...await page.evaluate(() => {
+    const tabs = [...document.querySelectorAll('#view-nav [role="tab"]')];
+    const selected = document.getElementById("tab-settings");
+    const problems = [];
+    if (tabs.filter((tab) => tab.tabIndex === 0).length !== 1 || selected.tabIndex !== 0) problems.push("Selected main tab is not the sole tab stop");
+    return problems;
+  }));
+  return problems;
+}
+
 export async function audit(name, launcher) {
   const browser = await launcher.launch();
   const out = {
@@ -3309,15 +3410,23 @@ export async function audit(name, launcher) {
   try {
     const full = FULL_MODES[name] || FULL_MODES.chromium;
     for (const mode of THEME_MODES) {
-      if (full.includes(mode.name)) await auditTheme(browser, mode, out);
-      else if (!mode.stored) await checkSystemTheme(browser, mode, out);
+      if (full.includes(mode.name)) {
+        console.log(`${name}: ${mode.name} full theme checks`);
+        await auditTheme(browser, mode, out);
+      } else if (!mode.stored) {
+        console.log(`${name}: ${mode.name} system selection checks`);
+        await checkSystemTheme(browser, mode, out);
+      }
     }
     await auditStatusPages(browser, out);
+    console.log(`${name}: layout, focus and behavior checks`);
 
     const wide = await browser.newContext({ viewport: { width: 1280, height: 800 },
       reducedMotion: "reduce", colorScheme: "light", bypassCSP: true });
     const page = await newPage(wide);
     page.on("pageerror", (error) => out.pageerrors.push(error.message));
+    const selectedTab = await selectedTabEntryProblems(page);
+    if (selectedTab.length) out.behaviour.selectedTabEntry = selectedTab;
     await eachTarget(page, async (target) => {
       const small = await smallChoiceControls(page);
       if (small.length) out.smallChoices[target] = small;
@@ -3346,6 +3455,7 @@ export async function audit(name, launcher) {
     const switcher = await stationSwitcherProblems(page);
     if (switcher.length) out.behaviour.stationSwitcher = switcher;
     // 200 % text at the same window width.
+    console.log(`${name}: 200% text checks`);
     await wide.addInitScript(() => {
       document.addEventListener("DOMContentLoaded", () => {
         document.documentElement.style.fontSize = "200%";
@@ -3360,6 +3470,7 @@ export async function audit(name, launcher) {
     const narrow = await browser.newContext({ viewport: { width: 320, height: 640 },
       reducedMotion: "reduce", colorScheme: "light" });
     const phone = await newPage(narrow);
+    console.log(`${name}: 320px reflow checks`);
     phone.on("pageerror", (error) => out.pageerrors.push(error.message));
     await eachTarget(phone, async (target) => {
       const overflow = await horizontalOverflow(phone);
@@ -3393,6 +3504,6 @@ export function validateVisualAudit(name, result) {
 
 await runAudit({
   audit,
-  report: "visual_audit.json",
+  report: process.env.AUTODJ_VISUAL_REPORT || "visual_audit.json",
   validate: validateVisualAudit,
 });

@@ -21,7 +21,7 @@ An event due while AutoDJ is stopped does not run later. A one-time event missed
 
 ## Prepare and air a show
 
-In **Library tools**, open **Shows**, press **Add show**, and enter a **Name**. Choose **A category** or **A clockwheel** under **Songs come from**, set **Target length (minutes)**, and press **Save show**. Open its list and press **Generate list**. Review the order; use **Move up**, **Move down**, **Remove**, or **Add songs** to change it. Generating again replaces the prepared list.
+In **Library tools**, open **Shows**, press **Add show**, and enter a **Name**. Choose **A category** or **A clockwheel** under **Songs come from**, set **Target length (minutes)**, and press **Save show**. Open its list and press **Generate list**. Review the order. Use each song's **Options** menu for **Move up**, **Move down** or confirmed **Remove**. Use **Add songs** to search and add another song. Generating again replaces the prepared list.
 
 To schedule it, add an event whose **Action** is **Play a show**. Select the show. Soft timing puts its songs in the queue after the current song; hard timing starts its first song at the chosen time. **Start after this song** in the show list starts it now. **Stop show** removes its waiting songs. After its last song, normal picking resumes. Each station keeps its own shows.
 

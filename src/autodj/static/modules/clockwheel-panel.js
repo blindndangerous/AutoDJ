@@ -208,6 +208,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       { key: "step", label: "Step", value: stepSummary },
       { key: "kind", label: "Kind", value: (step) => String(step.type === "category" ? "music" : step.type).replaceAll("_", " ") },
       { key: "target", label: "Length or target", value: stepTarget },
+      { key: "selection", label: "Selection", value: stepSelection },
       { key: "rules", label: "Rules and hours", value: stepRules },
     ],
     primary: (step) => ({ id: "edit", label: "Edit", run: () => startEdit(clock.steps.indexOf(step)) }),
@@ -250,6 +251,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
       const spots = step.max_spots ?? 3;
       return `${spots} ${Number(spots) === 1 ? "spot" : "spots"}${step.max_seconds ? `, ${step.max_seconds} seconds` : ""}`;
     }
+    return "Not specified";
+  }
+
+  function stepSelection(step) {
+    if (!FOLDER_TYPES.has(step.type) && step.type !== "category") return "Not applicable";
     return step.selection === "random" ? "Random selection" : "Least recently played";
   }
 
@@ -933,7 +939,6 @@ export function installClockwheelPanel({ document: doc = document, request = req
     dirty = fresh;
     savedPicking = fresh ? null : picking(value);
     resetForm();
-    nameInput.value = clock.name;
     resync.value = clock.resync_minutes.join(", ");
     resync.removeAttribute("aria-invalid");
     if (stationName) {
@@ -1087,7 +1092,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     naming = { action, name };
     nameHeading.textContent = action === "create" ? "Create clockwheel" : `${action === "rename" ? "Rename" : "Duplicate"} ${name}`;
     nameSubmit.textContent = action === "create" ? "Create" : action === "rename" ? "Rename" : "Duplicate";
-    editorName.value = action === "rename" ? name : "";
+    editorName.value = action === "rename" ? name : action === "create" ? nameInput.value.trim() : "";
     clearFieldError(editorName, nameError);
     nameEditor.open(editorName, from);
   }

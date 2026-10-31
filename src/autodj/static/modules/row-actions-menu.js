@@ -1,6 +1,6 @@
 import { placeRows, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
-import { tableRow } from "./table-row.js";
+import { tableFocusTarget, tableRow } from "./table-row.js";
 
 let nextMenu = 0;
 
@@ -52,7 +52,7 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
     menu.children[last ? menu.children.length - 1 : 0]?.focus();
   }
   function close(restore = false) {
-    if (restore) button.focus();
+    if (restore && button.isConnected) tableFocusTarget(button).focus();
     if (menu.hidePopover && menu.matches(":popover-open")) menu.hidePopover();
     menu.hidden = true;
     button.setAttribute("aria-expanded", "false");

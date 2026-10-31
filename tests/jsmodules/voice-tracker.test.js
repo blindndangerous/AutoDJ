@@ -316,7 +316,7 @@ describe("voice tracker", () => {
     expect(byId("vt-closes").textContent).toBe("2:02");
     expect(byId("vt-airs").textContent).toBe("5:27");
     expect(status()).toBe("");
-    expect(byId("vt-none").hidden).toBe(false);
+    expect(byId("vt-list").querySelector(".no-results").textContent).toBe("No voice tracks yet.");
   });
 
   it("shows an ordered editable plan and submits its revision and choices", async () => {
@@ -773,11 +773,12 @@ describe("voice tracker", () => {
     expect(post.body.get("file").name).toBe("voice-track.wav");
     expect(document.activeElement).toBe(book);
     expect(byId("vt-playback").hasAttribute("src")).toBe(false);
-    const rows = byId("vt-list").querySelectorAll("li");
+    const rows = byId("vt-list").querySelectorAll("tbody tr[data-row-key]");
     expect(rows).toHaveLength(1);
-    expect(rows[0].textContent).toMatch(/^Third Song into Fourth Song: booked, waiting for its song change, airs in about 6:00 Cancel$/);
-    expect(rows[0].querySelector("button").getAttribute("aria-label")).toBe("Cancel voice track Third Song into Fourth Song");
-    expect(byId("vt-none").hidden).toBe(true);
+    expect(rows[0].cells[0].textContent).toBe("Third Song into Fourth Song");
+    expect(rows[0].cells[2].textContent).toBe("booked, waiting for its song change, airs in about 6:00");
+    expect(rows[0].querySelector("button").getAttribute("aria-label")).toBe("Options for Third Song into Fourth Song");
+    expect(byId("vt-list").querySelector(".no-results")).toBeNull();
   });
 
   it("aborts a slow upload on station clear without restoring the old take", async () => {
@@ -933,6 +934,34 @@ describe("voice tracker", () => {
     await vi.waitFor(() => expect(status()).toBe("There is no recording to discard."));
   });
 
+  // ADR-0021-14
+  it("uses a bounded shared bookings table with confirmed cancellation", async () => {
+    const { controls, server } = tracker();
+    server.tracks = Array.from({ length: 55 }, (_, index) => ({
+      break_id: index.toString(16).padStart(32, "0"), label: `Booking ${index + 1}`,
+      state: index ? "on_air" : "queued", cancellable: index === 0,
+      slot_id: "a".repeat(32), mixed_as: null, reason: null, eta: null,
+    }));
+    await controls.refresh();
+    const table = byId("vt-list").querySelector("table.collection-table");
+    expect(table).not.toBeNull();
+    expect(table.querySelectorAll('tbody tr[data-row-key]')).toHaveLength(50);
+    expect(table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    const options = table.querySelector('[aria-haspopup="menu"]');
+    options.click();
+    table.querySelector('[role="menuitem"][data-action="cancel"]').click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    expect(byId("confirm-title").textContent).toBe("Cancel this booking?");
+    expect(server.calls.some((call) => call.method === "DELETE")).toBe(false);
+    byId("confirm-cancel").click();
+    await flush();
+    expect(document.activeElement).toBe(options.closest("td"));
+    expect(server.calls.some((call) => call.method === "DELETE")).toBe(false);
+    const unavailable = table.querySelectorAll('[role="menuitem"][data-action="cancel"]')[1];
+    expect(unavailable.getAttribute("aria-disabled")).toBe("true");
+    expect(unavailable.getAttribute("aria-describedby")).toBeTruthy();
+  });
+
   it.each(["queued", "rendered"])("cancels a cancellable %s track and preserves focus", async (state) => {
     const { controls, server } = tracker();
     server.tracks = [{
@@ -940,14 +969,17 @@ describe("voice tracker", () => {
       slot_id: "a".repeat(32), mixed_as: null, reason: null, eta: null,
     }];
     await controls.refresh();
-    const cancel = byId("vt-list").querySelector("button");
-    cancel.focus();
+    const options = byId("vt-list").querySelector('[aria-haspopup="menu"]');
+    options.focus(); options.click();
+    const cancel = byId("vt-list").querySelector('[role="menuitem"][data-action="cancel"]');
     cancel.click();
-    await flush();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
     expect(server.calls.at(-2)).toMatchObject({ method: "DELETE", url: `/api/voice-tracks/${"b".repeat(32)}` });
-    expect(byId("vt-list").querySelector("button")).toBeNull();
-    expect(byId("vt-list").textContent).toBe("Third Song into Fourth Song: dropped: cancelled in the voice tracker");
-    expect(document.activeElement).toBe(byId("vt-booked-heading"));
+    expect(cancel.getAttribute("aria-disabled")).toBe("true");
+    expect(byId("vt-list").querySelector("tbody tr").cells[2].textContent).toBe("dropped: cancelled in the voice tracker");
+    expect(document.activeElement).toBe(options.closest("td"));
     await vi.waitFor(() => expect(status()).toBe("Cancelled Third Song into Fourth Song."));
   });
 
@@ -968,15 +1000,78 @@ describe("voice tracker", () => {
       }
       return fallback(url, options);
     });
-    const cancel = byId("vt-list").querySelector("button");
-    cancel.focus();
+    const options = byId("vt-list").querySelectorAll('[aria-haspopup="menu"]')[1];
+    options.focus(); options.click();
+    const cancel = options.closest("tr").querySelector('[role="menuitem"][data-action="cancel"]');
     cancel.click();
-    await flush();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
     expect(byId("vt-error").hidden).toBe(false);
     expect(byId("vt-error").textContent).toBe(
       "Could not cancel Fourth Song into Fifth Song. That break is already mixed into the stream and will air");
-    expect(cancel.getAttribute("aria-describedby")).toBe("vt-error");
-    expect(document.activeElement).toBe(cancel);
+    expect(options.getAttribute("aria-describedby")).toBe("vt-error");
+    expect(document.activeElement).toBe(options.closest("td"));
+  });
+
+  // ADR-0021-14
+  it("links a failed Cancel to the heading when refresh removes its booking", async () => {
+    const { controls, server } = tracker();
+    server.tracks = [{
+      break_id: "b".repeat(32), label: "Third Song into Fourth Song", state: "queued", cancellable: true,
+      slot_id: "a".repeat(32), mixed_as: null, reason: null, eta: null,
+    }];
+    await controls.refresh();
+    const request = api.requestJson.getMockImplementation();
+    api.requestJson.mockImplementation(async (url, options = {}) => {
+      if (options.method === "DELETE") {
+        server.tracks = [];
+        throw new Error("This booking has already finished.");
+      }
+      return request(url, options);
+    });
+    const options = byId("vt-list").querySelector('[aria-haspopup="menu"]');
+    options.click();
+    byId("vt-list").querySelector('[data-action="cancel"]').click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
+    expect(options.isConnected).toBe(false);
+    expect(document.activeElement).toBe(byId("vt-booked-heading"));
+    expect(byId("vt-booked-heading").getAttribute("aria-describedby")).toBe("vt-error");
+    expect(byId("vt-error").hidden).toBe(false);
+    expect(byId("vt-error").textContent).toBe("Could not cancel Third Song into Fourth Song. This booking has already finished.");
+  });
+
+  it("does not restore booking focus after context clear during cancellation refresh", async () => {
+    const { controls, server } = tracker();
+    server.tracks = [{
+      break_id: "b".repeat(32), label: "Third Song into Fourth Song", state: "queued", cancellable: true,
+      slot_id: "a".repeat(32), mixed_as: null, reason: null, eta: null,
+    }];
+    await controls.refresh();
+    const request = api.requestJson.getMockImplementation();
+    let finishRefresh;
+    api.requestJson.mockImplementation((url, options = {}) => {
+      if (url.startsWith("/api/voice-tracks") && !options.method) {
+        return new Promise((resolve) => { finishRefresh = () => resolve({ tracks: [], slot: null }); });
+      }
+      return request(url, options);
+    });
+    const options = byId("vt-list").querySelector('[aria-haspopup="menu"]');
+    options.focus(); options.click();
+    byId("vt-list").querySelector('[role="menuitem"][data-action="cancel"]').click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(finishRefresh).toBeTypeOf("function"));
+    expect(byId("confirm-dialog").open).toBe(true);
+    controls.clear();
+    const staleHeadingFocus = vi.spyOn(byId("vt-booked-heading"), "focus");
+    finishRefresh();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
+    expect(staleHeadingFocus).not.toHaveBeenCalled();
+    expect(byId("vt-list").querySelectorAll("tbody tr[data-row-key]")).toHaveLength(0);
+    expect(status()).toBe("");
   });
 
   it("keeps a focused row in place when the list refreshes", async () => {
@@ -986,12 +1081,12 @@ describe("voice tracker", () => {
     });
     server.tracks = [track("1", "queued"), track("2", "queued")];
     await controls.refresh();
-    const second = byId("vt-list").querySelectorAll("button")[1];
+    const second = byId("vt-list").querySelectorAll('[aria-haspopup="menu"]')[1];
     second.focus();
     server.tracks = [track("1", "rendered"), track("2", "queued")];
     await controls.refresh();
-    expect(document.activeElement).toBe(second);
-    expect(byId("vt-list").querySelector("li").textContent).toBe("Track 1: mixed in as a talk-up, airs in about 5:00");
+    expect(document.activeElement).toBe(second.closest("td"));
+    expect(byId("vt-list").querySelector("tbody tr").cells[2].textContent).toBe("mixed in as a talk-up, airs in about 5:00");
   });
 
   it("starts and stops with Alt+R only while the tab shows, without moving focus", async () => {
@@ -1254,12 +1349,12 @@ it("marks lost bookings unknown after a run change and preserves cancellation fo
   server.run_id = "new-run"; server.tracks = [];
   await controls.refresh();
   expect(byId("vt-list").textContent).toContain("no longer booked; prior airtime is unknown");
-  expect(byId("vt-list").querySelector("button")).toBeNull();
-  expect(document.activeElement).toBe(byId("vt-booked-heading"));
+  expect(byId("vt-list").querySelector('[data-action="cancel"]').getAttribute("aria-disabled")).toBe("true");
+  expect(document.activeElement).toBe(byId("vt-list").querySelector('[aria-haspopup="menu"]').closest("td"));
   await controls.refresh();
   expect(byId("vt-list").textContent).toContain("no longer booked");
   controls.clear();
-  expect(byId("vt-list").textContent).toBe("");
+  expect(byId("vt-list").querySelector("tbody").children).toHaveLength(0);
 });
 
 

@@ -50,9 +50,9 @@ A song crossing the five-minute target can make the list longer. Preparing
 this list does not start the show or change what is playing.
 
 Make the example exactly two different songs. If generation produced more than
-two, use **Remove** on the extra entries. If it produced only one, enter another
+two, choose **Remove** from each extra entry's **Options** menu and confirm. If it produced only one, enter another
 practice title in **Search the library**, press **Search**, then **Add** for a
-different song. Use **Move up** or **Move down** to put the two songs in an order
+different song. Use **Move up** or **Move down** in each song's **Options** menu to set an order
 you recognize. These edits save immediately. Write down the two titles in order.
 
 Checkpoint: the list has two songs and a total duration; the saved show no longer

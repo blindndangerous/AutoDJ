@@ -1,4 +1,5 @@
 import { focusAfterDialog, focusSteadyPlace, releaseDialogFocus } from "./dom-helpers.js";
+import { tableFocusTarget } from "./table-row.js";
 
 // A <dialog> that acts modal without showModal() (#602, #627, #631).
 //
@@ -39,6 +40,8 @@ import { focusAfterDialog, focusSteadyPlace, releaseDialogFocus } from "./dom-he
 const stacks = new WeakMap();
 // Dialogs opened with showModal() by openDialog.
 const modals = new WeakSet();
+// Remember what the browser will restore without moving focus before opening.
+const nativeOpeners = new WeakMap();
 
 // What a press, key or submission aimed at the page sends while a guarded
 // dialog is open.
@@ -115,6 +118,7 @@ function tabbable(dialog) {
 // release() lets go of the page, as closeDialog does.
 export function openDialog(dialog, { home = null, onEscape = null, onGone = null } = {}) {
   const doc = dialog.ownerDocument;
+  nativeOpeners.set(dialog, doc.activeElement === doc.body ? null : doc.activeElement);
   dialog.setAttribute("aria-modal", "true");
   if (otherModalOpen(doc, dialog)) {
     modals.add(dialog);
@@ -241,16 +245,22 @@ export function closeDialog(dialog, {
   opener = null, target = null, place = null, value, handOff = false,
 } = {}) {
   const doc = dialog.ownerDocument;
+  const nativeOpener = nativeOpeners.get(dialog) || opener;
+  opener = tableFocusTarget(opener || (dialog.contains(doc.activeElement) ? nativeOpener : null));
+  target = tableFocusTarget(target);
   for (const entry of stackFor(doc).filter((item) => item.dialog === dialog)) entry.release();
   const modal = modals.has(dialog);
   const elsewhere = handOff || (Boolean(target?.isConnected) && target !== opener);
-  const hold = !modal && elsewhere && opener?.isConnected && !opener.hasAttribute("inert");
+  // A raw row button may be the browser's remembered opener, while our
+  // return target is its cell. Suppress that native button hop on close.
+  const hold = !modal && (elsewhere || (opener && nativeOpener !== opener))
+    && nativeOpener?.isConnected && !nativeOpener.hasAttribute("inert");
   if (modal) releaseDialogFocus(dialog);
-  if (hold) opener.setAttribute("inert", "");
+  if (hold) nativeOpener.setAttribute("inert", "");
   try {
     if (dialog.open) dialog.close(value);
   } finally {
-    if (hold) opener.removeAttribute("inert");
+    if (hold) nativeOpener.removeAttribute("inert");
   }
   if (handOff || (elsewhere && focusAfterDialog(target))) return;
   const active = doc.activeElement;

@@ -22,6 +22,18 @@ function table(actions) {
   return { grid, status, first: grid.body.querySelector('[aria-haspopup="menu"]') };
 }
 describe("row action menus", () => {
+  it.each(["Escape", "Tab", "Enter"])("restores the Options gridcell after %s closes the menu", (key) => {
+    const run = vi.fn();
+    const { grid, first } = table([{ id: "run", label: "Run now", run }]);
+    first.click();
+    press(key);
+    expect(first.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(grid.target("First", "options"));
+    expect(first.tabIndex).toBe(-1);
+    press("ArrowLeft");
+    expect(document.activeElement).toBe(grid.target("First", "name"));
+    expect(run).toHaveBeenCalledTimes(key === "Enter" ? 1 : 0);
+  });
   // ADR-0021-04
   it("supports menu keys and disabled reasons", async () => {
     document.body.innerHTML = '<p id="status" role="status"></p>';
@@ -71,7 +83,10 @@ describe("row action menus", () => {
   });
   it("opens on Space release without a duplicate native activation", () => {
     const run = vi.fn();
-    const { first } = table([{ id: "run", label: "Run now", run }]);
+    document.body.innerHTML = "";
+    const menu = createRowActionsMenu({ doc: document, name: "First", actions: [{ id: "run", label: "Run now", run }] });
+    document.body.append(menu.element);
+    const first = menu.button;
     first.focus();
     expect(keyEvent("keydown", " ").defaultPrevented).toBe(true);
     expect(first.getAttribute("aria-expanded")).toBe("false");

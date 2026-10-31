@@ -1,475 +1,282 @@
-// User-managed queue: render, reorder (Top/Up/Down), Remove, Clear.
-//
-// Event delegation at document level so the per-row buttons share a
-// single handler.  Optimistic local render + key tracking so the UI updates
-// immediately without waiting for the server round trip.
-
-import { fmtTrack, placeRows } from "./dom-helpers.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
+// The shared collection table owns rendering, menus and cell navigation.
+// Queue entries keep local identities through optimistic moves so duplicate
+// occurrences retain their rows and their exact server-side permutation.
+import { fmtTrack } from "./dom-helpers.js";
+import { createCollectionTable } from "./collection-table.js";
+import { deleteCollectionItem } from "./collection-delete.js";
 import { announceStatus } from "./live-region.js";
-import {
-  captureAuthenticatedRequestEpoch,
-  isAuthenticatedRequestCurrent,
-  requestJson,
-  staleActionText,
-} from "./api-client.js";
+import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, staleActionText } from "./api-client.js";
+import { currentStation } from "./stations.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { sendWithVoiceTrackConflict, voiceTrackConflict } from "./voice-track-conflict.js";
 
-let _lastKey = "";
-let _renderGeneration = 0;
-// The queue as it stood before a reorder or removal still in flight.  A
-// push of exactly that queue left the server before the change did, and
-// would only show the old order again for a second.
-let _pendingFromKey = null;
+const controllers = new WeakMap();
+const EMPTY_TEXT = "Queue is empty.  Search, then use Play next or Add to queue.";
+const queueKey = (queue) => JSON.stringify(queue.map((track) => [track.path, fmtTrack(track), track.bridge_to || ""]));
+const bridgeText = (track) => track.bridge_to ? `Bridge to ${String(track.bridge_to).trim()}` : "";
+const entryName = ({ track }) => `${fmtTrack(track)}${bridgeText(track) ? `, b${bridgeText(track).slice(1)}` : ""}`;
 
-function _queueKey(queue) {
-  // A bridge song's label is part of the row, so a change to it redraws.
-  return JSON.stringify(queue.map((t) => (t.bridge_to ? [t.path, t.bridge_to] : t.path)));
+function controller(els) {
+  const { queueList } = els;
+  if (!queueList) return null;
+  let state = controllers.get(queueList);
+  if (state) { Object.assign(state.els, els); return state; }
+  state = { els: { ...els }, items: [], nextId: 0, generation: 0, key: "", pendingFromKey: null,
+    busy: false, disabledReason: "", installed: false };
+  controllers.set(queueList, state);
+  state.grid = createCollectionTable({
+    host: queueList, label: "Queued tracks", status: els.queueAnnounce, fallback: queueList,
+    emptyText: EMPTY_TEXT, nameIndex: 1,
+    columns: [
+      { key: "position", label: "Position", value: (_, index) => index + 1 },
+      { key: "track", label: "Track", value: (entry) => fmtTrack(entry.track) },
+      { key: "bridge", label: "Bridge", value: (entry) => bridgeText(entry.track) },
+    ],
+    keyOf: (entry) => entry.id, nameOf: entryName,
+    primary: (entry) => ({ id: "info", label: "Track info", run: (button) => {
+      // Track info keeps its existing editor and return-to-collection event.
+      button.dataset.path = entry.track.path;
+      queueList.ownerDocument.dispatchEvent(new CustomEvent("autodj:edit-points", {
+        detail: { path: entry.track.path, kind: "music", opener: button },
+      }));
+    } }),
+    actions: (entry, index) => [["top", "Move to top"], ["up", "Move up"], ["down", "Move down"], ["remove", "Remove"]]
+      .map(([id, label]) => ({ id, label, disabledReason: actionReason(state, id, index),
+        run: (button) => changeQueue(state, id, entry.id, button) })),
+  });
+  return state;
 }
 
-// "Bridge to Song" for a song AutoDJ queued to lead into a listener
-// request (#49), said with the row and in each button's name.
-function bridgeText(track) {
-  const target = String(track?.bridge_to || "").trim();
-  return target ? `Bridge to ${target}` : "";
+function actionReason(state, action, index) {
+  if (state.disabledReason) return state.disabledReason;
+  if (state.busy) return "Still sending the last change…";
+  if ((action === "up" || action === "top") && index === 0) return "This track is already first in the queue.";
+  if (action === "down" && index === state.items.length - 1) return "This track is already last in the queue.";
+  return "";
 }
 
-// A websocket push draws the list again.  Remember which row (path plus
-// which duplicate of it) and which action held focus, so focus can go back
-// to the same control when its row is gone or the action is off.
-function _focusedQueueSpot(queueList) {
-  const active = queueList.ownerDocument?.activeElement;
-  const button = active?.closest?.(".queue-btn");
-  const row = button?.closest("li[data-path]");
-  if (!row || !queueList.contains(row)) return null;
-  const rows = Array.from(queueList.querySelectorAll("li[data-path]"));
-  const index = rows.indexOf(row);
-  return {
-    path: row.dataset.path,
-    occurrence: rows.slice(0, index)
-      .filter((other) => other.dataset.path === row.dataset.path).length,
-    index,
-    action: button.dataset.action,
-  };
+function draw(state, items, announceFocus = true) {
+  state.items = items;
+  state.key = queueKey(items.map((entry) => entry.track));
+  state.generation += 1;
+  if (state.els.queueCount) state.els.queueCount.textContent = items.length ? `(${items.length})` : "";
+  state.grid.update(items, { announceFocus });
+  // Track info's existing return matcher also handles a replacement row.
+  for (const entry of items) {
+    const button = state.grid.target(entry.id)?.querySelector("button");
+    if (button) button.dataset.path = entry.track.path;
+  }
 }
 
-// The button for *action* in *row*, or the row's first other action that
-// is on once the list is drawn.
-function _rowAction(row, action, usable) {
-  if (!row) return null;
-  const named = row.querySelector(`.queue-btn[data-action="${action}"]`);
-  if (usable(named)) return named;
-  return [...row.querySelectorAll('.queue-btn:not([data-action="info"])')].find(usable) || null;
-}
-
-// Where focus goes after a push: the same control on the same track, or
-// the row now where it was.
-function _spotTarget(spot) {
-  return (rows, usable) => {
-    const samePath = rows.filter((row) => row.dataset.path === spot.path);
-    const row = samePath[spot.occurrence] || rows[Math.min(spot.index, rows.length - 1)];
-    return _rowAction(row, spot.action, usable);
-  };
+function renderQueue(queue, els) {
+  const state = controller(els);
+  if (!state) return;
+  const drawn = new Map();
+  for (const entry of state.items) {
+    if (!drawn.has(entry.track.path)) drawn.set(entry.track.path, []);
+    drawn.get(entry.track.path).push(entry);
+  }
+  draw(state, queue.map((track) => ({
+    id: drawn.get(track.path)?.shift()?.id ?? ++state.nextId, track,
+  })));
 }
 
 export function applyQueueState(queue, els) {
-  const key = _queueKey(queue);
-  if (key === _lastKey || key === _pendingFromKey) return;
-  _lastKey = key;
-  const spot = els.queueList ? _focusedQueueSpot(els.queueList) : null;
-  renderQueue(queue, els, { focus: spot ? _spotTarget(spot) : null });
+  const state = controller(els);
+  if (!state) return;
+  const key = queueKey(queue);
+  if (key === state.key || key === state.pendingFromKey) return;
+  renderQueue(queue, els);
 }
 
 export function resetQueueState(els) {
-  const empty = [];
-  _pendingFromKey = null;
-  _lastKey = _queueKey(empty);
-  renderQueue(empty, els);
+  const state = controller(els);
+  if (!state) return;
+  state.pendingFromKey = null;
+  draw(state, []);
 }
 
-const EMPTY_TEXT = "Queue is empty.  Search, then use Play next or Add to queue.";
-// Each row's buttons: action, words on screen, icon, and the name built
-// from the song.
-const ROW_ACTIONS = [
-  ["top", "Top", "", (name) => `Move ${name} to top of queue`],
-  ["up", "Up", "▲", (name) => `Move ${name} up in queue`],
-  ["down", "Down", "▼", (name) => `Move ${name} down in queue`],
-  ["remove", "Remove", "✕", (name) => `Remove ${name} from queue`],
-  ["info", "Track info", "", (name) => `Track info for ${name}`],
-];
-const ROW_LABELS = Object.fromEntries(ROW_ACTIONS.map(([action, , , label]) => [action, label]));
-
-function _newQueueRow(doc, path) {
-  const row = doc.createElement("li");
-  row.dataset.path = path;
-  const name = doc.createElement("span");
-  name.className = "queue-name";
-  row.append(name);
-  for (const [action, words, icon] of ROW_ACTIONS) {
-    const button = doc.createElement("button");
-    button.type = "button";
-    button.className = "queue-btn";
-    button.dataset.action = action;
-    button.dataset.path = path;
-    if (icon) {
-      const shape = doc.createElement("span");
-      shape.setAttribute("aria-hidden", "true");
-      shape.textContent = icon;
-      button.append(shape, ` ${words}`);
-    } else {
-      button.textContent = words;
-    }
-    row.append(button);
-  }
-  return row;
+// The app supplies its current playback restriction. Rechecking at invocation
+// also covers keyboard activation and a confirmation already on screen.
+export function setQueueDisabledReason(els, reason = "") {
+  const state = controller(els);
+  if (!state || state.disabledReason === reason) return;
+  state.disabledReason = reason;
+  state.grid.update(state.items, { announceFocus: false });
 }
 
-// Changes only what differs, so a row that stays says nothing new.
-function _fillQueueRow(row, track, index) {
-  const bridge = bridgeText(track);
-  const shown = fmtTrack(track);
-  // Each button names the song, and a bridge says which request it leads into.
-  const name = bridge ? `${shown}, b${bridge.slice(1)}` : shown;
-  if (row.dataset.queueIndex !== String(index)) row.dataset.queueIndex = String(index);
-  if (bridge) {
-    if (row.dataset.bridgeTo !== track.bridge_to) row.dataset.bridgeTo = track.bridge_to;
-  } else if ("bridgeTo" in row.dataset) {
-    delete row.dataset.bridgeTo;
-  }
-  const label = row.querySelector(".queue-name");
-  const text = `${index + 1}. ${shown}`;
-  if (label.textContent !== text) label.textContent = text;
-  if (label.title !== shown) label.title = shown;
-  let note = row.querySelector(".queue-bridge");
-  if (bridge) {
-    if (!note) {
-      note = row.ownerDocument.createElement("span");
-      note.className = "queue-bridge";
-      label.after(note);
-    }
-    if (note.textContent !== bridge) note.textContent = bridge;
-  } else {
-    note?.remove();
-  }
-  for (const button of row.querySelectorAll(":scope > .queue-btn")) {
-    const words = ROW_LABELS[button.dataset.action](name);
-    if (button.getAttribute("aria-label") !== words) button.setAttribute("aria-label", words);
-  }
+function announce(state, text, error = false) {
+  announceStatus(state.els.queueAnnounce, text, { force: true, dwellMs: error ? 6000 : 3000,
+    ...(error ? { tone: "error" } : {}) });
 }
 
-// Draws the queue in place (#328): a row that stays keeps its node, the
-// focused row is never moved, and focus never sits on a row that goes or
-// a button that goes off.  *focus*, when given, picks the button that
-// gets focus from the new rows (an empty queue gives it to the list).
-export function renderQueue(queue, { queueList, queueCount }, { focus = null } = {}) {
-  if (queueCount) queueCount.textContent = queue.length ? `(${queue.length})` : "";
-  if (!queueList) return;
-  _renderGeneration += 1;
-  const doc = queueList.ownerDocument;
-  if (queue.length === 0) {
-    let empty = queueList.querySelector(":scope > li.no-results");
-    if (!empty) {
-      empty = doc.createElement("li");
-      empty.className = "no-results";
-      empty.textContent = EMPTY_TEXT;
+function beginChange(state, action, id) {
+  const index = state.items.findIndex((entry) => entry.id === id);
+  if (index < 0) return null;
+  const reason = actionReason(state, action, index);
+  if (reason) { announce(state, reason); return null; }
+  const snapshot = state.items.slice();
+  const entry = snapshot[index];
+  const next = snapshot.slice();
+  const destination = action === "top" ? 0 : action === "up" ? index - 1 : action === "down" ? index + 1 : index;
+  next.splice(index, 1);
+  if (action !== "remove") next.splice(destination, 0, entry);
+  const paths = snapshot.map((item) => item.track.path);
+  const duplicateRemoval = action === "remove" && paths.indexOf(entry.track.path) !== index;
+  const remove = action === "remove" && !duplicateRemoval;
+  const body = remove ? { path: entry.track.path, position: index }
+    : { paths: next.map((item) => item.track.path), from_paths: paths, order: next.map((item) => snapshot.indexOf(item)) };
+  const epoch = captureAuthenticatedRequestEpoch();
+  const station = currentStation();
+  const { queueList } = state.els;
+  state.busy = true;
+  queueList.setAttribute("aria-busy", "true");
+  state.pendingFromKey = queueKey(snapshot.map((item) => item.track));
+  draw(state, next, false);
+  const generation = state.generation;
+  const focusTarget = () => state.grid.target(state.items[Math.min(destination, state.items.length - 1)]?.id, "options") || queueList;
+  const request = (voice = {}) => {
+    if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return Promise.resolve(null);
+    if (state.disabledReason) return Promise.reject(new Error(state.disabledReason));
+    return requestJson(remove ? "/api/queue/remove" : "/api/queue/reorder", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, ...voice }),
+    });
+  };
+  async function settle(send) {
+    let restoreRemovedFocus = false;
+    const rollback = () => {
+      if (state.generation !== generation) return;
+      restoreRemovedFocus = action === "remove" && queueList.contains(queueList.ownerDocument.activeElement);
+      draw(state, snapshot, false);
+    };
+    try {
+      const sent = await send();
+      if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return;
+      if (!sent) {
+        rollback();
+        announce(state, "Queue change canceled.");
+      } else {
+        const name = fmtTrack(entry.track);
+        announce(state, action === "remove"
+          ? `Removed ${name} from queue. Focus moved to ${state.items[Math.min(index, state.items.length - 1)] ? entryName(state.items[Math.min(index, state.items.length - 1)]) : "Queued tracks"}.`
+          : `Moved ${name} to position ${destination + 1} of ${next.length}.`);
+      }
+    } catch (error) {
+      if (!isAuthenticatedRequestCurrent(epoch)) return;
+      const stale = staleActionText(error);
+      if (stale) announce(state, stale, !error.actionDone);
+      else {
+        rollback();
+        announce(state, `Could not update queue: ${error.message}`, true);
+      }
+    } finally {
+      state.busy = false;
+      state.pendingFromKey = null;
+      queueList.setAttribute("aria-busy", "false");
+      state.grid.update(state.items, { announceFocus: false });
     }
-    if (focus) queueList.focus();
-    placeRows(queueList, [empty]);
+    if (restoreRemovedFocus) state.grid.target(entry.id, "options")?.focus();
+  }
+  return { request, settle, focusTarget };
+}
+
+async function changeQueue(state, action, id, button) {
+  if (!state.installed) return;
+  if (action !== "remove") {
+    const change = beginChange(state, action, id);
+    if (change) await change.settle(() => sendWithVoiceTrackConflict(button.ownerDocument, change.request));
     return;
   }
-  // The rows already drawn, by song and which duplicate of it.
-  const drawn = new Map();
-  const seen = new Map();
-  const keyOf = (path) => {
-    const occurrence = seen.get(path) || 0;
-    seen.set(path, occurrence + 1);
-    return JSON.stringify([path, occurrence]);
-  };
-  for (const row of queueList.querySelectorAll(":scope > li[data-path]")) {
-    drawn.set(keyOf(row.dataset.path), row);
-  }
-  seen.clear();
-  const off = new Map();
-  const rows = queue.map((track, index) => {
-    const row = drawn.get(keyOf(track.path)) || _newQueueRow(doc, track.path);
-    _fillQueueRow(row, track, index);
-    for (const button of row.querySelectorAll(":scope > .queue-btn")) {
-      const action = button.dataset.action;
-      off.set(button, action === "top" || action === "up" ? index === 0
-        : action === "down" ? index === queue.length - 1 : false);
-    }
-    return row;
+  const index = state.items.findIndex((entry) => entry.id === id);
+  if (index < 0) return;
+  const reason = actionReason(state, action, index);
+  if (reason) { announce(state, reason); return; }
+  const generation = state.generation;
+  const epoch = captureAuthenticatedRequestEpoch();
+  const station = currentStation();
+  let change = null, result = null, failure = null;
+  // No Undo: the queue APIs cannot restore consumed occurrences or their
+  // programme/voice bindings. A path append is not a safe restoration.
+  const confirmed = await deleteCollectionItem(button.ownerDocument, {
+    title: "Remove queued track?", message: `Remove ${entryName(state.items[index])} from the queue?`,
+    confirmLabel: "Remove", pendingText: "Removing…",
+    onConfirm: async () => {
+      if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return null;
+      if (generation !== state.generation) { announce(state, "The queue changed. Choose the track again."); return button; }
+      change = beginChange(state, action, id);
+      if (!change) return button;
+      try { result = await change.request(); } catch (error) { failure = error; }
+      if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return null;
+      return change.focusTarget();
+    },
   });
-  // Buttons come on first, so focus can go to them; they go off last,
-  // once focus has left them.
-  for (const [button, disabled] of off) if (!disabled && button.disabled) button.disabled = false;
-  const target = focus ? focus(rows, (button) => Boolean(button) && off.get(button) === false) : null;
-  if (target?.isConnected) target.focus();
-  placeRows(queueList, rows);
-  if (target && doc.activeElement !== target) target.focus();
-  for (const [button, disabled] of off) if (disabled && !button.disabled) button.disabled = true;
-  installActionListNavigation(queueList).refresh();
-}
-
-// Up and Down said only "Moved X up.", which left the listener counting
-// rows to find out where the track landed.
-function movedMessage(name, index, length) {
-  return `Moved ${name} to position ${index + 1} of ${length}.`;
-}
-
-// Clear queue asks first: it throws away every row at once.  Focus stays
-// on the button whatever the answer, so the user is where they started.
-export function installQueueClear({ queueList, queueAnnounce, queueClear, queueCount }) {
-  if (!queueClear || !queueList) return;
-  const doc = queueClear.ownerDocument;
-  queueClear.addEventListener("click", async () => {
-    const count = queueList.querySelectorAll("li[data-path]").length;
-    if (count === 0) {
-      announceStatus(queueAnnounce, "The queue is already empty.", { dwellMs: 3000, force: true });
-      return;
+  // A voice conflict needs the same shared confirmation dialog; the initial
+  // removal confirmation must have closed before asking the voice question.
+  if (confirmed && change) await change.settle(async () => {
+    if (voiceTrackConflict(failure)) {
+      if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return null;
+      return sendWithVoiceTrackConflict(button.ownerDocument, change.request, failure);
     }
-    const plural = count === 1 ? "track" : "tracks";
-    const epoch = captureAuthenticatedRequestEpoch();
-    let result = null;
-    let voiceConflict = null;
-    const clear = (voice = {}) => requestJson("/api/queue/reorder", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paths: [], ...voice }),
-    });
-    // Cleared while the confirmation is still open, so focus comes back
-    // to the button with the list already empty (see confirmAction).  The
-    // result is said after the dialog has closed.
-    const confirmed = await confirmAction(doc, {
-      title: "Clear the queue?",
-      message: `This removes all ${count} queued ${plural}.  AutoDJ keeps picking tracks on its own.`,
-      confirmLabel: "Clear queue",
-      onConfirm: async () => {
-        try {
-          await clear();
-          if (!isAuthenticatedRequestCurrent(epoch)) return null;
-          _lastKey = _queueKey([]);
-          renderQueue([], { queueList, queueCount });
-          result = [`Cleared the queue.  Removed ${count} ${plural}.`, { dwellMs: 3000, force: true }];
-        } catch (errorValue) {
-          if (!isAuthenticatedRequestCurrent(epoch)) return null;
-          if (voiceTrackConflict(errorValue)) voiceConflict = errorValue;
-          else result = [`Could not clear the queue: ${errorValue.message}`,
-            { dwellMs: 6000, force: true, tone: "error" }];
-        }
-        return queueClear;
-      },
-    });
-    queueClear.focus();
-    if (confirmed && voiceConflict && isAuthenticatedRequestCurrent(epoch)) {
-      try {
-        const sent = await sendWithVoiceTrackConflict(doc, clear, voiceConflict);
-        if (!sent) result = ["Queue clear canceled.", { dwellMs: 3000, force: true }];
-        else {
-          _lastKey = _queueKey([]);
-          renderQueue([], { queueList, queueCount });
-          result = [`Cleared the queue.  Removed ${count} ${plural}.`, { dwellMs: 3000, force: true }];
-        }
-      } catch (errorValue) {
-        result = [`Could not clear the queue: ${errorValue.message}`,
-          { dwellMs: 6000, force: true, tone: "error" }];
-      }
-      queueClear.focus();
-    }
-    if (confirmed && result && isAuthenticatedRequestCurrent(epoch)) {
-      announceStatus(queueAnnounce, ...result);
-    }
+    if (failure) throw failure;
+    return { value: result };
   });
 }
 
 export function installQueueButtons(els) {
-  const { queueList, queueAnnounce } = els;
-  if (!queueList) return;
-  let mutationPending = false;
-  // Whether a press while a change is sent has been answered yet: once per
-  // change, so a held key does not repeat it.
-  let stillSendingSaid = false;
+  const state = controller(els);
+  if (state) state.installed = true;
+}
 
-  installActionListNavigation(queueList);
-
-  // Delegated from the document, not the <ol>: a click listener on the
-  // list made NVDA call the whole list "clickable".
-  queueList.ownerDocument.addEventListener("click", async (e) => {
-    const btn = e.target.closest?.(".queue-btn");
-    if (!btn || !queueList.contains(btn) || btn.disabled) return;
-    const action = btn.dataset.action;
-    const path   = btn.dataset.path;
-    if (action === "info") {
-      queueList.ownerDocument.dispatchEvent(new CustomEvent("autodj:edit-points", {
-        detail: { path, kind: "music", opener: btn },
-      }));
-      return;
-    }
-    if (mutationPending) {
-      // A second press while a change is sent does nothing; it says why.
-      if (!stillSendingSaid) {
-        stillSendingSaid = true;
-        announceStatus(queueAnnounce, "Still sending the last change…", { dwellMs: 3000, force: true });
-      }
-      return;
-    }
+export function installQueueClear(els) {
+  const state = controller(els);
+  const { queueList, queueClear } = els;
+  if (!state || !queueClear) return;
+  const doc = queueClear.ownerDocument;
+  queueClear.addEventListener("click", async () => {
+    if (state.disabledReason || state.busy) { announce(state, state.disabledReason || "Still sending the last change…"); return; }
+    const count = state.items.length;
+    if (!count) { announce(state, "The queue is already empty."); return; }
+    const plural = count === 1 ? "track" : "tracks";
     const epoch = captureAuthenticatedRequestEpoch();
-
-    const items = Array.from(queueList.querySelectorAll("li[data-path]"));
-    const snapshot = items.map((li) => ({
-      path: li.dataset.path,
-      display_name: li.querySelector(".queue-name").textContent.replace(/^\d+\.\s*/, ""),
-      ...(li.dataset.bridgeTo ? { bridge_to: li.dataset.bridgeTo } : {}),
-    }));
-    const paths = items.map((li) => li.dataset.path);
-    const idx   = items.indexOf(btn.closest("li[data-path]"));
-    if (idx < 0) return;
-
-    const newQueue = snapshot.slice();
-    let focusAction = action;
-    let focusIndex = idx;
-    let focusQueueList = false;
-    let announceMsg = "";
-
-    const niceName = items[idx]
-      ? items[idx].querySelector(".queue-name").textContent.replace(/^\d+\.\s*/, "")
-      : path;
-
-    if (action === "top" && idx > 0) {
-      newQueue.unshift(...newQueue.splice(idx, 1));
-      focusIndex = 0;
-      announceMsg = movedMessage(niceName, 0, newQueue.length);
-      focusAction = newQueue.length > 1 ? "down" : "remove";
-    } else if (action === "up" && idx > 0) {
-      [newQueue[idx - 1], newQueue[idx]] = [newQueue[idx], newQueue[idx - 1]];
-      focusIndex = idx - 1;
-      announceMsg = movedMessage(niceName, idx - 1, newQueue.length);
-      if (idx - 1 === 0) focusAction = "down";
-    } else if (action === "down" && idx < newQueue.length - 1) {
-      [newQueue[idx + 1], newQueue[idx]] = [newQueue[idx], newQueue[idx + 1]];
-      focusIndex = idx + 1;
-      announceMsg = movedMessage(niceName, idx + 1, newQueue.length);
-      if (idx + 1 === newQueue.length - 1) focusAction = "up";
-    } else if (action === "remove") {
-      newQueue.splice(idx, 1);
-      announceMsg = `Removed ${niceName} from queue.`;
-      if (newQueue.length === 0) {
-        focusIndex = -1;
-        focusQueueList = true;
-      } else {
-        focusIndex = Math.min(idx, newQueue.length - 1);
-        focusAction = "remove";
-      }
-    } else {
-      return;
-    }
-
-    // Whether the pressed button had focus.  The optimistic render moves it
-    // at once to where it lands (the moved track's button, the next row's
-    // Remove, or the list when none is left), so it never sits on the page
-    // while the change is sent (#328); the reply places it again whatever
-    // the order.  The pressed button stays on: mutationPending refuses a
-    // second press, and a button turned off under focus dropped focus.
-    const hadFocus = queueList.contains(queueList.ownerDocument.activeElement);
-
-    // Optimistic local render so the user sees instant feedback.
-    mutationPending = true;
-    stillSendingSaid = false;
-    queueList.setAttribute("aria-busy", "true");
-    renderQueue(newQueue, els, {
-      focus: hadFocus ? (rows, usable) => _rowAction(rows[focusIndex], focusAction, usable) : null,
-    });
-    const optimisticGeneration = _renderGeneration;
-    const newPaths = newQueue.map((item) => item.path);
-    _pendingFromKey = _queueKey(snapshot);
-    _lastKey = _queueKey(newQueue);
-    let ownsRenderedQueue = true;
-
-    try {
-      const duplicateRemoval = action === "remove" && paths.indexOf(path) !== idx;
-      const url = action === "remove" && !duplicateRemoval ? "/api/queue/remove" : "/api/queue/reorder";
-      const body = action === "remove" && !duplicateRemoval
-        ? { path, position: idx }
-        : { paths: newPaths, from_paths: paths, order: newQueue.map((item) => snapshot.indexOf(item)) };
-      const sent = await sendWithVoiceTrackConflict(queueList.ownerDocument, (voice) => requestJson(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // The place in the queue as shown, so the server moves or removes
-        // that very entry, not another of the same file (a show's copy, #106).
-        body: JSON.stringify({ ...body, ...voice }),
-      }));
-      if (!isAuthenticatedRequestCurrent(epoch)) return;
-      if (!sent) {
-        if (_renderGeneration === optimisticGeneration) {
-          renderQueue(snapshot, els);
-          _lastKey = _queueKey(snapshot);
-          focusIndex = idx;
-          focusAction = action;
-        } else ownsRenderedQueue = false;
-        announceStatus(queueAnnounce, "Queue change canceled.", { dwellMs: 3000, force: true });
-      } else {
-        ownsRenderedQueue = _renderGeneration === optimisticGeneration;
-        // force: a second "Move up" on the same track is a second action,
-        // and silence would read as the button not working.
-        announceStatus(queueAnnounce, announceMsg, { dwellMs: 3000, force: true });
-      }
-    } catch (errorValue) {
-      if (!isAuthenticatedRequestCurrent(epoch)) return;
-      // Answered after a station switch: the queue on screen is the new
-      // station's, so only what happened on the old one is said (#70).
-      const left = staleActionText(errorValue);
-      if (left) {
-        ownsRenderedQueue = false;
-        announceStatus(queueAnnounce, left,
-          { dwellMs: 6000, force: true, tone: errorValue.actionDone ? "info" : "error" });
-      } else {
-        if (_renderGeneration === optimisticGeneration) {
-          renderQueue(snapshot, els);
-          _lastKey = _queueKey(snapshot);
-          focusIndex = idx;
-          focusAction = action;
-          focusQueueList = false;
-        } else {
-          ownsRenderedQueue = false;
+    const station = currentStation();
+    let result = null, conflict = null;
+    const clear = (voice = {}) => {
+      if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return Promise.resolve(null);
+      if (state.disabledReason) return Promise.reject(new Error(state.disabledReason));
+      return requestJson("/api/queue/reorder", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths: [], ...voice }) });
+    };
+    const done = () => {
+      resetQueueState(els);
+      result = `Cleared the queue.  Removed ${count} ${plural}.`;
+    };
+    const confirmed = await confirmAction(doc, {
+      title: "Clear the queue?", message: `This removes all ${count} queued ${plural}.  AutoDJ keeps picking tracks on its own.`,
+      confirmLabel: "Clear queue",
+      onConfirm: async () => {
+        if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return null;
+        try {
+          await clear();
+          if (isAuthenticatedRequestCurrent(epoch)) done();
+        } catch (error) {
+          if (!isAuthenticatedRequestCurrent(epoch)) return null;
+          if (voiceTrackConflict(error)) conflict = error;
+          else result = `Could not clear the queue: ${error.message}`;
         }
-        announceStatus(queueAnnounce,
-          `Could not update queue: ${errorValue.message}`,
-          { dwellMs: 6000, force: true, tone: "error" });
-      }
-    } finally {
-      mutationPending = false;
-      _pendingFromKey = null;
-      queueList.setAttribute("aria-busy", "false");
-    }
-
+        return queueClear;
+      },
+    });
     if (!isAuthenticatedRequestCurrent(epoch)) return;
-    // The reply places focus only when it was in the queue at the press and
-    // still is (or was lost to the page): focus the user has taken
-    // elsewhere meanwhile stays there.
-    if (!hadFocus) return;
-    const active = queueList.ownerDocument.activeElement;
-    const onPage = !active || active === queueList.ownerDocument.body;
-    if (!onPage && !queueList.contains(active)) return;
-    if (!ownsRenderedQueue) {
-      // A push drew the list the server has.  Focus that was on the
-      // pressed button goes to the same track's button there, or to the
-      // row now where it was.
-      if (!onPage) return;
-      const rows = Array.from(queueList.querySelectorAll("li[data-path]"));
-      const own = action === "remove" ? -1 : rows.findIndex((row) => row.dataset.path === path);
-      focusQueueList = rows.length === 0;
-      focusIndex = own >= 0 ? own : Math.max(0, Math.min(idx, rows.length - 1));
+    queueClear.focus();
+    if (confirmed && conflict) {
+      try {
+        const sent = await sendWithVoiceTrackConflict(doc, clear, conflict);
+        if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return;
+        if (sent) done(); else result = "Queue clear canceled.";
+      } catch (error) { result = `Could not clear the queue: ${error.message}`; }
+      queueClear.focus();
     }
-    if (focusQueueList) {
-      queueList.focus();
-      return;
-    }
-    // The moved track's button, the neighbour that took a removed row's
-    // place, or the pressed button again after a rollback.
-    const row = queueList.querySelector(`li[data-queue-index="${focusIndex}"]`);
-    const target = row?.querySelector(`.queue-btn[data-action="${focusAction}"]:not(:disabled)`)
-      || row?.querySelector('.queue-btn:not([data-action="info"]):not(:disabled)');
-    target?.focus();
+    if (confirmed && result && isAuthenticatedRequestCurrent(epoch)) announce(state, result, result.startsWith("Could not"));
+    queueList.setAttribute("aria-busy", "false");
   });
 }

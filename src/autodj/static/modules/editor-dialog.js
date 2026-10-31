@@ -3,6 +3,7 @@ import { confirmAction } from "./confirm-dialog.js";
 import { closeDialog, openDialog } from "./dialog-guard.js";
 import { dialogStatusLine, focusAfterDialog, showFieldError } from "./dom-helpers.js";
 import { announceStatus, clearAnnouncedStatus, sayIfStillPending } from "./live-region.js";
+import { tableFocusTarget } from "./table-row.js";
 
 const openEditors = new WeakMap();
 const closeEditors = new WeakMap();
@@ -20,6 +21,16 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
   if (!dialog.id) dialog.id = `${form.id}-dialog`;
   dialog.classList.add("editor-dialog");
   dialog.setAttribute("aria-labelledby", heading.id);
+  // Without explicit help, NVDA synthesizes a description from the entire
+  // form. Keep caller-provided short help, such as the clockwheel step's.
+  if (!dialog.getAttribute("aria-describedby")) {
+    const help = doc.createElement("p");
+    help.id = `${dialog.id}-help`;
+    help.hidden = true;
+    help.textContent = "Use Tab to move between fields and actions.";
+    dialog.append(help);
+    dialog.setAttribute("aria-describedby", help.id);
+  }
   // The heading names the dialog from inside its form's legend, so the
   // fieldset would be a second group with the same name: NVDA said "Add
   // category dialog" and then "Add category grouping".  The fieldset keeps
@@ -124,16 +135,24 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
     },
     open(first, from = doc.activeElement) {
       generation += 1;
-      opener = from;
+      opener = tableFocusTarget(from);
       form.hidden = false;
       original = snapshot();
       clearAnnouncedStatus(status);
-      openDialog(dialog, { home: first });
+      // Native opening must choose the requested field itself, otherwise it
+      // focuses the first descendant before our requested field gets focus.
+      const hadAutofocus = first?.hasAttribute("autofocus");
+      first?.setAttribute("autofocus", "");
+      try {
+        openDialog(dialog, { home: first });
+      } finally {
+        if (!hadAutofocus) first?.removeAttribute("autofocus");
+      }
       for (let index = stack.length - 1; index >= 0; index -= 1) {
         if (stack[index] === dialog || !stack[index].isConnected) stack.splice(index, 1);
       }
       stack.push(dialog);
-      first?.focus();
+      if (doc.activeElement !== first) first?.focus();
     },
   };
 }

@@ -99,7 +99,7 @@ A **clockwheel** repeats an ordered list of steps. This first wheel has one
 step: choose a song from Practice, then repeat that choice for the next song.
 
 1. In **Library tools**, expand **Clockwheels**.
-2. Press **Create**. In the dialog, enter `Practice` in **Name** and press **Create**.
+2. Enter `Practice` in **New clockwheel name** and press **Create**. In the dialog, check **Name** is `Practice` and press **Create**.
 3. Press **New step**. In the dialog, choose **Music matching conditions** as **Step type**.
 4. In the existing **Condition 1**, set **Condition type** to **Category**.
 5. Set **Music category** to **Practice** and leave **Operator** set to **is**.
@@ -110,6 +110,10 @@ step: choose a song from Practice, then repeat that choice for the next song.
 10. Press **Save clockwheel**. In the saved Practice row, open **Options for Practice** and choose **Activate**.
 11. Open **Settings**, **Profile**, **Song picking**. Set **Pick mode** to **Clockwheel**, then press **Save changes**.
 
+**New clockwheel name** keeps the text you entered; opening or saving a wheel does not replace it.
+
+The step's **Selection** is **Least recently played**. **Length or target** says
+**Not specified** because the song is selected during playback.
 Confirm that the clockwheel has one saved step, is active, and **Pick mode**
 remains **Clockwheel** when you return to Settings. Creating a wheel alone does
 not make it play: saving, activating, and selecting the pick mode have separate jobs.

@@ -3204,8 +3204,8 @@ describe("static accessibility contracts", () => {
     }
     // The list has a heading; its keyboard help is read on demand.
     const songs = document.getElementById("shows-songs");
-    expect(songs.tagName).toBe("OL");
-    expect(document.getElementById(songs.getAttribute("aria-labelledby")).tagName).toBe("H3");
+    expect(songs.tagName).toBe("DIV");
+    expect(document.getElementById("shows-editor-heading").tagName).toBe("H3");
     expect(songs.hasAttribute("aria-describedby")).toBe(false);
     expect(document.getElementById("shows-songs-help").textContent).toMatch(/Move up and Move down/);
     // The heading takes focus when the list opens, without a tab stop.
@@ -3352,7 +3352,9 @@ describe("static accessibility contracts", () => {
     expect(document.getElementById("vt-listen").getAttribute("aria-pressed")).toBe("false");
     expect([...tracker.querySelectorAll(".vt-actions button")].map((button) => button.textContent))
       .toEqual(["Listen back", "Book voice track", "Discard recording"]);
-    expect(document.getElementById("vt-list").getAttribute("role")).toBe("list");
+    // The shared builder supplies the table semantics inside this neutral host.
+    expect(document.getElementById("vt-list").tagName).toBe("DIV");
+    expect(document.getElementById("vt-list").hasAttribute("role")).toBe(false);
     // The shortcut is listed with the others, in words.
     const keys = [...document.querySelectorAll("#hotkey-help-modal dt kbd")].map((kbd) => kbd.textContent);
     expect(keys).toContain("Alt+R");
@@ -3572,16 +3574,17 @@ describe("listener request contracts", () => {
     expect(requestCss).toMatch(/\.error\s*\{[^}]*border-left: 4px solid CanvasText;[^}]*font-weight: 600;/);
   });
 
-  it("keeps the operator's request card to one status region, labelled lists and named buttons", () => {
-    const card = htmlSource.slice(htmlSource.indexOf('id="requests-card"'), htmlSource.indexOf("</details>", htmlSource.indexOf('id="requests-card"')));
-    expect(card.match(/aria-live=/g)).toHaveLength(1);
-    expect(card).toMatch(/id="requests-status"\s+role="status"\s+aria-live="polite"\s+aria-atomic="true"/);
-    expect(card).toMatch(/<ul id="requests-list" aria-label="Waiting requests"/);
-    expect(card).toMatch(/<ul id="requests-recent" aria-labelledby="requests-recent-heading"/);
-    // Each button starts with its visible word, then names its song.
-    expect(requestsScript).toMatch(/button\.textContent = label;/);
-    expect(requestsScript).toMatch(/aria-label", `\$\{label\} \$\{button\.dataset\.song\}`/);
-    expect(requestsScript).not.toMatch(/aria-live/);
+  it("keeps the operator's request card to one status region and named shared tables", () => {
+    installDocument();
+    const card = document.getElementById("requests-card");
+    const regions = [...card.querySelectorAll('[aria-live], [role="status"], [role="alert"]')];
+    expect(regions.map((region) => region.id)).toEqual(["requests-status"]);
+    expect(regions[0].getAttribute("role")).toBe("status");
+    expect(regions[0].getAttribute("aria-live")).toBe("polite");
+    expect(regions[0].getAttribute("aria-atomic")).toBe("true");
+    for (const id of ["requests-list", "requests-recent"]) {
+      expect(document.getElementById(id).closest('[aria-live], [role="status"], [role="alert"]')).toBeNull();
+    }
   });
 
   it("labels every smooth-transition setting, groups the give-up choice and links its help and error", () => {
@@ -3605,9 +3608,9 @@ describe("listener request contracts", () => {
     expect(requestsScript).toMatch(/showFieldError\(threshold, message, thresholdError, status\)/);
   });
 
-  it("says a bridge song in words with tokens only for its colour", () => {
-    const rule = cssSource.match(/#queue-list \.queue-bridge \{[^}]*\}/)?.[0] || "";
-    expect(rule).toMatch(/color: var\(--text-dim\);/);
+  it("uses theme tokens for collection and request-setting colours", () => {
+    const rule = cssSource.match(/\.collection-table \{[^}]*\}/)?.[0] || "";
+    expect(rule).toMatch(/color: var\(--text\);/);
     expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
     for (const selector of ["#requests-settings", "#requests-no-smooth"]) {
       const start = cssSource.indexOf(`${selector} {`);
@@ -3615,9 +3618,141 @@ describe("listener request contracts", () => {
       expect(block).toMatch(/\S/);
       expect(block).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
     }
-    const queueScript = readFileSync(staticPath("modules", "queue.js"), "utf8");
-    expect(queueScript).toMatch(/`Bridge to \$\{target\}`/);
-    expect(queueScript).toMatch(/className = "queue-bridge"/);
+  });
+});
+
+describe("Batch 2 rendered collection accessibility", () => {
+  function collection(id, label, columns, primary = null, actions = null) {
+    const host = document.getElementById(id);
+    const table = host.querySelector("table.collection-table");
+    expect(table, id).not.toBeNull();
+    expect(table.getAttribute("role")).toBe("grid");
+    expect(table.getAttribute("aria-label")).toBe(label);
+    expect([...table.querySelectorAll("th")].map((cell) => cell.textContent))
+      .toEqual([...columns, ...(primary ? ["Actions"] : []), ...(actions ? ["Options"] : [])]);
+    expect(table.querySelector('[role="rowheader"]')).toBeNull();
+    expect(table.closest('[aria-live], [role="status"], [role="alert"]')).toBeNull();
+    expect(table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    const row = table.querySelector("tbody tr[data-row-key]");
+    expect(row).not.toBeNull();
+    expect([...row.cells].every((cell) => cell.getAttribute("role") === "gridcell")).toBe(true);
+    const buttons = [...row.querySelectorAll('button:not([role="menuitem"])')];
+    expect(buttons.map((button) => button.textContent)).toEqual([...(primary ? [primary] : []), ...(actions ? ["Options"] : [])]);
+    if (primary) expect(buttons[0].getAttribute("aria-label")).toMatch(new RegExp(`^${primary} .+`));
+    if (actions) {
+      const options = row.querySelector('[aria-haspopup="menu"]');
+      expect(options.getAttribute("aria-label")).toMatch(/^Options for .+/);
+      const menu = document.getElementById(options.getAttribute("aria-controls"));
+      expect(menu.getAttribute("role")).toBe("menu");
+      expect(menu.hidden).toBe(true);
+      options.click();
+      expect(options.getAttribute("aria-expanded")).toBe("true");
+      expect(menu.hidden).toBe(false);
+      expect([...menu.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)).toEqual(actions);
+      for (const button of row.querySelectorAll("button")) {
+        expect(Number.parseFloat(window.getComputedStyle(button).minHeight), `${id}: ${button.textContent}`)
+          .toBeGreaterThanOrEqual(44);
+      }
+      menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      expect(menu.hidden).toBe(true);
+    }
+    return row;
+  }
+
+  it("renders Shows, songs and search with named grids and one primary action", async () => {
+    installDocument({ css: cssSource });
+    document.getElementById("panel-library").hidden = false;
+    const { installShowsPanel } = await import("../../src/autodj/static/modules/shows-panel.js");
+    const show = { id: "show", name: "Morning", source: "category", source_text: "Music", category: "music",
+      count: 1, total_text: "3:00", target_minutes: 60, missing: 0, events: [],
+      songs: [{ path: "/music/song.flac", title: "Song", seconds: 180, length_text: "3:00" }] };
+    const controls = installShowsPanel({ document, request: async (url) => {
+      if (url === "/api/shows") return { shows: [show], categories: [], clockwheels: [], on_air: null };
+      if (url.startsWith("/api/search")) return { results: [{ path: "/music/found.flac", title: "Found", length: 120 }] };
+      if (url.startsWith("/api/editions?")) return { editions: [] };
+      return show;
+    } });
+    try {
+      await controls.refresh();
+      const row = collection("shows-list", "Shows", ["Name", "Source", "Songs", "Length", "Target", "Missing", "Station name while active", "Schedule events"], "Open list", ["Edit", "Delete"]);
+      row.querySelector('button[data-action="open"]').click();
+      await vi.waitFor(() => expect(document.querySelector("#shows-songs tbody tr[data-row-key]")).not.toBeNull());
+      collection("shows-songs", "Show songs", ["Number", "Song", "Length", "Availability", "Repeated"], "Track info", ["Move up", "Move down", "Remove"]);
+      document.getElementById("shows-search").value = "found";
+      document.getElementById("shows-search-run").click();
+      await vi.waitFor(() => expect(document.querySelector("#shows-results tbody tr[data-row-key]")).not.toBeNull());
+      collection("shows-results", "Show search results", ["Song", "Length"], "Add", ["Add to edition"]);
+    } finally { controls.destroy(); }
+  });
+
+  it("renders Prepared occurrences and takes with reachable explained disabled choices", async () => {
+    installDocument({ css: cssSource });
+    document.getElementById("panel-library").hidden = false;
+    const { installPreparedEditions } = await import("../../src/autodj/static/modules/prepared-editions.js");
+    const edition = { id: "edition", name: "Morning edition", revision: 1, assets: {},
+      occurrences: [{ id: "first", kind: "song", path: "/song.flac", title: "Song" }],
+      takes: [{ id: "take", label: "Introduction", position: "opening", after_id: "first", status: "missing" }] };
+    const controls = installPreparedEditions({ doc: document, request: async (url) => url.startsWith("/api/editions?") ? { editions: [edition] } : edition });
+    try {
+      await controls.openShow({ id: "show", name: "Morning", songs: [] });
+      document.getElementById("edition-load").click();
+      await vi.waitFor(() => expect(document.querySelector("#edition-occurrences tbody tr[data-row-key]")).not.toBeNull());
+      collection("edition-occurrences", "Edition occurrences", ["Position", "Item", "Kind"], null, ["Move up", "Move down", "Remove"]);
+      const row = collection("edition-takes", "Edition takes", ["Name", "Placement", "Status"], "Listen", ["Re-record", "Review", "Approve", "Reattach", "Remove"]);
+      const listen = row.querySelector('button[data-action="listen"]');
+      expect(listen.disabled).toBe(false);
+      expect(listen.getAttribute("aria-disabled")).toBe("true");
+      expect(document.getElementById(listen.getAttribute("aria-describedby")).textContent).toContain("audio is missing");
+    } finally { controls.destroy(); }
+  });
+
+  it("renders Queue bridge words in data and accessible row names", async () => {
+    installDocument({ css: cssSource });
+    const { applyQueueState } = await import("../../src/autodj/static/modules/queue.js");
+    applyQueueState([{ path: "/bridge.flac", display_name: "Bridge song", bridge_to: "Requested song" }], {
+      queueList: document.getElementById("queue-list"), queueAnnounce: document.getElementById("queue-announce"),
+    });
+    const row = collection("queue-list", "Queued tracks", ["Position", "Track", "Bridge"], "Track info", ["Move to top", "Move up", "Move down", "Remove"]);
+    expect(row.querySelector('td[data-action="bridge"]').textContent).toBe("Bridge to Requested song");
+    expect(row.querySelector('[aria-haspopup="menu"]').getAttribute("aria-label")).toBe("Options for Bridge song, bridge to Requested song");
+    expect(row.querySelector('button[data-action="info"]').getAttribute("aria-label")).toBe("Track info Bridge song, bridge to Requested song");
+  });
+
+  it("renders Listener waiting and recent tables with names and silent data", async () => {
+    installDocument({ css: cssSource });
+    const { installListenerRequests } = await import("../../src/autodj/static/modules/listener-requests.js");
+    const state = { enabled: true, approval: "manual", today: 2, daily_limit: 50,
+      pending: [{ id: "waiting", title: "Song", artist: "Artist", requested_at: 100, can_approve: false, fit: "No smooth place is available." }],
+      recent: [{ id: "recent", title: "Other", requested_at: 90, status: "queued" }] };
+    const controls = installListenerRequests({ doc: document, request: async () => state, setTimer: () => null, formatTime: () => "10:00" });
+    await controls.refresh();
+    const row = collection("requests-list", "Waiting requests", ["Song", "Requester", "Time", "Fit"], "Approve", ["Play next", "Turn down"]);
+    collection("requests-recent", "Recent decisions", ["Song", "Requester", "Time", "Decision", "Reason"]);
+    const approve = row.querySelector('button[data-action="approve"]');
+    expect(approve.getAttribute("aria-label")).toBe("Approve Song by Artist");
+    expect(approve.disabled).toBe(false);
+    expect(approve.getAttribute("aria-disabled")).toBe("true");
+    expect(document.getElementById(approve.getAttribute("aria-describedby")).textContent).toBe("No smooth place is available.");
+    const card = document.getElementById("requests-card");
+    expect([...card.querySelectorAll('[aria-live], [role="status"], [role="alert"]')].map((region) => region.id)).toEqual(["requests-status"]);
+  });
+
+  it("renders Voice bookings with named options and an explained unavailable cancellation", async () => {
+    installDocument({ css: cssSource });
+    document.getElementById("panel-voice").hidden = false;
+    const { installVoiceTracker } = await import("../../src/autodj/static/modules/voice-tracker.js");
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new globalThis.Response(JSON.stringify({
+      accepting: false, slot: null, tracks: [{ break_id: "booking", label: "Introduction", state: "on_air", cancellable: false }],
+    }), { headers: { "Content-Type": "application/json" } }));
+    const controls = installVoiceTracker(undefined, { interval: () => null, media: () => null, Recorder: () => null });
+    try {
+      await controls.refresh();
+      const row = collection("vt-list", "Voice-track bookings", ["Booking", "State", "Details"], null, ["Cancel"]);
+      const cancel = row.querySelector('button[data-action="cancel"]');
+      expect(cancel.disabled).toBe(false);
+      expect(cancel.getAttribute("aria-disabled")).toBe("true");
+      expect(document.getElementById(cancel.getAttribute("aria-describedby")).textContent).toContain("This booking cannot be canceled");
+    } finally { controls.clear(); fetch.mockRestore(); }
   });
 });
 

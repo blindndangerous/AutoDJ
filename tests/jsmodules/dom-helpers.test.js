@@ -238,6 +238,28 @@ describe("reconcileRows", () => {
 });
 
 describe("focusAfterDialog", () => {
+  it("preserves the requested native input and rejects a disabled row button", () => {
+    document.body.innerHTML = '<table><tbody><tr><td role="gridcell" tabindex="0"><input id="first"><input id="second"></td><td role="gridcell" tabindex="-1"><button disabled>Pending</button></td></tr></tbody></table>';
+    const second = document.getElementById("second");
+    expect(focusAfterDialog(second)).toBe(true);
+    expect(document.activeElement).toBe(second);
+    expect(focusAfterDialog(document.querySelector("button"))).toBe(false);
+    expect(document.activeElement).toBe(second);
+  });
+  it("restores row buttons to their gridcell and preserves native input focus", () => {
+    document.body.innerHTML = '<table><tbody><tr><td role="gridcell" tabindex="0"><button>Options</button></td><td role="gridcell" tabindex="-1"><input type="checkbox"></td></tr></tbody></table>';
+    const [cell, checkboxCell] = document.querySelectorAll("td");
+    const button = cell.querySelector("button");
+    const buttonFocus = vi.fn();
+    button.addEventListener("focus", buttonFocus);
+    expect(focusAfterDialog(button)).toBe(true);
+    expect(document.activeElement).toBe(cell);
+    expect(buttonFocus).not.toHaveBeenCalled();
+    expect(focusAfterDialog(checkboxCell)).toBe(true);
+    expect(document.activeElement).toBe(checkboxCell);
+    expect(focusAfterDialog(checkboxCell.querySelector("input"))).toBe(true);
+    expect(document.activeElement).toBe(checkboxCell.querySelector("input"));
+  });
   it("does not count the page body as a place focus returned to", () => {
     expect(focusAfterDialog(document.body)).toBe(false);
   });

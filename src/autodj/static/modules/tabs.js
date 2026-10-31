@@ -6,7 +6,7 @@ import { settingsHaveChanges, confirmSettingsNavigation } from "./settings-draft
 // the ARIA APG roving-tabindex pattern (tablist.js).
 
 import { showVisibleStatus } from "./live-region.js";
-import { markSelected, tabForKey } from "./tablist.js";
+import { installTabEntry, markSelected, tabForKey } from "./tablist.js";
 
 // The main tabs in order.  The tab bar follows this list, and Alt+1 to
 // Alt+9 open the tab at that position, so a new tab only goes here.
@@ -31,6 +31,8 @@ export function initViewRouter() {
       lnk.parentElement.append(lnk);
     }
   }
+  const tablist = document.querySelector('#view-nav [role="tablist"]');
+  if (tablist) installTabEntry(tablist);
   for (const lnk of _viewLinks.values()) {
     lnk.addEventListener("click", () => {
       const target = lnk.dataset.view;

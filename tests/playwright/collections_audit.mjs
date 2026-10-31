@@ -6,6 +6,7 @@ import { readFileSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { expect } from "@playwright/test";
 import { runAudit } from "./audit_helpers.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -139,7 +140,77 @@ async function focused(page, selector) {
   await page.waitForFunction((value) => document.activeElement?.matches(value), selector);
 }
 
+// Assert the active element itself, then continue through the grid with arrows.
+// Descendant containment would incorrectly accept the Options button.
+async function cellReturn(page, selector) {
+  const cell = page.locator(selector).first();
+  await expect(cell).toBeFocused();
+  await expect(cell).toHaveAttribute("role", "gridcell");
+  await page.keyboard.press("ArrowLeft");
+  assert.equal(await cell.evaluate((element) => document.activeElement === element.previousElementSibling), true, `${selector}: Left continues grid navigation`);
+  await page.keyboard.press("ArrowRight");
+  await expect(cell).toBeFocused();
+}
+
+async function editorDescription(page) {
+  const dialog = page.locator('dialog.editor-dialog[open]');
+  const title = await dialog.evaluate((element) => document.getElementById(element.getAttribute("aria-labelledby")).textContent.trim());
+  await expect(dialog).toHaveAccessibleName(title);
+  await expect(dialog).toHaveAccessibleDescription(await dialog.getAttribute("id") === "clock-step-dialog"
+    ? "Choose what the step plays, how it chooses and when it plays."
+    : "Use Tab to move between fields and actions.");
+}
+
+async function dataCellNames(page, host) {
+  const cells = page.locator(`${host} tbody tr[data-row-key]:first-child > td`);
+  if (!await cells.count()) return;
+  await cells.first().focus();
+  for (let index = 0; index < await cells.count(); index += 1) {
+    const cell = cells.nth(index);
+    if (index) await page.keyboard.press("ArrowRight");
+    if (await cell.locator("button, input, select").count()) continue;
+    const content = (await cell.textContent()).replace(/\s+/g, " ").trim();
+    await expect(cell).toHaveAccessibleName(content);
+  }
+  const rows = page.locator(`${host} tbody tr[data-row-key]`);
+  if (await rows.count() < 2) return;
+  const destination = rows.nth(1);
+  const named = destination.locator("td[data-name]");
+  if (!await named.count()) return;
+  const rowName = (await named.textContent()).replace(/\s+/g, " ").trim();
+  const secondCells = destination.locator(":scope > td");
+  for (let index = 0; index < await secondCells.count(); index += 1) {
+    const cell = secondCells.nth(index);
+    if (await cell.locator("button, input, select").count() || await cell.getAttribute("data-name") !== null) continue;
+    await cells.nth(index).focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(cell).toBeFocused();
+    const content = (await cell.textContent()).replace(/\s+/g, " ").trim();
+    await expect(cell).toHaveAccessibleName(`${content}, ${rowName}`);
+    await named.focus();
+    await expect(cell).toHaveAccessibleName(content);
+  }
+}
+
+async function traceEditorOpen(page, trigger, first, evidence) {
+  await page.locator(trigger).focus();
+  await page.evaluate(() => {
+    window.editorFocusTrace = [];
+    window.captureEditorFocus = (event) => window.editorFocusTrace.push({ type: event.type, target: event.target.id || event.target.tagName });
+    for (const type of ["focus", "focusin"]) document.addEventListener(type, window.captureEditorFocus, true);
+  });
+  await page.keyboard.press("Enter");
+  await focused(page, first);
+  const events = await page.evaluate(() => {
+    for (const type of ["focus", "focusin"]) document.removeEventListener(type, window.captureEditorFocus, true);
+    return window.editorFocusTrace;
+  });
+  assert.deepEqual(events, [{ type: "focus", target: first.slice(1) }, { type: "focusin", target: first.slice(1) }]);
+  evidence.checks.push(`Editor opening ${first}: exactly one focus and one focusin event, no intermediate focus`);
+}
+
 async function checkTable(page, host) {
+  await dataCellNames(page, host);
   assert.equal(await page.locator(`${host} [tabindex="0"]`).count(), 1, `${host} single Tab stop`);
   await page.locator(host).evaluate((element) => {
     const before = document.createElement("button"), after = document.createElement("button");
@@ -203,8 +274,9 @@ async function visuals(page, evidence, state) {
     };
     const visible = (element) => element.getClientRects().length && !element.closest("[hidden]");
     const small = [...document.querySelectorAll(".collection-table button, .row-actions-menu [role=menuitem], dialog[open] button")]
-      .filter(visible).map((element) => ({ label: element.getAttribute("aria-label") || element.textContent, width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height }))
-      .filter(({ width, height }) => width < 24 || height < 24);
+      .filter(visible).map((element) => ({ label: element.getAttribute("aria-label") || element.textContent, width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height,
+        minimumHeight: element.matches('.collection-table button, .row-actions-menu [role="menuitem"]') ? 44 : 24 }))
+      .filter(({ width, height, minimumHeight }) => width < 24 || height < minimumHeight);
     const active = document.activeElement;
     const style = window.getComputedStyle(active);
     const bounds = active.getBoundingClientRect();
@@ -214,14 +286,14 @@ async function visuals(page, evidence, state) {
     return { small, minimumButtonTextContrast: Math.min(...textContrast), focus: { label: active.getAttribute("aria-label") || active.textContent.trim(), contrast: contrast(rgba(style.outlineColor), background(focusBackground)), outlineStyle: style.outlineStyle, outlineWidth: Number.parseFloat(style.outlineWidth), bounds: bounds.toJSON(), viewport: { width: window.innerWidth, height: window.innerHeight }, visible: bounds.bottom > 0 && bounds.top < window.innerHeight && bounds.right > 0 && bounds.left < window.innerWidth } };
   });
   evidence.visual.push({ state, ...measurements });
-  assert.deepEqual(measurements.small, [], `24px targets ${state}`);
+  assert.deepEqual(measurements.small, [], `24px targets; collection buttons/menu items 44px high ${state}`);
   assert.ok(measurements.focus.outlineWidth >= 2 && measurements.focus.outlineStyle !== "none", `visible focus ${state}`);
   assert.equal(measurements.focus.visible, true, `focus in viewport ${state}`);
   assert.ok(measurements.focus.contrast >= 3, `focus contrast ${state}: ${measurements.focus.contrast}`);
   assert.ok(measurements.minimumButtonTextContrast >= 4.5, `button text contrast ${state}`);
 }
 
-async function menuJourney(page, row, evidence, state) {
+async function menuJourney(page, row, evidence, state, typeahead = "d") {
   const cell = page.locator(`${row} td[data-action="options"]`);
   const button = page.locator(`${row} [aria-haspopup="menu"]`);
   await cell.focus();
@@ -231,40 +303,46 @@ async function menuJourney(page, row, evidence, state) {
   await focused(page, `${menu} [role="menuitem"]:first-child`);
   assert.equal(await button.getAttribute("aria-expanded"), "true");
   await page.keyboard.press("ArrowDown");
-  await focused(page, `${menu} [role="menuitem"]:nth-child(2)`);
+  const second = await page.locator(`${menu} [role="menuitem"]`).count() > 1 ? 2 : 1;
+  await focused(page, `${menu} [role="menuitem"]:nth-child(${second})`);
   await page.keyboard.press("End");
   await focused(page, `${menu} [role="menuitem"]:last-child`);
   await page.keyboard.press("Home");
   await focused(page, `${menu} [role="menuitem"]:first-child`);
-  await page.keyboard.press("d");
+  await page.keyboard.press(typeahead);
   await focused(page, `${menu} [role="menuitem"]`);
-  assert.match(await page.evaluate(() => document.activeElement.textContent), /^d/i, "type-ahead chooses a matching item");
+  assert.equal((await page.evaluate(() => document.activeElement.textContent)).toLowerCase().startsWith(typeahead), true, "type-ahead chooses a matching item");
   await axe(page, evidence, `${state} menu`);
   await visuals(page, evidence, `${state} menu`);
   await page.keyboard.press("Escape");
-  await focused(page, `${row} [aria-haspopup="menu"]`);
-  await visuals(page, evidence, `${state} Options button`);
+  await cellReturn(page, `${row} td[data-action="options"]`);
+  await visuals(page, evidence, `${state} Options cell`);
   assert.equal(await button.getAttribute("aria-expanded"), "false");
-  await page.keyboard.press("ArrowUp");
-  await focused(page, `${menu} [role="menuitem"]:last-child`);
-  await page.keyboard.press("Escape");
-  await page.keyboard.press("ArrowDown");
-  await focused(page, `${menu} [role="menuitem"]:first-child`);
-  await page.keyboard.press("Escape");
-  await page.keyboard.down("Space");
-  assert.equal(await button.getAttribute("aria-expanded"), "false", "button Space waits for release");
-  await page.keyboard.up("Space");
-  await focused(page, `${menu} [role="menuitem"]:first-child`);
-  assert.equal(await button.getAttribute("aria-expanded"), "true", "Space release leaves popup open");
-  await page.keyboard.press("Escape");
-  await cell.focus();
   await page.keyboard.press("Space");
   await focused(page, `${menu} [role="menuitem"]:first-child`);
+  await page.keyboard.press("ArrowUp");
+  await focused(page, `${menu} [role="menuitem"]:last-child`);
+  await page.keyboard.press("ArrowDown");
+  await focused(page, `${menu} [role="menuitem"]:first-child`);
+  // Give even the document's final collection a real subsequent Tab target.
+  // Otherwise Firefox can move focus to browser chrome while activeElement
+  // still names the last document control, which is not a trapped menu.
+  await page.locator(row).evaluate(async (element) => {
+    const { collectionHost } = await import(new URL("/modules/collection-table.js", window.location.href).href);
+    const host = collectionHost(element);
+    const after = document.createElement("button");
+    after.id = "audit-menu-after"; after.textContent = "After collection menu";
+    host.after(after);
+  });
   await page.keyboard.press("Tab");
+  await focused(page, "#audit-menu-after");
   assert.equal(await button.getAttribute("aria-expanded"), "false");
   assert.equal(await button.evaluate((element) => element.closest("table").contains(document.activeElement)), false, "Tab leaves collection");
   assert.equal(await page.locator(menu).evaluate((element) => element.contains(document.activeElement)), false, "Tab leaves popup");
-  evidence.checks.push(`${state}: Enter/Space, button Space release, button Up/Down, arrows, Home/End, type-ahead, Escape and Tab`);
+  await page.keyboard.press("Shift+Tab");
+  await cellReturn(page, `${row} td[data-action="options"]`);
+  await page.locator("#audit-menu-after").evaluate((element) => element.remove());
+  evidence.checks.push(`${state}: Enter/Space, wrapping menu arrows, Home/End, type-ahead, Escape to exact cell and arrow continuation; Tab exit and Shift+Tab cell re-entry`);
 }
 
 async function stoppedStation(page, row, evidence) {
@@ -278,6 +356,7 @@ async function stoppedStation(page, row, evidence) {
   const description = await item.getAttribute("aria-describedby");
   assert.ok(description, "disabled Run now has a description before activation");
   assert.equal(await page.locator(`#${description}`).textContent(), reason);
+  await expect(item).toHaveAccessibleDescription(reason);
   await axe(page, evidence, "Station stopped menu");
   const before = await page.evaluate(() => window.collectionFixture.calls.length);
   for (const method of ["mouse", "Enter", "Space", "type-ahead then Enter"]) {
@@ -309,7 +388,20 @@ async function stoppedStation(page, row, evidence) {
 
 async function journey(page, evidence) {
   for (const host of ["#schedule-events", "#schedule-upcoming", "#schedule-runs", "#clock-list", "#clock-slots"]) await checkTable(page, host);
-  evidence.checks.push("All five tables: one Tab stop and actual Tab/Shift+Tab entry/exit");
+  await expect(page.locator("#clock-name")).toHaveAccessibleName("New clockwheel name");
+  await expect(page.locator("#clock-name")).toHaveValue("");
+  await page.locator("#clock-name").fill("Future wheel");
+  await page.locator('#clock-list tr[data-row-key="Evening"] td[data-action="open"]').focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#clock-name")).toHaveValue("Future wheel");
+  await page.locator('#clock-list tr[data-row-key="Morning"] td[data-action="open"]').focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#clock-name")).toHaveValue("Future wheel");
+  await page.locator("#clock-name").fill("");
+  await expect(page.locator('#clock-slots th').filter({ hasText: /^Selection$/ })).toHaveCount(1);
+  await expect(page.locator('#clock-slots tr[data-index="0"] td[data-action="selection"]')).toHaveAccessibleName("Least recently played");
+  await expect(page.locator('#clock-slots tr[data-index="0"] td[data-action="target"]')).toHaveAccessibleName("Not specified");
+  evidence.checks.push("All five tables: computed data names omit redundant headers, one Tab stop, actual Tab/Shift+Tab entry/exit; Selection separated from Length or target and New clockwheel name computed label");
   const eventRow = '#schedule-events tr[data-row-key="event-0"]';
   await menuJourney(page, eventRow, evidence, "Schedule");
   await stoppedStation(page, eventRow, evidence);
@@ -318,27 +410,32 @@ async function journey(page, evidence) {
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => window.collectionFixture.calls.some(({ url }) => url.endsWith("/event-0/run")));
   assert.equal(await page.evaluate(() => window.collectionFixture.calls.filter(({ url }) => url.endsWith("/event-0/run")).length), 1);
-  evidence.checks.push("Schedule: Enter invokes Run now through the real menu handler");
+  await cellReturn(page, `${eventRow} td[data-action="options"]`);
+  evidence.checks.push("Schedule: Enter invokes Run now once and returns to exact Options cell with arrow continuation");
   await page.locator(`${eventRow} [aria-haspopup="menu"]`).focus();
   await page.keyboard.press("Space");
   await focused(page, `${eventRow} [role="menuitem"][data-action="run"]`);
   await page.keyboard.press("Space");
-  await focused(page, `${eventRow} [aria-haspopup="menu"]`);
+  await cellReturn(page, `${eventRow} td[data-action="options"]`);
   assert.equal(await page.locator(`${eventRow} [aria-haspopup="menu"]`).getAttribute("aria-expanded"), "false");
   assert.equal(await page.evaluate(() => window.collectionFixture.calls.filter(({ url }) => url.endsWith("/event-0/run")).length), 2);
-  evidence.checks.push("Schedule: Space opens on release and activates once without reopening on focus return");
+  evidence.checks.push("Schedule: Space opens and activates once without reopening on focus return");
+  await choose(page, eventRow, "delete");
+  await confirmationScan(page, evidence, "Delete schedule event");
+  await expect(page.locator("#confirm-dialog")).toHaveAccessibleDescription(await page.locator("#confirm-message").textContent());
+  await page.locator("#confirm-cancel").click();
+  await cellReturn(page, `${eventRow} td[data-action="options"]`);
 
-  await page.locator(`${eventRow} td[data-action="edit"]`).focus();
-  await page.keyboard.press("Enter");
-  await focused(page, "#schedule-name");
+  await traceEditorOpen(page, `${eventRow} td[data-action="edit"]`, "#schedule-name", evidence);
+  await editorDescription(page);
   await axe(page, evidence, "Schedule editor");
   await page.keyboard.press("Escape");
-  await focused(page, `${eventRow} td[data-action="edit"]`);
+  await cellReturn(page, `${eventRow} td[data-action="edit"]`);
   await page.keyboard.press("Enter");
   await page.locator("#schedule-name").fill("Morning revised");
   await page.locator("#schedule-save").focus();
   await page.keyboard.press("Enter");
-  await focused(page, `${eventRow} td[data-action="edit"]`);
+  await cellReturn(page, `${eventRow} td[data-action="edit"]`);
   assert.equal(await page.locator(`${eventRow} td`).first().textContent(), "Morning revised");
   evidence.checks.push("Schedule editor: keyboard open, Escape cancel, save and return to Edit cell");
 
@@ -353,9 +450,8 @@ async function journey(page, evidence) {
   assert.equal(await page.locator('#clock-slots tr[data-index]').count(), 2);
   await page.keyboard.press("Escape");
   evidence.checks.push("Clockwheel step: disabled Move up stays reachable and announces its reason without mutation");
-  await page.locator(`${stepRow} td[data-action="edit"]`).focus();
-  await page.keyboard.press("Enter");
-  await focused(page, "#clock-step-type");
+  await traceEditorOpen(page, `${stepRow} td[data-action="edit"]`, "#clock-step-type", evidence);
+  await editorDescription(page);
   await axe(page, evidence, "Clockwheel step editor");
   await page.locator("#clock-step-selection").selectOption("random");
   await page.locator("#clock-add-step").focus();
@@ -381,6 +477,7 @@ async function journey(page, evidence) {
   await page.keyboard.press("r");
   await page.keyboard.press("Enter");
   await focused(page, "#clock-editor-name");
+  await editorDescription(page);
   await axe(page, evidence, "Clockwheel Rename editor");
   await page.locator("#clock-editor-name").fill("Evening revised");
   await page.locator('#clock-name-form button[type="submit"]').focus();
@@ -392,6 +489,7 @@ async function journey(page, evidence) {
   await page.locator("#clock-create").focus();
   await page.keyboard.press("Enter");
   await focused(page, "#clock-editor-name");
+  await editorDescription(page);
   await axe(page, evidence, "Clockwheel Create editor");
   await page.keyboard.press("Escape");
   await focused(page, "#clock-create");
@@ -416,7 +514,7 @@ async function journey(page, evidence) {
   assert.ok(menuBounds.x >= 0 && menuBounds.x + menuBounds.width <= 320, "320px popup stays in viewport");
   await page.keyboard.press("Escape");
   await page.emulateMedia({ forcedColors: "active" });
-  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
   await visuals(page, evidence, "Forced colors menu");
   await page.keyboard.press("Escape");
   await page.emulateMedia({ forcedColors: "none" });
@@ -436,7 +534,7 @@ async function journey(page, evidence) {
     window.collectionFixture.events.splice(0, 1);
     await window.collectionFixture.scheduler.refresh();
   });
-  await focused(page, '#schedule-events tr[data-row-key="event-1"] td[data-action="options"]');
+  await cellReturn(page, '#schedule-events tr[data-row-key="event-1"] td[data-action="options"]');
   assert.equal(await page.locator('[role="menu"]:visible').count(), 0, "removed native popover closes");
   await page.waitForFunction(() => document.getElementById("schedule-status").textContent.includes("Focus moved to Options for Evening"));
   await page.keyboard.press("Enter");
@@ -451,6 +549,475 @@ async function journey(page, evidence) {
   evidence.checks.push("Native open popup survives passive refresh; row removal closes it and announces adjacent-row/final Add fallback");
 }
 
+// Each Batch 2 surface gets a fresh document and production card markup.
+// Modules own the controls; only network data and timers are supplied here.
+async function mountBatch(page, theme, surface) {
+  await page.goto(BASE);
+  await page.evaluate(async ({ theme, surface }) => {
+    document.documentElement.dataset.theme = theme;
+    const source = new window.DOMParser().parseFromString(await (await fetch("/source-index")).text(), "text/html");
+    const panel = document.createElement("section");
+    const library = ["shows", "editions"].includes(surface);
+    panel.id = library ? "panel-library" : surface === "voice" ? "panel-voice" : "panel-queue";
+    panel.setAttribute("aria-label", library ? "Library tools" : surface === "voice" ? "Voice tracks" : "Queue and requests");
+    const card = library ? source.getElementById("shows-heading").closest("details")
+      : surface === "voice" ? source.getElementById("voice-tracker")
+        : source.getElementById(surface === "queue" ? "queue-card" : "requests-card");
+    card.hidden = false;
+    if (card.tagName === "DETAILS") card.open = true;
+    if (surface === "voice") panel.append(source.getElementById("voice-heading"));
+    panel.append(card);
+    document.getElementById("fixture").append(panel);
+    document.body.append(source.getElementById("confirm-dialog"));
+    const clone = (value) => JSON.parse(JSON.stringify(value));
+    const calls = [];
+    const fixture = window.batchFixture = { calls };
+    if (["shows", "queue"].includes(surface)) {
+      const view = surface === "shows" ? "library" : "queue";
+      panel.dataset.view = view;
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", `tab-${view}`);
+      panel.removeAttribute("aria-label");
+      const nav = document.createElement("div");
+      nav.id = "view-nav"; nav.setAttribute("role", "tablist"); nav.setAttribute("aria-label", "Views");
+      nav.append(source.getElementById(`tab-${view}`), source.getElementById("tab-track-info"));
+      document.getElementById("fixture").prepend(nav);
+      document.getElementById("fixture").append(source.getElementById("panel-track-info"));
+      // Library folders and the current-track trigger are dependencies of the
+      // actual Track info controller. Keep their production markup hidden.
+      const support = document.createElement("div"); support.hidden = true;
+      support.append(source.getElementById("source-folders-heading").closest("section"), source.getElementById("edit-current-points"));
+      document.body.append(support, source.getElementById("track-info-dialog"), source.getElementById("sr-status"));
+      const libraryRequest = async (url) => {
+        if (url.startsWith("/api/library/points?")) return {
+          path: new URL(url, window.location.href).searchParams.get("path"), title: "Selected song", kind: "music", points: {},
+        };
+        if (url === "/api/library/folders") return { folders: [], similarity_available: false };
+        if (url === "/api/library/auto-rescan") return { hours: 0, minutes: 0 };
+        if (url === "/api/library/music-fade") return { db: 10 };
+        if (url.startsWith("/api/intros?")) return { song: [], artist: [], active: true };
+        throw new Error(`Unexpected Track info fixture request ${url}`);
+      };
+      const { initViewRouter } = await import(new URL("/modules/tabs.js", window.location.href).href);
+      window.history.replaceState(null, "", `#${view}`);
+      initViewRouter();
+      const { installLibraryFolders } = await import(new URL("/modules/library-folders.js", window.location.href).href);
+      fixture.library = installLibraryFolders({ request: libraryRequest });
+    }
+    document.addEventListener("autodj:edit-points", (event) => {
+      fixture.trackInfo = { path: event.detail.path, kind: event.detail.kind, opener: event.detail.opener };
+    });
+    if (surface === "shows") {
+      const song = (index) => ({ path: `/music/${index}.flac`, title: `Song ${index}`, seconds: 180, length_text: "3:00", missing: false });
+      const show = { id: "sample-show", name: "Evening selection", source: "category", category: "music",
+        source_text: "Category Music", clockwheel: "", target_minutes: 60, station_name: "", events: [], missing: 0,
+        songs: [song(1), song(2)] };
+      const view = () => ({ ...show, count: show.songs.length, total_seconds: show.songs.length * 180, total_text: `${show.songs.length * 3}:00` });
+      fixture.shows = [show];
+      const request = async (url, options = {}) => {
+        const method = options.method || "GET", body = options.body ? JSON.parse(options.body) : {};
+        calls.push({ url, method, body });
+        if (url === "/api/shows") return clone({ shows: fixture.shows.map(() => view()), categories: [{ id: "music", name: "Music" }], clockwheels: [], limits: { min_minutes: 5, max_minutes: 360 }, on_air: null });
+        if (url.startsWith("/api/editions?")) return { editions: [] };
+        if (url.endsWith("/songs")) { show.songs = body.songs.map((path) => song(Number(path.match(/(\d+)\.flac$/)[1]))); return clone(view()); }
+        if (url === "/api/shows/sample-show") {
+          if (method === "PUT") Object.assign(show, body);
+          if (method === "DELETE") fixture.shows = [];
+          return clone(view());
+        }
+        if (url.startsWith("/api/search?")) return { results: fixture.emptySearch ? [] : [{ path: "/music/3.flac", title: "Song 3", length: 180 }] };
+        throw new Error(`Unexpected shows fixture ${method} ${url}`);
+      };
+      const { installShowsPanel } = await import(new URL("/modules/shows-panel.js", window.location.href).href);
+      fixture.controls = installShowsPanel({ request });
+      await fixture.controls.refresh();
+    } else if (surface === "editions") {
+      document.getElementById("shows-editor").hidden = false;
+      document.getElementById("edition-card").hidden = false;
+      document.getElementById("edition-card").open = true;
+      fixture.edition = { id: "sample-edition", show_id: "sample-show", name: "Evening edition", revision: 3,
+        occurrences: [{ id: "first", kind: "song", path: "/music/1.flac" }, { id: "second", kind: "song", path: "/music/2.flac" }],
+        assets: {}, takes: [{ id: "speech", asset_id: "recording", label: "Introduction", position: "transition",
+          before_id: "first", after_id: "second", placement: "auto", status: "unattached", dependency_hash: "old" }] };
+      const request = async (url, options = {}) => {
+        const method = options.method || "GET", body = options.body ? JSON.parse(options.body) : {};
+        calls.push({ url, method, body });
+        const edition = fixture.edition;
+        if (url.startsWith("/api/editions?")) return clone({ editions: [edition] });
+        if (url.endsWith("/reattach")) {
+          Object.assign(edition.takes[0], { before_id: body.before_id, after_id: body.after_id, status: "needs_review", dependency_hash: "new" });
+          edition.revision += 1;
+        } else if (method === "DELETE") { edition.takes = []; edition.revision += 1; }
+        else if (method === "PUT") { edition.occurrences = body.occurrences; edition.revision += 1; }
+        return clone(edition);
+      };
+      const { installPreparedEditions } = await import(new URL("/modules/prepared-editions.js", window.location.href).href);
+      fixture.controls = installPreparedEditions({ request });
+      await fixture.controls.openShow({ id: "sample-show", name: "Evening programme", songs: [
+        { path: "/music/1.flac", title: "First song" }, { path: "/music/2.flac", title: "Second song" }] });
+      document.getElementById("edition-load").click();
+    } else if (surface === "queue") {
+      const queue = await import(new URL("/modules/queue.js", window.location.href).href);
+      const els = { queueList: document.getElementById("queue-list"), queueAnnounce: document.getElementById("queue-announce"), queueClear: document.getElementById("queue-clear") };
+      queue.resetQueueState(els);
+      queue.applyQueueState(["Alpha", "Bravo", "Charlie"].map((display_name, index) => ({ path: `/music/${index + 1}.flac`, display_name })), els);
+      queue.installQueueButtons(els); queue.installQueueClear(els);
+      fixture.restrict = (reason) => queue.setQueueDisabledReason(els, reason);
+    } else if (surface === "requests") {
+      fixture.state = { enabled: true, approval: "manual", today: 3, daily_limit: 20, bridges_enabled: false,
+        max_bridges: 2, bridge_cost_threshold: 2, no_smooth_spot: "best",
+        pending: ["Alpha", "Bravo", "Charlie", "Delta"].map((title, index) => ({ id: `request-${index}`, title, artist: "Artist", name: "Listener", requested_at: 100,
+          fit: index === 1 ? "No smooth position is available." : "Fits the queue", can_approve: index !== 1 })),
+        recent: [{ id: "previous", title: "Earlier song", name: "Listener", requested_at: 90, status: "queued", note: "Approved" }] };
+      const request = async (url, options = {}) => {
+        const method = options.method || "GET", body = options.body ? JSON.parse(options.body) : null;
+        calls.push({ url, method, body });
+        if (url === "/api/requests" && method === "GET") return clone(fixture.state);
+        const action = /^\/api\/requests\/(request-\d+)\/(approve|play-next|reject)$/.exec(url);
+        if (method === "POST" && action && body === null) {
+          const index = fixture.state.pending.findIndex((item) => item.id === action[1]);
+          if (index < 0) throw new Error(`Missing fixture request ${action[1]}`);
+          const item = fixture.state.pending.splice(index, 1)[0];
+          fixture.state.recent.unshift({ ...item, status: action[2] === "reject" ? "rejected" : "queued" });
+          return clone(fixture.state);
+        }
+        throw new Error(`Unexpected listener request fixture ${method} ${url}`);
+      };
+      const { installListenerRequests } = await import(new URL("/modules/listener-requests.js", window.location.href).href);
+      fixture.controls = installListenerRequests({ request, setTimer: () => 0, later: (callback) => setTimeout(callback, 0) });
+      await fixture.controls.refresh();
+    } else if (surface === "voice") {
+      const { installVoiceTracker } = await import(new URL("/modules/voice-tracker.js", window.location.href).href);
+      fixture.controls = installVoiceTracker(undefined, { interval: () => 0, media: () => ({ enumerateDevices: async () => [] }) });
+      await fixture.controls.refresh();
+    }
+  }, { theme, surface });
+  await page.addScriptTag({ url: `${BASE}/axe.js` });
+}
+
+async function choose(page, row, action) {
+  await page.locator(`${row} [aria-haspopup="menu"]`).focus();
+  await page.keyboard.press("Enter");
+  await page.locator(`${row} button[data-action="${action}"]`).focus();
+  await page.keyboard.press("Enter");
+}
+
+async function emptyTable(page, host, evidence) {
+  await page.locator("#confirm-dialog").waitFor({ state: "hidden" });
+  await page.locator(`${host} td.no-results`).waitFor();
+  assert.equal(await page.locator(`${host} td.no-results`).count(), 1);
+  assert.equal(Number(await page.locator(`${host} td.no-results`).getAttribute("colspan")), await page.locator(`${host} thead th`).count());
+  await checkTable(page, host);
+  evidence.checks.push(`${host}: one spanning empty row and one actual Tab stop`);
+}
+
+async function tableArrows(page, host) {
+  const first = page.locator(`${host} tbody tr[data-row-key] td`).first();
+  await first.focus();
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await first.evaluate((element) => document.activeElement === element.nextElementSibling), true, `${host} right cell navigation`);
+  await page.keyboard.press("ArrowLeft");
+  assert.equal(await first.evaluate((element) => document.activeElement === element), true, `${host} left cell navigation`);
+}
+
+async function confirmationScan(page, evidence, state) {
+  await focused(page, "#confirm-cancel");
+  await axe(page, evidence, `${state} confirmation`);
+  await visuals(page, evidence, `${state} confirmation`);
+}
+
+async function trackInfoRoundtrip(page, row, evidence, state) {
+  await focused(page, "#track-info-heading");
+  assert.equal(await page.locator("#points-path").inputValue(), "/music/1.flac");
+  await axe(page, evidence, `${state} real Track info`);
+  await page.locator("#track-info-return").focus();
+  await page.keyboard.press("Enter");
+  await focused(page, `${row} td[data-action="info"]`);
+  evidence.checks.push(`${state}: actual library Track info controller and tab router return directly to the originating cell`);
+}
+
+async function showsJourney(page, evidence) {
+  const show = '#shows-list tr[data-row-key="sample-show"]';
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ width: 320, height: 640 });
+  // A row taller than the viewport must not move its button between pointer
+  // down and up when the shared grid transfers focus to the containing cell.
+  await page.locator(show).evaluate((row) => { row.style.height = "900px"; });
+  assert.ok((await page.locator(show).boundingBox()).height > 640, "pointer regression uses a tall row");
+  const beforeOpen = await page.evaluate(() => window.batchFixture.calls.filter((call) => call.url === "/api/shows/sample-show" && call.method === "GET").length);
+  await page.locator(`${show} button[data-action="open"]`).click();
+  await page.waitForFunction(() => !document.getElementById("shows-editor").hidden && document.querySelectorAll('#shows-songs tr[data-row-key]').length === 2);
+  assert.equal(await page.evaluate(() => window.batchFixture.calls.filter((call) => call.url === "/api/shows/sample-show" && call.method === "GET").length), beforeOpen + 1, "real pointer opens the show once");
+  await focused(page, "#shows-editor-heading");
+  await page.locator("#shows-close").click();
+  await page.locator(show).evaluate((row) => row.style.removeProperty("height"));
+  await page.setViewportSize(viewport);
+  evidence.checks.push("Show primary: real pointer opens a tall row at320x640, sends one detail GET and focuses its editor");
+  await checkTable(page, "#shows-list"); await tableArrows(page, "#shows-list");
+  await menuJourney(page, show, evidence, "Show", "d");
+  await choose(page, show, "edit");
+  await focused(page, "#shows-name");
+  await editorDescription(page);
+  await axe(page, evidence, "Show metadata editor"); await visuals(page, evidence, "Show metadata editor");
+  await page.keyboard.press("Escape");
+  await cellReturn(page, `${show} td[data-action="options"]`);
+  await choose(page, show, "edit");
+  await page.locator("#shows-name").fill("Evening revised");
+  for (const id of ["shows-source-category", "shows-category", "shows-target", "shows-station-name", "shows-save"]) {
+    await page.keyboard.press("Tab"); await focused(page, `#${id}`);
+  }
+  await page.keyboard.press("Enter");
+  await focused(page, `${show} td[data-action="open"]`);
+  assert.equal(await page.locator(`${show} td[data-action="name"]`).textContent(), "Evening revised");
+  await page.keyboard.press("Enter");
+  await page.locator('#shows-songs tr[data-row-key]').first().waitFor();
+  await checkTable(page, "#shows-songs"); await tableArrows(page, "#shows-songs");
+  const song = '#shows-songs tr[data-row-key]:first-child';
+  await menuJourney(page, song, evidence, "Show song", "r");
+  await page.locator(`${song} td[data-action="info"]`).focus(); await page.keyboard.press("Enter");
+  assert.deepEqual(await page.evaluate(() => ({ path: window.batchFixture.trackInfo.path, kind: window.batchFixture.trackInfo.kind,
+    liveOpener: window.batchFixture.trackInfo.opener.isConnected })), { path: "/music/1.flac", kind: "music", liveOpener: true });
+  await trackInfoRoundtrip(page, song, evidence, "Show song");
+  await choose(page, song, "remove"); await confirmationScan(page, evidence, "Remove show song");
+  await page.locator("#confirm-cancel").click();
+  await cellReturn(page, `${song} td[data-action="options"]`);
+  assert.equal(await page.locator('#shows-songs tr[data-row-key]').count(), 2);
+  await choose(page, song, "remove"); await page.locator("#confirm-accept").click();
+  await focused(page, '#shows-songs td[data-action="options"]');
+  await page.locator("#shows-search").fill("song"); await page.locator("#shows-search-run").click();
+  await page.locator('#shows-results tr[data-row-key]').waitFor();
+  await checkTable(page, "#shows-results"); await tableArrows(page, "#shows-results");
+  await menuJourney(page, '#shows-results tr[data-row-key]', evidence, "Show search result", "a");
+  await page.locator('#shows-results td[data-action="add"]').focus(); await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelectorAll('#shows-songs tr[data-row-key]').length === 2);
+  for (let count = 2; count > 0; count -= 1) {
+    await choose(page, song, "remove"); await page.locator("#confirm-accept").click();
+    await page.waitForFunction((wanted) => document.querySelectorAll('#shows-songs tr[data-row-key]').length === wanted, count - 1);
+  }
+  await emptyTable(page, "#shows-songs", evidence);
+  await page.evaluate(() => { window.batchFixture.emptySearch = true; });
+  await page.locator("#shows-search-run").click(); await emptyTable(page, "#shows-results", evidence);
+  await choose(page, show, "delete"); await confirmationScan(page, evidence, "Delete show");
+  await page.locator("#confirm-cancel").click();
+  await cellReturn(page, `${show} td[data-action="options"]`);
+  await choose(page, show, "delete"); await page.locator("#confirm-accept").click();
+  await focused(page, "#shows-add"); await emptyTable(page, "#shows-list", evidence);
+  await axe(page, evidence, "Empty shows");
+  evidence.checks.push("Shows: metadata cancel/save; Track info dispatch with actual opener; confirmed song/show removal cancel/accept; search Add; three empty tables");
+}
+
+async function editionsJourney(page, evidence) {
+  const occurrence = '#edition-occurrences tr[data-row-key="first"]', take = '#edition-takes tr[data-row-key="speech"]';
+  await page.locator(occurrence).waitFor();
+  for (const host of ["#edition-occurrences", "#edition-takes"]) { await checkTable(page, host); await tableArrows(page, host); }
+  await menuJourney(page, occurrence, evidence, "Prepared occurrence", "r");
+  await menuJourney(page, take, evidence, "Prepared take", "r");
+  await choose(page, take, "review");
+  assert.equal(await page.locator(`${take} button[data-action="review"]`).getAttribute("aria-disabled"), "true");
+  await page.keyboard.press("Escape");
+  await choose(page, take, "reattach"); await focused(page, "#edition-reattach-position");
+  await editorDescription(page);
+  await axe(page, evidence, "Reattach editor"); await visuals(page, evidence, "Reattach editor");
+  await page.keyboard.press("Escape"); await cellReturn(page, `${take} td[data-action="options"]`);
+  await choose(page, take, "reattach");
+  await focused(page, "#edition-reattach-position");
+  await page.keyboard.press("Tab"); await focused(page, "#edition-reattach-save");
+  await page.keyboard.press("Enter");
+  await cellReturn(page, `${take} td[data-action="options"]`);
+  assert.deepEqual(await page.evaluate(() => window.batchFixture.calls.find((call) => call.url.endsWith("/reattach")).body),
+    { expected_revision: 3, before_id: "first", after_id: "second" });
+  await choose(page, take, "remove"); await confirmationScan(page, evidence, "Remove take");
+  await page.locator("#confirm-cancel").click();
+  await cellReturn(page, `${take} td[data-action="options"]`);
+  await choose(page, take, "remove"); await page.locator("#confirm-accept").click();
+  await emptyTable(page, "#edition-takes", evidence);
+  await choose(page, occurrence, "remove"); await confirmationScan(page, evidence, "Remove occurrence");
+  await page.locator("#confirm-cancel").click();
+  await cellReturn(page, `${occurrence} td[data-action="options"]`);
+  for (let count = 2; count > 0; count -= 1) {
+    await choose(page, '#edition-occurrences tr[data-row-key]:first-child', "remove"); await page.locator("#confirm-accept").click();
+    await page.waitForFunction((wanted) => document.querySelectorAll('#edition-occurrences tr[data-row-key]').length === wanted, count - 1);
+  }
+  await emptyTable(page, "#edition-occurrences", evidence); await axe(page, evidence, "Empty prepared tables");
+  evidence.checks.push("Prepared editions: disabled review, reattach cancel/save preserving revision/bindings, occurrence/take removal cancel/accept and empty tables");
+}
+
+async function queueJourney(page, evidence, calls) {
+  await checkTable(page, "#queue-list"); await tableArrows(page, "#queue-list");
+  const row = '#queue-list tr[data-row-key]:first-child';
+  await menuJourney(page, row, evidence, "Queued track", "r");
+  await page.locator(`${row} td[data-action="info"]`).focus(); await page.keyboard.press("Enter");
+  assert.equal(await page.evaluate(() => window.batchFixture.trackInfo.path), "/music/1.flac");
+  await trackInfoRoundtrip(page, row, evidence, "Queued track");
+  const last = '#queue-list tr[data-row-key]:last-child';
+  await choose(page, last, "top");
+  await page.waitForFunction(() => document.getElementById("queue-list").getAttribute("aria-busy") === "false");
+  assert.deepEqual(calls.at(-1).body.order, [2, 0, 1]);
+  await choose(page, row, "remove"); await confirmationScan(page, evidence, "Remove queued track");
+  const count = calls.length;
+  await page.locator("#confirm-cancel").click(); assert.equal(calls.length, count);
+  await cellReturn(page, `${row} td[data-action="options"]`);
+  await choose(page, row, "remove"); await page.locator("#confirm-accept").click();
+  await page.waitForFunction(() => document.querySelectorAll('#queue-list tr[data-row-key]').length === 2);
+  await page.waitForFunction(() => document.getElementById("queue-list").getAttribute("aria-busy") === "false");
+  await page.evaluate(() => window.batchFixture.restrict("Start the station to change its queue."));
+  const restrictedCount = calls.length;
+  const restrictedOrder = await page.locator('#queue-list tr[data-row-key]').evaluateAll((rows) => rows.map((item) => item.dataset.rowKey));
+  await choose(page, row, "down");
+  const reason = await page.locator(`${row} button[data-action="down"]`).getAttribute("aria-describedby");
+  assert.equal(await page.locator(`#${reason}`).textContent(), "Start the station to change its queue.");
+  await page.waitForFunction(() => document.getElementById("queue-announce").textContent === "Start the station to change its queue.");
+  assert.equal(calls.length, restrictedCount, "restricted keyboard action sends no request");
+  assert.deepEqual(await page.locator('#queue-list tr[data-row-key]').evaluateAll((rows) => rows.map((item) => item.dataset.rowKey)), restrictedOrder, "restricted keyboard action preserves queue order");
+  await axe(page, evidence, "Restricted queue menu"); await page.keyboard.press("Escape");
+  await page.evaluate(() => window.batchFixture.restrict(""));
+  await page.locator("#queue-clear").focus(); await page.keyboard.press("Enter");
+  await confirmationScan(page, evidence, "Clear queue");
+  await page.locator("#confirm-cancel").click();
+  await page.locator("#queue-clear").focus(); await page.keyboard.press("Enter");
+  await page.locator("#confirm-accept").click();
+  await focused(page, "#queue-clear"); await emptyTable(page, "#queue-list", evidence); await axe(page, evidence, "Empty queue");
+  evidence.checks.push("Queue: Track info dispatch; reorder permutation; Remove/Clear cancel and accept; explained unavailable mutation; empty table");
+}
+
+async function requestsJourney(page, evidence) {
+  for (const host of ["#requests-list", "#requests-recent"]) { await checkTable(page, host); await tableArrows(page, host); }
+  const row = '#requests-list tr[data-row-key]:first-child';
+  await menuJourney(page, row, evidence, "Listener request", "t");
+  const offAirReason = "Start the station to change the queue.";
+  await page.evaluate((reason) => window.batchFixture.controls.setQueueDisabledReason(reason), offAirReason);
+  const stoppedCalls = await page.evaluate(() => window.batchFixture.calls.length);
+  const stoppedOrder = await page.locator('#requests-list tr[data-row-key]').evaluateAll((rows) => rows.map((item) => item.dataset.rowKey));
+  async function refused(button) {
+    await page.waitForFunction((reason) => document.getElementById("requests-status").textContent.trim() === reason, offAirReason);
+    assert.equal(await button.getAttribute("aria-disabled"), "true");
+    const id = await button.getAttribute("aria-describedby");
+    assert.ok(id, "stopped action has a persistent reason");
+    assert.equal(await page.locator(`#${id}`).textContent(), offAirReason);
+    await page.evaluate(() => { document.getElementById("requests-status").textContent = ""; });
+    const bounds = await button.boundingBox();
+    await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.waitForFunction((reason) => document.getElementById("requests-status").textContent === reason, offAirReason);
+    assert.equal(await page.evaluate(() => window.batchFixture.calls.length), stoppedCalls, "stopped pointer action sends no request");
+  }
+  await page.locator(`${row} td[data-action="approve"]`).focus(); await page.keyboard.press("Enter");
+  await refused(page.locator(`${row} button[data-action="approve"]`));
+  await choose(page, row, "play-next");
+  await refused(page.locator(`${row} button[data-action="play-next"]`));
+  assert.deepEqual(await page.locator('#requests-list tr[data-row-key]').evaluateAll((rows) => rows.map((item) => item.dataset.rowKey)), stoppedOrder, "stopped queue actions preserve requests");
+  await axe(page, evidence, "Stopped listener request actions"); await page.keyboard.press("Escape");
+  await choose(page, '#requests-list tr[data-row-key="request-3"]', "reject");
+  await confirmationScan(page, evidence, "Turn down request while stopped");
+  await page.locator("#confirm-accept").click();
+  await page.waitForFunction(() => document.querySelectorAll('#requests-list tr[data-row-key]').length === 3);
+  const offAirPost = { url: "/api/requests/request-3/reject", method: "POST", body: null };
+  assert.deepEqual(await page.evaluate(() => window.batchFixture.calls.filter((call) => call.method === "POST")), [offAirPost]);
+  await page.evaluate(() => window.batchFixture.controls.setQueueDisabledReason(""));
+  assert.equal(await page.locator(`${row} button[data-action="approve"]`).getAttribute("aria-disabled"), "false");
+  await page.locator(`${row} [aria-haspopup="menu"]`).focus(); await page.keyboard.press("Enter");
+  assert.equal(await page.locator(`${row} button[data-action="play-next"]`).getAttribute("aria-disabled"), "false");
+  await page.keyboard.press("Escape");
+  const unavailable = '#requests-list tr[data-row-key="request-1"]';
+  const approve = page.locator(`${unavailable} button[data-action="approve"]`);
+  assert.equal(await approve.getAttribute("aria-disabled"), "true");
+  const reason = await approve.getAttribute("aria-describedby");
+  assert.ok(reason, "unavailable Approve has an associated reason before activation");
+  assert.equal(await page.locator(`#${reason}`).textContent(), "No smooth position is available.");
+  const beforeRefusal = await page.evaluate(() => ({ count: window.batchFixture.calls.length,
+    order: window.batchFixture.state.pending.map((item) => item.id) }));
+  await page.locator(`${unavailable} td[data-action="approve"]`).focus();
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.getElementById("requests-status").textContent === "No smooth position is available.");
+  assert.deepEqual(await page.evaluate(() => ({ count: window.batchFixture.calls.length,
+    order: window.batchFixture.state.pending.map((item) => item.id) })), beforeRefusal, "unavailable Approve sends no request and preserves waiting requests");
+  await focused(page, `${unavailable} td[data-action="approve"]`);
+  await axe(page, evidence, "Unavailable listener approval");
+  await page.locator(`${row} td[data-action="approve"]`).focus(); await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelectorAll('#requests-list tr[data-row-key]').length === 2);
+  assert.deepEqual(await page.evaluate(() => window.batchFixture.calls.filter((call) => call.method === "POST")),
+    [offAirPost, { url: "/api/requests/request-0/approve", method: "POST", body: null }], "Approve keeps its route and empty payload");
+  await choose(page, row, "play-next");
+  await page.waitForFunction(() => document.querySelectorAll('#requests-list tr[data-row-key]').length === 1);
+  assert.deepEqual(await page.evaluate(() => window.batchFixture.calls.filter((call) => call.method === "POST")), [
+    offAirPost,
+    { url: "/api/requests/request-0/approve", method: "POST", body: null },
+    { url: "/api/requests/request-1/play-next", method: "POST", body: null },
+  ], "Play next keeps its distinct route and empty payload");
+  await choose(page, row, "reject"); await confirmationScan(page, evidence, "Turn down request");
+  await page.locator("#confirm-cancel").click();
+  await cellReturn(page, `${row} td[data-action="options"]`);
+  assert.equal(await page.locator('#requests-list tr[data-row-key]').count(), 1);
+  await choose(page, row, "reject"); await page.locator("#confirm-accept").click();
+  await emptyTable(page, "#requests-list", evidence);
+  assert.deepEqual(await page.evaluate(() => window.batchFixture.calls.filter((call) => call.method === "POST").at(-1)),
+    { url: "/api/requests/request-2/reject", method: "POST", body: null }, "Turn down keeps its route and empty payload");
+  await page.evaluate(async () => { window.batchFixture.state.recent = []; await window.batchFixture.controls.refresh(); });
+  await emptyTable(page, "#requests-recent", evidence); await axe(page, evidence, "Empty listener tables");
+  evidence.checks.push("Listener requests: stopped queue mutations refuse mouse/keyboard with reasons and no POST; Turn down remains available; restart restores queue actions; exact action routes/payloads; unavailable Approve reason/keyboard refusal without mutation; confirmation cancel/accept; recent cell navigation and both empty states");
+}
+
+async function voiceJourney(page, evidence, state) {
+  const host = "#vt-list", row = `${host} tr[data-row-key="${"a".repeat(32)}"]`, unavailable = `${host} tr[data-row-key="${"b".repeat(32)}"]`;
+  await page.locator(row).waitFor();
+  await checkTable(page, host); await tableArrows(page, host);
+  await menuJourney(page, row, evidence, "Voice booking", "c");
+  await choose(page, unavailable, "cancel");
+  assert.equal(await page.locator(`${unavailable} button[data-action="cancel"]`).getAttribute("aria-disabled"), "true");
+  assert.ok(await page.locator(`${unavailable} button[data-action="cancel"]`).getAttribute("aria-describedby"));
+  assert.equal(await page.locator('#confirm-dialog[open]').count(), 0);
+  await axe(page, evidence, "Noncancellable voice booking menu"); await page.keyboard.press("Escape");
+  await choose(page, row, "cancel"); await confirmationScan(page, evidence, "Cancel voice booking");
+  assert.equal(await page.locator("#confirm-title").textContent(), "Cancel this booking?");
+  await page.locator("#confirm-cancel").click();
+  await cellReturn(page, `${row} td[data-action="options"]`);
+  assert.equal(state.calls.filter((call) => call.method === "DELETE").length, 0);
+  await choose(page, row, "cancel"); await page.locator("#confirm-accept").click();
+  await page.waitForFunction(() => document.getElementById("vt-status").textContent.includes("Cancelled"));
+  assert.equal(state.calls.filter((call) => call.method === "DELETE").length, 1);
+  state.tracks = [];
+  await page.evaluate(async () => { await window.batchFixture.controls.refresh(); });
+  await emptyTable(page, host, evidence); await axe(page, evidence, "Empty voice bookings");
+  evidence.checks.push("Voice bookings: explained noncancellable action, Cancel confirmation cancel/accept and empty table; no microphone access");
+}
+
+async function batchSurface(page, theme, surface, evidence) {
+  const calls = [];
+  const voice = { calls, accepting: false, reason: "No open song change.", slot: null,
+    limits: { max_seconds: 600, max_bytes: 67108864, sample_rate: 44100 },
+    tracks: [{ break_id: "a".repeat(32), label: "Queued announcement", state: "queued", cancellable: true, source: "voice_track" },
+      { break_id: "b".repeat(32), label: "Completed announcement", state: "played", cancellable: false, source: "voice_track" }] };
+  if (surface === "queue") await page.route("**/api/queue/**", async (route) => {
+    calls.push({ url: route.request().url(), body: route.request().postDataJSON() });
+    await route.fulfill({ contentType: "application/json", body: '{"ok":true}' });
+  });
+  if (surface === "voice") await page.route("**/api/voice-tracks**", async (route) => {
+    const method = route.request().method(); calls.push({ method, url: route.request().url() });
+    if (method === "DELETE") { voice.tracks[0].state = "dropped"; voice.tracks[0].cancellable = false; }
+    const body = method === "DELETE" ? voice.tracks[0] : { ...voice, calls: undefined };
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await mountBatch(page, theme, surface);
+  const firstCell = page.locator('.collection-table tbody tr[data-row-key] td').first();
+  await firstCell.waitFor();
+  await firstCell.focus();
+  await axe(page, evidence, `${surface} loaded`);
+  await visuals(page, evidence, `${surface} loaded`);
+  await firstCell.evaluate((element) => element.blur());
+  await page.setViewportSize({ width: 320, height: 800 });
+  await firstCell.focus();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${surface} 320px page reflow`);
+  await visuals(page, evidence, `${surface} 320px`);
+  await page.emulateMedia({ forcedColors: "active" });
+  await visuals(page, evidence, `${surface} forced colors`);
+  await page.emulateMedia({ forcedColors: "none" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  if (surface === "shows") await showsJourney(page, evidence);
+  else if (surface === "editions") await editionsJourney(page, evidence);
+  else if (surface === "queue") await queueJourney(page, evidence, calls);
+  else if (surface === "requests") await requestsJourney(page, evidence);
+  else await voiceJourney(page, evidence, voice);
+}
+
 async function audit(name, launcher) {
   const browser = await launcher.launch({ headless: true });
   const results = { browser: name, version: browser.version(), fixture: "Production index/CSS/modules; in-memory API replies; loopback static server", themes: [], limitations: ["No live AutoDJ backend, station routing or persistence", "No screen-reader speech capture or human listening", "Chromium forced-colors emulation is not Windows high-contrast hardware evidence", "320 CSS pixels models reflow width; browser zoom and custom text spacing are not exercised", "Computed focus-ring and button-text contrast are measured against composited CSS backgrounds; pixel-level appearance still needs platform review"] };
@@ -463,6 +1030,18 @@ async function audit(name, launcher) {
       results.themes.push(evidence);
       page.on("pageerror", (error) => evidence.errors.push(error.message));
       try { await mount(page, theme); await journey(page, evidence); }
+      catch (error) { evidence.errors.push(error.stack || String(error)); }
+      finally { await page.close(); }
+      try {
+        for (const surface of ["shows", "editions", "queue", "requests", "voice"]) {
+          const batchPage = await context.newPage();
+          batchPage.setDefaultTimeout(10000);
+          batchPage.on("pageerror", (error) => evidence.errors.push(`${surface}: ${error.message}`));
+          try { await batchSurface(batchPage, theme, surface, evidence); }
+          catch (error) { evidence.errors.push(`${surface}: ${error.stack || String(error)}`); }
+          finally { await batchPage.close(); }
+        }
+      }
       catch (error) { evidence.errors.push(error.stack || String(error)); }
       finally { await context.close(); }
     }

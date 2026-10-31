@@ -41,6 +41,28 @@ function makeEditor(id, { fallback, parent = document.body, save = vi.fn(), onCa
 afterEach(() => document.body.replaceChildren());
 
 describe("the dialog's name", () => {
+  // ADR-0021-21
+  it("describes editors with short help instead of their form contents", () => {
+    const editor = makeEditor("edit");
+    editor.open(editor.value);
+    const description = byId(editor.dialog.getAttribute("aria-describedby"));
+    expect(description?.textContent).toBe("Use Tab to move between fields and actions.");
+    expect(description?.contains(editor.form)).toBe(false);
+    expect(description?.querySelector("input, select, textarea, button")).toBeNull();
+    expect(editor.value.labels[0].textContent.trim()).toBe("Value");
+    expect(document.activeElement).toBe(editor.value);
+    editor.close();
+  });
+
+  it("preserves the clockwheel step editor's explicit short description", () => {
+    installIndexMarkup();
+    const dialog = byId("clock-step-dialog");
+    const editor = createEditorDialog({ dialog, form: byId("clock-step-form"), heading: byId("clock-step-legend"),
+      cancel: byId("clock-cancel-edit"), save: vi.fn() });
+    expect(editor.dialog.getAttribute("aria-describedby")).toBe("clock-step-desc");
+    expect(byId("clock-step-desc").textContent).toBe("Choose what the step plays, how it chooses and when it plays.");
+  });
+
   it("is not given again to a group around the form, as Add category's legend was", () => {
     // NVDA said "Add category dialog", then "Add category grouping".
     const form = document.createElement("form");
@@ -59,6 +81,63 @@ describe("the dialog's name", () => {
 });
 
 describe("editor dialog controller", () => {
+  it("opens from a raw table action directly on the first field without visiting its cell", () => {
+    document.body.innerHTML = '<table><tbody><tr><td id="cell" role="gridcell" tabindex="0"><button id="opener">Edit</button></td></tr></tbody></table>';
+    const editor = makeEditor("edit");
+    byId("opener").focus();
+    const events = [];
+    const record = (event) => events.push(event.target.id);
+    document.addEventListener("focusin", record);
+    try {
+      editor.open(editor.value);
+      expect(events).toEqual(["edit-value"]);
+    } finally {
+      document.removeEventListener("focusin", record);
+      editor.close();
+    }
+  });
+
+  // ADR-0021-25
+  it("lets native opening focus the requested field once without an intermediate field", () => {
+    const editor = makeEditor("edit");
+    const later = document.createElement("input");
+    later.id = "later";
+    editor.form.append(later);
+    // Model the browser's dialog focusing steps, absent from happy-dom.
+    editor.dialog.show = () => {
+      editor.dialog.open = true;
+      (editor.dialog.querySelector("[autofocus]") || editor.value).focus();
+    };
+    const focus = vi.spyOn(later, "focus");
+    const events = [];
+    editor.form.addEventListener("focusin", (event) => events.push(event.target.id));
+    editor.open(later);
+    expect(events).toEqual(["later"]);
+    expect(focus).toHaveBeenCalledOnce();
+    expect(later.hasAttribute("autofocus")).toBe(false);
+    editor.close();
+  });
+
+  it("does not refocus the first field after the browser already focused it", () => {
+    const editor = makeEditor("edit");
+    editor.value.setAttribute("autofocus", "");
+    editor.dialog.show = () => { editor.dialog.open = true; editor.value.focus(); };
+    const focus = vi.spyOn(editor.value, "focus");
+    editor.open(editor.value);
+    expect(focus).toHaveBeenCalledOnce();
+    expect(editor.value.hasAttribute("autofocus")).toBe(true);
+    editor.close();
+  });
+
+  it("restores the owning table cell when opened from its action button", () => {
+    document.body.innerHTML = '<table><tbody><tr><td id="cell" role="gridcell" tabindex="0"><button id="opener">Edit</button></td></tr></tbody></table>';
+    const editor = makeEditor("edit");
+    byId("cell").focus();
+    editor.open(editor.value, byId("opener"));
+    editor.cancel.click();
+    expect(document.activeElement).toBe(byId("cell"));
+  });
+
   it("closes child editors and invalidates their pending work with the parent", async () => {
     const parent = makeEditor("parent");
     parent.open(parent.value);

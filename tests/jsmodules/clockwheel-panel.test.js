@@ -210,8 +210,8 @@ describe("clockwheel editor", () => {
     await open(server);
     expect(rowText(0)).toBe("liner from News, weather (with subfolders)");
     expect(rowText(1)).toBe("music from category Rock, gold");
-    expect(rows()[0].children[3].textContent).toBe("Random selection");
-    expect(rows()[0].children[4].textContent).toBe("ignoring repeat rules, only if the following track fits before the next reset, only on Friday from 08:00 until 09:00");
+    expect(rows()[0].children[4].textContent).toBe("Random selection");
+    expect(rows()[0].children[5].textContent).toBe("ignoring repeat rules, only if the following track fits before the next reset, only on Friday from 08:00 until 09:00");
   });
 
   // ADR-0021-09
@@ -219,12 +219,65 @@ describe("clockwheel editor", () => {
     controls = installClockwheelPanel({ document, request: fakeServer().request });
     await vi.waitFor(() => expect(byId("clock-list").querySelector("table.collection-table")).not.toBeNull());
     expect([...byId("clock-list").querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["Name", "Active", "Steps", "Actions", "Options"]);
-    expect([...byId("clock-slots").querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["#", "Step", "Kind", "Length or target", "Rules and hours", "Actions", "Options"]);
+    expect([...byId("clock-slots").querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["#", "Step", "Kind", "Length or target", "Selection", "Rules and hours", "Actions", "Options"]);
     expect(byId("clock-slots").querySelector('[role="rowheader"]')).toBeNull();
     await vi.waitFor(() => expect(byId("clock-slots").querySelectorAll("tbody tr[data-row-key]")).toHaveLength(3));
     const first = byId("clock-slots").querySelector("tbody tr[data-row-key]");
     expect(first.querySelector('button[data-action="edit"]').textContent).toBe("Edit");
     expect(first.querySelector('[aria-haspopup="menu"]').getAttribute("aria-label")).toMatch(/^Options for Step 1/);
+  });
+
+  // ADR-0021-19
+  it("separates step targets and selection without inventing track lengths", async () => {
+    const server = fakeServer({ categories: [{ id: "c1", name: "Rock gold" }] });
+    server.clocks.Morning.steps = [
+      MUSIC,
+      MORNING.steps[1],
+      { type: "category", category: "c1", selection: "least_recent" },
+      MORNING.steps[2],
+      { type: "settings", preset: "Evening" },
+      { type: "ad_break", max_spots: 1, max_seconds: 60 },
+      { type: "ad_break", max_spots: 3, max_seconds: 0 },
+    ];
+    await open(server);
+    expect(rows().map((row) => [row.children[3].textContent, row.children[4].textContent])).toEqual([
+      ["Not specified", "Least recently played"],
+      ["Not specified", "Random selection"],
+      ["Not specified", "Least recently played"],
+      ["Album/Song.flac", "Not applicable"],
+      ["Evening", "Not applicable"],
+      ["1 spot, 60 seconds", "Not applicable"],
+      ["3 spots", "Not applicable"],
+    ]);
+  });
+
+  // ADR-0021-20
+  it("labels the shared new name and uses it to prefill Create", async () => {
+    await open(fakeServer());
+    expect(document.querySelector('label[for="clock-name"]').textContent).toBe("New clockwheel name");
+    const help = byId(byId("clock-name").getAttribute("aria-describedby"));
+    expect(help.textContent).toContain("Create and Import .PAL use this name.");
+    byId("clock-name").value = "Evening";
+    byId("clock-create").click();
+    await vi.waitFor(() => expect(byId("clock-name-form-dialog").open).toBe(true));
+    expect(byId("clock-editor-name").value).toBe("Evening");
+  });
+
+  // ADR-0021-22
+  it("preserves an empty or operator-entered new name when opening saved wheels", async () => {
+    const server = await open(fakeServer());
+    expect(byId("clock-name").value).toBe("");
+    server.clocks.Night = { ...copy(MORNING), name: "Night" };
+    await controls.refresh();
+    for (const name of ["", "  Future wheel  "]) {
+      byId("clock-name").value = name;
+      savedAction("Night", "open").click();
+      await vi.waitFor(() => expect(byId("clock-open-name").textContent).toBe("Night"));
+      expect(byId("clock-name").value).toBe(name);
+      savedAction("Morning", "open").click();
+      await vi.waitFor(() => expect(byId("clock-open-name").textContent).toBe("Morning"));
+      expect(byId("clock-name").value).toBe(name);
+    }
   });
 
   it("shows a debounced matching track count for the current step", async () => {
@@ -557,7 +610,7 @@ describe("clockwheel editor", () => {
   it("opens the active clockwheel quietly and lists each step with its position", async () => {
     await open(fakeServer());
     expect(byId("clock-slots").querySelectorAll('[role="rowheader"]')).toHaveLength(0);
-    expect(byId("clock-slots").querySelectorAll('tbody [role="gridcell"]')).toHaveLength(21);
+    expect(byId("clock-slots").querySelectorAll('tbody [role="gridcell"]')).toHaveLength(24);
     expect(rowText(0)).toBe("music from Rock");
     expect(rowText(2)).toBe("track Album/Song.flac");
     expect(byId("clock-open-name").textContent).toBe("Morning");
@@ -628,7 +681,7 @@ describe("clockwheel editor", () => {
     expect(document.activeElement).toBe(rowCell(1, "options"));
     rowButton(1, "duplicate");
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-    expect(document.activeElement).toBe(rows()[1].querySelector('[aria-haspopup="menu"]'));
+    expect(document.activeElement).toBe(rowCell(1, "options"));
   });
 
   it("undoes either Delete path and restores the removed step's focus without saving", async () => {
@@ -961,7 +1014,7 @@ describe("clockwheel editor", () => {
     byId("clock-step-require-following").checked = true;
     byId("clock-add-step").click();
     expect(rowText(1)).toBe("liner from Top/Hour");
-    expect(rows()[1].children[4].textContent).toBe("ignoring repeat rules, only if the following track fits before the next reset");
+    expect(rows()[1].children[5].textContent).toBe("ignoring repeat rules, only if the following track fits before the next reset");
     expect(document.activeElement).toBe(rowCell(1, "edit"));
     expect(byId("clock-step-legend").textContent).toBe("Add a step");
     expect(byId("clock-step-require-following").checked).toBe(false);
@@ -999,7 +1052,7 @@ describe("clockwheel editor", () => {
     byId("clock-step-hours-until").value = "02:00";
     byId("clock-add-step").click();
     expect(rowText(2)).toBe("track Album/Song.flac");
-    expect(rows()[2].children[4].textContent).toBe("only on Friday and Saturday from 22:00 until 02:00");
+    expect(rows()[2].children[5].textContent).toBe("only on Friday and Saturday from 22:00 until 02:00");
     expect(byId("clock-step-day-4").checked).toBe(false); // the form is cleared for the next step
     expect(byId("clock-step-hours-from").value).toBe("");
     byId("clock-save").click();
@@ -1084,6 +1137,7 @@ describe("clockwheel editor", () => {
 
   it("creates a clockwheel in the page and saves it with POST", async () => {
     const server = await open(fakeServer());
+    byId("clock-name").value = "Future wheel";
     byId("clock-create").click();
     await vi.waitFor(() => expect(byId("clock-name-form-dialog").open).toBe(true));
     submitName("Morning");
@@ -1095,6 +1149,7 @@ describe("clockwheel editor", () => {
     await vi.waitFor(() => expect(status()).toBe("New clockwheel Night. Add its steps, then press Save clockwheel."));
     expect(document.activeElement).toBe(byId("clock-new-step"));
     expect(byId("clock-open-name").textContent).toBe("Night, not saved yet");
+    expect(byId("clock-name").value).toBe("Future wheel");
     byId("clock-new-step").click();
     const condition = byId("clock-step-conditions").firstElementChild;
     condition.querySelectorAll("select")[1].value = "jazz";
@@ -1119,6 +1174,7 @@ describe("clockwheel editor", () => {
       }],
     });
     expect(byId("clock-open-name").textContent).toBe("Night");
+    expect(byId("clock-name").value).toBe("Future wheel");
   });
 
   it("focuses the step the server refused and says why", async () => {
@@ -1133,15 +1189,21 @@ describe("clockwheel editor", () => {
 
   it("copies, renames, activates and turns off the named saved row", async () => {
     const server = await open(fakeServer());
+    byId("clock-name").value = "Future wheel";
     savedAction("Morning", "duplicate").click();
     await vi.waitFor(() => expect(byId("clock-name-form-dialog").open).toBe(true));
+    expect(byId("clock-editor-name").value).toBe("");
     submitName("Weekend");
     await vi.waitFor(() => expect(status()).toBe("Copied Morning as Weekend, and opened the copy."));
     expect(byId("clock-open-name").textContent).toBe("Weekend");
+    expect(byId("clock-name").value).toBe("Future wheel");
     savedAction("Weekend", "rename").click();
+    await vi.waitFor(() => expect(byId("clock-name-form-dialog").open).toBe(true));
+    expect(byId("clock-editor-name").value).toBe("Weekend");
     submitName("Saturday");
     await vi.waitFor(() => expect(status()).toBe("Renamed Weekend to Saturday."));
     expect(Object.keys(server.clocks).sort()).toEqual(["Morning", "Saturday"]);
+    expect(byId("clock-name").value).toBe("Future wheel");
     savedAction("Saturday", "activate").click();
     await vi.waitFor(() => expect(status()).toBe("Saturday is the active clockwheel. It plays when Pick mode is set to Clockwheel."));
     expect(server.active).toBe("Saturday");
@@ -1264,13 +1326,14 @@ describe("clockwheel editor", () => {
     byId("clock-import").click();
     await vi.waitFor(() => expect(status()).toBe("Choose a .PAL file first."));
     Object.defineProperty(byId("clock-pal-file"), "files", { value: [{ name: "throwback.pal", size: 10, text: async () => "Dir['D:\\Music\\Rock'].QueueBottom(smLRP, EnforceRules);" }] });
-    byId("clock-name").value = "Throwback";
+    byId("clock-name").value = "  Throwback  ";
     byId("clock-resync-minutes").value = "0, 30";
     byId("clock-import").click();
     await vi.waitFor(() => expect(status()).toBe("Imported Throwback from throwback.pal, 1 step. Choose Options for Throwback, then Activate."));
     const call = server.calls.find((item) => item.url === "/api/library/clock/import");
     expect(call.body).toEqual({ text: "Dir['D:\\Music\\Rock'].QueueBottom(smLRP, EnforceRules);", name: "Throwback", resync_minutes: [0, 30] });
     expect(byId("clock-open-name").textContent).toBe("Throwback");
+    expect(byId("clock-name").value).toBe("  Throwback  ");
   });
 
   it("shows and says the notice about old single-clock data", async () => {
@@ -1582,6 +1645,6 @@ describe("clockwheel step conditions, for screen readers", () => {
     byId("clock-add-step").click();
     expect(rowText(3)).toBe("ad break");
     expect(rows()[3].children[3].textContent).toBe("1 spot");
-    expect(rows()[3].children[4].textContent).toBe("from Gone Shop");
+    expect(rows()[3].children[5].textContent).toBe("from Gone Shop");
   });
 });

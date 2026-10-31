@@ -100,9 +100,9 @@ The existing folder and songs are visible without another import. The new
 category is Practice Two's own definition. If its count is zero, check the
 folder choice and completed analysis; do not add another copy of the folder.
 
-Now expand **Clockwheels** and create this station's rotation:
+Now expand **Clockwheels** and create this station's rotation: **New clockwheel name** is independent of the open wheel; enter the new name explicitly.
 
-1. Press **Create**. In the dialog, enter `Practice Two` in **Name** and press **Create**.
+1. Enter `Practice Two` in **New clockwheel name** and press **Create**. Check **Name** in the dialog and press **Create**.
 2. Press **New step**, then choose **Music matching conditions** in **Step type**.
 3. In **Condition 1**, choose **Category** as **Condition type**, set
    **Music category** to **Practice Two**, and keep **Operator** as **is**.
@@ -168,8 +168,8 @@ it returning automatically on the next server start. Its saved settings,
 category, wheel and history remain available to edit or start later; the page
 does not offer station deletion. Do not remove shared music to retire it.
 
-Switch to Practice, remove your queued marker using **Remove**,
-and leave Browser playback paused. Confirm its Practice wheel is still active.
+Switch to Practice, choose **Remove** from your queued marker's **Options** menu,
+confirm removal, and leave Browser playback paused. Confirm its Practice wheel is still active.
 You have kept the original lesson's setup and a separate stopped station.
 
 For daily operations and copying content, use

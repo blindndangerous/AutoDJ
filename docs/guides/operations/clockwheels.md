@@ -15,7 +15,9 @@ group when the edited profile is still active; saving an inactive profile does n
 station back to it. **Activate** in the Profiles list resolves all eligible groups for the selected profile. A schedule
 event can also switch to a saved profile by name.
 
-Press **Create** to open the name dialog. Enter **Name**, then press **Create**
+Enter **New clockwheel name**, then press **Create** to open the name dialog.
+Opening or saving a wheel leaves **New clockwheel name** as you typed it; it
+does not replace it with the open wheel's name. Review or change **Name**, then press **Create**
 in the dialog. The new wheel appears in the table marked **Not saved**; add its
 steps and press **Save clockwheel** to persist it. To abandon it, open that row's
 **Options for \<name\>**, choose **Delete**, and confirm discarding the unsaved wheel.
@@ -23,7 +25,7 @@ steps and press **Save clockwheel** to persist it. To abandon it, open that row'
 Each saved row shows **Name**, **Active** and **Steps**. Press its **Open** action
 to edit its steps. Use **Options for \<name\>** for **Duplicate**, **Rename**,
 **Activate** or **Turn off**, and **Delete**. Duplicate and Rename ask for the new
-name in a dialog. These actions target their row, even when another wheel is
+name in a dialog and leave **New clockwheel name** alone. These actions target their row, even when another wheel is
 open. Duplicate opens the copy, so it first asks before discarding unsaved work
 in the currently open wheel. Saved-wheel Delete asks for confirmation; step
 deletion instead offers Undo.
@@ -44,15 +46,21 @@ Step types:
   continues and the report records a missed break with the reason. JSON example:
   `{"type":"ad_break","max_spots":3,"max_seconds":60,"advertiser":"","category":""}`.
 
-The step table separates **#**, **Step**, **Kind**, **Length or target**, and
-**Rules and hours**. Each row has **Edit** and **Options for <step name>**;
+The step table separates **#**, **Step**, **Kind**, **Length or target**,
+**Selection**, and **Rules and hours**. Length or target shows the track path,
+preset name, or ad-break spot limit and optional seconds. Music, liner and category
+steps say **Not specified** because their lengths are not known here. Selection
+shows **Least recently played** or **Random selection** for those steps, and
+**Not applicable** for track, preset and ad-break steps.
+Each row has **Edit** and **Options for <step name>**;
 Options contains **Move up**, **Move down**, **Duplicate** and **Delete**.
 Tab enters the table once. Up and Down move between rows in the same column;
 Left and Right move between cells. Home and End reach the row's first or last
 cell; Ctrl+Home and Ctrl+End reach the first or last row in the same column.
 Enter or Space activates an action cell. Within Options, arrows and Home/End
 move between choices, typing matches their names, Enter activates, and Escape
-returns to Options. Disabled choices explain their restriction when activated.
+returns to the Options cell, where arrows continue table navigation. Cancelling
+a menu action's confirmation also returns there. Disabled choices explain their restriction when activated.
 Tab leaves the table or closes and leaves its menu. Delete removes the focused
 step immediately, like **Options**, **Delete**. Alt+Up and Alt+Down reorder it,
 and focus moves with it. See the [keyboard guide](../keyboard-and-screen-reader.md).
@@ -101,7 +109,7 @@ next handoff. The song still follows the usual clock and repeat rules; skipping 
 not count it as played. With no reset times set, this checkbox has no effect.
 
 **Import .PAL** turns a SAM Broadcaster `.PAL` file into a new clockwheel, once; the `.PAL` file
-is not used after that. Enter **Imported clockwheel name**, choose **.PAL file to
+is not used after that. Enter **New clockwheel name**, choose **.PAL file to
 import**, then press **Import .PAL**. Only `Dir[...]` and `SubDir[...]` lines with `QueueBottom` are read, and
 nothing in the file runs. Each folder must be a registered music or voice liner folder, or a folder
 inside one that adds subfolders; the innermost registered folder is used. A folder above every

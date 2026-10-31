@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createCollectionTable } from "../../src/autodj/static/modules/collection-table.js";
+import axe from "axe-core";
+import * as collections from "../../src/autodj/static/modules/collection-table.js";
+
+const { createCollectionTable } = collections;
 
 const press = (key) => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
 let host, status, fallback;
@@ -18,6 +21,54 @@ function mount(extra = {}) {
   });
 }
 describe("collection tables", () => {
+  // ADR-0021-23
+  it("refreshes the focused row context after keyed data changes", () => {
+    const grid = mount();
+    grid.update([{ id: "a", name: "First", count: 1 }, { id: "b", name: "Second", count: 2 }]);
+    grid.target("a", "count").focus();
+    press("ArrowDown");
+    const count = grid.target("b", "count");
+    expect(count.getAttribute("aria-label")).toBe("2, Second");
+    grid.update([{ id: "a", name: "First", count: 1 }, { id: "b", name: "Renamed", count: 3 }]);
+    expect(document.activeElement).toBe(count);
+    expect(count.getAttribute("aria-label")).toBe("3, Renamed");
+    press("ArrowLeft");
+    expect(count.hasAttribute("aria-label")).toBe(false);
+  });
+  // ADR-0021-17
+  it("keeps computed data names free of native headers after navigation and updates", () => {
+    const grid = mount();
+    grid.update([{ id: "a", name: "Evening", count: 2 }]);
+    grid.target("a", "name").focus();
+    press("ArrowRight");
+    const names = () => {
+      axe.setup(document);
+      try {
+        const row = grid.body.firstElementChild;
+        return [row.cells[0], row.cells[1], row.querySelector('button[data-action="edit"]'), row.querySelector('[aria-haspopup="menu"]')]
+          .map((element) => axe.commons.text.accessibleText(element));
+      }
+      finally { axe.teardown(); }
+    };
+    expect(names()).toEqual(["Evening", "2", "Edit Evening", "Options for Evening"]);
+    grid.update([{ id: "a", name: "Later", count: 3 }]);
+    expect(names()).toEqual(["Later", "3", "Edit Later", "Options for Later"]);
+  });
+  it("finds a collection's owning host independently of internal wrappers", () => {
+    const grid = mount();
+    grid.update([{ id: "a", name: "First" }]);
+    const cell = grid.target("a");
+    const wrapper = document.createElement("div");
+    grid.table.before(wrapper);
+    wrapper.append(grid.table);
+    expect(collections.collectionHost(cell)).toBe(host);
+    expect(collections.collectionHost(cell.querySelector("button"))).toBe(host);
+    expect(collections.collectionHost(grid.body.querySelector('[role="menuitem"]'))).toBe(host);
+    expect(collections.collectionHost(fallback)).toBeNull();
+    expect(collections.collectionHost(null)).toBeNull();
+    grid.clear();
+    expect(collections.collectionHost(grid.table)).toBe(host);
+  });
   // ADR-0021-01
   it("preserves keyed rows and focus while updating data", () => {
     const edit = vi.fn();
@@ -66,9 +117,9 @@ describe("collection tables", () => {
     grid.update([{ id: "a", name: "Renamed", count: 2 }]);
     expect(document.activeElement).toBe(item);
     press("Escape");
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Options for Renamed");
+    expect(document.activeElement).toBe(grid.target("a", "options"));
     expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
-    press("ArrowDown");
+    press("Enter");
     press("Enter");
     expect(remove).toHaveBeenCalledWith({ id: "a", name: "Renamed", count: 2 });
   });
@@ -81,6 +132,20 @@ describe("collection tables", () => {
     expect(run).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(status.textContent).toBe("Save first."));
     expect(grid.target("a").querySelector("button").disabled).toBe(false);
+  });
+  // ADR-0021-15
+  it("associates the current disabled primary reason before activation", () => {
+    const grid = mount({ primary: (item) => ({ id: "edit", label: "Edit", disabledReason: item.reason, run() {} }) });
+    grid.update([{ id: "a", name: "First", reason: "Save first." }]);
+    const button = grid.target("a").querySelector("button");
+    const id = button.getAttribute("aria-describedby");
+    expect(id).toBeTruthy();
+    expect(document.getElementById(id).textContent).toBe("Save first.");
+    grid.update([{ id: "a", name: "First", reason: "Still saving." }]);
+    expect(button.getAttribute("aria-describedby")).toBe(id);
+    expect(document.getElementById(id).textContent).toBe("Still saving.");
+    grid.update([{ id: "a", name: "First" }]);
+    expect(button.hasAttribute("aria-describedby")).toBe(false);
   });
   it("preserves focus on an unchanged empty state", () => {
     const grid = mount();
@@ -101,12 +166,14 @@ describe("collection tables", () => {
     expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
     await vi.waitFor(() => expect(status.textContent).toContain("Options for Second"));
   });
-  it("resumes grid arrows from the Options button after Escape", () => {
+  // ADR-0021-18
+  it("resumes grid arrows from the Options cell after Escape", () => {
     const grid = mount();
     grid.update([{ id: "a", name: "First" }]);
     grid.target("a", "options").focus();
     press("Enter");
     press("Escape");
+    expect(document.activeElement).toBe(grid.target("a", "options"));
     press("ArrowLeft");
     expect(document.activeElement).toBe(grid.target("a"));
   });

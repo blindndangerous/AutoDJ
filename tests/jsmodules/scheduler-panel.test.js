@@ -640,7 +640,7 @@ describe("Schedule panel", () => {
     expect(edit.getAttribute("aria-label")).toBe("Edit Breakfast");
   });
 
-  it("disables and enables an event through Options and returns focus to its button", async () => {
+  it("disables and enables an event through Options and returns focus to its cell", async () => {
     const server = fakeServer();
     server.events.push(event("Morning show"));
     await openPanel(server);
@@ -649,11 +649,11 @@ describe("Schedule panel", () => {
     toggle.click();
     await vi.waitFor(() => expect(status()).toBe("Event Morning show disabled"));
     expect(server.calls.at(-2).body).toEqual({ enabled: false });
-    expect(document.activeElement).toBe(optionsCell("Morning show").querySelector('[aria-haspopup="menu"]'));
+    expect(document.activeElement).toBe(optionsCell("Morning show"));
     expect(toggle.textContent).toBe("Enable");
     menuAction("Morning show", "toggle").click();
     await vi.waitFor(() => expect(status()).toBe("Event Morning show enabled"));
-    expect(document.activeElement).toBe(optionsCell("Morning show").querySelector('[aria-haspopup="menu"]'));
+    expect(document.activeElement).toBe(optionsCell("Morning show"));
   });
 
   it("runs an event now and says how it went", async () => {
@@ -712,7 +712,7 @@ describe("Schedule panel", () => {
     expect(byId("confirm-dialog").open).toBe(true);
     expect(byId("confirm-title").textContent).toBe("Delete event First?");
     byId("confirm-cancel").click();
-    await vi.waitFor(() => expect(document.activeElement).toBe(optionsCell("First").querySelector('[aria-haspopup="menu"]')));
+    await vi.waitFor(() => expect(document.activeElement).toBe(optionsCell("First")));
     expect(server.events).toHaveLength(2);
 
     menuAction("First", "delete").click();

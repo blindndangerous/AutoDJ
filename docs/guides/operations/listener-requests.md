@@ -74,14 +74,20 @@ the show's waiting songs and the listener is told only that it plays "after the 
 so, and its form holds the switch to turn them on. While they are on, it says how many requests
 are waiting and how many the station took today. Each waiting request shows who
 sent it (if they gave a name), when, and either where it would fit and why ("Fits after Song by
-Artist: same key, 2 BPM apart.") or what stops it. Each request has three buttons:
+Artist: same key, 2 BPM apart.") or what stops it. The table has a primary **Approve**
+action and an **Options** menu for the other decisions.
 
-- **Approve** queues it at that place, checked again at that moment. It is left out while no place
-  keeps the rules.
-- **Play next** queues it first, after the song playing and any "play next" song, whatever fits.
+When the station is stopped, **Approve** and **Play next** stay reachable but
+explain: "Start the station to change the queue." **Turn down** remains available.
+
+The decisions are:
+
+- **Approve** queues it at that place, checked again at that moment. When no place keeps the
+  rules, Approve remains reachable but unavailable and explains the restriction.
+- **Options**, **Play next** queues it first, after the song playing and any "play next" song, whatever fits.
   DMCA limits and clockwheel step restrictions still hold, counting that "play next" song
   and the queued songs after it.
-- **Turn down**.
+- **Options**, **Turn down** asks for confirmation before rejecting the request.
 
 Below the decisions, **Request settings** starts with **Take listener requests** and
 **Approval**, then **Smooth transitions** holds four more of the `[requests]` settings:
@@ -95,10 +101,12 @@ page opened or closed. While it saves, the button is marked busy. They are kept 
 config.toml values from then on. A Roughness limit outside 0 to 10 is refused in the browser:
 the field is marked, its error shown under it and linked to it, and focus goes to it.
 
-Focus moves to the next request's Approve button (its first button when Approve is not offered),
+Focus moves to an action cell in a nearby request row,
 or to the card's title when none is left, and the result is said once just after that. Recent
 decisions are listed below. The card refreshes every 15 seconds while it is open, without
-speaking: rows are updated in place, and a row that has focus stays until focus leaves it. A
+speaking when unchanged: rows are updated in place. A late refresh from before a
+successful decision cannot put the decided request back into Waiting. If a focused row disappears,
+focus moves to a nearby row or the card title and the change is announced. A
 request still waiting after three hours expires, and can no longer be approved. The same actions are available as paired routes: `GET /api/requests`,
 and `POST /api/requests/<id>/approve`, `/play-next` and `/reject` (each also under
 `/api/stations/<slug>/` for a station by name). The web UI's card shows the selected station's

@@ -59,6 +59,70 @@ describe("card headings", () => {
 });
 
 describe("tab arrow keys", () => {
+  // ADR-0011-10
+  it("redirects outside focus to the selected main tab without blocking activation", async () => {
+    for (const view of ["library", "settings"]) {
+      installIndex();
+      window.location.hash = `#${view}`;
+      vi.resetModules();
+      const { initViewRouter: freshRouter } = await import("../../src/autodj/static/modules/tabs.js");
+      try {
+        freshRouter();
+        const outside = document.querySelector(".skip-link");
+        const selected = document.getElementById(`tab-${view}`);
+        const now = document.getElementById("tab-now");
+        outside.focus();
+        now.focus(); // NVDA browse-mode Tab can target a tabindex=-1 tab.
+        expect(document.activeElement).toBe(selected);
+        expect(now.getAttribute("aria-selected")).toBe("false");
+        now.focus(); // Focus coming from the same tablist is left alone.
+        expect(document.activeElement).toBe(now);
+        now.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+        expect(document.activeElement.id).toBe("tab-settings");
+        document.getElementById("tab-settings").dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+        expect(document.activeElement).toBe(now);
+        selected.click();
+        outside.focus();
+        now.dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true }));
+        now.focus();
+        expect(document.activeElement).toBe(now);
+        document.dispatchEvent(new window.PointerEvent("pointerup", { bubbles: true }));
+        now.click();
+        expect(now.getAttribute("aria-selected")).toBe("true");
+        selected.click();
+        outside.focus();
+        now.focus();
+        expect(document.activeElement).toBe(selected);
+        now.click(); // Browse-mode Enter focuses, then clicks its original object.
+        expect(document.activeElement).toBe(now);
+        expect(now.getAttribute("aria-selected")).toBe("true");
+      } finally { window.location.hash = ""; }
+    }
+  });
+
+  // ADR-0021-26
+  it("keeps Settings as the sole main tab stop after selection and refresh", async () => {
+    installIndex();
+    window.location.hash = "#settings";
+    vi.resetModules();
+    const { initViewRouter: freshRouter } = await import("../../src/autodj/static/modules/tabs.js");
+    try {
+      freshRouter();
+      const stops = () => [...document.querySelectorAll('#view-nav [role="tab"]')].filter((tab) => tab.tabIndex === 0);
+      const settings = document.getElementById("tab-settings");
+      expect(stops()).toEqual([settings]);
+      expect(settings.getAttribute("aria-selected")).toBe("true");
+      document.getElementById("tab-now").click();
+      settings.click();
+      document.querySelector(".skip-link").focus();
+      window.dispatchEvent(new window.HashChangeEvent("hashchange"));
+      expect(stops()).toEqual([settings]);
+      expect(settings.getAttribute("aria-selected")).toBe("true");
+    } finally {
+      window.location.hash = "";
+    }
+  });
+
   it.each(["arrow", "hash"])("pauses the cue preview on %s navigation and keeps its position", async (navigation) => {
     installIndex();
     window.location.hash = "#track-info";

@@ -6,6 +6,7 @@ import {
 } from "./dom-helpers.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
+import { collectionHost } from "./collection-table.js";
 import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
 import { NBSP, announceStatus, sayIfStillPending } from "./live-region.js";
@@ -218,11 +219,16 @@ export function installLibraryFolders({ document: doc = document, request = requ
     });
   });
 
+  function returnCollection(opener) {
+    // Keep the named host for matching replacement rows and empty-list fallback.
+    return collectionHost(opener) || opener?.closest?.("ul, ol, table") || null;
+  }
+
   function rememberReturn(opener) {
     const panel = opener?.closest?.("section[data-view]");
     returnView = panel?.dataset.view !== "track-info" ? panel?.dataset.view : null;
     returnTarget = returnView ? opener : null;
-    returnContainer = returnTarget?.closest("ul, ol, table") || null;
+    returnContainer = returnCollection(returnTarget);
     if (returnTarget) {
       const label = opener.getAttribute("aria-label");
       const path = opener.dataset.path;
@@ -849,7 +855,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   }
   async function openEditor(path, kind = "music", opener = null) {
     if (suspended || opening || saving) return;
-    const sourceList = opener?.closest?.("ul, ol, table");
+    const sourceList = returnCollection(opener);
     const sourcePanel = opener?.closest?.("section[data-view]");
     if (!path) { rememberReturn(opener); showTrackInfo(); pointSay("Choose a track first.", true); return; }
     if (path === currentPath && unsaved()) { rememberReturn(opener); showTrackInfo(); return; }

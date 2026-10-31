@@ -4,6 +4,15 @@ import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { createRowActionsMenu, rowActionsCell } from "./row-actions-menu.js";
 
+let nextReason = 0;
+const hosts = new WeakMap();
+
+// Consumers identify the owning collection without depending on its wrappers.
+export function collectionHost(element) {
+  const table = element?.closest?.(".collection-table");
+  return table ? hosts.get(table) || null : null;
+}
+
 // Collections share row identity, cell navigation, popup actions, empty
 // state and focus recovery. Panels supply data and action descriptors only.
 export function createCollectionTable({ host, label, columns, keyOf, nameOf,
@@ -13,6 +22,7 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
   scroll.className = "data-table-scroll";
   const table = doc.createElement("table");
   table.className = "collection-table";
+  hosts.set(table, host);
   table.setAttribute("role", "grid");
   table.setAttribute("aria-label", label);
   const head = table.createTHead().insertRow();
@@ -40,6 +50,11 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
       });
       record.button = button;
       const cell = tableRow(doc, [button], { nameIndex: -1 }).firstElementChild;
+      const reason = doc.createElement("span");
+      reason.id = `collection-action-reason-${++nextReason}`;
+      reason.hidden = true;
+      cell.append(reason);
+      record.reason = reason;
       row.append(cell);
     }
     if (actions) {
@@ -57,10 +72,6 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
       const value = String(column.value(item, index) ?? "");
       const cell = row.cells[at];
       if (cell.textContent !== value) cell.textContent = value;
-      // A label supplied for grid movement must not retain old values.
-      if (cell.dataset.headingLabel !== undefined) {
-        cell.setAttribute("aria-label", `${value}, ${column.label}, ${name}`);
-      }
     });
     if (primary) {
       record.primary = primary(item, index);
@@ -70,6 +81,9 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
       button.dataset.action = action.id;
       button.setAttribute("aria-label", `${action.label} ${name}`);
       button.setAttribute("aria-disabled", String(Boolean(action.disabledReason)));
+      record.reason.textContent = action.disabledReason || "";
+      if (action.disabledReason) button.setAttribute("aria-describedby", record.reason.id);
+      else button.removeAttribute("aria-describedby");
       button.parentElement.dataset.action = action.id;
     }
     record.menu?.update(name, actions(item, index));

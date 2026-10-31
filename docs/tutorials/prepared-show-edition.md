@@ -36,7 +36,7 @@ navigation between tabs, headings and native controls.
    `Practice review`.
 2. Expand **Prepared editions**. Enter `Tomorrow practice` in **New edition name**
    and press **Create edition from show**.
-3. Read the edition summary and its numbered song list. Confirm that items 1 and
+3. Read the edition summary and its occurrence table. Confirm that items 1 and
    2 are the intended songs in that order.
 4. Check that the station row still offers **Start**.
 
@@ -60,15 +60,16 @@ another page has made your view stale: **Open edition** reloads the saved state.
 4. Press **Stop recording**. Check that the microphone indicator stops and the
    page says the recording stopped for this position.
 5. Play **Private edition take**, listen for the complete sentence, then pause it.
-6. Press **Save recording**. Focus moves to the saved take's **Review pending
-   speech** button. Read **Needs review** beside
-   its numbered transition.
+6. Press **Save recording**. Focus moves to the saved take's **Options** cell.
+   Read **Needs review** in its Status column and check its numbered transition.
 
 If the saved audio is missing or invalid, focus returns to **Edition contents
 and recordings**. Repair the audio before reviewing it.
 
 The stored take is now durable, but it is not approved for broadcast. Short
 recordings have a 3:00 limit. Listening privately has not changed that state.
+If you need to remove it, wait for any edition save to finish, then choose
+**Options**, **Remove** and confirm. Remove explains the restriction while saving.
 
 If recording is unavailable, check the secure/localhost address and site
 microphone permission, then retry. For silence or clipping, check the input
@@ -79,7 +80,7 @@ starts in Needs review. An import failure leaves the saved edition intact.
 
 ## Review the real transition, then approve
 
-1. On the saved take, press **Review pending speech**. AutoDJ opens **Programme
+1. Open the saved take's **Options** menu and choose **Review**. AutoDJ opens **Programme
    review** in **Now Playing** and generates the take's contextual review.
 2. Wait for **Review ready**. Read the summary's pending-speech message. The
    target is retained completely even when ordinary review rules shorten song
@@ -89,12 +90,12 @@ starts in Needs review. An import failure leaves the saved edition intact.
    **Next item** give programme and preview timestamps for navigation.
 4. Pause the player, then press **Return to edition**. The take still needs
    explicit approval; generating or listening has not approved it.
-5. Press **Approve reviewed take** on that take. Check that its state becomes
+5. Open that take's **Options** menu and choose **Approve**. Check that its state becomes
    **ready**, and that the station remains stopped.
 
 Approval records the exact audio and relevant transition inputs. A completed
 review is evidence for this take, not permission to air another recording.
-If approval is disabled, finish the target's **Review pending speech** request
+If approval is unavailable, read its restriction and finish the target's **Review** request
 and return from that review. An incomplete result or missing target cannot
 approve speech: repair the named source and generate a new target review.
 If a save or approval reports a stale revision, press **Open edition**, inspect
@@ -112,7 +113,8 @@ replacing an adjacent occurrence, or changing relevant cues would instead mark
 it **Needs review** without deleting the source recording.
 
 If you separate a transition's two items, its take becomes **Unattached**. Choose
-an adjacent pair in that take's **Position for** list and press **Reattach**.
+**Reattach** from that take's **Options** menu. In the dialog, choose an adjacent pair
+in **Position** and press **Reattach**.
 The recording stays saved; review and approve its new context before airing.
 Standalone segments instead follow their own occurrence and need review again
 when their neighbours change.

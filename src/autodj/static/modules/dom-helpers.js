@@ -1,6 +1,7 @@
 // Pure DOM / formatting helpers shared across modules.
 
 import { announceStatus } from "./live-region.js";
+import { tableFocusTarget } from "./table-row.js";
 
 // ----------------------------------------------------------------
 // Debug logging — opt-in via `?debug=1` URL param OR
@@ -196,6 +197,7 @@ export function releaseDialogFocus(dialog) {
 // Once the dialog is closed.  A control the browser focused anyway lets go
 // and takes focus again, so the change is still reported.
 export function focusAfterDialog(control) {
+  control = tableFocusTarget(control);
   // The page body takes no focus, so it never counts as a place to return to.
   if (!control?.isConnected || control.disabled || control === control.ownerDocument.body) return false;
   if (control.ownerDocument.activeElement === control) control.blur();

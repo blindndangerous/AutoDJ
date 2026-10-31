@@ -155,8 +155,11 @@ timer and **Booked voice tracks**.
 Expected result: the timer returns to **Not recording**, and no new booked entry
 appears. The earlier aired entry can remain in the list. You have removed the
 local draft, not cancelled or replayed the earlier booking. If a second booking
-appears, check whether you pressed **Book voice track**; **Cancel** can drop a
-booking only while it is still waiting, not once mixed into prepared audio.
+appears, check whether you pressed **Book voice track**. To cancel it, choose **Cancel**
+from the booking's **Options** menu and confirm **Cancel booking**. Cancellation is
+available only before that recording starts; an unavailable Cancel explains the restriction.
+If cancellation fails after the row disappears, read the error associated with
+the Voice tracks heading before deciding what to do next.
 
 ## Stop and retain the station settings
 
