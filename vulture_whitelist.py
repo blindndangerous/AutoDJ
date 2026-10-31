@@ -17,6 +17,8 @@ _.imag
 _.LimitFlags
 # urllib.request.HTTPRedirectHandler override.
 _.redirect_request
+# acme.ClientNetwork invokes this transport override from its public request methods.
+_._send_request
 # torch.nn.Module and transformers hooks.
 _.forward
 _._attn_implementation

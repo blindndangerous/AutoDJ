@@ -77,6 +77,28 @@ coordination.
 | `ADR-0019-03` | Remote and forwarded requests cannot change certificates or bootstrap trust over HTTP. | automated | `tests/integration/test_certificates_api.py::test_remote_or_forwarded_requests_cannot_manage_or_bootstrap_trust` |
 | `ADR-0019-04` | Trust installation and microphone recording work on the chosen client OS/browser. | manual | Follow the HTTPS setup in docs/guides/operations/network.md on a second device; record OS, browser, trust installation, HTTPS status, microphone permission and recording result. |
 | `ADR-0019-05` | HTTPS restart uses the existing confirmation and waits for its validated destination before navigation. | automated | `tests/jsmodules/updates.test.js::can restart into the validated HTTPS setup URL after its health check answers`; `tests/jsmodules/updates.test.js::does not request a restart for an invalid HTTPS destination`; `tests/jsmodules/updates.test.js::does not navigate when the HTTPS restart is refused` |
+| `ADR-0019-06` | DNS-01 creates a separate Cloudflare TXT record and removes only its owned record; CNAME delegation is refused. | automated | `tests/unit/test_acme_dns.py::test_owned_txt_cleanup_and_cname_refusal` |
+| `ADR-0019-07` | Current directory terms and uncertain hostname reachability require explicit consent before registration or issuance. | automated | `tests/unit/test_acme_service.py::test_terms_and_host_confirmation_before_registration` |
+| `ADR-0019-08` | Staging results never enter the certificate inventory; temporary certificate keys and unreferenced credentials are removed. | automated | `tests/unit/test_acme_worker.py::test_staging_never_enters_inventory_and_secrets_are_removed` |
+| `ADR-0019-09` | A renewal adds an inventory pair without overriding a manual selection made during issuance. | automated | `tests/unit/test_acme_worker.py::test_renewal_respects_manual_selection` |
+| `ADR-0019-10` | ACME mutations retain direct native loopback and existing browser Origin checks. | automated | `tests/integration/test_acme_api.py::test_acme_local_policy_rejects_remote_forwarded_and_bad_origin` |
+| `ADR-0019-11` | Renewal uses ARI when available, otherwise two thirds of actual validity with jitter that only advances the time. | automated | `tests/unit/test_acme_service.py::test_renewal_schedule_uses_actual_validity_and_ari` |
+| `ADR-0019-12` | Rolling daily budgets survive reconstruction; retries back off at 15 minutes, 1 hour, 6 hours and 24 hours and honor later Retry-After. | automated | `tests/unit/test_acme_service.py::test_persistent_budget_and_retry_schedule` |
+| `ADR-0019-13` | One supervised child admits one operation, has a 15-minute deadline, and receives no secrets in its arguments. Waiting for child termination does not hold the management lock. | automated | `tests/unit/test_acme_worker.py::test_child_has_one_slot_deadline_and_no_secret_arguments`; `tests/unit/test_acme_review.py::test_slow_child_reaping_does_not_hold_management_lock` |
+| `ADR-0019-14` | Doctor reports saved failures without issuance, DNS writes or secret disclosure. | automated | `tests/unit/test_acme_worker.py::test_doctor_acme_is_read_only_and_redacted` |
+| `ADR-0019-15` | An order receipt survives a later authorization-fetch failure; retry resumes that order. | automated | `tests/unit/test_acme_client.py::test_library_resume_uses_saved_order_after_auth_fetch_failure` |
+| `ADR-0019-16` | Let's Encrypt remains an option in the existing two-step modal with staging first, private native inputs, associated field guidance and one status announcement per action. | automated | `tests/jsmodules/secure-connections-acme.test.js::offers ACME third in the existing wizard with staging first and private native inputs`; `tests/jsmodules/secure-connections-acme.test.js::associates zone format and token permissions with their inputs`; `tests/jsmodules/secure-connections-acme.test.js::announces successful preflight exactly once while retaining heading focus` |
+| `ADR-0019-17` | A real test CA validates DNS-01 issuance and owned cleanup, including an interrupted cleanup retry. | automated | `tests/integration/test_acme_pebble.py::test_pebble_dns01_issuance_and_owned_cleanup` |
+| `ADR-0019-18` | A successful certificate delete remains successful when one lineage needs cleanup; startup and saved retries sweep unreferenced lineages independently. | automated | `tests/unit/test_acme_review.py::test_deleted_lineage_sweep_is_independent_and_retryable`; `tests/unit/test_acme_review.py::test_startup_sweeps_lineage_after_interrupted_certificate_delete` |
+| `ADR-0019-19` | Releasing pending DNS cleanup requires confirmation, logs owned record IDs, and leaves manual-removal instructions. | automated | `tests/unit/test_acme_review.py::test_cleanup_release_is_confirmed_logged_and_unblocks_removal` |
+| `ADR-0019-20` | Successful renewal retains the active pair, its predecessor and any pair still served pending restart, pruning only older pairs in that lineage. | automated | `tests/unit/test_acme_review.py::test_successful_renewal_keeps_only_active_and_previous_in_its_lineage`; `tests/integration/test_acme_api.py::test_renewal_pruning_keeps_the_pair_still_served_until_restart` |
+| `ADR-0019-21` | Failure to establish child process ownership terminates and reaps the spawned child before another tick. | automated | `tests/unit/test_acme_review.py::test_job_setup_failure_terminates_and_reaps_child` |
+| `ADR-0019-22` | Each authorization retains its own cleanup receipt; one failed cleanup does not prevent cleanup of other owned records. | automated | `tests/unit/test_acme_client.py::test_two_authorizations_keep_every_receipt_and_cleanup_independently` |
+| `ADR-0019-23` | Publication failure reports the observed saved selection, including failure to persist an activation rollback. | automated | `tests/unit/test_acme_review.py::test_activation_failure_message_matches_saved_selection` |
+| `ADR-0019-24` | New ACME controls work with the supported browser/screen-reader combinations and preserve one announcement per action. | manual | Run tests/playwright/acme_audit.mjs for automated keyboard, axe, theme and reflow checks. Follow docs/accessibility-testing.md with a supported screen reader for acquisition, consent, errors, cleanup release, activation and hostname handoff. Record actual speech, platform and browser evidence separately. |
+| `ADR-0019-25` | An invalid task checkpoint remains visible as needing attention without blocking other tasks or removing account keys whose references are unknown. | automated | `tests/unit/test_acme_review.py::test_bad_task_does_not_stop_other_renewals_and_reports_attention`; `tests/unit/test_acme_review.py::test_invalid_child_failure_counter_releases_slot_without_overwriting_state` |
+| `ADR-0019-26` | Retrying publication of an issued pair restores its renewal schedule instead of immediately ordering another certificate. | automated | `tests/unit/test_acme_review.py::test_publication_retry_restores_future_renewal_schedule` |
+| `ADR-0019-27` | Renewal details use the same direct native-mode loopback policy as saved ACME operations. Other callers receive certificate metadata without those details. | automated | `tests/integration/test_acme_api.py::test_inventory_renewal_details_require_direct_native_localhost` |
 
 ## Implementation and verification
 
@@ -89,3 +111,128 @@ Operational instructions live in the [network guide](../guides/operations/networ
 Run focused store, route, TLS and shared route-classification tests, frontend
 interaction tests and a browser audit. Record actual platform and screen-reader
 evidence separately from automated checks.
+
+## Amendment 2026-10-31: Let's Encrypt issuance and renewal
+
+The operator approved the ACME decisions for the extension to
+[PR #700](https://github.com/blindndangerous/AutoDJ/pull/700), stacked on
+[PR #698](https://github.com/blindndangerous/AutoDJ/pull/698). This amendment
+extends certificate acquisition and renewal; the original inventory, Active/Saved/
+Expired model, activation, deletion, access checks and two-step modal remain
+authoritative. The original record's Proposed status is unchanged.
+
+Use the installed `acme` library with DNS-01 and one built-in provider:
+Cloudflare's fixed HTTPS API origin, an explicit zone ID and an operator-supplied
+zone-scoped DNS-edit API token. Zone inspection requires zone read permission.
+The adapter verifies the selected active zone and rejects out-of-zone names.
+Cloudflare zone access does not prove that a supplied token has no wider scope;
+the operator must create the token with only the selected zone's permissions.
+No HTTP-01, TLS-ALPN-01, wildcard, IP identifier, arbitrary provider endpoint,
+RFC 2136 or acme-dns is supported. Other providers retain external renewal/import.
+One ordinary DNS name is supported per built-in certificate in this release.
+
+Create a separate TXT record rather than replacing an RRset. Persist a random
+ownership marker before creation and the returned record ID before notifying the
+CA. The marker permits receipt recovery after a lost creation response. Cleanup
+compares the saved ID and record contents and never deletes unrelated records.
+A CNAME at the challenge name is an explained unsupported case. Every
+authorization retains a separate persisted receipt; cleanup attempts each
+independently, including receipt recovery after a lost response. Cleanup failure
+remains visible and keeps the required credential until cleanup can finish.
+An operator can explicitly confirm **Stop retrying DNS cleanup**. That records
+the owned TXT IDs in the host log and displays the challenge name and manual
+removal instructions. It releases the pending work without deleting DNS records.
+
+The host resolver preflight returns its observed addresses. Addresses that cannot
+all be shown to belong to this host require explicit operator confirmation;
+NAT and bridged containers are warnings, not hard blocks. Private-only names,
+localhost, IP literals, wildcards and names outside the selected zone are blocked.
+Directory terms are displayed before issuance. The backend requires explicit
+acceptance and persists the URL and time; changed terms stop automatic issuance.
+The frontend must warn that production certificate names enter public Certificate
+Transparency logs. It must offer the separate, explicit
+“Let's Encrypt staging test — not trusted” action first. Staging never publishes
+a certificate into the inventory or serving context.
+
+One server-owned supervisor launches one Python child for blocking work, separately
+from requests and playout under [ADR 8](0008-bound-background-work-outside-playout.md).
+There is no unbounded operation queue. The child has a 15-minute deadline;
+requests have 5-second connect and 15-second read limits and a 1 MiB response
+limit. Shutdown terminates the child with a 5-second grace before killing it.
+The Windows child uses the existing Job Object ownership helper. Child output
+is discarded and library logging is disabled. Credentials travel through private
+files, never command-line arguments. Saved operation metadata is distinct from
+certificate state and is not another certificate inventory.
+Child termination waits outside the management lock, while retaining the worker
+slot until reaping finishes. Status and unrelated certificate management remain
+available during termination.
+
+Private ACME files live under `<index_dir>/.tls/acme`, using the existing
+owner-only atomic file helpers and checked private reads. Staging and production
+have separate account keys. Account keys and DNS tokens are omitted from all
+public status and Doctor views, and removed when no setup, lineage or pending
+cleanup references them. Startup and per-task retries recover credential cleanup
+after an interrupted certificate deletion. A failure cleaning one task does not
+block other tasks or turn a successful certificate deletion into an API error.
+Each checkpoint is validated independently. An unreadable or invalid task is
+skipped for execution and reported as needing attention in local status and
+Doctor. Its file and possible account-key references remain until storage is
+repaired; valid tasks continue. Renewal details in inventory responses use the
+same direct native-mode loopback policy as saved ACME operations.
+Existing backup exclusion of `.tls` applies. Durable
+budget receipts contain no credentials and survive account or lineage deletion.
+
+Persist order URLs before fetching authorizations and resume recoverable orders
+after interruption. Limit orders to three per environment and canonical name
+per rolling day, independent of account keys, and account registrations to three
+per environment per rolling day. These are local protection limits, not a claim
+about CA quotas or ARI replacement-order exemptions. Retry transient failures at
+15 minutes, 1 hour, 6 hours, then 24 hours, honoring a later Retry-After. Invalid
+authorization, terms and other permanent failures require operator correction.
+
+Persist the renewal time returned by ARI; fall back to two thirds of the actual
+certificate validity with up to five percent of its lifetime subtracted as jitter.
+Only a lineage selected in the existing inventory renews automatically; saved,
+never-activated lineages do not. Renewal adds a new pair of type “Let's Encrypt”
+and conditionally activates it through the existing inventory lock and activation
+path. A successful renewal retains the active pair and the pair it replaced,
+pruning older pairs only from that lineage. A pair still served pending restart
+is also retained. Retrying publication of an already issued pair restores its
+certificate renewal time when its saved retry time is zero. A manual selection
+made during issuance wins; the renewed pair stays Saved with an explicit
+paused-renewal note.
+Issuance failures retain the working pair and appear in row metadata and read-only
+Doctor diagnostics. Activation uses the original rollback behavior; when storage
+also prevents rollback, the failure reports the observed selection rather than
+claiming it was unchanged.
+
+Public certificates cannot cover localhost. The existing activation route therefore
+accepts an optional explicit destination `hostname` query parameter for Let's
+Encrypt rows only. It keeps the original body-independent request handling.
+That hostname must already be in the server's allowed hosts and covered by the
+certificate. The request still requires direct native-mode loopback and existing
+browser authorization/Origin policy. No allowlist is widened. Existing callers
+without the optional hostname retain the original management-host validation.
+The existing two-step modal explains the hostname handoff and first-HTTPS restart
+before activation. A cross-host restart destination must match the active Let's
+Encrypt certificate and an advertised HTTPS origin in fresh local-only inventory
+metadata; the port stays unchanged. The browser probe omits credentials and uses
+normal TLS verification. No certificate is installed as a trusted root for this
+acquisition method.
+
+Implementation entrypoints: [DNS adapter](../../src/autodj/acme_dns.py),
+[ACME client](../../src/autodj/acme_client.py),
+[private service](../../src/autodj/acme_service.py), and
+[worker ownership](../../src/autodj/acme_worker.py).
+The [network guide](../guides/operations/network.md) and
+[domain HTTPS guide](../guides/operations/domain-https.md) describe acquisition,
+renewal and recovery. The [threat model](../../THREAT_MODEL.md) records the access,
+credential and provider boundaries. Automated mappings refer to executed tests;
+they do not prove public DNS propagation, Cloudflare token scope, real-provider
+issuance, platform process teardown, operating-system trust or screen-reader speech.
+
+The opt-in Pebble integration uses checksum-verified release binaries and a
+temporary loopback CA/DNS environment. The Linux CI job requires it to execute;
+missing binaries fail that job. Ordinary local suites without the binary paths
+skip it explicitly. The test uses the real ACME protocol and DNS validation with
+a test-only Cloudflare request bridge; it does not contact Cloudflare or a public CA.
