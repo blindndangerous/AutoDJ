@@ -1613,7 +1613,7 @@
       padding-inline-start: 1.5rem;
     }
     :where(#queue-list, #profile-list, #device-list,
-      #ln-file-list, #lyrics-list, #why-list, #clock-slots),
+      #ln-file-list, #lyrics-list, #why-list),
     :where(main) :where(ul, ol):where(:has(> li.no-results:only-child)) {
       padding-inline-start: 0;
     }
@@ -1621,7 +1621,7 @@
     /* Rows that end in a button (Revoke, Remove folder, Unban) touched the
        next row's button: 44 px targets with no space between them. */
     :where(#token-list, #workers-list, #listener-ban-list, #listener-control-list,
-      #clock-list, #categories-list, #shows-list) > li + li {
+      #categories-list, #shows-list) > li + li {
       margin-top: 0.4rem;
     }
     /* Links: the card colour scheme's own link blue, underlined, so a link
@@ -1681,36 +1681,70 @@
       margin: 0.5rem 0;
     }
 
-    /* ---- Clockwheel steps grid ----
-       Each step was an <ol> number, then its own step number, then five
-       buttons in inline flow: "1. 1", and a long step name wrapped its
-       row's buttons under the next row's.  One row per step now: the
-       step number, then the buttons wrapping inside that row. */
-    #clock-slots {
-      list-style: none;
-      display: grid;
-      gap: 0.5rem;
-      margin: 0.5rem 0;
+    /* Shared collection tables retain native columns inside a scrollable
+       viewport. Popover menus use the top layer, outside that viewport. */
+    .collection-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      color: var(--text);
+      background: var(--bg-card);
     }
-    #clock-slots > li {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.4rem;
-      padding: 0.4rem 0;
+    .collection-table :is(th, td) {
+      padding: 0.5rem;
+      text-align: start;
+      vertical-align: top;
       border-bottom: 1px solid var(--border);
+      overflow-wrap: anywhere;
+      min-width: 4ch;
     }
-    #clock-slots > li:last-child { border-bottom: none; }
-    #clock-slots [role="rowheader"] {
-      min-width: 2ch;
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
+    .collection-table th { font-weight: 600; }
+    .collection-table tbody tr:nth-child(even) { background: var(--tint); }
+    .collection-table td:focus-visible,
+    .row-actions-menu button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
     }
-    /* The focusable cell wraps its button; its focus ring hugs the button
-       rather than an inline box that cut through the label. */
-    #clock-slots [role="gridcell"] {
-      display: inline-flex;
+    .collection-table button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .collection-table button,
+    .row-actions-menu button { min-width: 24px; min-height: 24px; }
+    .row-actions-menu {
+      position: fixed;
+      inset: auto;
+      margin: 0;
+      padding: 0.25rem;
+      max-width: calc(100vw - 8px);
+      max-height: calc(100vh - 8px);
+      overflow: auto;
+      border: 2px solid var(--control-border);
       border-radius: var(--radius);
+      background: var(--bg-card);
+      color: var(--text);
+      z-index: 1000;
+    }
+    .row-actions-menu button {
+      display: block;
+      width: 100%;
+      margin: 0;
+      padding: 0.5rem;
+      text-align: start;
+      color: var(--text);
+      background: var(--bg-card);
+      border: 0;
+      white-space: normal;
+    }
+    .row-actions-menu button:hover { background: var(--tint-3); }
+    .row-actions-menu [aria-disabled="true"] { color: var(--text-dim); }
+    @media (forced-colors: active) {
+      /* System text keeps the ring legible on the forced Canvas background;
+         Firefox's Highlight can fall below 3:1 against that background. */
+      .collection-table :is(td, button):focus-visible,
+      .row-actions-menu button:focus-visible { outline-color: CanvasText; }
+      .row-actions-menu { border-color: ButtonText; }
+      .row-actions-menu [aria-disabled="true"] { color: GrayText; }
     }
 
     /* ---- Shows (#106) ----

@@ -102,14 +102,14 @@ folder choice and completed analysis; do not add another copy of the folder.
 
 Now expand **Clockwheels** and create this station's rotation:
 
-1. Enter `Practice Two` in **Name** and press **Create**.
+1. Press **Create**. In the dialog, enter `Practice Two` in **Name** and press **Create**.
 2. Press **New step**, then choose **Music matching conditions** in **Step type**.
 3. In **Condition 1**, choose **Category** as **Condition type**, set
    **Music category** to **Practice Two**, and keep **Operator** as **is**.
 4. Set **Choose** to **Least recently played**, uncheck **Follow the repeat rules**,
    leave day and hour restrictions unset, and press **Add step**.
 5. Clear **Restart at these minutes past each hour**. Press **Save clockwheel**,
-   then **Activate**.
+   then choose **Activate** from **Options for Practice Two** in its saved row.
 6. In **Settings**, **Song picking**, choose **Clockwheel** in **Pick mode**.
    Press **Save changes** in the Song picking tab.
 

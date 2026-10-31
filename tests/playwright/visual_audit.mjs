@@ -1006,8 +1006,9 @@ async function openDaypartErrors(page, visit) {
   await page.locator("#categories-form-error").waitFor({ state: "visible" });
   await inspectEditorModal(page, "categories-form", visit, "library/category-dates-error");
   await cancelEditor(page, "categories-form", "categories-cancel");
-  await page.locator("#clock-name").fill("Audit");
   await page.locator("#clock-create").click();
+  await page.locator("#clock-editor-name").fill("Audit");
+  await page.locator('#clock-name-form button[type="submit"]').click();
   await page.locator("#clock-new-step").click();
   const condition = page.locator("#clock-step-conditions").getByRole("group").first();
   await condition.getByLabel("Condition type", { exact: true }).selectOption("title");

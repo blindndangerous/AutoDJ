@@ -106,8 +106,8 @@ function event(name, changes = {}) {
   };
 }
 
-async function openPanel(server) {
-  const controls = installSchedulerPanel({ doc: document, request: server.request, now: () => NOW });
+async function openPanel(server, options = {}) {
+  const controls = installSchedulerPanel({ doc: document, request: server.request, now: () => NOW, ...options });
   const subtabs = initSubtabs(byId("settings-tabs"), { storage: null });
   byId("stab-schedule").click();
   await vi.waitFor(() => expect(server.request).toHaveBeenCalled());
@@ -115,9 +115,15 @@ async function openPanel(server) {
   return { controls, subtabs };
 }
 
-const rowButton = (name, role) => [...byId("schedule-events").children]
-  .find((row) => row.querySelector("span").textContent.startsWith(`${name}:`))
-  ?.querySelector(`[data-role="${role}"]`);
+const rowsIn = (id) => [...byId(id).querySelectorAll("tbody > tr")];
+const rowFor = (name) => rowsIn("schedule-events").find((row) => row.cells[0].textContent === name);
+const rowButton = (name, action) => rowFor(name)?.querySelector(`button[data-action="${action}"]`);
+const editCell = (name) => rowButton(name, "edit")?.closest("td");
+const optionsCell = (name) => rowFor(name)?.querySelector('[aria-haspopup="menu"]')?.closest("td");
+function menuAction(name, action) {
+  rowFor(name).querySelector('[aria-haspopup="menu"]').click();
+  return rowButton(name, action);
+}
 
 function submit() {
   byId("schedule-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
@@ -128,6 +134,24 @@ beforeEach(() => {
 });
 
 describe("Schedule panel", () => {
+  // ADR-0021-06
+  it("uses shared collection tables with event columns and one primary action", async () => {
+    const server = fakeServer();
+    server.events.push(event("Morning show"));
+    await openPanel(server);
+    const table = byId("schedule-events").querySelector("table.collection-table");
+    expect(table).not.toBeNull();
+    expect([...table.querySelectorAll("th")].map((cell) => cell.textContent)).toEqual([
+      "Name", "When", "Action", "Next run", "Enabled", "Actions", "Options",
+    ]);
+    expect(table.querySelector('[role="rowheader"]')).toBeNull();
+    expect(table.querySelector('button[aria-label="Edit Morning show"]')).not.toBeNull();
+    expect(table.querySelector('button[aria-label="Options for Morning show"]')).not.toBeNull();
+    expect(table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    expect(byId("schedule-upcoming").querySelector("table.collection-table")).not.toBeNull();
+    expect(byId("schedule-runs").querySelector("table.collection-table")).not.toBeNull();
+  });
+
   it("is a Settings subtab whose panel is labelled by its tab", () => {
     const tab = byId("stab-schedule");
     expect(tab.getAttribute("role")).toBe("tab");
@@ -145,45 +169,47 @@ describe("Schedule panel", () => {
     expect(byId("schedule-days").querySelector("legend").textContent).toBe("Days");
   });
 
-  it("lists events, next events and recent runs as plain text with named buttons", async () => {
+  it("lists event data in separate cells and recent activity in read-only tables", async () => {
     const server = fakeServer();
     server.events.push(event("Morning show"), event("Overnight", { enabled: false, timing: "hard" }));
     server.runs.push({ time: "2026-10-11T07:00:00+00:00", event: "Morning show", summary: "Switch profile: Morning", result: "error", message: "Profile Morning was not found" });
     await openPanel(server);
-    const rows = [...byId("schedule-events").children];
-    expect(rows.map((row) => row.querySelector("span").textContent)).toEqual([
-      "Morning show: Every day at 07:00:00. Switch profile: Morning. Soft timing.",
-      "Overnight: Every day at 07:00:00. Switch profile: Morning. Hard timing. Disabled.",
+    const rows = rowsIn("schedule-events");
+    expect([...rows[0].cells].slice(0, 3).map((cell) => cell.textContent)).toEqual([
+      "Morning show", "Every day at 07:00:00. Soft timing.", "Switch profile: Morning",
     ]);
-    expect([...rows[0].querySelectorAll("button")].map((button) => [button.textContent, button.getAttribute("aria-label")])).toEqual([
-      ["Edit", "Edit Morning show"],
-      ["Disable", "Disable Morning show"],
-      ["Run now", "Run now, Morning show"],
-      ["Delete", "Delete Morning show"],
-    ]);
-    expect(rows[1].querySelector('[data-role="toggle"]').getAttribute("aria-label")).toBe("Enable Overnight");
-    const actions = [...byId("schedule-events").querySelectorAll("button")];
-    expect(actions.filter((item) => item.tabIndex === 0)).toHaveLength(1);
-    actions[0].focus();
-    actions[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    expect(document.activeElement).toBe(actions[1]);
-    const next = byId("schedule-upcoming").textContent;
-    expect(next).toContain("Morning show. Switch profile: Morning.");
-    expect(next).toContain("in 2 hours");
+    expect(rows[1].cells[3].textContent).toBe("Disabled");
+    expect(rows[1].cells[4].textContent).toBe("No");
+    const edit = rowButton("Morning show", "edit");
+    expect(edit.getAttribute("aria-label")).toBe("Edit Morning show");
+    expect(rowFor("Morning show").querySelector('[aria-haspopup="menu"]').getAttribute("aria-label"))
+      .toBe("Options for Morning show");
+    const menu = rowFor("Morning show").querySelector('[role="menu"]');
+    expect(menu.hidden).toBe(true);
+    expect([...menu.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent))
+      .toEqual(["Run now", "Disable", "Delete"]);
+    expect(byId("schedule-events").querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    rows[0].cells[0].focus();
+    rows[0].cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(rows[0].cells[1]);
+    const next = rowsIn("schedule-upcoming")[0];
+    expect(next.cells[0].textContent).toBe("Morning show");
+    expect(next.cells[2].textContent).toBe("in 2 hours");
+    expect(next.cells[3].textContent).toBe("Switch profile: Morning");
     const clock = new Intl.DateTimeFormat(undefined, { hourCycle: "h23", hour: "numeric", minute: "2-digit", timeZone: "UTC" });
-    expect(next).toContain(clock.format(new Date("2026-10-11T14:00:00Z")));
-    expect(byId("schedule-runs").textContent).toContain("Morning show. Switch profile: Morning. Failed: Profile Morning was not found.");
+    expect(next.cells[1].textContent).toContain(clock.format(new Date("2026-10-11T14:00:00Z")));
+    expect(rowsIn("schedule-runs")[0].cells[3].textContent).toBe("Failed: Profile Morning was not found");
     expect(byId("schedule-upcoming").getAttribute("aria-live")).toBeNull();
   });
 
   it("says when there is nothing to list", async () => {
     await openPanel(fakeServer());
-    expect(byId("schedule-events").textContent).toBe("No events yet.");
-    expect(byId("schedule-upcoming").textContent).toBe("Nothing is scheduled.");
-    expect(byId("schedule-runs").textContent).toBe("No events have run yet.");
+    expect(byId("schedule-events").querySelector(".no-results").textContent).toBe("No events yet.");
+    expect(byId("schedule-upcoming").querySelector(".no-results").textContent).toBe("Nothing is scheduled.");
+    expect(byId("schedule-runs").querySelector(".no-results").textContent).toBe("No events have run yet.");
   });
 
-  it("adds an event from the server's action list and focuses its Edit button", async () => {
+  it("adds an event from the server's action list and focuses its Edit cell", async () => {
     const server = fakeServer();
     await openPanel(server);
     byId("schedule-add").click();
@@ -205,7 +231,7 @@ describe("Schedule panel", () => {
       time: "07:00", timing: "hard", wait_seconds: 0, enabled: true,
     });
     expect(byId("schedule-form").hidden).toBe(true);
-    expect(document.activeElement).toBe(rowButton("Morning show", "edit"));
+    expect(document.activeElement).toBe(editCell("Morning show"));
   });
 
   it("shows only the fields the repeat choice uses, keeping focus on Repeat", async () => {
@@ -343,7 +369,7 @@ describe("Schedule panel", () => {
     await vi.waitFor(() => expect(status()).toBe("Event News saved"));
     expect(server.calls.find((call) => call.method === "POST").body)
       .toMatchObject({ timing: "hard", wait_seconds: 45 });
-    expect(rowButton("News", "edit").closest("li").textContent).toContain("Hard timing, waits up to 45 seconds.");
+    expect(rowButton("News", "edit").closest("tr").textContent).toContain("Hard timing, waits up to 45 seconds.");
 
     // Soft timing never waits, whatever the hidden field still holds.
     rowButton("News", "edit").click();
@@ -450,9 +476,9 @@ describe("Schedule panel", () => {
       return { ...data, upcoming: [...data.upcoming, later] };
     });
     await openPanel(server);
-    expect(rowButton("Season", "edit").closest("li").querySelector("span").textContent)
-      .toMatch(/Disabled\. Ended, no runs left\.$/);
-    const [today, later] = [...byId("schedule-upcoming").children].map((item) => item.textContent);
+    expect(rowFor("Season").cells[3].textContent).toBe("Ended, no runs left");
+    expect(rowFor("Season").cells[4].textContent).toBe("No");
+    const [today, later] = rowsIn("schedule-upcoming").map((item) => item.textContent);
     expect(today).toContain("Sunday");
     expect(today).toContain("11");
     expect(today).toContain("October");
@@ -479,7 +505,7 @@ describe("Schedule panel", () => {
     initSubtabs(byId("settings-tabs"), { storage: null });
     byId("stab-schedule").click();
     await vi.waitFor(() => expect(byId("schedule-timezone").textContent).toBe("Pacific/Kiritimati"));
-    const [first] = [...byId("schedule-upcoming").children].map((item) => item.textContent);
+    const [first] = rowsIn("schedule-upcoming").map((item) => item.textContent);
     expect(first).toContain("January");
     expect(first).toContain("2027");
   });
@@ -544,7 +570,7 @@ describe("Schedule panel", () => {
     expect(byId("schedule-form-dialog").open).toBe(false);
     resolveSave({ ...event("Pending event"), id: "pending" });
     await flush();
-    expect(byId("schedule-events").textContent).toBe("");
+    expect(byId("schedule-events").querySelector("tbody").textContent).toBe("");
     expect(status()).toBe("");
   });
 
@@ -586,10 +612,10 @@ describe("Schedule panel", () => {
     await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
     byId("confirm-accept").click();
     await vi.waitFor(() => expect(dialog.open).toBe(false));
-    expect(document.activeElement).toBe(edit);
+    expect(document.activeElement).toBe(edit.closest("td"));
   });
 
-  it("edits an event in place and Cancel returns focus to its Edit button", async () => {
+  it("edits an event in place and Cancel returns focus to its Edit cell", async () => {
     const server = fakeServer();
     server.events.push(event("Morning show", { params: { name: "Gone" } }));
     await openPanel(server);
@@ -601,7 +627,7 @@ describe("Schedule panel", () => {
     expect(byId("schedule-param-name").selectedOptions[0].textContent).toBe("Gone (not found)");
     byId("schedule-cancel").click();
     expect(byId("schedule-form").hidden).toBe(true);
-    expect(document.activeElement).toBe(edit);
+    expect(document.activeElement).toBe(edit.closest("td"));
 
     edit.click();
     byId("schedule-param-name").value = "Night";
@@ -610,71 +636,120 @@ describe("Schedule panel", () => {
     await vi.waitFor(() => expect(status()).toBe("Event Breakfast saved"));
     const put = server.calls.find((call) => call.method === "PUT");
     expect(put.url).toBe("/api/schedule/id-Morning%20show");
-    expect(document.activeElement).toBe(edit);
+    expect(document.activeElement).toBe(edit.closest("td"));
     expect(edit.getAttribute("aria-label")).toBe("Edit Breakfast");
   });
 
-  it("disables and enables an event without moving focus", async () => {
+  it("disables and enables an event through Options and returns focus to its button", async () => {
     const server = fakeServer();
     server.events.push(event("Morning show"));
     await openPanel(server);
-    const toggle = rowButton("Morning show", "toggle");
+    const toggle = menuAction("Morning show", "toggle");
     toggle.focus();
     toggle.click();
     await vi.waitFor(() => expect(status()).toBe("Event Morning show disabled"));
     expect(server.calls.at(-2).body).toEqual({ enabled: false });
-    expect(document.activeElement).toBe(toggle);
+    expect(document.activeElement).toBe(optionsCell("Morning show").querySelector('[aria-haspopup="menu"]'));
     expect(toggle.textContent).toBe("Enable");
-    expect(toggle.getAttribute("aria-label")).toBe("Enable Morning show");
+    menuAction("Morning show", "toggle").click();
+    await vi.waitFor(() => expect(status()).toBe("Event Morning show enabled"));
+    expect(document.activeElement).toBe(optionsCell("Morning show").querySelector('[aria-haspopup="menu"]'));
   });
 
   it("runs an event now and says how it went", async () => {
     const server = fakeServer();
     server.events.push(event("Morning show"));
     await openPanel(server);
-    rowButton("Morning show", "run").click();
+    menuAction("Morning show", "run").click();
     await vi.waitFor(() => expect(status()).toBe("Event Morning show ran"));
     server.runResult = { result: "error", message: "Stream control needs stream mode" };
-    rowButton("Morning show", "run").click();
+    menuAction("Morning show", "run").click();
     await vi.waitFor(() => expect(status()).toBe("Event Morning show failed: Stream control needs stream mode"));
-    expect(byId("schedule-runs").children).toHaveLength(2);
+    expect(rowsIn("schedule-runs")).toHaveLength(2);
+  });
+
+  it("keeps Run now focusable and explains why an initially stopped station cannot run it", async () => {
+    const server = fakeServer();
+    server.events.push(event("Morning show"));
+    await openPanel(server, { offAir: true });
+    const run = menuAction("Morning show", "run");
+    expect(run.disabled).toBe(false);
+    expect(run.getAttribute("aria-disabled")).toBe("true");
+    run.focus();
+    run.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(status()).toBe("Start the station to run this event now"));
+    expect(document.activeElement).toBe(run);
+    expect(server.calls.some((call) => call.url.endsWith("/run"))).toBe(false);
+  });
+
+  it("updates Run now in an open menu immediately when the station stops and starts", async () => {
+    const server = fakeServer();
+    server.events.push(event("Morning show"));
+    const { controls } = await openPanel(server);
+    const run = menuAction("Morning show", "run");
+    run.focus();
+    controls.setOffAir(true);
+    expect(document.activeElement).toBe(run);
+    expect(run.getAttribute("aria-disabled")).toBe("true");
+    expect(run.disabled).toBe(false);
+    run.click();
+    await vi.waitFor(() => expect(status()).toBe("Start the station to run this event now"));
+    expect(server.calls.some((call) => call.url.endsWith("/run"))).toBe(false);
+    controls.setOffAir(false);
+    expect(document.activeElement).toBe(run);
+    expect(run.getAttribute("aria-disabled")).toBe("false");
+    run.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(status()).toBe("Event Morning show ran"));
+    expect(server.calls.filter((call) => call.url.endsWith("/run"))).toHaveLength(1);
   });
 
   it("asks before deleting, then focuses the next event", async () => {
     const server = fakeServer();
     server.events.push(event("First"), event("Second"));
     await openPanel(server);
-    const remove = rowButton("First", "delete");
+    const remove = menuAction("First", "delete");
     remove.click();
     expect(byId("confirm-dialog").open).toBe(true);
     expect(byId("confirm-title").textContent).toBe("Delete event First?");
     byId("confirm-cancel").click();
-    await vi.waitFor(() => expect(document.activeElement).toBe(remove));
+    await vi.waitFor(() => expect(document.activeElement).toBe(optionsCell("First").querySelector('[aria-haspopup="menu"]')));
     expect(server.events).toHaveLength(2);
 
-    remove.click();
+    menuAction("First", "delete").click();
     byId("confirm-accept").click();
     await vi.waitFor(() => expect(status()).toBe("Event First deleted"));
-    expect(document.activeElement).toBe(rowButton("Second", "edit"));
+    expect(document.activeElement).toBe(editCell("Second"));
 
-    rowButton("Second", "delete").click();
+    menuAction("Second", "delete").click();
     byId("confirm-accept").click();
     await vi.waitFor(() => expect(status()).toBe("Event Second deleted"));
     expect(document.activeElement).toBe(byId("schedule-add"));
   });
 
-  it("keeps focus on a row's button when another page changes the schedule", async () => {
+  it("keeps an open menu and its focused item when another page changes the schedule", async () => {
     const server = fakeServer();
     server.events.push(event("First"), event("Second"));
     const { controls } = await openPanel(server);
-    const run = rowButton("Second", "run");
+    const run = menuAction("Second", "run");
     run.focus();
     server.events.unshift(event("Zero"));
     server.events.find((item) => item.name === "Second").enabled = false;
     await controls.refresh();
     expect(document.activeElement).toBe(run);
-    expect(run.closest("li").querySelector("span").textContent).toContain("Disabled.");
-    expect([...byId("schedule-events").children].map((row) => row.dataset.eventId)).toEqual(["id-Zero", "id-First", "id-Second"]);
+    expect(rowFor("Second").cells[4].textContent).toBe("No");
+    expect(rowsIn("schedule-events").map((row) => row.dataset.rowKey)).toEqual(["id-Zero", "id-First", "id-Second"]);
+  });
+
+  it("distinguishes an unlisted next run from a disabled or ended event", async () => {
+    const server = fakeServer();
+    server.events.push(event("Later"));
+    const reply = server.request.getMockImplementation();
+    server.request.mockImplementation(async (url, options) => {
+      const data = await reply(url, options);
+      return url === "/api/schedule" && !options?.method ? { ...data, upcoming: [] } : data;
+    });
+    await openPanel(server);
+    expect(rowFor("Later").cells[3].textContent).toBe("Not in next 5 runs");
   });
 
   it("does not load while hidden, and forgets everything on sign-out", async () => {
@@ -695,7 +770,7 @@ describe("Schedule panel", () => {
     controls.clear();
     release({ timezone: "UTC", actions: ACTIONS, events: [event("Private show")], upcoming: [], runs: [] });
     await pending;
-    expect(byId("schedule-events").textContent).toBe("");
+    expect(byId("schedule-events").querySelector("tbody").textContent).toBe("");
     expect(byId("schedule-timezone").textContent).toBe("");
   });
 

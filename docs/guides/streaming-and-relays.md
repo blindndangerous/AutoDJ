@@ -71,7 +71,7 @@ clockwheel editor, under **Station name**, or in the show's **Add show** or **Ed
 save. It takes the same characters as **Station name**, up to 100.
 
 - A clockwheel's name is used while it picks the songs: **Pick mode** is **Clockwheel** and it
-  is the active clockwheel. It does not matter whether you pressed **Activate** or a schedule
+  is the active clockwheel. It does not matter whether you chose **Activate** from its row's **Options** menu or a schedule
   event switched to it.
 - A show's name is used while the show is on the air, and comes before the clockwheel's. A
   prepared edition uses the name of the show it was made from.

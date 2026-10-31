@@ -2479,15 +2479,15 @@
   <div class="card" role="tabpanel" id="spanel-schedule" data-settings-kind="station" aria-labelledby="stab-schedule" hidden>
     <h3>Schedule</h3>
     <!-- scheduler-panel.js fills this panel when it is seen, and again when
-         the server says the schedule changed or an event ran.  The lists
-         are plain text, not live regions: each result of a button is said
+         the server says the schedule changed or an event ran.  The shared
+         tables are not live regions: each result of a button is said
          once through #schedule-status. -->
     <p>Change the station at set times, in the station time zone: <span id="schedule-timezone"></span>.</p>
     <div id="schedule-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <h4 id="schedule-upcoming-heading">Next events</h4>
-    <ul id="schedule-upcoming" aria-labelledby="schedule-upcoming-heading"></ul>
+    <div id="schedule-upcoming"></div>
     <h4 id="schedule-events-heading">Events</h4>
-    <ul id="schedule-events" aria-labelledby="schedule-events-heading"></ul>
+    <div id="schedule-events"></div>
     <button type="button" id="schedule-add">Add event</button>
     <!-- Add and Edit share this form.  It checks its own fields: an error
          is said, the field gets aria-invalid and focus, and the words stay
@@ -2609,7 +2609,7 @@
       </fieldset>
     </form>
     <h4 id="schedule-runs-heading">Recent runs</h4>
-    <ul id="schedule-runs" aria-labelledby="schedule-runs-heading"></ul>
+    <div id="schedule-runs"></div>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-server" data-settings-kind="server" aria-labelledby="stab-server" hidden>
@@ -3750,21 +3750,16 @@
       <summary><h2 id="clockwheel-heading">Clockwheels</h2></summary>
       <div class="flow-form">
       <!-- clockwheel-panel.js fills this section.  Each result of a button
-           is said once through #clock-status; the lists are plain text. -->
+           is said once through #clock-status; the shared tables are not live regions. -->
       <p>A clockwheel is a repeating order of steps: music or voice liners from a library folder, music from a category, and more. The active one plays when Pick mode is set to Clockwheel, and the Schedule can switch to another one at set times.</p>
       <p id="clock-notice" class="field-error" hidden></p>
       <div id="clock-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
       <h3 id="clock-list-heading">Saved clockwheels</h3>
-      <ul id="clock-list" aria-labelledby="clock-list-heading"><li>No clockwheels loaded.</li></ul>
-      <label for="clock-name">Name</label>
+      <div id="clock-list"></div>
+      <label for="clock-name">Imported clockwheel name</label>
       <input id="clock-name" type="text" maxlength="64" autocomplete="off" spellcheck="false" aria-describedby="clock-name-help">
-      <p id="clock-name-help">Up to 64 letters, digits, spaces, dashes and underscores. Create, Duplicate, Rename and Import .PAL use this name.</p>
+      <p id="clock-name-help">Up to 64 letters, digits, spaces, dashes and underscores. Import .PAL uses this name.</p>
       <button type="button" id="clock-create">Create</button>
-      <button type="button" id="clock-duplicate">Duplicate</button>
-      <button type="button" id="clock-rename">Rename</button>
-      <button type="button" id="clock-delete">Delete</button>
-      <button type="button" id="clock-activate">Activate</button>
-      <button type="button" id="clock-deactivate">Turn off clockwheel</button>
       <label for="clock-pal-file">.PAL file to import</label>
       <input id="clock-pal-file" type="file" accept=".pal,text/plain" aria-describedby="clock-pal-help">
       <button type="button" id="clock-import">Import .PAL</button>
@@ -3772,9 +3767,9 @@
       <p>Import makes a new clockwheel from a SAM Broadcaster .PAL file. Each folder must be a registered music or voice liner folder, or a folder inside one that adds subfolders.</p>
 
       <h3 id="clock-steps-heading">Steps of <span id="clock-open-name">no clockwheel open</span></h3>
-      <ol id="clock-slots" role="grid" aria-labelledby="clock-steps-heading"><li role="row"><div role="gridcell">Open or create a clockwheel to see its steps.</div></li></ol>
+      <div id="clock-slots"></div>
       <button type="button" id="clock-new-step">New step</button>
-      <button type="button" id="clock-undo" aria-keyshortcuts="Control+Z" disabled>Undo step change</button>
+      <button type="button" id="clock-undo" aria-keyshortcuts="Control+Z" aria-disabled="true">Undo step change</button>
       <p id="clock-next"></p>
       <h4>Station name</h4>
       <label for="clock-station-name">Station name while active</label>

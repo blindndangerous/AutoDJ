@@ -12,15 +12,23 @@ have an active window, such as 22:00 until 02:00; a window may cross midnight, a
 Without a window the count starts again at local midnight. An every-N-minutes event can also keep
 to chosen days; leave every day unchecked to run every day.
 
+Press **Add event** to open the editor dialog. The **Events** table separates
+**Name**, **When**, **Action**, **Next run** and **Enabled**. Use a row's **Edit**
+action to change it. Open **Options for <event name>** for **Run now**,
+**Enable** or **Disable**, and **Delete**. Delete asks for confirmation; its
+past runs remain in **Recent runs**. **Next events** and **Recent runs** are
+read-only tables. Each table uses one Tab stop and arrow-key cell navigation;
+see the [keyboard guide](../keyboard-and-screen-reader.md).
+
 Any repeating event can have a **Date range**: an optional start date, end date, or both. A
 one-time event's date is its whole range, so the form hides **Date range** for it, unless the
 event was saved with a range: then the dates stay in view to keep or clear. The event runs
 only on dates from the start date to the end date, both included, in the station time zone, and
-the **Next events** list skips the dates outside it. An active window that crosses midnight
+the **Next events** table skips the dates outside it. An active window that crosses midnight
 belongs to the day it starts: a Friday 18:00 until 02:00 window whose end date is that Friday
 runs until 02:00 on Saturday, and a window that started the day before the start date does not
-run. The events list says the range in words, such as "Every day at 00:00, from 27 November to 26
-December 2026", and an event with no run left says "Ended, no runs left". An event whose range
+run. The event's **When** column says the range in words, such as "Every day at 00:00, from 27 November to 26
+December 2026". Its **Next run** column says "Ended, no runs left" when appropriate. An event whose range
 has no run left cannot be saved enabled; save it disabled, or move its end date. Schedule files
 from earlier versions load unchanged, and an event without a range is saved without the two
 fields.
@@ -31,7 +39,7 @@ year is ignored, so the event needs no edit next year. A range may run past New 
 date 20 December and end date 2 January runs from 20 December to 2 January every year. Without an
 end date, or with the same month and day, it is that one day each year. 29 February counts as 28
 February in a year that has none. A yearly range needs a start date. **Next events** shows the
-next run in the range, next year's once this year's has passed, and the events list says, for
+next run in the range, next year's once this year's has passed, and the event's **When** column says, for
 example, "Every day at 00:00, every year from 20 December to 2 January". There is no **Every
 week**: the event's own **Repeat** rule chooses its days. An event whose dates do not repeat is
 saved without the choice, so an earlier version still reads the file.
@@ -44,7 +52,7 @@ A seasonal clockwheel, such as a holiday one from 27 November to 26 December, ta
 2. **Regular music**: once on 27 December at 00:00, action **Change song picking** back to the
    usual clockwheel.
 
-Use **Run now** on the first event to start the season at once when you add it partway through.
+Choose **Run now** from **Options for Holiday music** to start the season at once when you add it partway through.
 
 Times use `station.timezone in the station definition`, an IANA name such as `America/Denver`, or the system time
 zone when that is not set (UTC when the system has no IANA name). **Time for the selected station** in
@@ -91,7 +99,7 @@ events, which never fade the song out, never wait. An event with no
 wait is saved without the key, so an older AutoDJ still reads the schedule; one with a wait is
 refused by an older version, which keeps a copy of the file.
 
-**Run now** runs an event's action at once, to test it. Each run, failure and missed event goes
+**Run now**, in the event's **Options** menu, runs its action at once, to test it. Each run, failure and missed event goes
 to the server log and to **Recent runs**, which keeps the last 200.
 
 Schedules live in `schedule.json` in the station's folder, next to `web_state.json`. AutoDJ

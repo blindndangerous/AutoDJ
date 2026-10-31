@@ -4,21 +4,16 @@
 // opens one into a working copy, edits its steps in the page, and sends it
 // back only when Save clockwheel is pressed; nothing is saved on its own.
 //
-// The <ol> is a layout grid with a row header and a cell for each native
-// button. The step name is the Edit button. Keyboard focus moves between
-// the cells themselves (one roving tab stop), not the buttons: NVDA turns
-// on focus mode when a grid cell gets focus, but not for a button inside
-// one, and in browse mode it would keep the arrow keys. Enter or Space on
-// a cell presses its button. Up/Down moves between names, Left/Right moves
-// among row actions, and Alt+Up/Down moves the focused step. After every
-// change focus stays with the step that moved, or the nearest one. A settled
-// track count is also announced once through #clock-status.
+// Saved wheels and steps use the shared collection table. Cell focus retains
+// the native table keyboard model; Options menus contain secondary actions.
+// Alt+Up/Down moves the focused step, Delete removes it, and Ctrl+Z undoes
+// step changes. Edits remain in the working copy until Save clockwheel.
 //
 // Folders are chosen from the registered library folders by ID, with an
 // optional path inside the folder; the browser never sends a full path.
 // Category conditions name a saved category (Categories, above) by its ID.
-import { reconcileRows } from "./dom-helpers.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
+import { createCollectionTable } from "./collection-table.js";
+import { deleteCollectionItem } from "./collection-delete.js";
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { createEditorDialog, showEditorError } from "./editor-dialog.js";
@@ -26,10 +21,10 @@ import { clearFieldError, clearFormErrors, showFieldError } from "./dom-helpers.
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
 import { createConditionRow, readConditionRows, renumberConditionRows, updateConditionCategories } from "./condition-editor.js";
-import { describeStep } from "./clockwheel-step.js";
+import { describeConditions, describeStep } from "./clockwheel-step.js";
 import { addBrowseButton, libraryFolderSource } from "./path-picker.js";
 export { describeStep } from "./clockwheel-step.js";
-import { fillStepHours, installStepHours, readStepHours } from "./step-hours.js";
+import { fillStepHours, installStepHours, readStepHours, stepHoursText } from "./step-hours.js";
 import { checkStationName, isStationNameError } from "./station-name-field.js";
 
 const NAME = /^[A-Za-z0-9 _-]{1,64}$/;
@@ -73,7 +68,6 @@ export function installClockwheelPanel({ document: doc = document, request = req
   const stationName = el("clock-station-name");
   const stationNameError = el("clock-station-name-error");
   const status = el("clock-status");
-  const listNavigation = installActionListNavigation(list);
   const typeSelect = el("clock-step-type");
   const newStep = el("clock-new-step");
   const addButton = el("clock-add-step");
@@ -99,13 +93,18 @@ export function installClockwheelPanel({ document: doc = document, request = req
   let undoHistory = [];
   let dirty = false;
   let editing = null; // index of the step in the form, or null when adding
-  let listSignature = "";
+  const savedStepCounts = new Map();
+  let savedCountSweepRunning = false;
+  let savedCountGeneration = 0;
+  const stepKeys = new WeakMap();
+  let nextStepKey = 0;
   let optionsSignature = "";
   let lastNotice = null;
   let lastPendingUpdate = false;
   let loadFailed = false;
   let timer = null;
   let generation = 0;
+  let listGeneration = 0;
   let suspended = false;
   let conditionId = 0;
   let stepCountTimer = null;
@@ -159,39 +158,99 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   // ---- Saved clockwheels ---------------------------------------------
+  const savedTable = createCollectionTable({
+    host: list, label: "Saved clockwheels", status, fallback: el("clock-create"),
+    emptyText: "No saved clockwheels.", keyOf: (name) => name, nameOf: (name) => name,
+    columns: [
+      { key: "name", label: "Name", value: (name) => isDraft(name) ? `${name}, Not saved` : name },
+      { key: "active", label: "Active", value: (name) => !isDraft(name) && name === data.active ? "Yes" : "No" },
+      { key: "steps", label: "Steps", value: (name) => isDraft(name) ? clock.steps.length : savedStepCounts.get(name) ?? "Not loaded" },
+    ],
+    primary: (name) => ({ id: "open", label: "Open", run: () => isDraft(name)
+      ? (rowTarget(0, "edit") || newStep)?.focus() : openClock(name) }),
+    actions: (name) => [
+      { id: "duplicate", label: "Duplicate", disabledReason: isDraft(name) ? "Save this clockwheel before duplicating it." : "", run: (button) => openNameEditor("duplicate", name, button) },
+      { id: "rename", label: "Rename", disabledReason: savedActionReason(name), run: (button) => openNameEditor("rename", name, button) },
+      { id: "activate", label: !isDraft(name) && name === data.active ? "Turn off" : "Activate", disabledReason: !isDraft(name) && name === data.active ? "" : savedActionReason(name), run: () => activateClock(name) },
+      { id: "delete", label: "Delete", run: () => deleteClock(name) },
+    ],
+  });
+
+  function isDraft(name) {
+    return isNew && clock?.name === name;
+  }
+
+  function clockNames() {
+    return isNew && clock ? [...data.names.filter((name) => name !== clock.name), clock.name] : data.names;
+  }
+
   function renderList() {
-    const signature = JSON.stringify([data.names, data.active, clock?.name ?? null, isNew]);
-    if (signature === listSignature) { listNavigation.refresh(); return; }
-    listSignature = signature;
-    if (!data.names.length) {
-      reconcileRows(list, [], (name) => name, () => null, () => {}, {
-        fallback: el("clock-create"),
-        onFocusLost: ({ target }) => say(`The saved clockwheels list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Create clockwheel"}.`),
-      });
-      let none = list.querySelector(":scope > li.no-results");
-      if (!none) { none = doc.createElement("li"); none.className = "no-results"; none.textContent = "No saved clockwheels."; }
-      list.append(none);
-      listNavigation.refresh();
-      return;
+    savedTable.update(clockNames());
+    for (const row of savedTable.body.querySelectorAll("tr[data-row-key]")) {
+      const button = row.querySelector('button[data-action="open"]');
+      const selected = clock?.name === row.dataset.rowKey;
+      if (selected) button.setAttribute("aria-current", "true");
+      else button.removeAttribute("aria-current");
     }
-    reconcileRows(list, data.names, (name) => name, (name) => {
-      const item = doc.createElement("li");
-      const button = doc.createElement("button");
-      button.type = "button";
-      button.dataset.name = name;
-      button.dataset.action = "open";
-      button.addEventListener("click", () => void openClock(name));
-      item.append(button);
-      return item;
-    }, (item, name) => {
-      const button = item.querySelector(":scope > button");
-      const label = name === data.active ? `${name}, active` : name;
-      if (button.textContent !== label) button.textContent = label;
-      const current = !isNew && clock?.name === name;
-      if (current && button.getAttribute("aria-current") !== "true") button.setAttribute("aria-current", "true");
-      else if (!current && button.hasAttribute("aria-current")) button.removeAttribute("aria-current");
-    }, { fallback: el("clock-create"), onFocusLost: ({ target }) => say(`The saved clockwheels list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Create clockwheel"}.`) });
-    listNavigation.refresh();
+  }
+
+  function stepKey(step) {
+    if (!stepKeys.has(step)) stepKeys.set(step, String(++nextStepKey));
+    return stepKeys.get(step);
+  }
+
+  const stepTable = createCollectionTable({
+    host: steps, label: "Clockwheel steps", status, fallback: newStep, nameIndex: 1,
+    emptyText: "No steps. Open or create a clockwheel, then press New step.",
+    keyOf: stepKey, nameOf: (step, index) => `Step ${index + 1}, ${stepSummary(step)}`,
+    columns: [
+      { key: "number", label: "#", value: (step, index) => index + 1 },
+      { key: "step", label: "Step", value: stepSummary },
+      { key: "kind", label: "Kind", value: (step) => String(step.type === "category" ? "music" : step.type).replaceAll("_", " ") },
+      { key: "target", label: "Length or target", value: stepTarget },
+      { key: "rules", label: "Rules and hours", value: stepRules },
+    ],
+    primary: (step) => ({ id: "edit", label: "Edit", run: () => startEdit(clock.steps.indexOf(step)) }),
+    actions: (step, index) => ROW_ACTIONS.slice(1).map(([id, label]) => ({
+      id, label, run: () => rowAction(id, clock.steps.indexOf(step)),
+      disabledReason: id === "move-up" && index === 0 ? "This is already the first step."
+        : id === "move-down" && index === clock.steps.length - 1 ? "This is already the last step."
+          : id === "delete" && editing !== null ? "Finish editing the step before deleting it." : "",
+    })),
+  });
+
+  function stepSummary(step) {
+    if (step.type === "category") return `music from ${describeConditions([{ field: "category", category: step.category }], "all", data.sources, data.categories)}`;
+    if (FOLDER_TYPES.has(step.type)) {
+      const conditions = step.conditions || [{ field: "folder", source: step.source, folder: step.folder || "", recursive: step.recursive }];
+      return `${step.type} from ${describeConditions(conditions, step.match, data.sources, data.categories)}`;
+    }
+    if (step.type === "track") return `track ${step.path}`;
+    if (step.type === "settings") return `switch to preset ${step.preset}`;
+    return `${String(step.type).replaceAll("_", " ")}${step.type === "ad_break" ? "" : " step"}`;
+  }
+
+  function stepRules(step) {
+    const rules = [];
+    if ((FOLDER_TYPES.has(step.type) || step.type === "category") && step.enforce_rules === false) rules.push("ignoring repeat rules");
+    if (step.type === "liner" && step.require_following) rules.push("only if the following track fits before the next reset");
+    if (step.type === "ad_break") {
+      if (step.advertiser) rules.push(`from ${step.advertiser}`);
+      if (step.category) rules.push(`category ${step.category}`);
+    }
+    const hours = stepHoursText(step);
+    if (hours) rules.push(hours);
+    return rules.join(", ") || "None";
+  }
+
+  function stepTarget(step) {
+    if (step.type === "track") return step.path || "";
+    if (step.type === "settings") return step.preset || "";
+    if (step.type === "ad_break") {
+      const spots = step.max_spots ?? 3;
+      return `${spots} ${Number(spots) === 1 ? "spot" : "spots"}${step.max_seconds ? `, ${step.max_seconds} seconds` : ""}`;
+    }
+    return step.selection === "random" ? "Random selection" : "Least recently played";
   }
 
   function renderOptions() {
@@ -452,58 +511,17 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (apply) apply.hidden = !clock || isNew || clock.name !== data.active;
   }
 
-  function renderSteps(focusIndex = null, action = "edit") {
+  function renderSteps(focusIndex = null, action = "edit", announceFocus = focusIndex === null) {
     if (editing !== null) {
       if (legend) legend.textContent = `Edit step ${editing + 1}`;
       addButton.textContent = `Update step ${editing + 1}`;
     }
-    if (undoButton) undoButton.disabled = !undoHistory.length || editing !== null;
-    if (!clock || !clock.steps.length) {
-      const none = doc.createElement("li");
-      none.setAttribute("role", "row");
-      const cell = doc.createElement("div");
-      cell.setAttribute("role", "gridcell");
-      cell.textContent = clock ? "No steps yet. Press New step to add one." : "Open or create a clockwheel to see its steps.";
-      none.append(cell);
-      steps.replaceChildren(none);
-    } else {
-      steps.replaceChildren(...clock.steps.map((step, index) => {
-        const item = doc.createElement("li");
-        item.dataset.index = String(index);
-        item.setAttribute("role", "row");
-        const number = doc.createElement("span");
-        number.setAttribute("role", "rowheader");
-        number.textContent = String(index + 1);
-        item.append(number);
-        for (const [key, title] of ROW_ACTIONS) {
-          // The cell takes keyboard focus, which turns on NVDA's focus mode;
-          // its button is for the mouse and browse mode, out of the tab order.
-          const cell = doc.createElement("span");
-          cell.setAttribute("role", "gridcell");
-          cell.dataset.action = key;
-          cell.tabIndex = index === 0 && key === "edit" ? 0 : -1;
-          const button = doc.createElement("button");
-          button.type = "button";
-          button.dataset.action = key;
-          button.tabIndex = -1;
-          if (key === "edit") {
-            button.textContent = describe(step);
-            cell.append(button);
-            item.append(cell);
-            continue;
-          }
-          // The visible words start the name, which says which step.
-          button.textContent = title;
-          button.setAttribute("aria-label", `${title} step ${index + 1}`);
-          button.disabled = (key === "move-up" && index === 0) || (key === "move-down" && index === clock.steps.length - 1)
-            || (key === "delete" && editing !== null);
-          if (button.disabled) cell.setAttribute("aria-disabled", "true");
-          cell.append(button);
-          item.append(" ", cell);
-        }
-        return item;
-      }));
+    if (undoButton) {
+      undoButton.disabled = false;
+      undoButton.setAttribute("aria-disabled", String(!undoHistory.length || editing !== null));
     }
+    stepTable.update(clock?.steps || [], { announceFocus });
+    [...stepTable.body.querySelectorAll("tr[data-row-key]")].forEach((row, index) => { row.dataset.index = String(index); });
     renderHeading();
     renderNext();
     if (focusIndex !== null) focusRow(focusIndex, action);
@@ -513,33 +531,13 @@ export function installClockwheelPanel({ document: doc = document, request = req
   // steps that name it.  Only the words change, so focus and the grid's tab
   // stop stay where they are.
   function renderStepWords() {
-    if (!clock) return;
-    for (const item of steps.querySelectorAll(":scope > li[data-index]")) {
-      const step = clock.steps[Number(item.dataset.index)];
-      const button = item.querySelector('button[data-action="edit"]');
-      const text = step ? describe(step) : null;
-      if (button && text !== null && button.textContent !== text) button.textContent = text;
-    }
+    if (clock) renderSteps();
   }
 
-  const CELL = '[role="gridcell"][data-action]';
-  const ENABLED_CELL = `${CELL}:not([aria-disabled="true"])`;
-
-  // Makes one cell the list's only tab stop.
-  function makeTabStop(cell) {
-    steps.querySelectorAll(CELL).forEach((item) => { item.tabIndex = item === cell ? 0 : -1; });
-  }
-
-  // Makes one cell of a row the list's tab stop and returns it.
+  // A menu action returns to its Options cell; Edit returns to its own cell.
   function rowTarget(index, action) {
-    const row = steps.querySelector(`li[data-index="${index}"]`);
-    if (!row) return null;
-    const other = { "move-up": "move-down", "move-down": "move-up" }[action] || "edit";
-    const target = row.querySelector(`[role="gridcell"][data-action="${action}"]:not([aria-disabled="true"])`)
-      || row.querySelector(`[role="gridcell"][data-action="${other}"]:not([aria-disabled="true"])`)
-      || row.querySelector('[role="gridcell"][data-action="edit"]');
-    makeTabStop(target);
-    return target;
+    const step = clock?.steps[index];
+    return step ? stepTable.target(stepKey(step), action === "edit" ? "primary" : "options") : null;
   }
 
   function focusRow(index, action) {
@@ -548,6 +546,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
 
   function changed(message, focusIndex, action) {
     dirty = true;
+    renderList();
     renderSteps(focusIndex, action);
     say(`${message} Not saved yet.`);
   }
@@ -573,7 +572,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
     clock.steps.splice(index, 1);
     if (editing !== null) resetForm();
     dirty = true;
-    renderSteps();
+    renderList();
+    renderSteps(null, "edit", false);
     const left = clock.steps.length;
     const message = `Deleted step ${index + 1}, ${gone}.`;
     if (!left) return { message: `${message} No steps are left. Not saved yet.`, target: newStep };
@@ -584,17 +584,24 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function remove(index) {
-    const { message, target } = removeStep(index);
-    target?.focus();
-    say(message);
+    return deleteCollectionItem(doc, { undo: true, onConfirm: () => {
+      const { message, target } = removeStep(index);
+      target?.focus();
+      say(message);
+      return target;
+    } });
   }
 
   function rememberSteps(index) {
-    undoHistory.push({ steps: copy(clock.steps), index });
+    const steps = copy(clock.steps);
+    // Snapshots copy values, but each logical step keeps its collection key.
+    steps.forEach((step, at) => stepKeys.set(step, stepKey(clock.steps[at])));
+    undoHistory.push({ steps, index });
   }
 
   function undoSteps() {
-    if (!clock || editing !== null || !undoHistory.length) return;
+    if (editing !== null) { say("Finish editing the step before undoing."); return; }
+    if (!clock || !undoHistory.length) { say("No step changes to undo."); return; }
     const previous = undoHistory.pop();
     clock.steps = previous.steps;
     resetForm();
@@ -628,53 +635,18 @@ export function installClockwheelPanel({ document: doc = document, request = req
     } else if (action === "delete") remove(index);
   }
 
-  steps.addEventListener("click", (event) => {
-    const button = event.target.closest?.("button[data-action]");
-    const row = button?.closest("li[data-index]");
-    if (row) {
-      makeTabStop(button.closest(CELL));
-      rowAction(button.dataset.action, Number(row.dataset.index));
-    }
-  });
   steps.addEventListener("keydown", (event) => {
-    const row = event.target.closest?.("li[data-index]");
+    if (event.target.closest('[role="menu"]')) return;
+    const row = event.target.closest?.("tr[data-index]");
     if (!row || !clock) return;
-    if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
-        && (event.key === "Home" || event.key === "End")) {
-      event.preventDefault();
-      focusRow(event.key === "Home" ? 0 : clock.steps.length - 1, event.target.dataset?.action || "edit");
-    } else if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
         && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
       event.preventDefault();
-      move(Number(row.dataset.index), event.key === "ArrowUp" ? -1 : 1, event.target.dataset?.action || "edit");
-    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
-        && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-      const next = Number(row.dataset.index) + (event.key === "ArrowUp" ? -1 : 1);
-      event.preventDefault();
-      if (next >= 0 && next < clock.steps.length) {
-        focusRow(next, event.target.dataset?.action || "edit");
-      }
-    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
-        && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
-      const cells = [...row.querySelectorAll(ENABLED_CELL)];
-      const at = cells.indexOf(event.target.closest?.(CELL));
-      const next = at + (event.key === "ArrowLeft" ? -1 : 1);
-      event.preventDefault();
-      if (next >= 0 && next < cells.length) focusRow(Number(row.dataset.index), cells[next].dataset.action);
-    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
-        && (event.key === "Home" || event.key === "End")) {
-      const cells = [...row.querySelectorAll(ENABLED_CELL)];
-      event.preventDefault();
-      focusRow(Number(row.dataset.index), cells[event.key === "Home" ? 0 : cells.length - 1].dataset.action);
+      if (!event.repeat) move(Number(row.dataset.index), event.key === "ArrowUp" ? -1 : 1,
+        event.target.dataset?.action === "options" ? "options" : "edit");
     } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "Delete") {
       event.preventDefault();
       if (!event.repeat) rowAction("delete", Number(row.dataset.index));
-    } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
-        && (event.key === "Enter" || event.key === " ") && event.target.matches?.(CELL)) {
-      // A focused cell acts as its button; a focused button handles these itself.
-      event.preventDefault();
-      const button = event.target.querySelector("button[data-action]");
-      if (!event.repeat && button && !button.disabled) button.click();
     }
   });
 
@@ -906,6 +878,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     rememberSteps(editing ?? clock.steps.length);
     if (editing !== null) {
       const index = editing;
+      stepKeys.set(step, stepKey(clock.steps[index]));
       clock.steps[index] = step;
       resetForm();
       changed(`Updated ${position(index)}.`, index, "edit");
@@ -922,10 +895,15 @@ export function installClockwheelPanel({ document: doc = document, request = req
     scheduleStepCount();
     stepEditor.open(typeSelect, newStep);
   });
-  resync.addEventListener("input", () => { if (clock) { dirty = true; renderNext(); } });
+  function changedClockSettings() {
+    if (!clock) return;
+    if (!dirty) { dirty = true; renderList(); }
+    renderNext();
+  }
+  resync.addEventListener("input", changedClockSettings);
   stationName?.addEventListener("input", () => {
     if (stationNameError) clearFieldError(stationName, stationNameError);
-    if (clock) { dirty = true; renderNext(); }
+    changedClockSettings();
   });
   // A refused station name: marked, its error tied to it and said, focus on it.
   function refuseStationName(message) {
@@ -947,6 +925,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
   function load(value, { fresh = false } = {}) {
     undoHistory = [];
     clock = copy(value);
+    if (!fresh) {
+      savedCountGeneration += 1;
+      savedStepCounts.set(value.name, value.steps.length);
+    }
     isNew = fresh;
     dirty = fresh;
     savedPicking = fresh ? null : picking(value);
@@ -958,7 +940,6 @@ export function installClockwheelPanel({ document: doc = document, request = req
       stationName.value = clock.station_name || "";
       if (stationNameError) clearFieldError(stationName, stationNameError);
     }
-    listSignature = "";
     renderList();
     renderSteps();
   }
@@ -967,14 +948,13 @@ export function installClockwheelPanel({ document: doc = document, request = req
     undoHistory = [];
     clock = null; isNew = false; dirty = false;
     resetForm();
-    listSignature = "";
     renderList();
     renderSteps();
   }
 
   async function openClock(name, { quiet = false } = {}) {
-    if (!(await discardChanges())) return;
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+    if (!(await discardChanges()) || !current(epoch, mine)) return;
     try {
       const value = await request(clockUrl(name));
       if (!current(epoch, mine)) return;
@@ -986,11 +966,13 @@ export function installClockwheelPanel({ document: doc = document, request = req
   async function refresh() {
     if (!panel || panel.hidden || doc.hidden || suspended) return;
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+    const requestId = ++listGeneration;
     try {
       const value = await request("/api/library/clock");
-      if (!current(epoch, mine)) return;
+      if (!current(epoch, mine) || requestId !== listGeneration) return;
       loadFailed = false;
       data = { ...empty(), ...value };
+      for (const name of savedStepCounts.keys()) if (!data.names.includes(name)) savedStepCounts.delete(name);
       renderList();
       renderOptions();
       renderStepWords();
@@ -998,11 +980,36 @@ export function installClockwheelPanel({ document: doc = document, request = req
       // The first look at the panel opens the active clockwheel, silently.
       if (!clock && data.active && data.names.includes(data.active)) await openClock(data.active, { quiet: true });
       else renderNext();
+      if (current(epoch, mine)) void refreshSavedCounts();
     } catch (error) {
       // A failed automatic refresh is said once, not on every retry.
       if (current(epoch, mine) && !loadFailed) say(`Could not load clockwheels: ${error.message}`, true);
       if (current(epoch, mine)) loadFailed = true;
     }
+  }
+
+  // The index exposes names only. Count reads run separately, one at a time,
+  // so a slow saved file cannot block controls or create overlapping sweeps.
+  async function refreshSavedCounts() {
+    if (savedCountSweepRunning) return;
+    savedCountSweepRunning = true;
+    const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+    const names = [...data.names];
+    try {
+      for (const name of names) {
+        if (!current(epoch, mine)) break;
+        if (!data.names.includes(name)) continue;
+        const countVersion = savedCountGeneration;
+        let count;
+        try { count = (await request(clockUrl(name))).steps.length; }
+        catch { count = "Unavailable"; }
+        if (!current(epoch, mine)) break;
+        // Opening or saving a wheel may already have supplied fresher counts.
+        if (countVersion !== savedCountGeneration || !data.names.includes(name)) continue;
+        savedStepCounts.set(name, count);
+        renderList();
+      }
+    } finally { savedCountSweepRunning = false; }
   }
 
   // Runs one change on the server, applies its result and reloads the list.
@@ -1026,34 +1033,135 @@ export function installClockwheelPanel({ document: doc = document, request = req
     }
   }
 
-  function needSaved(verb) {
-    if (!clock || isNew) { say(`Open a saved clockwheel to ${verb} it.`, true); return false; }
-    if (dirty) { say(`Save the changes to ${clock.name}, or open it again to drop them, before you ${verb} it.`, true); return false; }
+  function savedActionReason(name) {
+    if (isDraft(name)) return `Save ${name} before renaming or activating it.`;
+    return clock?.name === name && dirty
+      ? `Save the changes to ${name}, or open it again to drop them, before changing the saved clockwheel.` : "";
+  }
+
+  function savedActionAllowed(name) {
+    const reason = savedActionReason(name);
+    if (reason) {
+      say(reason, true);
+      return false;
+    }
     return true;
   }
 
-  function newName(verb) {
-    const name = typedName();
-    if (clock && name === clock.name) {
-      nameInput.focus();
-      throw new Error(`Type a new name in Name to ${verb}.`);
-    }
-    return name;
+  const nameForm = doc.createElement("form");
+  nameForm.id = "clock-name-form";
+  nameForm.hidden = true;
+  const nameHeading = doc.createElement("h1");
+  nameHeading.id = "clock-name-legend";
+  const nameLabel = doc.createElement("label");
+  nameLabel.htmlFor = "clock-editor-name";
+  nameLabel.textContent = "Name";
+  const editorName = doc.createElement("input");
+  editorName.id = nameLabel.htmlFor;
+  editorName.type = "text";
+  editorName.maxLength = 64;
+  editorName.autocomplete = "off";
+  const nameError = doc.createElement("p");
+  nameError.id = "clock-editor-name-error";
+  nameError.className = "field-error";
+  nameError.hidden = true;
+  const nameActions = doc.createElement("div");
+  nameActions.className = "dialog-actions";
+  const nameSubmit = doc.createElement("button");
+  nameSubmit.type = "submit";
+  nameSubmit.textContent = "Save";
+  const nameCancel = doc.createElement("button");
+  nameCancel.type = "button";
+  nameCancel.textContent = "Cancel";
+  nameActions.append(nameSubmit, nameCancel);
+  nameForm.append(nameHeading, nameLabel, editorName, nameError, nameActions);
+  let naming = null;
+  const nameEditor = createEditorDialog({ form: nameForm, heading: nameHeading, cancel: nameCancel,
+    fallback: el("clock-create"), save: saveName });
+
+  async function openNameEditor(action, name = null, from = el("clock-create")) {
+    const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+    if (name && action !== "duplicate" && !savedActionAllowed(name)) return;
+    if ((action === "create" || action === "duplicate") && !(await discardChanges())) return;
+    if (!current(epoch, mine)) return;
+    naming = { action, name };
+    nameHeading.textContent = action === "create" ? "Create clockwheel" : `${action === "rename" ? "Rename" : "Duplicate"} ${name}`;
+    nameSubmit.textContent = action === "create" ? "Create" : action === "rename" ? "Rename" : "Duplicate";
+    editorName.value = action === "rename" ? name : "";
+    clearFieldError(editorName, nameError);
+    nameEditor.open(editorName, from);
   }
 
-  el("clock-create")?.addEventListener("click", async () => {
-    let name;
-    try { name = typedName(); } catch (error) { say(error.message, true); return; }
-    if (data.names.some((item) => item.toLowerCase() === name.toLowerCase())) {
-      nameInput.focus();
-      say(`A clockwheel named ${name} already exists. Type another name.`, true);
+  async function saveName(event, active) {
+    event.preventDefault();
+    const name = editorName.value.trim();
+    const { action, name: source } = naming;
+    if (!NAME.test(name) || RESERVED.test(name)) {
+      showEditorError(editorName, "A clockwheel name needs 1 to 64 letters, digits, spaces, dashes or underscores.", nameError, nameEditor.status);
       return;
     }
-    if (!(await discardChanges())) return;
-    load({ version: 1, name, steps: [], resync_minutes: [0] }, { fresh: true });
-    newStep?.focus();
-    say(`New clockwheel ${name}. Add its steps, then press Save clockwheel.`);
-  });
+    if (data.names.some((item) => item.toLowerCase() === name.toLowerCase())) {
+      showEditorError(editorName, `A clockwheel named ${name} already exists. Type another name.`, nameError, nameEditor.status);
+      return;
+    }
+    if (action === "create") {
+      nameEditor.close();
+      load({ version: 1, name, steps: [], resync_minutes: [0] }, { fresh: true });
+      newStep?.focus();
+      say(`New clockwheel ${name}. Add its steps, then press Save clockwheel.`);
+      return;
+    }
+    const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+    const result = await send(`${clockUrl(source)}/${action}`, "POST", { name });
+    if (!active() || !current(epoch, mine)) return;
+    // Renaming another saved row must not replace the current working copy.
+    if (action === "duplicate" || clock?.name === source) load(result);
+    await refresh();
+    if (!current(epoch, mine)) return;
+    nameEditor.close();
+    (savedTable.target(name) || el("clock-create")).focus();
+    say(action === "duplicate" ? `Copied ${source} as ${name}, and opened the copy.` : `Renamed ${source} to ${name}.`);
+  }
+
+  async function activateClock(name) {
+    const turnOff = name === data.active;
+    if (!turnOff && !savedActionAllowed(name)) return;
+    if (await command(() => send("/api/library/clock/active", "POST", { name: turnOff ? null : name }))) {
+      say(turnOff ? "No clockwheel is active now." : `${name} is the active clockwheel. It plays when Pick mode is set to Clockwheel.`);
+    }
+  }
+
+  async function deleteClock(name) {
+    let deleted = null;
+    const index = clockNames().indexOf(name);
+    const draft = isDraft(name);
+    const discard = clock?.name === name && dirty ? ` Unsaved changes to ${name} will also be discarded.` : "";
+    const message = draft
+      ? "This clockwheel has not been saved. Its unsaved changes will be discarded."
+      : (name === data.active
+        ? "It is the active clockwheel, so no clockwheel plays until you activate another. Its references are removed from saved profiles and station defaults."
+        : "Its file is removed, along with its references in saved profiles and station defaults. Backups made earlier still hold it.") + discard;
+    // The request runs while the dialog is open; the result is said after it closes.
+    await deleteCollectionItem(doc, {
+      title: `Delete clockwheel ${name}?`,
+      message,
+      confirmLabel: "Delete clockwheel",
+      onConfirm: async () => {
+        if (draft) {
+          if (!isDraft(name)) return null;
+          close();
+          deleted = true;
+        } else {
+          deleted = await command(() => send(clockUrl(name), "DELETE"), () => { if (clock?.name === name) close(); });
+        }
+        const names = clockNames();
+        return deleted ? savedTable.target(names[Math.min(index, names.length - 1)]) || el("clock-create") : null;
+      },
+    });
+    if (deleted) say(draft ? `Dropped the new clockwheel ${name}; it was never saved.` : `Deleted ${name}.`);
+  }
+
+  el("clock-create")?.addEventListener("click", () => void openNameEditor("create"));
 
   el("clock-save")?.addEventListener("click", async () => {
     if (!clock) { say("Open or create a clockwheel first.", true); return; }
@@ -1091,60 +1199,6 @@ export function installClockwheelPanel({ document: doc = document, request = req
     }
   });
 
-  el("clock-duplicate")?.addEventListener("click", async () => {
-    if (!needSaved("copy")) return;
-    let name;
-    try { name = newName("copy it"); } catch (error) { say(error.message, true); return; }
-    const from = clock.name;
-    const copy = await command(() => send(`${clockUrl(from)}/duplicate`, "POST", { name }), (result) => load(result));
-    if (copy) say(`Copied ${from} as ${copy.name}, and opened the copy.`);
-  });
-
-  el("clock-rename")?.addEventListener("click", async () => {
-    if (!needSaved("rename")) return;
-    let name;
-    try { name = newName("rename it"); } catch (error) { say(error.message, true); return; }
-    const old = clock.name;
-    const renamed = await command(() => send(`${clockUrl(old)}/rename`, "POST", { name }), (result) => load(result));
-    if (renamed) say(`Renamed ${old} to ${renamed.name}.`);
-  });
-
-  el("clock-delete")?.addEventListener("click", async () => {
-    if (!clock) { say("Open a clockwheel to delete it.", true); return; }
-    const name = clock.name;
-    if (isNew) {
-      close();
-      say(`Dropped the new clockwheel ${name}; it was never saved.`);
-      return;
-    }
-    let deleted = null;
-    // The request runs while the dialog is open; the result is said after it closes.
-    await confirmAction(doc, {
-      title: `Delete clockwheel ${name}?`,
-      message: name === data.active
-        ? "It is the active clockwheel, so no clockwheel plays until you activate another. Its references are removed from saved profiles and station defaults."
-        : "Its file is removed, along with its references in saved profiles and station defaults. Backups made earlier still hold it.",
-      confirmLabel: "Delete clockwheel",
-      onConfirm: async () => {
-        deleted = await command(() => send(clockUrl(name), "DELETE"), () => close());
-        return deleted ? list.querySelector("button") || el("clock-create") : null;
-      },
-    });
-    if (deleted) say(`Deleted ${name}.`);
-  });
-
-  el("clock-activate")?.addEventListener("click", async () => {
-    if (!needSaved("activate")) return;
-    const name = clock.name;
-    if (await command(() => send("/api/library/clock/active", "POST", { name }))) {
-      say(`${name} is the active clockwheel. It plays when Pick mode is set to Clockwheel.`);
-    }
-  });
-
-  el("clock-deactivate")?.addEventListener("click", async () => {
-    if (await command(() => send("/api/library/clock/active", "POST", { name: null }))) say("No clockwheel is active now.");
-  });
-
   el("clock-import")?.addEventListener("click", async () => {
     const fileInput = el("clock-pal-file");
     const file = fileInput?.files?.[0];
@@ -1162,7 +1216,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (!current(epoch, mine)) return;
     const imported = await command(() => send("/api/library/clock/import", "POST", { text, name, resync_minutes: minutes }),
       (result) => load(result));
-    if (imported) say(`Imported ${imported.name} from ${file.name}, ${count(imported.steps.length)}. Press Activate to use it.`);
+    if (imported) say(`Imported ${imported.name} from ${file.name}, ${count(imported.steps.length)}. Choose Options for ${imported.name}, then Activate.`);
   });
 
   // ---- Polling and sign-out -------------------------------------------
@@ -1189,8 +1243,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
     data = empty();
     undoHistory = [];
     clock = null; isNew = false; dirty = false;
-    listSignature = ""; optionsSignature = ""; lastNotice = null; lastPendingUpdate = false;
-    reconcileRows(list, [], (name) => name, () => null, () => {}, { fallback: el("clock-create") });
+    optionsSignature = ""; lastNotice = null; lastPendingUpdate = false;
+    savedStepCounts.clear();
+    savedTable.clear();
+    nameEditor.close();
     nameInput.value = "";
     resync.value = "0";
     if (stationName) {

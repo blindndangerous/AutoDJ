@@ -333,15 +333,117 @@ with deterministic local TTS audio and injected cancellation delay. It bypasses
 normal model/hardware startup and does not establish normal-startup, physical
 output-routing, speech or Windows/NVDA evidence.
 
+## Collection tables
+
+[ADR 21](adr/0021-unify-collection-tables.md) establishes one collection pattern.
+Schedule events, Upcoming and Runs, saved Clockwheels and clockwheel steps are
+the first migrated screens. Other collections remain migration work; do not
+treat a passing pilot audit as evidence for every screen.
+
+Run `node tests/playwright/collections_audit.mjs` for the focused headless
+Chromium pilot audit. It starts its own loopback static server, loads the actual
+index markup, styles and panel modules, and supplies in-memory API replies.
+Set `AUTODJ_BROWSERS=firefox` to repeat it in an installed Playwright Firefox;
+in PowerShell, use `$env:AUTODJ_BROWSERS = 'firefox'` before the command.
+It checks both themes, keyboard/menu/editor journeys, axe, minimum targets,
+computed button-text and focus-ring contrast, 320-pixel reflow and emulated forced
+colors. The report retains axe incomplete nodes. Hidden popup references are
+checked directly against the DOM; computed contrast supplements overlap cases
+that axe cannot resolve. Results go to
+`.codex-tmp/collections-audit.json`; `AUTODJ_COLLECTIONS_REPORT` overrides the
+path, and `AUTODJ_BROWSERS` can select additional installed engines. This fixture
+does not verify the live backend, persistence or screen-reader speech. Use the
+procedure below for the remaining visual and platform evidence.
+
+Use `collection-table.js`, the `.collection-table` class, `tableRow` and
+`installTableNavigation`. Each native table has real column headings, plain
+grid cells and one Tab stop. Preserve cell focus rather than moving onto an
+ordinary action button: the established NVDA behavior avoids duplicate cell and
+button speech. Do not introduce row headers. Empty collections contain one
+`.no-results` row spanning all columns, including action columns.
+
+Each editable row has at most one visible primary action and an **Options for
+<row name>** button for every other action. `row-actions-menu.js` implements the
+menu-button contract: `aria-haspopup="menu"`, `aria-expanded`, `aria-controls`,
+`role="menu"` and `menuitem` children. Enter/Space opens from the grid cell.
+When the button itself receives focus, Enter, Space or Down opens on the first
+item and Up opens on the last. Grid-cell arrows keep their existing navigation.
+Inside the popup, Up/Down, Home/End and type-ahead move through choices. Enter
+activates. Escape closes and returns to the Options button, now the table's
+only Tab stop; Tab closes and leaves the menu. Disabled actions remain present
+and reachable with `aria-disabled`. Their reason is linked with
+`aria-describedby`, and activation announces it without performing the action.
+
+Keep keyed rows and controls mounted during refresh. The shared table reuses
+the focus-preserving placement from `dom-helpers`. Removing a focused row moves
+focus to a usable nearby row or panel fallback and announces the new destination
+through `announceStatus`. Quiet refreshes do not announce unchanged rows.
+Action outcomes, disabled reasons and validation announcements also use the
+shared status helper, with the editor's region while a dialog is open.
+
+Use `createEditorDialog` for add/edit and `collection-delete.js` for removal.
+The removal helper calls `confirmAction` unless Undo is available. Clockwheel
+steps retain Undo and their Alt+Up/Down, Delete and Ctrl+Z accelerators. Do not
+add a step-delete confirmation. Read-only tables use the shared class and
+navigation without a menu. The cart wall and text-only lists remain exceptions
+as specified by ADR 21.
+
+For each migrated panel, verify these paths in a real browser with populated
+and empty data:
+
+1. Tab into and out of each table. Check exactly one table stop, arrow movement,
+   Home/End and Ctrl+Home/End. Confirm no extra stops on row buttons or closed
+   menu items. Read data and column headings in browse mode as well as focus mode.
+2. Open Options with Enter/Space from its cell, then test the focused button's
+   Down/Up keys. Space on the button opens on release and must not immediately
+   close the popup or reopen it after activating an item. Check first/last item
+   focus, arrows, Home/End and type-ahead.
+   Activate one enabled item with Enter. Activate a disabled item and verify
+   its reason is announced without mutation. Check that `aria-describedby`
+   resolves to the same restriction before activation.
+   Stop the station while an event menu is open. Run now must stay focusable,
+   send no request on mouse, Enter, Space or type-ahead followed by Enter, and
+   announce "Start the station to run this event now" on each attempt.
+3. Escape from an open menu. Check focus returns directly to Options and the
+   expanded state becomes false. Tab and Shift+Tab must close the menu without
+   trapping focus or exposing its hidden items in the page Tab sequence.
+   An outside click closes it; opening another row's menu leaves only one open.
+4. Open an editor, cancel it, reopen it and save. Check field labels, dirty-edit
+   confirmation, error focus, pending-save guards and direct return to the row's
+   control. Repeat after another update removes the original row.
+5. Refresh and reorder rows with a cell focused, and again with a menu open.
+   Check preserved focus and current action data. Remove the focused row and
+   then the final row; verify the destination and exactly one status announcement.
+6. In saved Clockwheels, act on a row while another wheel is open. Verify the
+   selected row owns Duplicate, Rename, Activate/Turn off and Delete. With unsaved
+   work open, Duplicate must name that wheel in its discard confirmation;
+   declining must preserve the working copy. Create a wheel and verify its row
+   says Not saved. Its Options, Delete must ask before discarding it and must
+   not send a DELETE request for an unsaved file. In steps,
+   test Alt+Up/Down, Delete and Undo, including deletion of the last step. Check
+   Ctrl+Z still edits text normally in fields.
+7. Repeat in Light and Dark. Run axe's WCAG 2.2 A/AA rules; measure 24 by 24 CSS
+   pixel minimum targets, text/control contrast and visible, unobscured focus.
+   Check 320-pixel reflow, 400% zoom, text spacing and forced colors. Menus must
+   stay visible and usable near viewport and scroll-container edges.
+
+Record automated browser and axe results separately from real screen-reader
+speech. Sample NVDA in Chrome and Firefox, including table/menu/dialog transitions,
+disabled reasons, removed-row focus and Undo. Record revision, OS, browser and
+screen-reader versions, exact flows and defects, speech-capture method and whether
+a person listened. Unperformed platform or speech checks remain explicit limits.
+
 ## Continuous integration
 
-Add/Edit forms for categories, intro rules, scheduled events, ad spots and ad
-breaks use `editor-dialog.js`. Keep feature validation and API operations in
+Add/Edit forms for categories, intro rules, scheduled events, clockwheel steps,
+ad spots and ad breaks use `editor-dialog.js`. Migrated collections use it for
+all add/edit operations. Keep feature validation and API operations in
 their panel; pass the save callback the controller's current-request guard and
 check it after every await before changing the UI. Close the controller when
 station or authentication state is cleared. Save closes onto the saved row's
-Edit control; Cancel and Escape return to the opener, asking before discarding
-changed fields. A pending save prevents another submission or dismissal.
+Edit control (the action cell in a shared collection table); Cancel and Escape
+return to the opener, asking before discarding changed fields. A pending save
+prevents another submission or dismissal.
 
 Use the dialog's own status region while it is open. `showEditorError` places
 the error beside its field and links and focuses it; it announces separately
@@ -571,13 +673,18 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   condition once none are left; an invalid value or duration marked invalid and focused; Match
   all/Match any and every condition read in the step summary; and saved values and keyboard focus
   preserved when folder, genre or Beets choices refresh, with an open genre list left alone.
-- Library tools, Clockwheels, the step list: Tab into the list turning on NVDA's focus mode on
-  the first step name (a grid cell, not a button); Up and Down moving between names and Left,
-  Right, Home and End along a row without leaving focus mode; Enter and Space pressing the focused
-  cell's button; Alt+Up and Alt+Down moving the step and saying its new position once; and the
-  Delete key behaving like the Delete button; Delete and Undo disabled while a step is being
-  edited, with its unsaved fields preserved; Undo step change and Ctrl+Z restoring the step and
-  its focus, including after deleting the last step; and Ctrl+Z still undoing text in inputs.
+- Settings, Schedule and Library tools, Clockwheels: follow the
+  [collection-table procedure](#collection-tables), including named columns,
+  one table Tab stop, Options menu navigation and editor focus restoration.
+  Saved clockwheel actions must name and affect their row, even while another
+  wheel is open. Upcoming and Runs must expose their data without action menus.
+- Library tools, Clockwheels, the step table: Tab enters a plain grid cell with
+  no row-header announcement; arrows, Home/End and Ctrl+Home/End navigate its data
+  and action columns. Enter/Space activates Edit or opens Options. Alt+Up/Down
+  moves the step and says its new position once. Delete behaves like Options,
+  Delete, with Undo and no confirmation. Disabled menu actions remain reachable
+  and explain their reason. Undo step change and Ctrl+Z restore the step and its
+  focus, including after deleting the last step; Ctrl+Z still undoes text in inputs.
 - Library tools, Shows: Add show and Edit landing on Name; a refused field marked invalid, its
   error read with it and focused; Open list moving focus to the list heading and saying the total
   once; each song's Move up, Move down and Remove buttons named with the song, focus staying on

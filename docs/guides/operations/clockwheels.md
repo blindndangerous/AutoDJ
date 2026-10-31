@@ -15,6 +15,19 @@ group when the edited profile is still active; saving an inactive profile does n
 station back to it. **Activate** in the Profiles list resolves all eligible groups for the selected profile. A schedule
 event can also switch to a saved profile by name.
 
+Press **Create** to open the name dialog. Enter **Name**, then press **Create**
+in the dialog. The new wheel appears in the table marked **Not saved**; add its
+steps and press **Save clockwheel** to persist it. To abandon it, open that row's
+**Options for \<name\>**, choose **Delete**, and confirm discarding the unsaved wheel.
+
+Each saved row shows **Name**, **Active** and **Steps**. Press its **Open** action
+to edit its steps. Use **Options for \<name\>** for **Duplicate**, **Rename**,
+**Activate** or **Turn off**, and **Delete**. Duplicate and Rename ask for the new
+name in a dialog. These actions target their row, even when another wheel is
+open. Duplicate opens the copy, so it first asks before discarding unsaved work
+in the currently open wheel. Saved-wheel Delete asks for confirmation; step
+deletion instead offers Undo.
+
 Step types:
 
 - **Music** or **Voice liner** matching the conditions in the step. Choose least recently played
@@ -31,12 +44,18 @@ Step types:
   continues and the report records a missed break with the reason. JSON example:
   `{"type":"ad_break","max_spots":3,"max_seconds":60,"advertiser":"","category":""}`.
 
-The editor lists numbered steps with their names as Edit buttons. With focus in the step list,
-Up and Down move to the previous or next step name. Left and Right move between the actions in a
-row; Home and End go to its first or last available action. Enter or Space presses that action.
-Ctrl+Home and Ctrl+End move to the first or last step. The same keys work in the other action lists.
-Delete removes the step immediately, just like its Delete button. Tab leaves the step list.
-Alt+Up and Alt+Down reorder the focused step, and focus moves with it.
+The step table separates **#**, **Step**, **Kind**, **Length or target**, and
+**Rules and hours**. Each row has **Edit** and **Options for <step name>**;
+Options contains **Move up**, **Move down**, **Duplicate** and **Delete**.
+Tab enters the table once. Up and Down move between rows in the same column;
+Left and Right move between cells. Home and End reach the row's first or last
+cell; Ctrl+Home and Ctrl+End reach the first or last row in the same column.
+Enter or Space activates an action cell. Within Options, arrows and Home/End
+move between choices, typing matches their names, Enter activates, and Escape
+returns to Options. Disabled choices explain their restriction when activated.
+Tab leaves the table or closes and leaves its menu. Delete removes the focused
+step immediately, like **Options**, **Delete**. Alt+Up and Alt+Down reorder it,
+and focus moves with it. See the [keyboard guide](../keyboard-and-screen-reader.md).
 
 **New step** and a step's **Edit** action use the shared modal editor. Cancel or Escape
 asks before discarding changed step fields. **Add step** or **Update step** changes
@@ -48,7 +67,7 @@ first. You can undo several changes in order, until you save or open another clo
 Ctrl+Z in a text field keeps the browser's usual text undo. Undo changes the working copy;
 press **Save clockwheel** to keep the result.
 
-These list keys do not replace the playback or spoken-status shortcuts. Nothing is saved until you press **Save clockwheel**; opening
+These table keys do not replace the playback or spoken-status shortcuts. Step edits are not saved until you press **Save clockwheel**; opening
 another clockwheel with unsaved changes asks first. **Restart at these minutes past each hour**
 sends the clockwheel back to step 1 at the song change nearest each minute.
 
@@ -82,7 +101,8 @@ next handoff. The song still follows the usual clock and repeat rules; skipping 
 not count it as played. With no reset times set, this checkbox has no effect.
 
 **Import .PAL** turns a SAM Broadcaster `.PAL` file into a new clockwheel, once; the `.PAL` file
-is not used after that. Only `Dir[...]` and `SubDir[...]` lines with `QueueBottom` are read, and
+is not used after that. Enter **Imported clockwheel name**, choose **.PAL file to
+import**, then press **Import .PAL**. Only `Dir[...]` and `SubDir[...]` lines with `QueueBottom` are read, and
 nothing in the file runs. Each folder must be a registered music or voice liner folder, or a folder
 inside one that adds subfolders; the innermost registered folder is used. A folder above every
 registered folder (for example `SubDir['C:\Station']` when only `C:\Station\Rock` is registered)
@@ -90,7 +110,7 @@ is refused: register the parent folder, or edit that step after the import.
 
 Upgrading from the single clockwheel: the clock saved by earlier versions is not read. The
 Clockwheels section and the server log say so. Import the `.PAL` file again under a name, then
-press **Activate**.
+open its **Options for \<name\>** menu and choose **Activate**.
 
 
 ## Related tasks and contracts

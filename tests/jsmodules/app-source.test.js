@@ -4403,6 +4403,51 @@ describe("several stations (#70)", () => {
     expect(fit.disabled).toBe(false);
   });
 
+  it("updates the schedule Run now menu action when the real app stops and starts a station", async () => {
+    const schedule = {
+      timezone: "UTC", actions: [], upcoming: [], runs: [],
+      events: [{ id: "event-one", name: "Morning show", enabled: true, repeat_text: "Daily at 07:00",
+        action_text: "Switch profile", timing: "soft" }],
+    };
+    const app = await setupApp({
+      stations: [AUTODJ, OWL],
+      onRequest: (url) => {
+        if (url.endsWith("/schedule")) return jsonResponse(schedule);
+        if (url.endsWith("/schedule/event-one/run")) return jsonResponse({ result: "ok" });
+        return owlRequests(url);
+      },
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    chooseOwl();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    document.getElementById("tab-settings").click();
+    document.getElementById("stab-schedule").click();
+    await vi.waitFor(() => expect(document.querySelector('#schedule-events [aria-haspopup="menu"]')).not.toBeNull());
+    document.querySelector('#schedule-events [aria-haspopup="menu"]').click();
+    const run = document.querySelector('#schedule-events [role="menuitem"][data-action="run"]');
+    run.focus();
+    expect(run.getAttribute("aria-disabled")).toBe("false");
+    sockets[0].onclose({ code: 4409, wasClean: true });
+    expect(run.getAttribute("aria-disabled")).toBe("true");
+    expect(run.disabled).toBe(false);
+    expect(document.activeElement).toBe(run);
+    run.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(document.getElementById("schedule-status").textContent)
+      .toBe("Start the station to run this event now"));
+    const runCalls = () => app.fetchImpl.mock.calls.filter(([url]) => url.endsWith("/schedule/event-one/run"));
+    expect(runCalls()).toHaveLength(0);
+
+    document.getElementById("station-start").click();
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    sockets[1].onopen();
+    expect(run.getAttribute("aria-disabled")).toBe("false");
+    expect(run.disabled).toBe(false);
+    run.focus();
+    run.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(runCalls()).toHaveLength(1));
+    expect(runCalls()[0][0]).toBe("/api/stations/nightowl/schedule/event-one/run");
+  });
+
   it("asks before leaving browser decks that play, and stops them only on yes", async () => {
     const stopAllDecks = vi.fn();
     const app = await setupApp({

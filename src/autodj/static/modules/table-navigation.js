@@ -10,7 +10,8 @@
 export function installTableNavigation(body) {
   if (!body) return { refresh() {} };
   const cells = () => [...body.querySelectorAll("tr > td[role=gridcell], tr > td[role=rowheader]")];
-  const controls = (cell) => cell ? [...cell.querySelectorAll("button, input, select")] : [];
+  const controls = (cell) => cell ? [...cell.querySelectorAll("button, input, select")]
+    .filter((item) => !item.closest('[role="menu"]')) : [];
   const input = (cell) => controls(cell).find((item) => ["INPUT", "SELECT"].includes(item.tagName) && !item.disabled);
   const stop = (cell) => input(cell) || cell;
   const place = (cell) => {
@@ -28,21 +29,29 @@ export function installTableNavigation(body) {
   function refresh() {
     const items = cells();
     const focused = body.ownerDocument.activeElement;
+    // A row menu owns its focus until it closes; refreshing data must not
+    // pull its active item back into the grid.
+    if (body.contains(focused) && focused.closest?.('[role="menu"]')) return;
     const activeCell = focused?.closest?.("td[role=gridcell], td[role=rowheader]");
-    setRovingFocus(stop(activeCell && body.contains(activeCell) ? activeCell : items[0]));
+    setRovingFocus(body.contains(focused) && focused.matches?.('[aria-haspopup="menu"]')
+      ? focused : stop(activeCell && body.contains(activeCell) ? activeCell : items[0]));
   }
   body.addEventListener("focusin", (event) => {
+    if (event.target.closest?.('[role="menu"]')) return;
     const cell = event.target.closest?.("td");
     if (!cell || !body.contains(cell)) return;
     // Firefox can focus a tall cell while leaving its bottom below the viewport.
     cell.scrollIntoView({ block: "nearest", inline: "nearest" });
-    const target = stop(cell);
+    // Escape from a menu returns to its actual button. It becomes the
+    // table's sole Tab stop; ordinary grid movement still focuses cells.
+    const target = event.target.matches?.('[aria-haspopup="menu"]') ? event.target : stop(cell);
     // Focus that lands on a cell's button, such as Track info handing it
     // back, moves to the cell.
     if (event.target !== target) { target.focus(); return; }
     setRovingFocus(target);
   });
   body.addEventListener("keydown", (event) => {
+    if (event.target.closest?.('[role="menu"]')) return;
     if (event.target.matches("select")) return;
     const rowEdge = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
       && (event.key === "Home" || event.key === "End");

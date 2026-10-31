@@ -36,6 +36,7 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | [18: Profile overrides](0018-profiles-store-overrides-of-station-defaults.md) | Proposed | Station-owned profile overrides, defaults inheritance, activation and startup resolution |
 | [19: Server certificates](0019-manage-server-certificates-on-the-host.md) | Proposed | Host-only HTTPS setup, private certificate inventory, active selection and client trust; missing-package startup refusal, maintenance access and serve refusal policy amendment 2026-10-31 |
 | [20: Local browser programme](0020-local-browser-programme-ownership.md) | Accepted; bounded prototype implemented, Chromium endurance checked, hardware evidence pending | Single local browser ownership, stereo programme input, direct monitoring, occurrence accounting and bounded prototype recovery; bounded preparation waits and consumption-driven credit amendments 2026-10-31 |
+| [21: Unified collection tables](0021-unify-collection-tables.md) | Accepted | Shared table and row-action menus, modal record editors, confirmation or Undo, consistent empty/disabled states and phased collection migration |
 
 [ADR 13](0013-produce-speech-outside-playout.md) describes selected
 Showcraft-inspired speech capabilities inside AutoDJ. Its contract table records

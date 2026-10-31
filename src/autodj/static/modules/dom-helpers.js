@@ -312,13 +312,17 @@ export function placeRows(list, rows) {
 
 // Reuse direct-child rows by stable item key, update them in place, then
 // order them without moving the row that currently contains focus.
-export function reconcileRows(list, items, keyOf, createRow, updateRow, { fallback = null, onFocusLost = null } = {}) {
+export function reconcileRows(list, items, keyOf, createRow, updateRow, {
+  fallback = null, onFocusLost = null, rowSelector = "li",
+  controlSelector = ":scope > button:not(:disabled)", focusSelector = "button", focusControl = (active) => active,
+} = {}) {
   const active = list.ownerDocument.activeElement;
-  const focusedRow = active?.closest?.("li");
+  const focusedRow = active?.closest?.(rowSelector);
   const focusedIndex = focusedRow && focusedRow.parentElement === list ? [...list.children].indexOf(focusedRow) : -1;
   const focusedKey = focusedRow?.dataset.rowKey;
-  const focusedAction = active?.dataset?.action || active?.dataset?.role;
-  const focusedColumn = focusedRow ? [...focusedRow.querySelectorAll("button")].indexOf(active) : -1;
+  const control = focusControl(active);
+  const focusedAction = control?.dataset?.action || control?.dataset?.role;
+  const focusedColumn = focusedRow ? [...focusedRow.querySelectorAll(focusSelector)].indexOf(control) : -1;
   const existing = new Map([...list.children]
     .filter((row) => row.dataset.rowKey !== undefined)
     .map((row) => [row.dataset.rowKey, row]));
@@ -334,7 +338,7 @@ export function reconcileRows(list, items, keyOf, createRow, updateRow, { fallba
   const focused = focusedIndex >= 0 && (!active.isConnected || active.disabled);
   let target = null;
   if (focused) {
-    const candidates = (row) => [...row.querySelectorAll(":scope > button:not(:disabled)")];
+    const candidates = (row) => [...row.querySelectorAll(controlSelector)];
     const choose = (row) => {
       const buttons = candidates(row);
       return buttons.find((button) => (button.dataset.action || button.dataset.role) === focusedAction)

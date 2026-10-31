@@ -317,12 +317,19 @@ The browser UI uses native HTML and shared rules in
 `src/autodj/static/app.css`. Use `.card` for a grouped surface,
 `.settings-row` for a label and its control, `.setting-desc` for visible help,
 `.field-error` for an error stated in text, and `.no-results` for an empty
-list. Use `.dialog-actions` for a right-aligned, wrapping button row. These
-patterns preserve source and keyboard order; keep action-list rows aligned with
-their labels, and keep purpose-specific layouts such as the clockwheel step
-grid and dense tables local to their feature. Reuse the existing theme and
-spacing tokens, and keep native focus, forced-colors, and narrow-screen
-behavior in view.
+list. Use `.dialog-actions` for a right-aligned, wrapping button row.
+Collections, including clockwheel steps and dense data tables, use the shared
+`.collection-table` class and `modules/collection-table.js`, built on `tableRow`
+and `installTableNavigation`. Keep real data columns, one Tab stop, at most one
+visible primary row action, and an **Options for <row name>** menu for the rest.
+Use `createEditorDialog` for add/edit and `deleteCollectionItem` for removal:
+confirm unless the screen offers Undo. Empty tables contain one `.no-results`
+row spanning every column. Disabled row actions remain focusable with
+`aria-disabled` and explain why when activated. Read-only tables need no menu.
+The cart wall and text-only lists remain exceptions. See
+[ADR 21](docs/adr/0021-unify-collection-tables.md) for the contract and phased
+migration. Reuse theme and spacing tokens, keep targets at least 24 by 24 CSS
+pixels, and preserve visible focus, forced-colors and narrow-screen behavior.
 
 ## Where things live
 
