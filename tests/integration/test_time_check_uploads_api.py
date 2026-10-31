@@ -206,8 +206,8 @@ def test_pack_removal_with_invalid_profile_hides_saved_path_and_keeps_pack(
     refused = client.delete("/api/time-checks/packs/Studio")
     assert refused.status_code == 400
     assert refused.json()["detail"] == (
-        "A saved profile file is damaged, so the voice pack was kept. "
-        "Repair or remove that profile file, then try again."
+        "The saved profile Broken is invalid, so the voice pack was kept. "
+        "Repair or remove that profile, then try again."
     )
     assert str(broken) not in refused.json()["detail"]
     assert "line 1 column" not in refused.text

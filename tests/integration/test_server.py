@@ -3998,11 +3998,13 @@ class TestMisc:
         assert picked.path in calls
         assert nxt2.path in calls
 
+    @pytest.mark.parametrize("requested_path", ["~/song.wav", "~/missing/../song.wav"])
     def test_lyrics_uses_indexed_path_when_request_normalizes_differently(
-        self, tmp_path, bridge, monkeypatch
+        self, tmp_path, bridge, monkeypatch, requested_path
     ) -> None:
         from fastapi.testclient import TestClient
 
+        from autodj import audio_meta
         from autodj.catalog import _path
 
         home = tmp_path / "home"
@@ -4022,14 +4024,25 @@ class TestMisc:
         bridge.sim.entry_for_path.side_effect = lambda path: (
             entry if _path(path) == _path(indexed) else None
         )
+        read_lyrics = audio_meta.read_library_lyrics
+        read_paths = []
 
-        response = TestClient(create_app(bridge)).get("/api/lyrics", params={"path": "~/song.wav"})
+        def record_read(path, cfg):
+            read_paths.append(Path(path))
+            return read_lyrics(path, cfg)
+
+        monkeypatch.setattr(audio_meta, "read_library_lyrics", record_read)
+
+        response = TestClient(create_app(bridge)).get(
+            "/api/lyrics", params={"path": requested_path}
+        )
 
         assert response.status_code == 200
         assert response.json() == {
-            "path": "~/song.wav",
+            "path": requested_path,
             "lyrics": [{"time_s": 1.0, "text": "Indexed lyrics"}],
         }
+        assert read_paths == [indexed]
 
     def test_lyrics_endpoint_reads_each_requested_index_path(self, bridge, monkeypatch) -> None:
         from fastapi.testclient import TestClient

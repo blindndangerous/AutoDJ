@@ -99,7 +99,7 @@ from autodj.breaks_api import (
     VOICE_UPLOAD_PATH,
 )
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
-from autodj.catalog import ADVANCED_MAX_MINUTES_LIMIT
+from autodj.catalog import ADVANCED_MAX_MINUTES_LIMIT, normalize_path
 from autodj.config import AdsConfig, BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
@@ -2185,11 +2185,15 @@ def create_app(
     @app.get("/api/lyrics")
     async def api_lyrics(path: str) -> dict[str, object]:
         """Return timed lyric lines for one exact indexed track path."""
-        authorized_entry = shared.entry_for_path(path)
+        # Normalize aliases before both authorization and reading, preserving
+        # equivalent spelling. The entry is the token for the ownership recheck.
+        normalized = normalize_path(path)
+        read_path = path if Path(path) == Path(normalized) else normalized
+        authorized_entry = shared.entry_for_path(read_path)
         if authorized_entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
-        lyrics = await _read_lyrics_owned(authorized_entry.path)
-        if shared.entry_for_path(path) != authorized_entry:
+        lyrics = await _read_lyrics_owned(read_path)
+        if shared.entry_for_path(read_path) != authorized_entry:
             raise HTTPException(status_code=409, detail="Track index changed")
         return {"path": path, "lyrics": lyrics}
 

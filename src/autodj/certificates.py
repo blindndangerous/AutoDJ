@@ -304,10 +304,11 @@ class CertificateStore:
             raise CertificateError("unknown certificate")
         with self._lock:
             self._safe_root()
-            if not any(x["id"] == ident for x in self._load()["certificates"]):
+            directories = {x["id"]: self.root / x["id"] for x in self._load()["certificates"]}
+            if ident not in directories:
                 raise CertificateError("unknown certificate")
             root = self.root.resolve()
-            directory = self.root / ident
+            directory = directories[ident]
             if (
                 directory.is_symlink()
                 or directory.is_junction()
