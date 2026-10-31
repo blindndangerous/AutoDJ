@@ -11,7 +11,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from autodj.config import DmcaConfig
+from autodj.errors import FieldError
 from autodj.repeat_rules import PlayRecord, TrackKeyCache
+from autodj.station_routes import PlayNextBody, _dmca_refusal
 from tests._layout import point_index
 from tests._server import create_app
 
@@ -33,6 +35,15 @@ def dmca_bridge(bridge):
 
 
 ALBUM_LIMIT = "more than 3 songs from the album “Album” in 3 hours"
+
+
+def test_dmca_refusal_uses_the_shared_domain_error(dmca_bridge) -> None:
+    station = create_app(dmca_bridge).state.stations.default
+    with pytest.raises(FieldError) as refused:
+        _dmca_refusal(station, PlayNextBody(path=_make_entry(4).path), append=True)
+    assert refused.value.status == 409
+    assert refused.value.field == "confirm"
+    assert ALBUM_LIMIT in str(refused.value)
 
 
 @pytest.mark.parametrize(

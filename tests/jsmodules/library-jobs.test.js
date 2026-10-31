@@ -148,14 +148,14 @@ describe("library job live region", () => {
         name: "enrich", running: false, elapsed_seconds: 1, exit_code: 1,
         lines: [
           "[autodj-jobs] $ autodj enrich",
-          "No beets_db in config — enrich requires beets.",
+          "Error: No [library] beets_db in config — enrich requires beets.",
           "[autodj-jobs] exit 1 (elapsed 1.0s)",
         ],
       },
     }, els);
 
     expect(els.jobStatus.textContent).toBe(
-      "enrich exited with code 1 after 0:01. No beets_db in config — enrich requires beets.",
+      "enrich exited with code 1 after 0:01. Error: No [library] beets_db in config — enrich requires beets.",
     );
   });
 

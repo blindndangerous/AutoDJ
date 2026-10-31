@@ -382,16 +382,20 @@ def test_backwards_cart_dates_name_their_field(app_client: TestClient) -> None:
         "detail": "Do not play after must be on or after the Not before date",
         "field": "not_after",
     }
-    # Other refusals keep their list of problems, without the input echoed.
+    # Ordinary validation uses the same scalar detail and field envelope.
     other = app_client.put("/api/carts/pages/1/slots/3", json={**body, "mode": "loud"})
     assert other.status_code == 422
-    assert isinstance(other.json()["detail"], list)
-    assert "field" not in other.json()
-    # Another endpoint's 422 is the list it always was.
+    assert other.json() == {
+        "detail": "mode: Input should be 'duck', 'over' or 'replace'",
+        "field": "mode",
+    }
+    # Another endpoint uses the shared envelope without echoing its input.
     elsewhere = app_client.put("/api/time-checks", json={"enabled": "yes please"})
     assert elsewhere.status_code == 422
-    assert isinstance(elsewhere.json()["detail"], list)
-    assert "field" not in elsewhere.json()
+    assert elsewhere.json() == {
+        "detail": "enabled: Input should be a valid boolean",
+        "field": "enabled",
+    }
 
 
 def test_a_profile_shows_its_cart_page(app_client: TestClient) -> None:

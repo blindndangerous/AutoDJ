@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from autodj.fsutil import atomic_write
+from autodj.fsutil import atomic_write, set_aside
 
 logger = logging.getLogger(__name__)
 _CLOSED_LISTENER_GRACE = 30.0
@@ -265,13 +265,7 @@ class ListenerAccess:
                     "Cannot load listener bans from %s: %s; starting with no bans", path, exc
                 )
                 self._bans.clear()
-                bad = path.with_name(f"{path.name}.{time.time_ns()}.bad")
-                try:
-                    path.replace(bad)
-                except OSError:
-                    logger.error(
-                        "Cannot move corrupt listener bans file %s aside", path, exc_info=True
-                    )
+                set_aside(path, "listener bans file", str(exc), naming="timestamp")
         self.prune_expired()
 
     def _save(self) -> None:

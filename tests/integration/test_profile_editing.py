@@ -28,6 +28,26 @@ def patch_profile(
     )
 
 
+@pytest.mark.parametrize(
+    ("changes", "field", "message"),
+    [
+        ({"stream": {"station_name": ""}}, "station_name", "station_name must not be blank"),
+        (
+            {"playback": {"music_speed_percent": True}},
+            "music_speed_percent",
+            "music_speed_percent must be a number",
+        ),
+    ],
+)
+def test_station_validation_keeps_the_location_field_prefix(rig, changes, field, message):
+    """ADR-0022-05: station validation retains its original location-based prefix."""
+    client, *_ = rig
+    view = settings_view(client, "")
+    response = patch_profile(client, view, "", changes)
+    assert response.status_code == 422
+    assert response.json() == {"detail": f"{field}: Value error, {message}", "field": field}
+
+
 @pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
 def test_active_profile_identity_is_present_without_a_profile_query_and_is_station_owned(
     rig: Any,

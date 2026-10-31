@@ -84,6 +84,32 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0010-03` | Backups include committed station WAL data and preserve removed-station ledgers without enabling them. | automated | `tests/unit/test_station_database_backup.py::test_station_backup_includes_live_wal_and_unconfigured_station` |
 | `ADR-0010-04` | Restore leaves station relay credentials local rather than installing archived secrets. | automated | `tests/unit/test_station_backup.py::test_restore_skips_relay_settings_in_an_archive_that_has_them` |
 | `ADR-0010-05` | Real power-loss/network-filesystem recovery lacks environment verification in this audit. | gap | Unit failure injection does not establish real power-loss or network-share durability; retain explicit evidence limits. |
+| `ADR-0010-06` | Every consolidated JSON store keeps the old file and removes temporary output when writing or replacing fails. | automated | `tests/unit/test_store_writes.py::test_failed_store_write_keeps_old_file_and_cleans_temporary` |
+| `ADR-0010-07` | Shared recovery retains operator-visible filename styles and preserves partially usable schedules at their original path. | automated | `tests/unit/test_fsutil.py::test_set_aside_preserves_recovery_filename_styles`; `tests/unit/test_fsutil.py::test_set_aside_copy_preserves_the_live_schedule` |
+| `ADR-0010-08` | After replacement, a refused directory flush logs a warning without reporting the committed save as failed; stores update in-memory state. | automated | `tests/unit/test_fsutil.py::test_directory_flush_failure_keeps_committed_write_and_warns`; `tests/unit/test_store_writes.py::test_time_checks_publish_saved_state_when_directory_flush_is_refused` |
+
+## Amendment 2026-10-31: shared persistence helpers
+
+The owner explicitly approved consolidating existing filesystem operations.
+This focused amendment does not accept the broader retrospective proposal.
+Cart, live-DJ, clockwheel and time-check JSON writes use `fsutil.atomic_write`.
+Live-DJ credentials, clockwheels and time-check settings retain their previous
+private creation modes; cart state retains its existing default mode. A failed
+write removes its temporary file, and replacement uses the shared bounded
+Windows sharing retries.
+
+Owner review clarification, 2026-10-31: after replacement, directory fsync is
+best-effort. An `OSError` there logs a warning and leaves the save successful,
+so callers update their in-memory state to match the new file. Failures writing
+or flushing the temporary file, or replacing the destination, still propagate.
+This does not establish durability after power loss on a share that refuses fsync.
+
+Invalid state uses `fsutil.set_aside`. The helper retains the documented
+`.bad-<id>`, `.<time_ns>.bad` and `.<32 hex>.bad` recovery names. The scheduler
+uses its copy option because a partially valid schedule must remain on disk
+until its usable events are saved. Stores that previously refused to continue
+after set-aside failure still propagate that failure. See the
+[station file reference](../reference/operations/stations.md) for names.
 
 ## Verification
 

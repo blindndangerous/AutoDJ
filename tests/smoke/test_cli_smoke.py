@@ -168,7 +168,7 @@ class TestStatsCommand:
     def test_stats_requires_library_catalog(self, runner: CliRunner, project_dir: Path) -> None:
         result = runner.invoke(cli, ["--config", str(project_dir / "config.toml"), "stats"])
         assert result.exit_code == 1
-        assert "Current library not found" in result.output
+        assert "Current library not found" in result.stderr
 
     def test_stats_missing_config_exits_1(self, runner: CliRunner, tmp_path: Path) -> None:
         result = runner.invoke(cli, ["--config", str(tmp_path / "nope.toml"), "stats"])

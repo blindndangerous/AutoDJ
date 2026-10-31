@@ -23,8 +23,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
-import uuid
 from collections.abc import Awaitable, Callable
 from datetime import date as Date
 from pathlib import Path
@@ -36,7 +34,8 @@ from fastapi import File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from autodj.clip_dates import ClipDates, ClipDatesError, parse_dates, station_today, station_zone
+from autodj.clip_dates import ClipDates, parse_dates, station_today, station_zone
+from autodj.fsutil import atomic_write, set_aside
 from autodj.liner_files import (
     InvalidLinerName,
     LinerConflictError,
@@ -68,17 +67,6 @@ def _clean_name(value: str) -> str:
     return value
 
 
-class CartDatesError(ClipDatesError):
-    """A cart's play dates refused, naming the field.
-
-    ``reports_field`` marks it for the server's 422 handler, which answers
-    ``{"detail": ..., "field": ...}`` for it alone; every other 422 keeps
-    its list of problems.
-    """
-
-    reports_field = True
-
-
 class CartSlot(BaseModel):
     """One assigned clip and how it plays."""
 
@@ -105,10 +93,7 @@ class CartSlot(BaseModel):
             validate_liner_name(self.clip)
         # Do not play after must not come before Not before.  The error names
         # its field, so the cart routes' 422 can point the page at it.
-        try:
-            parse_dates({"not_before": self.not_before, "not_after": self.not_after})
-        except ClipDatesError as exc:
-            raise CartDatesError(exc.field, exc.message) from None
+        parse_dates({"not_before": self.not_before, "not_after": self.not_after})
         return self
 
     def dates(self) -> ClipDates:
@@ -193,42 +178,21 @@ class CartStore:
             return CartWall.model_validate_json(self.path.read_bytes())
         except FileNotFoundError:
             return CartWall()
-        except (OSError, ValueError):
-            bad = self.path.with_name(f"{STATE_FILE}.bad-{uuid.uuid4().hex[:8]}")
-            try:
-                self.path.replace(bad)
-            except OSError:
-                logger.exception("Could not set aside the damaged cart wall %s", self.path)
-            else:
-                logger.warning(
-                    "The cart wall %s could not be read; it was moved to %s and an empty"
-                    " wall was loaded",
-                    self.path,
-                    bad.name,
-                    exc_info=True,
-                )
+        except (OSError, ValueError) as exc:
+            set_aside(self.path, "cart wall", str(exc))
             return CartWall()
 
     def save(self) -> None:
         """Write the wall atomically."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        part = self.path.with_name(f".{STATE_FILE}.{uuid.uuid4().hex}.tmp")
-        try:
-            document = self.wall.model_dump(mode="json")
-            # A slot without play dates is written without the two keys, so
-            # an older AutoDJ, which refuses unknown keys, still reads the wall.
-            for page in document["pages"]:
-                for assigned in page["slots"]:
-                    for key in ("not_before", "not_after"):
-                        if assigned is not None and assigned[key] is None:
-                            del assigned[key]
-            with part.open("x", encoding="utf-8", newline="\n") as handle:
-                handle.write(json.dumps(document, indent=2, ensure_ascii=False) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(part, self.path)
-        finally:
-            part.unlink(missing_ok=True)
+        document = self.wall.model_dump(mode="json")
+        # A slot without play dates is written without the two keys, so
+        # an older AutoDJ, which refuses unknown keys, still reads the wall.
+        for page in document["pages"]:
+            for assigned in page["slots"]:
+                for key in ("not_before", "not_after"):
+                    if assigned is not None and assigned[key] is None:
+                        del assigned[key]
+        atomic_write(self.path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
 
     def page(self, page: int) -> CartPage:
         """Return page *page* (1-based)."""

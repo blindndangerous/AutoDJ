@@ -38,9 +38,9 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from fastapi import Body, HTTPException, Request
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
+from autodj.errors import FieldError
 from autodj.live_queue import VoiceQueueConflict
 from autodj.shows import (
     MAX_SHOWS,
@@ -48,7 +48,6 @@ from autodj.shows import (
     MAX_TARGET_MINUTES,
     MIN_TARGET_MINUTES,
     Show,
-    ShowBusy,
     ShowError,
     ShowGenerations,
     fresh_seed,
@@ -80,11 +79,6 @@ class GenerateBody(BaseModel):
 
     start: datetime | None = None
     seed: StrictInt | None = Field(default=None, ge=0)
-
-
-def _rejected(field: str, message: str, status: int = 400) -> JSONResponse:
-    """A refusal whose ``field`` lets the page mark and focus the field at fault."""
-    return JSONResponse(status_code=status, content={"detail": message, "field": field})
 
 
 def _gone() -> HTTPException:
@@ -258,7 +252,7 @@ def install_shows(router: StationRouter) -> None:
     @router.post("/shows", status_code=201, response_model=None)
     async def shows_create(
         station: SavedStationDep, body: dict[str, Any] = Body(...)
-    ) -> dict[str, Any] | JSONResponse:
+    ) -> dict[str, Any]:
         """Add a show with an empty list."""
         store = _store(station)
 
@@ -270,8 +264,6 @@ def install_shows(router: StationRouter) -> None:
 
         try:
             return await asyncio.to_thread(create)
-        except ShowError as exc:
-            return _rejected(exc.field, exc.message)
         except OSError as exc:
             raise HTTPException(
                 status_code=503, detail="The shows file could not be saved"
@@ -308,7 +300,7 @@ def install_shows(router: StationRouter) -> None:
     @router.put("/shows/{show_id}", response_model=None)
     async def shows_update(
         station: SavedStationDep, show_id: str, body: dict[str, Any] = Body(...)
-    ) -> dict[str, Any] | JSONResponse:
+    ) -> dict[str, Any]:
         """Change a show's name, source or target; its list stays."""
         _check_id(show_id)
         store = _store(station)
@@ -335,8 +327,6 @@ def install_shows(router: StationRouter) -> None:
             return await asyncio.to_thread(change)
         except KeyError:
             raise _gone() from None
-        except ShowError as exc:
-            return _rejected(exc.field, exc.message)
         except OSError as exc:
             raise HTTPException(
                 status_code=503, detail="The shows file could not be saved"
@@ -345,7 +335,7 @@ def install_shows(router: StationRouter) -> None:
     @router.put("/shows/{show_id}/songs", response_model=None)
     async def shows_songs(
         station: SavedStationDep, request: Request, show_id: str, body: SongsBody
-    ) -> dict[str, Any] | JSONResponse:
+    ) -> dict[str, Any]:
         """Save a show's list, in order; 409 while the list is being generated."""
         _check_id(show_id)
         store = _store(station)
@@ -369,12 +359,8 @@ def install_shows(router: StationRouter) -> None:
             # The check and the save are one step: a generation waits (409) meanwhile.
             with _generations(request).reserved(station.slug, show_id, busy):
                 return await asyncio.to_thread(save)
-        except ShowBusy as exc:
-            return _rejected(exc.field, exc.message, 409)
         except KeyError:
             raise _gone() from None
-        except ShowError as exc:
-            return _rejected(exc.field, exc.message)
         except OSError as exc:
             raise HTTPException(
                 status_code=503, detail="The shows file could not be saved"
@@ -383,7 +369,7 @@ def install_shows(router: StationRouter) -> None:
     @router.post("/shows/{show_id}/generate", response_model=None)
     async def shows_generate(
         station: SavedStationDep, request: Request, show_id: str, body: GenerateBody
-    ) -> dict[str, Any] | JSONResponse:
+    ) -> dict[str, Any]:
         """Generate the list again with a dry run of the station's picker."""
         from autodj.rotation_api import station_source
         from autodj.rotation_sim import EARLIEST_START, LATEST_START, snapshot_player
@@ -395,7 +381,7 @@ def install_shows(router: StationRouter) -> None:
             raise _gone()
         start = _start_time(body, station.timezone)
         if start is not None and not (EARLIEST_START <= start < LATEST_START):
-            return _rejected("start", "Pick as if at must be between 2000 and 2099")
+            raise FieldError("Pick as if at must be between 2000 and 2099", "start", status=400)
         seed = body.seed if body.seed is not None else fresh_seed()
         source = station_source(station)
 
@@ -426,10 +412,6 @@ def install_shows(router: StationRouter) -> None:
             with generations.reserved(station.slug, show_id):
                 result = await generations.run(work)
                 view = await asyncio.to_thread(save, result)
-        except ShowBusy as exc:
-            return _rejected(exc.field, exc.message, 409)
-        except ShowError as exc:
-            return _rejected(exc.field, exc.message)
         except KeyError:
             raise _gone() from None
         except OSError as exc:

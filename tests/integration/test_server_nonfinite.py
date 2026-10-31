@@ -48,6 +48,10 @@ class TestNonFiniteRejected:
     def test_volume(self, client, token: str) -> None:
         resp = _post_raw(client, "/api/volume", f'{{"volume": {token}}}')
         assert resp.status_code == 422
+        assert resp.json() == {
+            "detail": "volume: Input should be a finite number",
+            "field": "volume",
+        }
         _assert_status_healthy(client)
 
     def test_seek_seconds(self, client, token: str) -> None:

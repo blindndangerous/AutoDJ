@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -9,6 +10,58 @@ import pytest
 
 from autodj import fsutil
 from autodj.fsutil import atomic_write
+
+
+@pytest.mark.parametrize(
+    "naming,pattern",
+    [
+        ("prefix", r"state\.json\.bad-[0-9a-f]{8}"),
+        ("timestamp", r"state\.json\.\d+\.bad"),
+        ("uuid", r"state\.json\.[0-9a-f]{32}\.bad"),
+    ],
+)
+def test_set_aside_preserves_recovery_filename_styles(tmp_path, naming, pattern):
+    """ADR-0010-07: recovery preserves the operator-visible filename patterns."""
+    path = tmp_path / "state.json"
+    path.write_bytes(b"invalid state")
+    assert fsutil.set_aside(path, "state file", "invalid JSON", naming=naming)
+    [saved] = tmp_path.iterdir()
+    assert re.fullmatch(pattern, saved.name)
+    assert saved.read_bytes() == b"invalid state"
+    assert not path.exists()
+
+
+def test_set_aside_copy_preserves_the_live_schedule(tmp_path):
+    """ADR-0010-07: a partially usable schedule remains available after set-aside."""
+    path = tmp_path / "schedule.json"
+    path.write_bytes(b"partially valid schedule")
+    assert fsutil.set_aside(path, "schedule file", "bad event", copy=True)
+    [saved] = tmp_path.glob("schedule.json.bad-*")
+    assert saved.read_bytes() == path.read_bytes() == b"partially valid schedule"
+
+
+@pytest.mark.parametrize("raise_on_error", [False, True])
+@pytest.mark.parametrize("copy", [False, True])
+def test_set_aside_failure_keeps_original_and_reports_no_success(
+    tmp_path, monkeypatch, caplog, raise_on_error, copy
+):
+    path = tmp_path / "state.json"
+    path.write_bytes(b"invalid state")
+
+    def refuse(self, target):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(Path, "write_bytes" if copy else "replace", refuse)
+    if raise_on_error:
+        with pytest.raises(PermissionError, match="locked"):
+            fsutil.set_aside(path, "state file", "invalid", copy=copy, raise_on_error=True)
+    else:
+        assert not fsutil.set_aside(path, "state file", "invalid", copy=copy, raise_on_error=False)
+    assert list(tmp_path.iterdir()) == [path]
+    assert path.read_bytes() == b"invalid state"
+    assert "Could not set aside" in caplog.text
+    assert "set it aside as" not in caplog.text
+    assert "kept a copy as" not in caplog.text
 
 
 def test_atomic_write_replaces_text_and_bytes_without_leaving_temp(tmp_path: Path) -> None:
@@ -40,6 +93,35 @@ def test_failed_write_keeps_old_file_and_removes_temp(
 
     assert path.read_text(encoding="utf-8") == "old"
     assert [item.name for item in tmp_path.iterdir()] == ["state.json"]
+
+
+def test_directory_flush_failure_keeps_committed_write_and_warns(tmp_path, monkeypatch, caplog):
+    """ADR-0010-08: directory durability failure cannot undo a completed replacement."""
+    path = tmp_path / "state.json"
+    path.write_text("old", encoding="utf-8")
+
+    def refuse(directory):
+        assert directory == path.parent
+        assert path.read_text(encoding="utf-8") == "new"
+        raise OSError("share refuses directory flush")
+
+    monkeypatch.setattr(fsutil, "fsync_directory", refuse)
+    atomic_write(path, "new")
+
+    assert path.read_text(encoding="utf-8") == "new"
+    assert list(tmp_path.iterdir()) == [path]
+    assert str(path) in caplog.text
+    assert "share refuses directory flush" in caplog.text
+    assert caplog.records[-1].levelname == "WARNING"
+
+
+def test_directory_flush_does_not_suppress_non_os_errors(tmp_path, monkeypatch):
+    def fail(directory):
+        raise RuntimeError("unexpected failure")
+
+    monkeypatch.setattr(fsutil, "fsync_directory", fail)
+    with pytest.raises(RuntimeError, match="unexpected failure"):
+        atomic_write(tmp_path / "state.json", "new")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions and directory fsync")

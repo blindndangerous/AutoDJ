@@ -51,6 +51,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from autodj.clip_dates import ClipDates, ClipDatesError, parse_dates
+from autodj.errors import FieldError, first_issue
 from autodj.fsutil import atomic_write, file_signature, set_aside
 from autodj.liners import LINER_EXTS
 from autodj.repeat_rules import ArtistSplitter, artist_key
@@ -76,13 +77,13 @@ _EXTENSIONS = "|".join(ext.lstrip(".") for ext in LINER_EXTS)
 _FILE = re.compile(rf"intro-([0-9a-f]{{32}})\.({_EXTENSIONS})")
 
 
-class IntroError(ValueError):
+class IntroError(FieldError):
     """An intro that cannot be saved, naming the field at fault (``""`` for none)."""
 
-    def __init__(self, field_name: str, message: str) -> None:
-        super().__init__(message)
-        self.field = field_name
-        self.message = message
+    field: str
+
+    def __init__(self, field_name: str, message: str, status: int = 422) -> None:
+        super().__init__(message, field_name, status, null_empty_field=True)
 
 
 def file_name(intro_id: str, suffix: str) -> str:
@@ -186,12 +187,7 @@ def parse_rules(values: dict[str, Any]) -> dict[str, Any]:
     try:
         rules = _Rules.model_validate(cleaned)
     except ValidationError as exc:
-        error = exc.errors()[0]
-        location = [str(part) for part in error.get("loc", ())]
-        name = location[0] if location else ""
-        if error.get("type") == "extra_forbidden":
-            raise IntroError(name, f"Unknown field {name}") from None
-        raise IntroError(name, f"{labels.get(name, name)}: {error['msg']}") from None
+        raise IntroError(*first_issue(exc, labels)) from None
     label = " ".join("".join(ch if ch.isprintable() else " " for ch in rules.label).split())
     try:
         parse_dates({"not_before": rules.not_before, "not_after": rules.not_after})
@@ -492,7 +488,7 @@ class MatchedIntros:
             self._first_folder_locked()
             current = self._load_locked()
             if intro_id not in current and len(current) + len(self._skipped) >= MAX_INTROS:
-                raise IntroError("", f"A station can keep at most {MAX_INTROS} matched intros")
+                raise IntroError("", f"A station can keep at most {MAX_INTROS} matched intros", 409)
             current[intro_id] = intro
             self._write_locked(current)
 

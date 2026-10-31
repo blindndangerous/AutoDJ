@@ -39,6 +39,7 @@ from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from autodj.api_errors import error_headers
 from autodj.breaks import BreakCues, new_id, speech_cues, valid_id
 from autodj.breaks_api import (
     MULTIPART_OVERHEAD_BYTES,
@@ -47,6 +48,7 @@ from autodj.breaks_api import (
     _within,
     decode_gate,
 )
+from autodj.errors import FieldError, first_issue
 from autodj.intro_rules import MAX_RULES, IntroRules
 from autodj.liner_files import LinerTooLargeError, store_liner_upload
 from autodj.liners import LINER_EXTS
@@ -55,7 +57,6 @@ from autodj.matched_intros import (
     MAX_INTRO_SECONDS,
     TRACK_ID_PATTERN,
     Intro,
-    IntroError,
     MatchedIntros,
     file_name,
     parse_rules,
@@ -118,21 +119,11 @@ def _library(station: StationRuntime) -> Any:
     return library
 
 
-class RuleRefused(Exception):
+class RuleRefused(FieldError):
     """An intro rule that cannot be saved, naming the field at fault for the page."""
 
     def __init__(self, field_name: str, message: str, status: int = 422) -> None:
-        super().__init__(message)
-        self.field = field_name
-        self.message = message
-        self.status = status
-
-    def response(self) -> JSONResponse:
-        return JSONResponse(
-            status_code=self.status,
-            content={"detail": self.message, "field": self.field},
-            headers=_NO_STORE,
-        )
+        super().__init__(message, field_name, status)
 
 
 #: What each rule field is called on the page, for the errors.
@@ -150,7 +141,6 @@ _RULE_LABELS = {
 
 def parse_rule(value: Any) -> Any:
     """An :class:`~autodj.intro_rules.IntroRule` from a request body, or :class:`RuleRefused`."""
-    from autodj.clip_dates import ClipDatesError
     from autodj.intro_rules import IntroRule
 
     if not isinstance(value, dict):
@@ -160,15 +150,16 @@ def parse_rule(value: Any) -> Any:
     try:
         return IntroRule.model_validate(value)
     except ValidationError as exc:
-        error = exc.errors()[0]
-        cause = error.get("ctx", {}).get("error")
-        if isinstance(cause, ClipDatesError):
-            raise RuleRefused(cause.field, cause.message) from None
-        field = str(error["loc"][0]) if error["loc"] else "clip_ids"
-        message = str(cause) if isinstance(cause, ValueError) else error["msg"]
-        if field in _RULE_LABELS:
-            message = f"{_RULE_LABELS[field]}: {message}"
-        raise RuleRefused(field, message) from None
+        raise RuleRefused(
+            *first_issue(
+                exc,
+                _RULE_LABELS,
+                fallback_field="clip_ids",
+                prefix_unlabelled=False,
+                strip_value_error=True,
+                unknown_field=False,
+            )
+        ) from None
 
 
 def rule_choices(station: StationRuntime, library: Any) -> dict[str, Any]:
@@ -244,10 +235,6 @@ def _inactive_reason(station: StationRuntime) -> str | None:
     if getattr(player, "bus", None) is None:
         return BROWSER_REASON
     return None
-
-
-def _field_error(status: int, field: str, message: str) -> JSONResponse:
-    return JSONResponse({"detail": message, "field": field or None}, status_code=status)
 
 
 def intro_view(
@@ -386,6 +373,7 @@ def install_matched_intros(router: StationRouter) -> None:
         )
 
     @router.get("/intros/rules")
+    @error_headers(_NO_STORE, error_type=RuleRefused)
     async def intro_rules(station: SavedStationDep) -> JSONResponse:
         """The station's intro rules, and the liners and liner folders they may use."""
         store = _rules(station)
@@ -410,26 +398,24 @@ def install_matched_intros(router: StationRouter) -> None:
         )
 
     @router.post("/intros/rules/test")
+    @error_headers(_NO_STORE, error_type=RuleRefused)
     async def intro_rule_test(
         station: SavedStationDep,
         request: Request,
         path: str = Query(..., min_length=1, max_length=4096),
     ) -> JSONResponse:
         """Preview a filename pattern against this station's registered liner pool."""
-        try:
-            rule = await rule_body(request, station)
-        except RuleRefused as exc:
-            return exc.response()
+        rule = await rule_body(request, station)
         if rule.filename_pattern is None:
-            return _field_error(422, "filename_pattern", "Add a filename pattern to test")
+            raise FieldError("Add a filename pattern to test", "filename_pattern", status=422)
         filename_pattern = rule.filename_pattern
         library = _library(station)
         record = await asyncio.to_thread(library.catalog.record_for_path, path)
         if record is None or record.get("kind", "music") != "music":
-            return _field_error(404, "path", "That song is not in the library")
+            raise FieldError("That song is not in the library", "path", status=404)
         song_entry = await asyncio.to_thread(library.entry_for_path, record["path"])
         if song_entry is None:
-            return _field_error(404, "path", "That song is not in the library")
+            raise FieldError("That song is not in the library", "path", status=404)
         from autodj.intro_rules import resolve_filename_pattern
 
         def scan() -> tuple[str | None, tuple[str, ...], list[dict[str, Any]]]:
@@ -485,18 +471,16 @@ def install_matched_intros(router: StationRouter) -> None:
         )
 
     @router.post("/intros/rules", status_code=201)
+    @error_headers(_NO_STORE, error_type=RuleRefused)
     async def intro_rule_create(station: SavedStationDep, request: Request) -> JSONResponse:
         store = _rules(station)
-        try:
-            fields = await rule_body(request, station)
-        except RuleRefused as exc:
-            return exc.response()
+        fields = await rule_body(request, station)
         key = new_id()
         rule = fields.model_copy(update={"created_at": time.time()})
         try:
             await asyncio.to_thread(store.save, key, rule, create=True)
         except ValueError as exc:
-            return RuleRefused("", str(exc), 409).response()
+            raise RuleRefused("", str(exc), 409) from exc
         except OSError as exc:
             raise HTTPException(
                 status_code=503, detail="The intro rules file could not be saved"
@@ -504,16 +488,14 @@ def install_matched_intros(router: StationRouter) -> None:
         return _saved(key, rule, 201)
 
     @router.put("/intros/rules/{rule_id}")
+    @error_headers(_NO_STORE, error_type=RuleRefused)
     async def intro_rule_edit(
         station: SavedStationDep, rule_id: str, request: Request
     ) -> JSONResponse:
         store = _rules(station)
         if not valid_id(rule_id):
             raise HTTPException(status_code=404, detail="No intro rule has that ID")
-        try:
-            fields = await rule_body(request, station)
-        except RuleRefused as exc:
-            return exc.response()
+        fields = await rule_body(request, station)
         previous = (await asyncio.to_thread(store.all)).get(rule_id)
         if previous is None:
             raise HTTPException(status_code=404, detail="No intro rule has that ID")
@@ -531,6 +513,7 @@ def install_matched_intros(router: StationRouter) -> None:
         return _saved(rule_id, rule)
 
     @router.delete("/intros/rules/{rule_id}")
+    @error_headers(_NO_STORE, error_type=RuleRefused)
     async def intro_rule_delete(station: SavedStationDep, rule_id: str) -> JSONResponse:
         store = _rules(station)
         if not valid_id(rule_id):
@@ -579,43 +562,34 @@ def install_matched_intros(router: StationRouter) -> None:
             try:
                 suffix = Path(upload.filename or "").suffix.lower()
                 if suffix not in LINER_EXTS:
-                    return _field_error(
-                        415,
-                        "file",
+                    raise FieldError(
                         "An intro must be one of these file types: " + ", ".join(LINER_EXTS),
+                        "file",
+                        status=415,
                     )
                 try:
                     fields = _IntroFields.model_validate(values)
                 except ValidationError as exc:
-                    error = exc.errors()[0]
-                    name = str((error.get("loc") or ("",))[0])
-                    message = (
-                        f"Unknown field {name}"
-                        if error.get("type") == "extra_forbidden"
-                        else f"{name}: {error['msg']}"
-                    )
-                    return _field_error(422, name, message)
-                try:
-                    rules = parse_rules(
-                        {
-                            "label": fields.label,
-                            "chance": fields.chance,
-                            "cooldown_minutes": fields.cooldown_minutes,
-                            "not_before": fields.not_before,
-                            "not_after": fields.not_after,
-                        }
-                    )
-                except IntroError as exc:
-                    return _field_error(422, exc.field, exc.message)
+                    field, message = first_issue(exc, {})
+                    raise FieldError(message, field or None, status=422) from exc
+                rules = parse_rules(
+                    {
+                        "label": fields.label,
+                        "chance": fields.chance,
+                        "cooldown_minutes": fields.cooldown_minutes,
+                        "not_before": fields.not_before,
+                        "not_after": fields.not_after,
+                    }
+                )
                 record = await asyncio.to_thread(library.record_for_id, fields.track_id)
                 if record is None or record.get("kind", "music") != "music":
-                    return _field_error(404, "track_id", "That song is not in the library")
+                    raise FieldError("That song is not in the library", "track_id", status=404)
                 artist = str(record.get("artist") or "").strip()
                 if fields.applies_to == "artist" and not artist:
-                    return _field_error(
-                        422,
-                        "applies_to",
+                    raise FieldError(
                         "This song has no artist, so its intro can only be for this song",
+                        "applies_to",
+                        status=422,
                     )
                 try:
                     path, _stored = await _within(
@@ -644,8 +618,6 @@ def install_matched_intros(router: StationRouter) -> None:
             )
             try:
                 await asyncio.to_thread(store.add, intro_id, intro)
-            except IntroError as exc:
-                return _field_error(409, exc.field, exc.message)
             except OSError as exc:
                 logger.warning("Could not save a matched intro: %s", exc)
                 raise HTTPException(

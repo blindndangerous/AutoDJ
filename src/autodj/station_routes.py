@@ -68,6 +68,7 @@ from autodj.config import (
     RelayConfig,
     _relay_target,
 )
+from autodj.errors import FieldError, first_issue
 from autodj.history_kinds import INSERT_KINDS
 from autodj.history_pages import history_page
 from autodj.live_queue import VoiceQueueConflict
@@ -1135,9 +1136,7 @@ def _liner_names(station: StationRuntime) -> list[str]:
     return [path.name for path in LinerLibrary.from_folder(station.paths.liners).files]
 
 
-def _dmca_refusal(
-    station: StationRuntime, body: PlayNextBody, *, append: bool
-) -> JSONResponse | None:
+def _dmca_refusal(station: StationRuntime, body: PlayNextBody, *, append: bool) -> None:
     """A 409 naming the DMCA limits a queued song would break, unless *body* confirms it.
 
     The song is not queued until the operator confirms; a confirmed
@@ -1162,12 +1161,10 @@ def _dmca_refusal(
         )
         return None
     where = "now" if now else "at the end of the queue" if append else "next"
-    return JSONResponse(
-        status_code=409,
-        content={
-            "detail": f"DMCA mode: playing this song {where} would mean {limits}.",
-            "field": "confirm",
-        },
+    raise FieldError(
+        f"DMCA mode: playing this song {where} would mean {limits}.",
+        "confirm",
+        status=409,
     )
 
 
@@ -1342,7 +1339,7 @@ def request_desk(station: StationRuntime) -> RequestDesk:
 
 def _equip_ads(station: StationRuntime, schedule: Any) -> None:
     """Give *station* its ad breaks (#51) and the Schedule's Ad break action."""
-    from autodj.ads import AdDesk, AdLog, AdsError, AdStore
+    from autodj.ads import AdDesk, AdLog, AdStore
 
     paths = station.paths
     store = AdStore(paths.ads, paths.ad_spots, max_spots=lambda: station.cfg.ads.max_spots)
@@ -1361,10 +1358,7 @@ def _equip_ads(station: StationRuntime, schedule: Any) -> None:
         reason = desk.refusal()
         if reason is not None:
             raise ValueError(reason)
-        try:
-            desk.request_named(params["name"], "schedule")
-        except AdsError as exc:
-            raise ValueError(exc.message) from exc
+        desk.request_named(params["name"], "schedule")
 
     def break_names() -> list[str]:
         return sorted(item.name for item in store.state().breaks.values())
@@ -1499,15 +1493,13 @@ def install_station_routes(router: StationRouter) -> None:
             try:
                 changes = StationSettingsChangesBody.model_validate(body.changes)
             except ValidationError as exc:
-                issue = exc.errors()[0]
-                field = str(issue["loc"][-1]) if issue["loc"] else "changes"
-                nested = re.search(rf"\b{re.escape(field)}\.([A-Za-z_]\w*)", issue["msg"])
+                field, message = first_issue(
+                    exc, location_index=-1, fallback_field="changes", unknown_field=False
+                )
+                nested = re.search(rf"\b{re.escape(field)}\.([A-Za-z_]\w*)", message)
                 if nested:
                     field = nested.group(1)
-                return JSONResponse(
-                    status_code=422,
-                    content={"detail": f"{field}: {issue['msg']}", "field": field},
-                )
+                raise FieldError(f"{field}: {message}", field, status=422) from exc
             parsed: dict[str, Any] = {}
             from autodj.breaks_api import BreakSettingsBody
             from autodj.config import DmcaConfig, PlayerPageConfig
@@ -1518,9 +1510,10 @@ def install_station_routes(router: StationRouter) -> None:
                 try:
                     return model.model_validate(data)
                 except ValidationError as exc:
-                    issue = exc.errors()[0]
-                    field = str(issue["loc"][-1]) if issue["loc"] else "settings"
-                    raise HTTPException(status_code=422, detail=f"{field}: {issue['msg']}") from exc
+                    field, message = first_issue(
+                        exc, {}, location_index=-1, fallback_field="settings", unknown_field=False
+                    )
+                    raise FieldError(message, field, status=422, include_field=False) from exc
 
             for name in changes.model_fields_set:
                 value = getattr(changes, name)
@@ -1586,10 +1579,7 @@ def install_station_routes(router: StationRouter) -> None:
                                 detail = f"Sites allowed to embed: use at most {MAX_EMBED_ORIGINS} sites."
                             else:
                                 detail = "Sites allowed to embed: enter one site per line."
-                            return JSONResponse(
-                                status_code=400,
-                                content={"detail": detail, "field": "embed_origins"},
-                            )
+                            raise FieldError(detail, "embed_origins") from exc
                         raise HTTPException(status_code=400, detail=detail) from exc
                     parsed[name] = value
                 elif name == "station":
@@ -1612,10 +1602,7 @@ def install_station_routes(router: StationRouter) -> None:
                             value = {**value, "log_label": label}
                             problem = registry.log_label_problem(slug, label)
                         if problem is not None:
-                            return JSONResponse(
-                                status_code=400,
-                                content={"detail": problem, "field": "log_label"},
-                            )
+                            raise FieldError(problem, "log_label")
                     from dataclasses import replace
 
                     try:
@@ -2139,16 +2126,14 @@ def install_station_routes(router: StationRouter) -> None:
             body = RelaySettingsBody.model_validate(data)
         except (TypeError, ValueError, ValidationError) as exc:
             if isinstance(exc, ValidationError):
-                issue = exc.errors()[0]
-                field = str(issue["loc"][-1]) if issue["loc"] else "name"
-                detail = (
-                    "Name may use letters, numbers, internal spaces, hyphens, and underscores (1 to 32 characters)."
-                    if field == "name"
-                    else f"{field}: {issue['msg']}"
+                field, detail = first_issue(
+                    exc, {}, location_index=-1, fallback_field="name", unknown_field=False
                 )
+                if field == "name":
+                    detail = "Name may use letters, numbers, internal spaces, hyphens, and underscores (1 to 32 characters)."
             else:
                 field, detail = "name", str(exc)
-            return JSONResponse(status_code=422, content={"detail": detail, "field": field})
+            raise FieldError(detail, field, status=422) from exc
         return await asyncio.to_thread(_save_stream_relay, station, body, registry)
 
     @router.delete("/stream/relays/{name}")
@@ -2540,7 +2525,7 @@ def install_station_routes(router: StationRouter) -> None:
         station: SavedStationDep, liner_id: str, body: dict[str, Any] = Body(...)
     ) -> dict[str, Any] | JSONResponse:
         """Set a liner's play dates: "not before" and "do not play after", both optional."""
-        from autodj.clip_dates import ClipDatesError, parse_dates, station_today
+        from autodj.clip_dates import parse_dates, station_today
 
         listed = await api_liners(station)
         item = next((entry for entry in listed["items"] if entry["id"] == liner_id), None)
@@ -2549,10 +2534,6 @@ def install_station_routes(router: StationRouter) -> None:
         try:
             dates = parse_dates(body)
             await asyncio.to_thread(station.liner_gate.store.set, liner_id, dates)
-        except ClipDatesError as exc:
-            return JSONResponse(
-                status_code=400, content={"detail": exc.message, "field": exc.field}
-            )
         except OSError as exc:
             logger.warning("Could not save liner dates: %s", exc)
             raise HTTPException(
@@ -2643,17 +2624,14 @@ def install_station_routes(router: StationRouter) -> None:
         return {"muted": muted}
 
     @router.post("/play-next", response_model=None)
-    async def api_play_next(
-        station: StationDep, body: PlayNextBody
-    ) -> dict[str, Any] | JSONResponse:
+    async def api_play_next(station: StationDep, body: PlayNextBody) -> dict[str, Any]:
         """Make a track the one that plays next, after the song playing.
 
         There is one "play next" song (#519): another Play next takes its
         place.  The answer names a song it replaced, so the page can say so.
         """
         # Off the event loop: the check reads the renders and the library (#217).
-        if refusal := await asyncio.to_thread(_dmca_refusal, station, body, append=False):
-            return refusal
+        await asyncio.to_thread(_dmca_refusal, station, body, append=False)
         earlier = station.bridge.player._state.queued_next
         try:
             queued = station.bridge.play_next(
@@ -2687,13 +2665,10 @@ def install_station_routes(router: StationRouter) -> None:
         }
 
     @router.post("/queue/add", response_model=None)
-    async def api_queue_add(
-        station: StationDep, body: PlayNextBody
-    ) -> dict[str, bool] | JSONResponse:
+    async def api_queue_add(station: StationDep, body: PlayNextBody) -> dict[str, bool]:
         """Append a track to the user-ordered queue."""
         # Off the event loop: the check reads the renders and the library (#217).
-        if refusal := await asyncio.to_thread(_dmca_refusal, station, body, append=True):
-            return refusal
+        await asyncio.to_thread(_dmca_refusal, station, body, append=True)
         try:
             queued = station.bridge.queue_add(
                 body.path,

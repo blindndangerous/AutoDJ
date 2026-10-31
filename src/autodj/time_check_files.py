@@ -46,6 +46,7 @@ from pathlib import Path, PurePosixPath
 from typing import IO
 
 from autodj.break_audio import BreakAudioError, check_break_audio
+from autodj.errors import FieldError
 from autodj.liner_files import AsyncReader, InvalidLinerName, validate_plain_name
 from autodj.stereo import TrackTooLongError
 from autodj.voice_packs import AUDIO_EXTENSIONS
@@ -85,24 +86,38 @@ _CHUNK_BYTES = 1024 * 1024
 _S_IFLNK = 0o120000
 
 
-class PackError(ValueError):
+class PackError(FieldError):
     """A pack or clip AutoDJ will not take, with the reason in words."""
+
+    status = 400
+    field: str | None = None
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, self.field, self.status, include_field=self.field is not None)
 
 
 class PackConflict(PackError):
     """The name is taken and replacing it was not asked for, or is not allowed."""
 
+    status = 409
+
 
 class PackExists(PackConflict):
     """The name is taken by a pack or clip the page may replace, when asked to."""
+
+    field = "replace"
 
 
 class PackTooLarge(PackError):
     """The upload or what it unpacks to is over a limit."""
 
+    status = 413
+
 
 class PackNotFound(PackError):
     """No pack or clip by that name in the station's folder."""
+
+    status = 404
 
 
 def _sentence(exc: Exception) -> str:

@@ -67,10 +67,15 @@ def test_interactive_default_declines_repair(tmp_path: Path) -> None:
     assert config.read_bytes() == original
 
 
-@pytest.mark.parametrize("flags", [["--yes"], ["--fix", "--yes"], ["--json", "--fix"]])
-def test_invalid_repair_options(flags) -> None:
+@pytest.mark.parametrize(
+    ("flags", "exit_code"),
+    [(["--yes"], 2), (["--fix", "--yes"], 2), (["--json", "--fix"], 2)],
+)
+def test_invalid_repair_options(flags, exit_code) -> None:
     result = CliRunner().invoke(cli, ["doctor", *flags])
-    assert result.exit_code == 2
+    assert result.exit_code == exit_code
+    assert result.stdout == ""
+    assert "Error:" in result.stderr
 
 
 def test_doctor_help_lists_repair_flags_without_yes() -> None:

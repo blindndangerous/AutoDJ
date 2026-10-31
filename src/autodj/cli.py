@@ -120,12 +120,11 @@ def _analyse_catalog_dj_meta(
 def _load_cfg_or_exit(
     config_path: str | None,
     *,
-    show_error: bool = True,
     log_file: bool = False,
     read_only: bool = False,
     loaded: AutoDJConfig | None = None,
 ) -> AutoDJConfig:  # pragma: no cover
-    """Load *config_path* or print + exit on missing file.
+    """Load *config_path* or raise a Click error on invalid configuration.
 
     An index folder in the old layout is moved into the new one first
     (:mod:`autodj.layout`), then the configuration is read again.  With
@@ -161,12 +160,9 @@ def _load_cfg_or_exit(
                 early.flush()
         return cfg
     except LayoutError as exc:
-        console.print(f"[bold red]{escape(str(exc))}[/]")
-        raise click.exceptions.Exit(1) from exc
+        raise click.ClickException(str(exc)) from exc
     except (OSError, KeyError, TypeError, ValueError) as exc:
-        if show_error:
-            console.print(f"[bold red]Config not found or invalid:[/] {escape(str(exc))}")
-        raise click.exceptions.Exit(1) from exc
+        raise click.ClickException(f"Config not found or invalid: {exc}") from exc
     finally:
         if early is not None:
             logging.getLogger().removeHandler(early)
@@ -474,7 +470,10 @@ def cmd_setup(arguments: tuple[str, ...]) -> None:
     """Detect hardware, install its runtime, and configure AutoDJ."""
     from autodj.launcher import run_setup
 
-    raise click.exceptions.Exit(run_setup(list(arguments)))
+    status = run_setup(list(arguments))
+    if status:
+        click.echo(f"Error: Setup failed with exit code {status}.", err=True)
+        raise click.exceptions.Exit(status)
 
 
 @cli.command("doctor")
@@ -529,7 +528,7 @@ def cmd_doctor(
     server_repairs = offer_repairs and station is None
     try:
         cfg = _doctor_load_config(ctx.obj["config_path"], server_repairs, fix is True, as_json)
-    except click.exceptions.Exit:
+    except click.ClickException:
         if not as_json:
             raise
         report = DoctorReport(
@@ -543,7 +542,9 @@ def cmd_doctor(
             )
         )
         click.echo(report.to_json())
-        raise click.exceptions.Exit(1) from None
+        raise click.ClickException(
+            "configuration invalid; fix the configuration and retry"
+        ) from None
     if station is not None and station not in {"default", *(s.slug for s in cfg.stations)}:
         raise click.BadParameter(f"no station is named {station!r}", param_hint="--station")
     report = run_doctor(cfg, station=station, check_updates=not offline)
@@ -570,7 +571,7 @@ def cmd_doctor(
             cfg, report, auto_fix=fix is True, station=station
         )
     if report.exit_code or recovery_failed:
-        raise click.exceptions.Exit(1)
+        raise click.ClickException("Doctor found required failures; review the report above.")
 
 
 @cli.command("check-update")
@@ -642,7 +643,7 @@ def _doctor_load_config(
             raise click.ClickException(
                 f"Could not repair configuration: {repair_error}"
             ) from repair_error
-    return _load_cfg_or_exit(config_path, show_error=not as_json, read_only=as_json)
+    return _load_cfg_or_exit(config_path, read_only=as_json)
 
 
 def _station_state_dir(cfg: AutoDJConfig, slug: str | None) -> Path:
@@ -1288,10 +1289,7 @@ def cmd_enrich(ctx: click.Context) -> None:
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
 
     if not cfg.library.beets_db:
-        console.print(
-            f"[bold red]No {escape('[library]')} beets_db in config — enrich requires beets.[/]"
-        )
-        sys.exit(1)
+        raise click.ClickException("No [library] beets_db in config — enrich requires beets.")
 
     if not (cfg.index.library_dir / "library.db").is_file():
         raise click.ClickException("No current library catalog. Run `autodj index` first.")
@@ -1303,8 +1301,7 @@ def cmd_enrich(ctx: click.Context) -> None:
             beets_db=cfg.library.beets_db,
         )
     except Exception as exc:
-        console.print(f"[bold red]Enrich failed:[/] {escape(str(exc))}")
-        sys.exit(1)
+        raise click.ClickException(f"Enrich failed: {exc}") from exc
 
     if total == 0:
         console.print("[yellow]No catalog entries found.[/]")
@@ -1667,11 +1664,10 @@ def cmd_analyse(
     """
     missing = [name for name in ("librosa", "soundfile") if not _can_import(name)]
     if missing:
-        console.print(
-            f"[bold red]Cannot analyse — missing packages: {', '.join(missing)}[/]\n"
-            "Install with:  [bold]uv sync --extra index[/]  (or --extra all)."
+        raise click.ClickException(
+            f"Cannot analyse — missing packages: {', '.join(missing)}\n"
+            "Install with:  uv sync --extra index  (or --extra all)."
         )
-        sys.exit(1)
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
 
@@ -1679,10 +1675,9 @@ def cmd_analyse(
 
     catalog_path = cfg.index.library_dir / "library.db"
     if not catalog_path.is_file():
-        console.print(
-            f"[bold red]No current library at {catalog_path}.[/]  Run `autodj index` first."
+        raise click.ClickException(
+            f"No current library at {catalog_path}.  Run `autodj index` first."
         )
-        sys.exit(1)
     try:
         with LibraryCatalog(catalog_path) as catalog:
             entries = list(catalog.entries_snapshot("music"))
@@ -1694,8 +1689,7 @@ def cmd_analyse(
             console.print()
             _analyse_catalog_dj_meta(cfg, catalog, entries, limit=limit)
     except Exception as exc:
-        console.print(f"[bold red]Analyse failed:[/] {escape(str(exc))}")
-        sys.exit(1)
+        raise click.ClickException(f"Analyse failed: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1831,11 +1825,10 @@ def _claim_index_for_serve(ctx: click.Context, library_dir: Path) -> None:
 
     restore_state = pending_restore_state(library_dir)
     if restore_state not in (None, "installed"):
-        console.print(
-            "[bold red]A restore of this index folder did not finish, so some files are new and "
-            "some old.[/] Run `autodj doctor --fix` to put the old files back, then start AutoDJ again."
+        raise click.ClickException(
+            "A restore of this index folder did not finish, so some files are new and "
+            "some old. Run `autodj doctor --fix` to put the old files back, then start AutoDJ again."
         )
-        sys.exit(1)
     if restore_state == "installed":
         console.print(
             "[yellow]A restore left old copies beside the index folder; `autodj doctor` can move "
@@ -1844,8 +1837,7 @@ def _claim_index_for_serve(ctx: click.Context, library_dir: Path) -> None:
     try:
         serve_lock = hold_serve_lock(library_dir)
     except BackupError as exc:
-        console.print(f"[bold red]{escape(str(exc))}[/]")
-        sys.exit(1)
+        raise click.ClickException(str(exc)) from exc
     ctx.call_on_close(serve_lock.release)
 
 
@@ -2135,12 +2127,11 @@ def cmd_list_devices() -> None:
     """
     try:
         import sounddevice as sd
-    except ImportError:
-        console.print(
-            "[bold red]sounddevice is not installed.[/]  "
-            "Install playback dependencies with [bold]uv sync --extra play[/].",
-        )
-        sys.exit(1)
+    except ImportError as exc:
+        raise click.ClickException(
+            "sounddevice is not installed.  "
+            "Install playback dependencies with uv sync --extra play."
+        ) from exc
 
     try:
         default_out = sd.default.device[1] if isinstance(sd.default.device, (list, tuple)) else None
@@ -2282,8 +2273,7 @@ def cmd_export_plays(
         raise click.BadParameter(str(exc)) from exc
     db = cfg.index.library_dir / "library.db"
     if not db.is_file():
-        click.echo(f"No play log found: {db} does not exist.", err=True)
-        raise click.exceptions.Exit(1)
+        raise click.ClickException(f"No play log found: {db} does not exist.")
     try:
         with LibraryCatalog(db) as catalog:
             from autodj.stations import DEFAULT_SLUG, StationPaths
@@ -2302,8 +2292,7 @@ def cmd_export_plays(
     except ValueError as exc:
         raise click.BadParameter(str(exc)) from exc
     except sqlite3.Error as exc:
-        click.echo(f"Could not read the play log in {db}: {exc}", err=True)
-        raise click.exceptions.Exit(1) from exc
+        raise click.ClickException(f"Could not read the play log in {db}: {exc}") from exc
     if missing:
         text = missing_csv(plays)
     elif report_format == "soundexchange":
@@ -2329,8 +2318,7 @@ def cmd_export_plays(
         try:
             out_path.write_bytes(data)
         except OSError as exc:
-            click.echo(f"Could not write {out_path}: {exc}", err=True)
-            raise click.exceptions.Exit(1) from exc
+            raise click.ClickException(f"Could not write {out_path}: {exc}") from exc
     click.echo(summary(plays), err=True)
 
 
@@ -2425,13 +2413,15 @@ def cmd_simulate(
         request = SimulationRequest(
             hours=days * 24 if days is not None else hours, picks=picks, start=start, seed=seed
         )
+    except SimulationError as exc:
+        raise click.UsageError(str(exc)) from exc
+    try:
         with open_station(cfg, station) as source:
             if not as_json:
                 click.echo("Simulating; nothing on air changes.", err=True)
             report = simulate(source, request)
     except SimulationError as exc:
-        click.echo(str(exc), err=True)
-        raise click.exceptions.Exit(1) from exc
+        raise click.ClickException(str(exc)) from exc
     if as_json:
         click.echo(_json.dumps(report, indent=2, ensure_ascii=False))
     else:
@@ -2463,7 +2453,6 @@ def cmd_stats(ctx: click.Context) -> None:
 
     catalog_path = cfg.index.library_dir / "library.db"
     if not catalog_path.is_file():
-        console.print(f"[bold red]Current library not found:[/] {escape(str(catalog_path))}")
-        sys.exit(1)
+        raise click.ClickException(f"Current library not found: {catalog_path}")
     with LibraryCatalog(catalog_path) as catalog:
         print_stats(list(catalog.entries_snapshot("music")), console)

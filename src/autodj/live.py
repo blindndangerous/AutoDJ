@@ -22,7 +22,6 @@ import hmac
 import json
 import logging
 import math
-import os
 import queue
 import secrets
 import shutil
@@ -38,6 +37,7 @@ from typing import Any
 
 import numpy as np
 
+from autodj.fsutil import atomic_write
 from autodj.station_log import CURRENT_STATION, track_station_thread
 from autodj.stereo import SAMPLE_RATE
 
@@ -174,18 +174,7 @@ class DjCredentials:
         return {"version": 1, "users": users, "settings": settings}
 
     def _write(self, data: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_name(f"{self.path.name}.{secrets.token_hex(8)}.tmp")
-        try:
-            with temporary.open("x", encoding="utf-8") as out:
-                if os.name != "nt":
-                    os.chmod(temporary, 0o600)
-                json.dump(data, out, indent=2)
-                out.flush()
-                os.fsync(out.fileno())
-            os.replace(temporary, self.path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        atomic_write(self.path, json.dumps(data, indent=2), mode=0o600)
 
     def accounts(self) -> list[dict[str, Any]]:
         """The accounts for the settings page: names only, never hashes."""

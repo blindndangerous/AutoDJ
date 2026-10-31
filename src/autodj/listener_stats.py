@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from autodj.fsutil import atomic_write
+from autodj.fsutil import atomic_write, set_aside
 from autodj.playlog import safe_csv
 from autodj.stream_formats import FORMATS
 
@@ -216,11 +216,7 @@ class ListenerStats:
             logger.error(
                 "Cannot load listener statistics from %s: %s; starting with none", self.path, exc
             )
-            bad = self.path.with_name(f"{self.path.name}.{time.time_ns()}.bad")
-            try:
-                self.path.replace(bad)
-            except OSError:
-                logger.error("Cannot move the unreadable %s aside", self.path, exc_info=True)
+            set_aside(self.path, "listener statistics file", str(exc), naming="timestamp")
             return []
         rows = []
         for raw in data["days"]:
