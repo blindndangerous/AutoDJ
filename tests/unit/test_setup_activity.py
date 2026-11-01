@@ -43,7 +43,34 @@ def test_launcher_ignores_only_its_matching_windows_redirector(tmp_path, monkeyp
     if same_args:
         setup_activity.ensure_idle(root, environment, 8080, launcher=True)
         processes.append(setup_activity.Process(300, "python.exe", command))
-    with pytest.raises(RuntimeError, match="still running"):
+    with pytest.raises(RuntimeError, match="using this checkout or environment"):
+        setup_activity.ensure_idle(root, environment, 8080, launcher=True)
+
+
+def test_nested_worktree_servers_do_not_block_package_sync(tmp_path, monkeypatch):
+    root, environment, _ = _paths(tmp_path)
+    _idle(monkeypatch)
+    monkeypatch.setattr("autodj.update_contract.other_servers", lambda *_: [])
+    # An occupied port is for server startup to diagnose, not package installation.
+    monkeypatch.setattr(setup_activity, "_busy_port", lambda _: True)
+    preview = root / ".worktrees/preview"
+    process = setup_activity.Process(
+        30284,
+        "autodj.exe",
+        f'"{preview}/.venv/Scripts/autodj.exe" --config .tmp/preview.toml serve',
+        str(preview),
+    )
+    monkeypatch.setattr(setup_activity, "_processes", lambda: [process])
+    setup_activity.ensure_idle(root, environment, 8080, launcher=True)
+    # A worktree deliberately sharing the updated venv still blocks the install.
+    shared = setup_activity.Process(
+        21980,
+        "autodj.exe",
+        f'"{environment}/Scripts/autodj.exe" serve',
+        str(preview),
+    )
+    monkeypatch.setattr(setup_activity, "_processes", lambda: [shared])
+    with pytest.raises(RuntimeError, match="Package updates are needed"):
         setup_activity.ensure_idle(root, environment, 8080, launcher=True)
 
 

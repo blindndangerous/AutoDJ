@@ -227,14 +227,17 @@ def _scoped(process: Process, root: Path, environment: Path) -> bool:
     command = process.command.casefold().replace("\\", "/")
     cwd = process.cwd.casefold().replace("\\", "/").rstrip("/")
 
-    def contained(path: str) -> bool:
-        return bool(re.search(r"(?<![\w.-])" + re.escape(path) + r"(?=$|[/\s\"'])", command))
+    def contained(path: str, *, checkout: bool = False) -> bool:
+        nested = r"(?!/\.worktrees/)" if checkout else ""
+        return bool(
+            re.search(r"(?<![\w.-])" + re.escape(path) + nested + r"(?=$|[/\s\"'])", command)
+        )
 
     return (
-        contained(root_text)
+        contained(root_text, checkout=True)
         or contained(env_text)
         or cwd == root_text
-        or cwd.startswith(root_text + "/")
+        or (cwd.startswith(root_text + "/") and not cwd.startswith(root_text + "/.worktrees/"))
     )
 
 
@@ -278,11 +281,17 @@ def ensure_idle(
         own_pids.add(updater_pid)
     servers = other_servers(state_dir, own_pids)
     if servers:
+        if launcher:
+            raise RuntimeError(
+                f"Package updates are needed for {environment}. "
+                "Stop AutoDJ running from this checkout, then start it again. "
+                f"Launcher process: {', '.join(map(str, servers))}."
+            )
         raise RuntimeError(
             "AutoDJ is running from this checkout (launcher process "
             f"{', '.join(map(str, servers))}); stop it before applying setup."
         )
-    if _busy_port(port):
+    if not launcher and _busy_port(port):
         raise RuntimeError(
             f"Port {port} is in use; stop its server or choose a free port before applying setup."
         )
@@ -321,6 +330,11 @@ def ensure_idle(
     ]
     if found:
         details = ", ".join(f"{activity} (process {process.pid})" for process, activity in found)
+        if launcher:
+            raise RuntimeError(
+                f"Package updates are needed for {environment}. "
+                f"Stop {details} using this checkout or environment, then start AutoDJ again."
+            )
         raise RuntimeError(f"AutoDJ {details} is still running; stop it before applying setup.")
 
 

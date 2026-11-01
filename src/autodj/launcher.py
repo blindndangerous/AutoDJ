@@ -106,6 +106,10 @@ def sync_runtime(selected: tuple[Path, str]) -> bool:
     script = ROOT / "scripts/runtime_sync.py"
     if not script.is_file() or not needs_sync(ROOT, *selected):
         return True
+    from autodj.version import STARTUP_WELCOME_ENV, current_version
+
+    print(f"Welcome to AutoDJ {current_version()}", flush=True)
+    os.environ[STARTUP_WELCOME_ENV] = "1"
     handle = try_lock(ROOT / ".uv/update/lock")
     if handle is None:
         print(UPDATE_RUNNING, file=sys.stderr)

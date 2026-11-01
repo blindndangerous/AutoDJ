@@ -7,6 +7,7 @@ import pytest
 
 from autodj import launcher, runtime_sync
 from autodj.update_contract import try_lock, unlock
+from autodj.version import STARTUP_WELCOME_ENV
 
 
 @pytest.fixture
@@ -25,6 +26,7 @@ def checkout(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "ROOT", root)
     monkeypatch.setenv("AUTODJ_RUNTIME", "")
     monkeypatch.setenv("AUTODJ_BOOTSTRAP", "1")
+    monkeypatch.delenv(STARTUP_WELCOME_ENV, raising=False)
     return root, environment
 
 
@@ -60,7 +62,7 @@ def test_sync_completes_before_supervisor(checkout, monkeypatch):
     assert events == ["sync", "serve", "serve"]
 
 
-def test_install_failure_prevents_server_and_releases_lock(checkout, monkeypatch):
+def test_install_failure_prevents_server_and_releases_lock(checkout, monkeypatch, capsys):
     """ADR-0012-13: installation failure keeps the server stopped and allows a retry."""
     root, environment = checkout
     helper = Mock(side_effect=RuntimeError("install failed"))
@@ -69,6 +71,9 @@ def test_install_failure_prevents_server_and_releases_lock(checkout, monkeypatch
     server = Mock()
     monkeypatch.setattr(launcher, "_supervise", server)
     assert launcher.main() == 1
+    captured = capsys.readouterr()
+    assert captured.out.startswith("Welcome to AutoDJ ")
+    assert "install failed" in captured.err
     server.assert_not_called()
     assert runtime_sync.needs_sync(root, environment, "no-model")
     handle = try_lock(root / ".uv/update/lock")
