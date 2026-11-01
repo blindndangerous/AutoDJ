@@ -78,8 +78,8 @@ export async function runAudit({ audit, validate, report }) {
     try {
       result = await audit(name, launcher);
     } catch (error) {
-      results[name] = { error: String(error) };
-      failures.push(`${name}: ${error}`);
+      results[name] = { error: String(error), stack: error?.stack };
+      failures.push(`${name}: ${error?.stack || error}`);
       writeReportAtomically(report, results);
       continue;
     }
