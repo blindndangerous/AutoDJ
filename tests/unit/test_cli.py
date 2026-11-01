@@ -429,11 +429,20 @@ class TestResolveSeedBeets:
 
 
 class TestCmdServe:
-    def test_welcome_and_progress_precede_server_import(self) -> None:
+    @pytest.mark.parametrize("launcher_welcome", [False, True])
+    def test_welcome_and_progress_precede_server_import(
+        self, monkeypatch, launcher_welcome
+    ) -> None:
         import builtins
         import logging
 
         from autodj import __version__
+        from autodj.version import STARTUP_WELCOME_ENV
+
+        if launcher_welcome:
+            monkeypatch.setenv(STARTUP_WELCOME_ENV, "1")
+        else:
+            monkeypatch.delenv(STARTUP_WELCOME_ENV, raising=False)
 
         events = []
         original_import = builtins.__import__
@@ -460,9 +469,15 @@ class TestCmdServe:
         ):
             result = CliRunner().invoke(cli, ["serve"])
         assert result.exit_code == 0, result.output
-        assert f"Welcome to AutoDJ {__version__}" in events[0]
-        assert events[1] == "Starting the server: loading configuration and audio components..."
-        assert events.index("server import") > 1
+        if launcher_welcome:
+            assert not any("Welcome to AutoDJ" in event for event in events)
+        else:
+            assert f"Welcome to AutoDJ {__version__}" in events[0]
+        progress = 0 if launcher_welcome else 1
+        assert (
+            events[progress] == "Starting the server: loading configuration and audio components..."
+        )
+        assert events.index("server import") > progress
 
     def test_serve_exits_zero(self) -> None:
         cfg_mock = _make_cfg()

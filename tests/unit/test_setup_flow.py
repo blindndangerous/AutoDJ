@@ -80,6 +80,8 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
     scripts = root / "scripts"
     scripts.mkdir(parents=True)
     (scripts / "setup-profiles.json").write_bytes((SCRIPTS / "setup-profiles.json").read_bytes())
+    for name in ("setup_support.py", "runtime_sync.py"):
+        (scripts / name).write_bytes((SCRIPTS / name).read_bytes())
     (root / "pyproject.toml").write_text(
         "[project]\nname = 'autodj'\nversion = '1.2.3'\n", encoding="utf-8"
     )

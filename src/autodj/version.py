@@ -7,6 +7,8 @@ import tomllib
 from functools import cache
 from pathlib import Path
 
+STARTUP_WELCOME_ENV = "AUTODJ_STARTUP_WELCOME"
+
 
 def _source_pyproject() -> Path | None:
     """Return this module's checkout pyproject, excluding installed layouts."""

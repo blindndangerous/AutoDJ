@@ -1970,8 +1970,10 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
       uv run autodj serve --server-audio
     """
     from autodj import __version__
+    from autodj.version import STARTUP_WELCOME_ENV
 
-    console.print(f"[bold green]Welcome to AutoDJ {escape(__version__)}[/]")
+    if os.environ.pop(STARTUP_WELCOME_ENV, None) != "1":
+        console.print(f"[bold green]Welcome to AutoDJ {escape(__version__)}[/]")
     logger = logging.getLogger(__name__)
     logger.info("Starting the server: loading configuration and audio components...")
     started = time.perf_counter()

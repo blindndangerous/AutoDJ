@@ -11,6 +11,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+_WINDOWS = os.name == "nt"
+
 
 @dataclass(frozen=True)
 class Process:
@@ -225,14 +227,17 @@ def _scoped(process: Process, root: Path, environment: Path) -> bool:
     command = process.command.casefold().replace("\\", "/")
     cwd = process.cwd.casefold().replace("\\", "/").rstrip("/")
 
-    def contained(path: str) -> bool:
-        return bool(re.search(r"(?<![\w.-])" + re.escape(path) + r"(?=$|[/\s\"'])", command))
+    def contained(path: str, *, checkout: bool = False) -> bool:
+        nested = r"(?!/\.worktrees/)" if checkout else ""
+        return bool(
+            re.search(r"(?<![\w.-])" + re.escape(path) + nested + r"(?=$|[/\s\"'])", command)
+        )
 
     return (
-        contained(root_text)
+        contained(root_text, checkout=True)
         or contained(env_text)
         or cwd == root_text
-        or cwd.startswith(root_text + "/")
+        or (cwd.startswith(root_text + "/") and not cwd.startswith(root_text + "/.worktrees/"))
     )
 
 
@@ -246,7 +251,14 @@ def _busy_port(port: int) -> bool:
         return True
 
 
-def ensure_idle(root: Path, environment: Path, port: int, updater_pid: int | None = None) -> None:
+def ensure_idle(
+    root: Path,
+    environment: Path,
+    port: int,
+    updater_pid: int | None = None,
+    *,
+    launcher: bool = False,
+) -> None:
     """Stop setup before mutation when a known AutoDJ process or server is active.
 
     The launcher's existing serving locks detect servers started through the
@@ -269,11 +281,17 @@ def ensure_idle(root: Path, environment: Path, port: int, updater_pid: int | Non
         own_pids.add(updater_pid)
     servers = other_servers(state_dir, own_pids)
     if servers:
+        if launcher:
+            raise RuntimeError(
+                f"Package updates are needed for {environment}. "
+                "Stop AutoDJ running from this checkout, then start it again. "
+                f"Launcher process: {', '.join(map(str, servers))}."
+            )
         raise RuntimeError(
             "AutoDJ is running from this checkout (launcher process "
             f"{', '.join(map(str, servers))}); stop it before applying setup."
         )
-    if _busy_port(port):
+    if not launcher and _busy_port(port):
         raise RuntimeError(
             f"Port {port} is in use; stop its server or choose a free port before applying setup."
         )
@@ -284,6 +302,25 @@ def ensure_idle(root: Path, environment: Path, port: int, updater_pid: int | Non
             f"Could not inspect running processes ({exc}); setup cannot safely verify that "
             "AutoDJ is idle. Close AutoDJ and rerun setup."
         ) from exc
+    if launcher and _WINDOWS:
+        # A Windows venv redirector waits for this interpreter with the same
+        # argv. It is part of this launch, not another server using the runtime.
+        current = next((p for p in processes if p.pid == os.getpid()), None)
+        parent = next((p for p in processes if current and p.pid == current.parent_pid), None)
+        if current and parent and parent.name.casefold() == "python.exe":
+            try:
+                args = [part.strip('"') for part in shlex.split(current.command, posix=False)]
+                parent_args = [part.strip('"') for part in shlex.split(parent.command, posix=False)]
+            except ValueError:
+                pass
+            else:
+                if (
+                    args[1:] == parent_args[1:]
+                    and _activity(current.name, current.command) == "serve"
+                    and _activity(parent.name, parent.command) == "serve"
+                    and _scoped(parent, root.resolve(), environment.resolve())
+                ):
+                    own_pids.add(parent.pid)
     found = [
         (process, activity)
         for process in processes
@@ -293,6 +330,11 @@ def ensure_idle(root: Path, environment: Path, port: int, updater_pid: int | Non
     ]
     if found:
         details = ", ".join(f"{activity} (process {process.pid})" for process, activity in found)
+        if launcher:
+            raise RuntimeError(
+                f"Package updates are needed for {environment}. "
+                f"Stop {details} using this checkout or environment, then start AutoDJ again."
+            )
         raise RuntimeError(f"AutoDJ {details} is still running; stop it before applying setup.")
 
 
