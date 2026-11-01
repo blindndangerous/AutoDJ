@@ -534,7 +534,8 @@ describe("profiles", () => {
     const { els } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll('button:not([role="menuitem"])')).toHaveLength(1));
     const apply = menuAction(els.list, "Late", "activate");
-    expect(document.activeElement).toBe(apply);
+    // The menu focuses its first item a frame after it is shown (#712).
+    await vi.waitFor(() => expect(document.activeElement).toBe(apply));
 
     apply.click();
 

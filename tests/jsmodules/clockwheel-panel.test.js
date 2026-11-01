@@ -639,6 +639,7 @@ describe("clockwheel editor", () => {
     expect(document.activeElement).toBe(rows()[2].children[0]);
     rowCell(2).focus();
     key("Enter");
+    await vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem"));
     expect(document.activeElement.textContent).toBe("Edit");
     key("Enter");
     expect(byId("clock-step-legend").textContent).toBe("Edit step 3");
@@ -656,7 +657,7 @@ describe("clockwheel editor", () => {
     await open(fakeServer());
     rowCell(0, "options").focus();
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-    expect(document.activeElement.getAttribute("role")).toBe("menuitem");
+    await vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem"));
     expect(document.activeElement.textContent).toBe("Edit");
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
     expect(document.activeElement.textContent).toBe("Move up");

@@ -363,9 +363,13 @@ async function contextMenuJourney(page, row, evidence, state) {
     window.contextMenuEvents = [];
     window.recordContextMenu = (event) => window.contextMenuEvents.push(event.defaultPrevented);
     window.addEventListener("contextmenu", window.recordContextMenu);
+    window.menuFocusTrace = [];
+    window.traceMenuFocus = (event) => window.menuFocusTrace.push(event.target.getAttribute("role") || event.target.tagName);
+    document.addEventListener("focusin", window.traceMenuFocus, true);
   });
   const synthetic = [];
   for (const [how, cell] of [["Shift+F10", first], ["ContextMenu", last], ["right-click", first]]) {
+    const words = (await cell.textContent()).replace(/\s+/g, " ").trim();
     if (how === "right-click") await cell.click({ button: "right" });
     else {
       await cell.focus();
@@ -379,13 +383,22 @@ async function contextMenuJourney(page, row, evidence, state) {
       }
     }
     await focused(page, `${menu} [role="menuitem"]:first-child`);
+    // #712: the menu opens inside the originating cell and only its item takes focus.
+    assert.equal(await cell.evaluate((element, id) => element.contains(document.querySelector(id)), menu), true, `${state} ${how} menu sits in its cell`);
+    // The menu inside the cell is not part of the cell's name, and sits beside it.
+    await expect(cell).toHaveAccessibleName(words);
+    const [cellBox, menuBox] = [await cell.boundingBox(), await page.locator(menu).boundingBox()];
+    assert.ok(Math.abs(menuBox.x - Math.max(4, Math.min(cellBox.x, page.viewportSize().width - menuBox.width - 4))) < 2, `${state} ${how} menu is anchored to its cell`);
+    assert.deepEqual(await page.evaluate(() => window.menuFocusTrace.splice(0).filter((role) => role !== "gridcell")), ["menuitem"], `${state} ${how} focuses only the item`);
     assert.equal(await button.getAttribute("aria-expanded"), "true", `${state} ${how} opens the row menu`);
     assert.equal(await page.locator('[role="menu"]:visible').count(), 1, `${state} ${how} opens one menu`);
     await page.keyboard.press("Escape");
     await expect(cell).toBeFocused();
+    await expect(cell).toHaveAccessibleName(words);
     assert.equal(await button.getAttribute("aria-expanded"), "false");
   }
   const prevented = await page.evaluate(() => {
+    document.removeEventListener("focusin", window.traceMenuFocus, true);
     window.removeEventListener("contextmenu", window.recordContextMenu);
     return window.contextMenuEvents;
   });
@@ -592,6 +605,7 @@ async function journey(page, evidence) {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator(`${eventRow} td[data-action="options"]`).focus();
   await page.keyboard.press("Enter");
+  await focused(page, `${eventRow} [role="menuitem"]:first-child`);
   await page.evaluate(async () => {
     const fixture = window.collectionFixture;
     fixture.events[0].name = "Morning refreshed";

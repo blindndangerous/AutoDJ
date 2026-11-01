@@ -169,6 +169,19 @@ describe("native table grid navigation", () => {
     expect([one, two, three, four].filter((item) => item.tabIndex === 0)).toEqual([three]);
   });
 
+  it("leaves an open menu's items out of cell labels and row names", () => {
+    document.body.innerHTML = `<table><thead><tr><th>Name</th><th>Artist</th></tr></thead><tbody id="rows">
+      <tr><td role="gridcell" data-name>Song 1</td><td role="gridcell">Band 1</td></tr>
+      <tr><td role="gridcell" data-name>Song 2<div role="menu"><button role="menuitem">Edit</button></div></td><td role="gridcell">Band 2<div role="menu"><button role="menuitem">Delete</button></div></td></tr>
+    </tbody></table>`;
+    const body = document.getElementById("rows");
+    installTableNavigation(body);
+    const [, band1, , band2] = body.querySelectorAll("td");
+    band1.focus();
+    band1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(band2.getAttribute("aria-label")).toBe("Band 2, Song 2");
+  });
+
   it("counts spanned columns when it names a cell's heading", () => {
     document.body.innerHTML = `<table><thead><tr><th>Title</th><th>Artist</th><th>Length</th></tr></thead><tbody id="rows">
       <tr><td role="gridcell" data-name colspan="2">Song 1 by Band 1</td><td role="gridcell">3:00</td></tr>

@@ -65,6 +65,7 @@ it("shows paired device data in columns with Rename and a revocation menu", asyn
   expect([...$("list").querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["Name", "Paired", "Last seen", "Actions"]);
   expect(row.querySelectorAll('button:not([role="menuitem"])')).toHaveLength(1);
   row.querySelector('[aria-haspopup="menu"]').click();
+  await vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem"));
   expect(document.activeElement.textContent).toBe("Rename");
   press("ArrowDown");
   expect(document.activeElement.textContent).toBe("Revoke access");

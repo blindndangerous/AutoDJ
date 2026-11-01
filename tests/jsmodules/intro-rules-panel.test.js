@@ -108,7 +108,8 @@ it("uses a named intro-rule collection grid and returns its menu to the Options 
   const row = table.querySelector("tbody tr");
   expect(row.cells[0].textContent).toBe("Eighties");
   row.querySelector('[aria-haspopup="menu"]').click();
-  expect(document.activeElement.textContent).toBe("Edit");
+  // The menu focuses its first item a frame after it is shown (#712).
+  await vi.waitFor(() => expect(document.activeElement.textContent).toBe("Edit"));
   document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
   expect(document.activeElement.textContent).toBe("Delete");
   document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

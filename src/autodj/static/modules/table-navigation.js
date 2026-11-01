@@ -18,7 +18,13 @@ export function installTableNavigation(body) {
   // cell remains a cell, so returning from an action cannot select its sibling.
   const stop = (cell) => controls(cell).some((item) => item.tagName === "BUTTON") ? cell
     : controls(cell).find((item) => !item.disabled && item.matches("input, select")) || cell;
-  const text = (cell) => cell?.textContent.replace(/\s+/g, " ").trim();
+  // A cell's words, without those of a row menu opened inside it.
+  const text = (cell) => {
+    if (!cell) return cell;
+    const words = (node) => [...node.childNodes].map((child) => child.nodeType === 3 ? child.data
+      : child.nodeType === 1 && !child.matches('[role="menu"]') ? words(child) : "").join("");
+    return words(cell).replace(/\s+/g, " ").trim();
+  };
   const place = (cell) => {
     const row = [...cell.parentElement.children];
     return row.slice(0, row.indexOf(cell)).reduce((sum, item) => sum + item.colSpan, 0);

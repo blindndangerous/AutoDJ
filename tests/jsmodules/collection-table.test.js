@@ -4,6 +4,8 @@ import * as collections from "../../src/autodj/static/modules/collection-table.j
 
 const { createCollectionTable } = collections;
 
+// A row menu focuses its first item a frame after it is shown (#712).
+const menuFocus = () => vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem"));
 const press = (key) => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
 let host, status, fallback;
 beforeEach(() => {
@@ -71,7 +73,7 @@ describe("collection tables", () => {
     expect(readOnly.target("a")).toBe(readOnly.body.firstElementChild.cells[0]);
   });
   // ADR-0021-35
-  it("opens a row's menu from the context menu key or right-click and returns to the originating cell", () => {
+  it("opens a row's menu from the context menu key or right-click and returns to the originating cell", async () => {
     const remove = vi.fn();
     const grid = mount({ remove });
     grid.update([{ id: "a", name: "First", count: 1 }, { id: "b", name: "Second", count: 2 }]);
@@ -85,6 +87,7 @@ describe("collection tables", () => {
     count.focus();
     expect(context(count).defaultPrevented).toBe(true);
     expect(button.getAttribute("aria-expanded")).toBe("true");
+    await menuFocus();
     expect(document.activeElement.textContent).toBe("Edit");
     press("Escape");
     expect(button.getAttribute("aria-expanded")).toBe("false");
@@ -108,14 +111,65 @@ describe("collection tables", () => {
     expect(document.activeElement).toBe(grid.target("a"));
     expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
   });
+  // ADR-0021-41
+  it("opens a context menu inside its originating cell without focusing the Options button", async () => {
+    const grid = mount();
+    grid.update([{ id: "a", name: "First", count: 1 }]);
+    const count = grid.target("a", "count");
+    const button = grid.target("a").querySelector('[aria-haspopup="menu"]');
+    const menu = document.getElementById(button.getAttribute("aria-controls"));
+    const focused = [];
+    document.addEventListener("focusin", (event) => focused.push(event.target), true);
+    count.focus();
+    focused.length = 0;
+    count.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    expect(count.contains(menu)).toBe(true);
+    await vi.waitFor(() => expect(document.activeElement.textContent).toBe("Edit"));
+    expect(focused).toEqual([document.activeElement]);
+    grid.update([{ id: "a", name: "First", count: 2 }]);
+    expect(count.contains(menu)).toBe(true);
+    expect(count.firstChild.data).toBe("2");
+    press("Escape");
+    expect(document.activeElement).toBe(count);
+    expect(count.textContent).toBe("2");
+    expect(button.parentElement.contains(menu)).toBe(true);
+  });
+  // ADR-0021-41
+  it("keeps an open context menu out of its cell's name and the list-change announcement", async () => {
+    const grid = mount();
+    grid.update([{ id: "a", name: "First", count: 1 }, { id: "b", name: "Second", count: 2 }]);
+    const count = grid.target("a", "count");
+    count.focus();
+    count.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await menuFocus();
+    const name = (element) => {
+      axe.setup(document);
+      try { return axe.commons.text.accessibleText(element); } finally { axe.teardown(); }
+    };
+    expect(count.querySelector('[role="menu"]')).not.toBeNull();
+    expect(name(count)).toBe("1");
+    grid.update([{ id: "a", name: "First", count: 5 }, { id: "b", name: "Second", count: 2 }]);
+    expect(name(count)).toBe("5");
+    press("Escape");
+    expect(document.activeElement).toBe(count);
+    expect(count.hasAttribute("aria-label")).toBe(false);
+    expect(name(count)).toBe("5");
+    // A row removed while its menu is open in a data cell names the new target's button.
+    count.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await menuFocus();
+    grid.update([{ id: "b", name: "Second", count: 2 }]);
+    await vi.waitFor(() => expect(status.textContent).toContain("Focus moved to"));
+    expect(status.textContent).not.toContain("Focus moved to Edit");
+  });
   // ADR-0021-25
-  it("lets a menu action that moves focus take it straight from the menu", () => {
+  it("lets a menu action that moves focus take it straight from the menu", async () => {
     const field = document.createElement("input");
     document.body.append(field);
     const grid = mount({ edit: () => field.focus() });
     grid.update([{ id: "a", name: "First" }]);
     grid.target("a", "name").focus();
     grid.target("a", "name").dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await menuFocus();
     const seen = [];
     const record = (event) => seen.push(event.target);
     document.addEventListener("focusin", record, true);
@@ -204,7 +258,7 @@ describe("collection tables", () => {
     expect(collections.collectionHost(grid.table)).toBe(host);
   });
   // ADR-0021-01
-  it("preserves keyed rows and focus while updating data", () => {
+  it("preserves keyed rows and focus while updating data", async () => {
     const edit = vi.fn();
     const grid = mount({ edit });
     grid.update([{ id: "a", name: "First", count: 1 }, { id: "b", name: "Second", count: 2 }]);
@@ -216,6 +270,7 @@ describe("collection tables", () => {
     expect(document.activeElement).toBe(target);
     expect(first.cells[0].textContent).toBe("Renamed");
     press("Enter");
+    await menuFocus();
     expect(document.activeElement.textContent).toBe("Edit");
     press("Enter");
     expect(edit).toHaveBeenCalledWith({ id: "a", name: "Renamed", count: 4 });
@@ -242,14 +297,14 @@ describe("collection tables", () => {
     grid.update([]);
     expect(document.activeElement).toBe(fallback);
   });
-  it("keeps popup focus through refresh and returns Escape to the sole Options tab stop", () => {
+  it("keeps popup focus through refresh and returns Escape to the sole Options tab stop", async () => {
     const remove = vi.fn();
     const grid = mount({ remove });
     grid.update([{ id: "a", name: "First", count: 1 }]);
     grid.target("a", "options").focus();
     press("Enter");
+    await menuFocus();
     const item = document.activeElement;
-    expect(item.getAttribute("role")).toBe("menuitem");
     grid.update([{ id: "a", name: "Renamed", count: 2 }]);
     expect(document.activeElement).toBe(item);
     press("Escape");
@@ -273,7 +328,7 @@ describe("collection tables", () => {
     grid.update([{ id: "a", name: "First" }, { id: "b", name: "Second" }]);
     grid.target("a", "options").focus();
     press("Enter");
-    expect(document.activeElement.getAttribute("role")).toBe("menuitem");
+    await menuFocus();
     grid.update([{ id: "b", name: "Second" }]);
     expect(document.activeElement).toBe(grid.target("b", "options"));
     expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);

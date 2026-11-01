@@ -65,7 +65,14 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
     columns.forEach((column, at) => {
       const value = String(column.value(item, index) ?? "");
       const cell = row.cells[at];
-      if (cell.textContent !== value) cell.textContent = value;
+      // A context menu opened from this cell sits after its text; keep it.
+      const menu = cell.querySelector(":scope > .row-actions-menu");
+      if (!menu) {
+        if (cell.textContent !== value) cell.textContent = value;
+      } else if (cell.firstChild?.nodeType === 3) {
+        if (cell.firstChild.data !== value) cell.firstChild.data = value;
+      } else cell.prepend(value);
+      if (menu && "menuLabel" in cell.dataset && cell.getAttribute("aria-label") !== value) cell.setAttribute("aria-label", value);
     });
     record.menu?.update(name, actions(item, index));
   }
@@ -85,7 +92,8 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
       focusControl: (active) => active?.closest?.("td"),
       onFocusLost: ({ target }) => {
         if (!announceFocus) return;
-        const control = target?.querySelector?.("button");
+        // Not a menu item of a menu open in that cell.
+        const control = [...(target?.querySelectorAll?.("button") || [])].find((item) => !item.closest('[role="menu"]'));
         const fieldLabel = [...(target?.labels || [])].map((item) => item.textContent.trim()).join(" ");
         const name = control?.getAttribute("aria-label") || target?.getAttribute("aria-label") || fieldLabel || target?.textContent.trim() || label;
         announceStatus(status, `The ${label} list changed. Focus moved to ${name}.`, { force: true });

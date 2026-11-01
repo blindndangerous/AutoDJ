@@ -126,7 +126,8 @@ describe("categories list", () => {
     expect(row.cells[0].textContent).toBe(DECADE.name);
     expect(row.querySelector('[aria-haspopup="menu"]').getAttribute("aria-label")).toBe(`Options for ${DECADE.name}`);
     row.querySelector('[aria-haspopup="menu"]').click();
-    expect(document.activeElement.textContent).toBe("Edit");
+    // The menu focuses its first item a frame after it is shown (#712).
+    await vi.waitFor(() => expect(document.activeElement.textContent).toBe("Edit"));
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     expect(document.activeElement.textContent).toBe("Delete");
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

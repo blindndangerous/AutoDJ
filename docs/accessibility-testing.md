@@ -464,7 +464,10 @@ and empty data:
    announce "Start the station to run this event now" on each attempt.
 3. Escape from an open menu. Check focus returns directly to the cell it opened
    from (the Actions cell, the focused cell or the clicked cell) and the expanded
-   state becomes false. Press Left and Right immediately and
+   state becomes false. In NVDA, check that opening says only the menu and its
+   first item, without the Actions cell or button name, that NVDA's focus ends on
+   that item rather than the menu, and that a single Escape closes the menu
+   without switching to browse mode. Press Left and Right immediately and
    confirm cell movement without toggling NVDA mode. Repeat after cancelling
    Delete and after a completed menu action. Tab and Shift+Tab must close the menu without
    trapping focus or exposing its hidden items in the page Tab sequence.

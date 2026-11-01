@@ -423,6 +423,33 @@ Batch 4 migration remains on hold until the operator reviews this result. Automa
 establish NVDA speech or operator acceptance, which #712 requires before the
 regression is resolved. ADR disposition: `update_existing_adr`.
 
+### NVDA follow-up, 2026-11-01
+
+An NVDA 2026.2 and Firefox sample of the pilot found two row-menu defects. The
+owner keeps the heading rule above even though NVDA, with its default table
+headers setting, speaks a moved-to heading twice.
+
+- Opening a menu focused its first item in the same task that showed it.
+  Firefox reports a shown `role="menu"` at its next rendering update, after that
+  focus, and NVDA then moved its focus to the menu container, so the first
+  Escape only left focus mode. The menu now shows first and focuses its item a
+  frame and a task later. A key pressed before then focuses the item and is
+  handled by the menu, so Escape, arrows, Enter and type-ahead behave as before.
+- Shift+F10 and the Applications key moved focus from a data cell into a menu
+  inside the Actions cell, so NVDA announced that cell, named by its contents,
+  before the menu. A menu opened from another cell is now placed in that cell
+  while it is open, positioned beside that cell, and returns to its Actions cell
+  on close. While it is there the cell is named by its own words only, and
+  cell labels and row names skip menu items. Data updates keep it there; focus
+  returns to the originating cell as before.
+- The deferred focus goes to whatever item is first when it runs, and only if
+  focus is still on the originating cell, the page or the menu; otherwise the
+  menu closes quietly. Only one row menu is open at a time, and a menu removed
+  from the page releases its claim on keys.
+
+Automated tests cover the focus order and placement; a fresh NVDA sample is still
+required. ADR disposition: `update_existing_adr`.
+
 ## Current contracts
 
 | ID | Constraint | Method | Evidence |
@@ -466,3 +493,5 @@ regression is resolved. ADR disposition: `update_existing_adr`.
 | `ADR-0021-37` | Schedule tables keep only scanned columns: events Name, When, Action, Enabled and Actions; Upcoming Name, Due and Action; Recent runs Name, When, Action and Result. | automated | `tests/jsmodules/scheduler-panel.test.js::keeps only scanned Schedule columns and one Actions menu per event` |
 | `ADR-0021-38` | Saved clockwheels show Name, Active and Actions; steps show Step and Actions, the Step cell being the numbered step sentence with its target, selection, rules and hours. | automated | `tests/jsmodules/clockwheel-panel.test.js::uses shared collection columns and row menus without row headers`, `tests/jsmodules/clockwheel-panel.test.js::shows each step as one numbered sentence with its target, selection and hours` |
 | `ADR-0021-39` | The #712 second pass keeps only scanned columns on the other collection screens, folding secondary facts into one Details or numbered cell; profiles and browser access keep theirs. | automated | `tests/jsmodules/shows-panel.test.js::uses shared show, song and search tables with one Actions menu`, `tests/jsmodules/prepared-editions.test.js::uses shared occurrence and take tables with dialog reattachment`, `tests/jsmodules/queue.test.js::uses the shared queue table with Track info and confirmed removal`, `tests/jsmodules/listener-requests.test.js::uses shared pending and recent request tables with focusable unavailable approval`, `tests/jsmodules/voice-tracker.test.js::uses a bounded shared bookings table with confirmed cancellation`, `tests/jsmodules/categories-panel.test.js::uses a named collection grid with Edit then Delete in one Actions menu`, `tests/jsmodules/intro-rules-panel.test.js::uses a named intro-rule collection grid and returns its menu to the Options cell`, `tests/jsmodules/matched-intros.test.js::uses collection cells and opens Add intro directly on Audio file`, `tests/jsmodules/ads-panel.test.js::uses shared spot and break columns with one Actions menu and disabled run reasons`, `tests/jsmodules/asset-collections.test.js::keeps liner rows keyed with dates and availability in Details and Options return focus` |
+| `ADR-0021-40` | A row menu is shown before its first item takes focus, and keys pressed before that focus are handled by the menu. The deferred focus goes to the current first item, only if focus has not moved elsewhere, and only one menu is open at a time. | automated | `tests/jsmodules/row-actions-menu.test.js::shows the menu before it focuses the first item and routes keys that arrive first`, `tests/jsmodules/row-actions-menu.test.js::focuses the replacement first item when an update replaces it while focus is pending`, `tests/jsmodules/row-actions-menu.test.js::closes quietly instead of taking focus that moved elsewhere before the deferred focus`, `tests/jsmodules/row-actions-menu.test.js::keeps one pending menu: opening a second closes the first and takes the next key` |
+| `ADR-0021-41` | A context menu opens inside its originating cell without focusing the Options button, beside that cell, survives data updates there, stays out of the cell's name and list-change announcements, and returns to its Actions cell on close. | automated | `tests/jsmodules/collection-table.test.js::opens a context menu inside its originating cell without focusing the Options button`, `tests/jsmodules/collection-table.test.js::keeps an open context menu out of its cell's name and the list-change announcement` |

@@ -102,12 +102,12 @@ describe("queue collection", () => {
     expect(document.getElementById("status-toast").hidden).toBe(false);
   });
 
-  it("uses one table Tab stop with cell arrows and menu opening keys", () => {
+  it("uses one table Tab stop with cell arrows and menu opening keys", async () => {
     const { els, rows, options } = setup();
     expect(els.queueList.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
     rows()[0].cells[0].focus(); press("ArrowDown"); expect(document.activeElement).toBe(rows()[1].cells[0]);
     press("End"); expect(document.activeElement).toBe(rows()[1].cells[1]);
-    press("Enter"); expect(document.activeElement.dataset.action).toBe("info");
+    press("Enter"); await vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem")); expect(document.activeElement.dataset.action).toBe("info");
     press("Escape"); expect(document.activeElement).toBe(options(1).closest("td"));
     press("ArrowUp"); expect(document.activeElement).toBe(options(0).closest("td"));
     press("Enter");
@@ -118,7 +118,7 @@ describe("queue collection", () => {
   it("keeps disabled boundary actions reachable and describes their reasons", async () => {
     const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     const { rows, options, els } = setup([track("a.mp3")]);
-    options(0).focus(); press("Enter");
+    options(0).focus(); press("Enter"); await vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem"));
     expect(document.activeElement.dataset.action).toBe("info");
     press("ArrowDown");
     expect(document.activeElement.dataset.action).toBe("top");
@@ -147,9 +147,9 @@ describe("queue collection", () => {
     expect(rows()[1].querySelector('[data-action="up"]').getAttribute("aria-disabled")).toBe("false");
   });
 
-  it("refreshes metadata and bridge names without replacing focused rows or open menus", () => {
+  it("refreshes metadata and bridge names without replacing focused rows or open menus", async () => {
     const { els, rows, options } = setup([track("a.mp3", "Alpha"), track("b.mp3", "Bravo")]);
-    const row = rows()[1]; options(1).focus(); press("Enter"); const focused = document.activeElement;
+    const row = rows()[1]; options(1).focus(); press("Enter"); await vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem")); const focused = document.activeElement;
     expect(focused.getAttribute("role")).toBe("menuitem");
     applyQueueState([track("a.mp3", "Alpha"), { ...track("b.mp3", "Renamed"), bridge_to: "Request" }], els);
     expect(rows()[1]).toBe(row); expect(document.activeElement).toBe(focused);
@@ -161,7 +161,7 @@ describe("queue collection", () => {
   it("uses current row positions after a refresh while a menu is open", async () => {
     const fetch = vi.fn(async () => response()); vi.stubGlobal("fetch", fetch);
     const { els, options } = setup(); options(2).focus(); press("Enter");
-    expect(document.activeElement.getAttribute("role")).toBe("menuitem");
+    await vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem"));
     applyQueueState([initial()[2], initial()[0], initial()[1]], els);
     press("ArrowDown"); press("ArrowDown"); press("ArrowDown"); press("Enter"); await settled(els);
     expect(bodies(fetch)[0]).toEqual({ paths: ["a.mp3", "c.mp3", "b.mp3"],
