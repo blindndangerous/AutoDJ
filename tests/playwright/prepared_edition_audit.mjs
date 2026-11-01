@@ -123,8 +123,23 @@ async function audit(name, launcher) {
     report.steps.push("production edition: axe WCAG2.2 A/AA; computed data names with the heading after a horizontal move; Escape returns to exact Options cell with arrow continuation");
     await (await takeAction("listen")).click();
     await expect(page.locator("#edition-audio")).toHaveAttribute("src", new RegExp(`/assets/${take.asset_id}$`));
-    await page.locator("#edition-audio").focus(); await page.keyboard.press("Space");
-    await expect.poll(() => page.locator("#edition-audio").evaluate((audio) => audio.currentTime)).toBeGreaterThan(0);
+    // Record the player's events so a failure says whether Space started playback (#714).
+    const audio = page.locator("#edition-audio");
+    await audio.evaluate((player) => {
+      player.auditEvents = [];
+      for (const type of ["play", "playing", "pause", "ended", "error", "stalled", "waiting"]) {
+        player.addEventListener(type, () => player.auditEvents.push(`${type}@${player.currentTime.toFixed(3)}`));
+      }
+    });
+    await audio.focus(); await page.keyboard.press("Space");
+    try {
+      await expect.poll(() => audio.evaluate((player) => player.currentTime), { timeout: 15000 }).toBeGreaterThan(0);
+    } catch (error) {
+      const state = await audio.evaluate((player) => ({ events: player.auditEvents, paused: player.paused,
+        readyState: player.readyState, networkState: player.networkState, error: player.error?.code ?? null,
+        focused: document.activeElement === player }));
+      throw new Error(`${error.message}\nAudio player: ${JSON.stringify(state)}`, { cause: error });
+    }
     await page.keyboard.press("Space");
     const asset = await page.request.get(`${url}/assets/${take.asset_id}`);
     assert.equal(asset.status(), 200);
@@ -171,6 +186,8 @@ async function audit(name, launcher) {
     await page.getByRole("button", { name: "Return to edition", exact: true }).click();
     const approve = await takeAction("approve");
     await expect(approve).toHaveAttribute("aria-disabled", "false"); await approve.click();
+    // "ready" can show before the approval is saved; wait for the save itself.
+    await expect.poll(async () => Boolean((await view()).takes[0].approval)).toBe(true);
     await expect(page.locator("#edition-takes")).toContainText("ready");
     await takeCellReturn();
     assert.ok((await view()).takes[0].approval);
@@ -214,7 +231,7 @@ async function audit(name, launcher) {
     assert.deepEqual(report.page_errors, []);
     report.passed = true;
   } catch (error) {
-    report.passed = false; report.error = String(error); report.server_log = logs;
+    report.passed = false; report.error = String(error); report.stack = error?.stack; report.server_log = logs;
   } finally {
     await browser?.close(); server.kill("SIGTERM");
     await new Promise((done) => { if (server.exitCode !== null || !server.pid) done(); else server.once("exit", done); });

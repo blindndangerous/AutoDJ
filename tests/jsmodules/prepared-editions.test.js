@@ -317,6 +317,43 @@ it("keeps approval pending across Options keyboard activation and submits only o
   expect(options.disabled).toBe(false);
 });
 
+it("leaves focus where the user moved it while an approval was saving", async () => {
+  const value = { ...edition, takes: [take] };
+  const replies = [];
+  const request = vi.fn(async (url) => url.endsWith("/approve") ? new Promise((resolve) => replies.push(resolve))
+    : url.includes("?") ? { editions: [value] } : value);
+  const { controls } = harness({ request });
+  await controls.openShow(show); get("load").click(); await settle();
+  takeAction("review").click();
+  document.dispatchEvent(new CustomEvent("autodj:edition-review-ready", { detail: {
+    edition_id: "edition", take_id: "take", review_id: "review", revision: 3,
+  } }));
+  takeAction("approve").click(); await settle();
+  get("takes").querySelector("tbody tr td").focus();
+  for (const reply of replies) reply({ ...value, revision: 4, takes: [{ ...take, status: "ready" }] });
+  await settle();
+  expect(get("status").textContent).toBe("Take approved for its reviewed placement.");
+  expect(document.activeElement).toBe(get("takes").querySelector("tbody tr td"));
+});
+
+it("returns focus to the approved take when focus was lost while saving", async () => {
+  const value = { ...edition, takes: [take] };
+  const replies = [];
+  const request = vi.fn(async (url) => url.endsWith("/approve") ? new Promise((resolve) => replies.push(resolve))
+    : url.includes("?") ? { editions: [value] } : value);
+  const { controls } = harness({ request });
+  await controls.openShow(show); get("load").click(); await settle();
+  takeAction("review").click();
+  document.dispatchEvent(new CustomEvent("autodj:edition-review-ready", { detail: {
+    edition_id: "edition", take_id: "take", review_id: "review", revision: 3,
+  } }));
+  takeAction("approve").click(); await settle();
+  document.activeElement?.blur();
+  for (const reply of replies) reply({ ...value, revision: 4, takes: [{ ...take, status: "ready" }] });
+  await settle();
+  expect(document.activeElement?.closest("tr[data-row-key]")?.dataset.rowKey).toBe("take");
+});
+
 it("resolves a prepared start conflict without changing the saved edition", async () => {
   const attempts = [];
   const request = vi.fn(async (url, options) => {

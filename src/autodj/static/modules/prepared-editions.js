@@ -343,7 +343,8 @@ export function installPreparedEditions({
       const value = await send(endpoint(`/takes/${encodeURIComponent(take.id)}/approve`), "POST", { review_id: receipt.review_id });
       if (current(ticket)) {
         receipts.delete(take.id); render(value);
-        takeTable.target(take.id)?.focus();
+        // The save is slow; the user may have moved on. Only recover lost focus.
+        if (!doc.activeElement || doc.activeElement === doc.body) takeTable.target(take.id)?.focus();
         say("Take approved for its reviewed placement.");
       }
     } catch (error) {
