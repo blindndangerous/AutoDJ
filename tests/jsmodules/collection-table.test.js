@@ -242,6 +242,207 @@ describe("collection tables", () => {
     press("ArrowLeft");
     expect(names()).toEqual(["Later, Name", "3", "Options for Later"]);
   });
+  // ADR-0021-42
+  it("names each table by a native caption, hidden only when a heading says it", () => {
+    const grid = mount();
+    const caption = grid.table.querySelector(":scope > caption");
+    expect(grid.table.firstElementChild).toBe(caption);
+    expect(caption.textContent).toBe("Examples");
+    expect(caption.classList.contains("visually-hidden")).toBe(false);
+    expect(grid.table.hasAttribute("aria-label")).toBe(false);
+    axe.setup(document);
+    try { expect(axe.commons.text.accessibleText(grid.table)).toBe("Examples"); } finally { axe.teardown(); }
+    const hidden = mount({ host: document.body.appendChild(document.createElement("div")), hideCaption: true });
+    expect(hidden.table.caption.textContent).toBe("Examples");
+    expect(hidden.table.caption.classList.contains("visually-hidden")).toBe(true);
+  });
+  // ADR-0021-43
+  it("names the Actions cell by its Options button alone while its menu is open", async () => {
+    const grid = mount();
+    grid.update([{ id: "a", name: "Evening", count: 1 }]);
+    const cell = grid.target("a");
+    const name = () => {
+      axe.setup(document);
+      try { return axe.commons.text.accessibleText(cell); } finally { axe.teardown(); }
+    };
+    // Closed, the hidden menu is not rendered (jsdom does not hide it for axe,
+    // so the browser audit checks that name), and the cell has no own label.
+    expect(cell.hasAttribute("aria-label")).toBe(false);
+    cell.focus();
+    press("Enter");
+    // From the moment the menu is shown, before its item takes focus.
+    expect(name()).toBe("Options for Evening");
+    await menuFocus();
+    expect(name()).toBe("Options for Evening");
+    grid.update([{ id: "a", name: "Late", count: 1 }]);
+    expect(name()).toBe("Options for Late");
+    press("Escape");
+    expect(document.activeElement).toBe(cell);
+    expect(cell.hasAttribute("aria-label")).toBe(false);
+    // A context menu opened on the Actions cell itself.
+    cell.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await menuFocus();
+    expect(name()).toBe("Options for Late");
+    press("Escape");
+    expect(cell.hasAttribute("aria-label")).toBe(false);
+  });
+  // ADR-0021-44
+  it("turns a row on or off in place from a native checkbox cell with one request", async () => {
+    let finish;
+    const run = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const grid = mount({
+      columns: [
+        { key: "name", label: "Name", value: (item) => item.name },
+        { key: "on", label: "On", value: (item) => item.ended ? "No, ended" : item.on ? "Yes" : "No",
+          toggle: { available: (item) => !item.ended, checked: (item) => item.on, label: (item) => `Enable ${item.name}`, run } },
+      ],
+    });
+    grid.update([{ id: "a", name: "Morning", on: true }, { id: "b", name: "Over", on: false, ended: true }]);
+    const cell = grid.target("a", "on");
+    const box = cell.querySelector("input");
+    expect(box.type).toBe("checkbox");
+    expect(box.checked).toBe(true);
+    expect(box.getAttribute("aria-label")).toBe("Enable Morning");
+    expect(cell.textContent).toBe("");
+    expect(grid.target("b", "on").querySelector("input")).toBeNull();
+    expect(grid.target("b", "on").textContent).toBe("No, ended");
+    // Arrows enter the cell on its checkbox, which keeps the one Tab stop.
+    grid.target("a", "name").focus();
+    press("ArrowRight");
+    expect(document.activeElement).toBe(box);
+    expect(cell.hasAttribute("aria-label")).toBe(false);
+    expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    box.click();
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    expect(run).toHaveBeenCalledWith({ id: "a", name: "Morning", on: true }, false, box);
+    expect(box.checked).toBe(false);
+    expect(box.disabled).toBe(false);
+    expect(box.getAttribute("aria-busy")).toBe("true");
+    expect(box.hasAttribute("aria-disabled")).toBe(false);
+    // A second press while saving does nothing, and stale data does not undo it.
+    box.click();
+    expect(run).toHaveBeenCalledOnce();
+    expect(box.checked).toBe(false);
+    grid.update([{ id: "a", name: "Morning", on: true }]);
+    expect(box.checked).toBe(false);
+    finish(true);
+    await vi.waitFor(() => expect(box.hasAttribute("aria-busy")).toBe(false));
+    expect(document.activeElement).toBe(box);
+    grid.update([{ id: "a", name: "Morning", on: false }]);
+    expect(cell.querySelector("input")).toBe(box);
+    expect(box.checked).toBe(false);
+    // A failed change puts the checkbox back.
+    run.mockImplementationOnce(async () => false);
+    box.click();
+    await vi.waitFor(() => expect(box.hasAttribute("aria-busy")).toBe(false));
+    expect(box.checked).toBe(false);
+    run.mockImplementationOnce(async () => { throw new Error("refused"); });
+    box.click();
+    await vi.waitFor(() => expect(box.hasAttribute("aria-busy")).toBe(false));
+    expect(box.checked).toBe(false);
+    expect(run).toHaveBeenCalledTimes(3);
+    // A row that can no longer be turned on shows its words instead.
+    grid.update([{ id: "a", name: "Morning", on: false, ended: true }]);
+    expect(cell.querySelector("input")).toBeNull();
+    expect(cell.textContent).toBe("No, ended");
+    expect(document.activeElement).toBe(cell);
+  });
+  // ADR-0021-44
+  it("shows the server's state once a toggle settles, after a reload or a failure", async () => {
+    let grid;
+    const run = vi.fn();
+    grid = mount({
+      columns: [
+        { key: "name", label: "Name", value: (item) => item.name },
+        { key: "on", label: "On", value: (item) => item.on ? "Yes" : "No",
+          toggle: { checked: (item) => item.on, label: (item) => `Enable ${item.name}`, run } },
+      ],
+    });
+    grid.update([{ id: "a", name: "Morning", on: true }]);
+    const box = grid.target("a", "on").querySelector("input");
+    // An unfocused checkbox (a click that does not focus, as in Safari)
+    // stays enabled while it saves.
+    let finish;
+    run.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    box.click();
+    expect(box.disabled).toBe(false);
+    expect(box.getAttribute("aria-busy")).toBe("true");
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    // A reload while saving reports another state; it shows once settled.
+    grid.update([{ id: "a", name: "Morning", on: true }]);
+    expect(box.checked).toBe(false);
+    finish(true);
+    await vi.waitFor(() => expect(box.hasAttribute("aria-busy")).toBe(false));
+    expect(box.checked).toBe(true);
+    // A failure shows the server's current state, not the value before the click.
+    run.mockImplementationOnce(async () => {
+      grid.update([{ id: "a", name: "Morning", on: false }]);
+      return false;
+    });
+    box.click();
+    await vi.waitFor(() => expect(box.hasAttribute("aria-busy")).toBe(false));
+    expect(box.checked).toBe(false);
+  });
+  // ADR-0021-44
+  it("keeps a context menu open in a toggle cell when its checkbox comes or goes", async () => {
+    const grid = mount({
+      columns: [
+        { key: "name", label: "Name", value: (item) => item.name },
+        { key: "on", label: "On", value: (item) => item.ended ? "No, ended" : item.on ? "Yes" : "No",
+          toggle: { available: (item) => !item.ended, checked: (item) => item.on, label: (item) => `Enable ${item.name}`,
+            note: (item) => item.late ? "Late" : "", run: vi.fn() } },
+      ],
+    });
+    grid.update([{ id: "a", name: "Morning", on: true, late: true }]);
+    const cell = grid.target("a", "on");
+    const box = cell.querySelector("input");
+    // A visible note beside the checkbox describes it.
+    const note = cell.querySelector(".toggle-note");
+    expect(note.textContent).toBe("Late");
+    expect(note.hidden).toBe(false);
+    expect(box.getAttribute("aria-describedby")).toBe(note.id);
+    box.focus();
+    box.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await menuFocus();
+    const menu = cell.querySelector(":scope > .row-actions-menu");
+    expect(menu).not.toBeNull();
+    grid.update([{ id: "a", name: "Morning", on: false, ended: true }]);
+    expect(cell.querySelector("input")).toBeNull();
+    expect(cell.querySelector(".toggle-note")).toBeNull();
+    expect(cell.querySelector(":scope > .row-actions-menu")).toBe(menu);
+    expect(cell.firstChild.data).toBe("No, ended");
+    expect(document.activeElement.getAttribute("role")).toBe("menuitem");
+    grid.update([{ id: "a", name: "Morning", on: false }]);
+    expect(cell.querySelector(":scope > input")).not.toBeNull();
+    expect(cell.querySelector(":scope > .row-actions-menu")).toBe(menu);
+    expect([...cell.childNodes].filter((node) => node.nodeType === 3)).toHaveLength(0);
+    press("Escape");
+  });
+  // ADR-0021-44
+  it("keeps an unavailable checkbox focusable and says why instead of changing it", async () => {
+    const run = vi.fn();
+    const grid = mount({
+      columns: [
+        { key: "name", label: "Name", value: (item) => item.name },
+        { key: "on", label: "On", value: (item) => item.on ? "Yes" : "No",
+          toggle: { checked: (item) => item.on, label: (item) => `Enable ${item.name}`, run,
+            disabledReason: (item) => item.locked ? "Unlock it first." : "" } },
+      ],
+    });
+    grid.update([{ id: "a", name: "Morning", on: false, locked: true }]);
+    const box = grid.target("a", "on").querySelector("input");
+    expect(box.disabled).toBe(false);
+    expect(box.getAttribute("aria-disabled")).toBe("true");
+    expect(document.getElementById(box.getAttribute("aria-describedby")).textContent).toBe("Unlock it first.");
+    box.focus();
+    box.click();
+    expect(box.checked).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(status.textContent).toBe("Unlock it first."));
+    grid.update([{ id: "a", name: "Morning", on: false, locked: false }]);
+    expect(box.hasAttribute("aria-disabled")).toBe(false);
+    expect(box.hasAttribute("aria-describedby")).toBe(false);
+  });
   it("finds a collection's owning host independently of internal wrappers", () => {
     const grid = mount();
     grid.update([{ id: "a", name: "First" }]);

@@ -26,7 +26,7 @@ function controller(els) {
   controllers.set(queueList, state);
   state.say = makeSay(() => state.els.queueAnnounce, { dwellMs: 3000, errorDwellMs: 6000 });
   state.grid = createCollectionTable({
-    host: queueList, label: "Queued tracks", status: els.queueAnnounce, fallback: queueList,
+    host: queueList, label: "Queued tracks", hideCaption: true, status: els.queueAnnounce, fallback: queueList,
     emptyText: EMPTY_TEXT,
     // The position and any bridge share the track's cell, as before #707.
     columns: [{ key: "track", label: "Track", value: (entry, index) => `${index + 1}. ${entryName(entry)}` }],

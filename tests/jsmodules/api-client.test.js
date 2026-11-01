@@ -56,6 +56,22 @@ it("does not run or mark busy an operation whose signal is already aborted", asy
   button.remove();
 });
 
+it("keeps an unfocused checkbox enabled when asked, so it is never reported unavailable", async () => {
+  document.body.innerHTML = '<input id="field"><input type="checkbox" id="on" aria-label="Enable Morning">';
+  const field = document.getElementById("field"), box = document.getElementById("on");
+  field.focus();
+  let finish;
+  const pending = withDisabled(box, () => new Promise((resolve) => { finish = resolve; }), { keepEnabled: true });
+  expect(box.disabled).toBe(false);
+  expect(box.hasAttribute("aria-disabled")).toBe(false);
+  expect(box.getAttribute("aria-busy")).toBe("true");
+  await Promise.resolve();
+  finish();
+  await pending;
+  expect(box.hasAttribute("aria-busy")).toBe(false);
+  expect(box.disabled).toBe(false);
+});
+
 it("keeps an unfocused button enabled when asked, guarding it with busy state instead", async () => {
   document.body.innerHTML = '<input id="field"><button type="button" id="save">Save</button>';
   const field = document.getElementById("field"), button = document.getElementById("save");

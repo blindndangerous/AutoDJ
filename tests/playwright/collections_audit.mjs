@@ -147,7 +147,12 @@ async function cellReturn(page, selector) {
   await expect(cell).toBeFocused();
   await expect(cell).toHaveAttribute("role", "gridcell");
   await page.keyboard.press("ArrowLeft");
-  assert.equal(await cell.evaluate((element) => document.activeElement === element.previousElementSibling), true, `${selector}: Left continues grid navigation`);
+  // A checkbox-only cell, such as Enabled, takes focus on its checkbox.
+  assert.equal(await cell.evaluate((element) => {
+    const previous = element.previousElementSibling;
+    const active = document.activeElement;
+    return active === previous || (active.matches('input[type="checkbox"]') && active.parentElement === previous);
+  }), true, `${selector}: Left continues grid navigation`);
   await page.keyboard.press("ArrowRight");
   await expect(cell).toBeFocused();
 }
@@ -216,7 +221,14 @@ async function traceEditorOpen(page, trigger, first, evidence, row = null) {
   evidence.checks.push(`Editor opening ${first}: exactly one focus and one focusin event, no intermediate focus`);
 }
 
-async function checkTable(page, host) {
+async function checkTable(page, host, evidence) {
+  // A native caption names the table, not aria-label (H39), in every engine.
+  const table = page.locator(`${host} table`);
+  assert.equal(await table.getAttribute("aria-label"), null, `${host} has no aria-label`);
+  const caption = (await table.locator(":scope > caption").textContent()).trim();
+  assert.ok(caption, `${host} has a caption`);
+  await expect(table).toHaveAccessibleName(caption);
+  evidence.checks.push(`${host}: accessible name "${caption}" from its caption`);
   await dataCellNames(page, host);
   assert.equal(await page.locator(`${host} [tabindex="0"]`).count(), 1, `${host} single Tab stop`);
   await page.locator(host).evaluate((element) => {
@@ -246,7 +258,28 @@ async function axe(page, evidence, state) {
     }).map((button) => button.getAttribute("aria-label"));
     const checked = await window.axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] } });
     const details = ({ id, impact, nodes }) => ({ id, impact, nodes: nodes.map(({ target, failureSummary }) => ({ target, failureSummary })) });
-    return { violations: checked.violations.map(details), incomplete: checked.incomplete.map(details), invalidPopupReferences };
+    // A shown row menu sits inside the cell it belongs to, so axe counts its
+    // items' words as that cell's visible label. The cell is named by its own
+    // words only (#712): its Options button's name, or its text. Only that
+    // exact case is set aside, and it is kept in the report as reviewed.
+    const ownName = (cell) => {
+      const button = [...cell.querySelectorAll("button")].find((item) => !item.closest('[role="menu"]'));
+      if (button) return button.getAttribute("aria-label");
+      return [...cell.childNodes].filter((node) => !node.matches?.('[role="menu"]')).map((node) => node.textContent).join("").replace(/\s+/g, " ").trim();
+    };
+    const menuCell = ({ target }) => {
+      const cell = document.querySelector(target[0]);
+      const menu = cell?.matches?.("td") && cell.querySelector(':scope [role="menu"]');
+      return Boolean(menu?.matches(":popover-open")) && cell.getAttribute("aria-label") === ownName(cell);
+    };
+    const violations = [], reviewed = [];
+    for (const violation of checked.violations.map(details)) {
+      const setAside = violation.id === "label-content-name-mismatch" ? violation.nodes.filter(menuCell) : [];
+      if (setAside.length) reviewed.push({ ...violation, nodes: setAside, reason: "Open row menu inside its cell; the cell is named by its own words, not the menu's items" });
+      const rest = violation.nodes.filter((node) => !setAside.includes(node));
+      if (rest.length) violations.push({ ...violation, nodes: rest });
+    }
+    return { violations, reviewed, incomplete: checked.incomplete.map(details), invalidPopupReferences };
   });
   evidence.axe.push({ state, ...result });
   assert.deepEqual(result.violations, [], `axe ${state}`);
@@ -309,6 +342,9 @@ async function menuJourney(page, row, evidence, state, typeahead = "d") {
   const menu = `#${menuId}`;
   await focused(page, `${menu} [role="menuitem"]:first-child`);
   assert.equal(await button.getAttribute("aria-expanded"), "true");
+  // The open menu's name is not added to its Actions cell's (#712).
+  const buttonName = await button.getAttribute("aria-label");
+  await expect(cell).toHaveAccessibleName(buttonName);
   await page.keyboard.press("ArrowDown");
   const second = await page.locator(`${menu} [role="menuitem"]`).count() > 1 ? 2 : 1;
   await focused(page, `${menu} [role="menuitem"]:nth-child(${second})`);
@@ -323,6 +359,7 @@ async function menuJourney(page, row, evidence, state, typeahead = "d") {
   await visuals(page, evidence, `${state} menu`);
   await page.keyboard.press("Escape");
   await cellReturn(page, `${row} td[data-action="options"]`);
+  await expect(cell).toHaveAccessibleName(buttonName);
   await visuals(page, evidence, `${state} Options cell`);
   assert.equal(await button.getAttribute("aria-expanded"), "false");
   await page.keyboard.press("Space");
@@ -349,7 +386,7 @@ async function menuJourney(page, row, evidence, state, typeahead = "d") {
   await page.keyboard.press("Shift+Tab");
   await cellReturn(page, `${row} td[data-action="options"]`);
   await page.locator("#audit-menu-after").evaluate((element) => element.remove());
-  evidence.checks.push(`${state}: Enter/Space, wrapping menu arrows, Home/End, type-ahead, Escape to exact cell and arrow continuation; Tab exit and Shift+Tab cell re-entry`);
+  evidence.checks.push(`${state}: Enter/Space, wrapping menu arrows, Home/End, type-ahead, Escape to exact cell and arrow continuation; Tab exit and Shift+Tab cell re-entry; the Actions cell is named by its button alone with the menu open and closed`);
 }
 
 // Each entry point opens the row's own menu; Escape returns to the cell it
@@ -357,7 +394,7 @@ async function menuJourney(page, row, evidence, state, typeahead = "d") {
 async function contextMenuJourney(page, row, evidence, state) {
   const button = page.locator(`${row} [aria-haspopup="menu"]`);
   const menu = `#${await button.getAttribute("aria-controls")}`;
-  const data = page.locator(`${row} > td:not([data-action="options"])`);
+  const data = page.locator(`${row} > td:not([data-action="options"]):not(:has(> input, > select, > button))`);
   const first = data.first(), last = data.last();
   await page.evaluate(() => {
     window.contextMenuEvents = [];
@@ -452,8 +489,33 @@ async function stoppedStation(page, row, evidence) {
   evidence.checks.push("Station stopped: mouse, Enter, Space and type-ahead/Enter send no Run now or mutation request during passive clockwheel refresh; each announces the linked disabled reason");
 }
 
+// The Enabled cell is a native checkbox: Space turns the event off and on
+// in place with one request each, and focus stays on the checkbox.
+async function enabledCheckbox(page, row, evidence) {
+  const box = page.locator(`${row} td[data-action="enabled"] input[type="checkbox"]`);
+  await expect(box).toHaveAccessibleName("Enable Morning");
+  await expect(box).toBeChecked();
+  assert.equal(await page.locator(`${row} [role="menuitem"][data-action="toggle"]`).count(), 0, "Enable/Disable is not in the menu");
+  await page.locator(`${row} td[data-action="action"]`).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(box).toBeFocused();
+  const requests = () => page.evaluate(() => window.collectionFixture.calls.filter(({ url }) => url.endsWith("/event-0/enable")).map(({ body }) => body));
+  const before = (await requests()).length;
+  for (const [enabled, word] of [[false, "disabled"], [true, "enabled"]]) {
+    await page.keyboard.press("Space");
+    await page.waitForFunction((text) => document.getElementById("schedule-status").textContent === text, `Event Morning ${word}`);
+    assert.deepEqual((await requests()).slice(before), enabled ? [{ enabled: false }, { enabled: true }] : [{ enabled: false }], `Space sends one enable request (${word})`);
+    await expect(box).toBeFocused();
+    if (enabled) await expect(box).toBeChecked(); else await expect(box).not.toBeChecked();
+    assert.equal(await box.getAttribute("aria-busy"), null, `${word}: not busy after the reply`);
+  }
+  await axe(page, evidence, "Schedule Enabled checkbox");
+  await visuals(page, evidence, "Schedule Enabled checkbox");
+  evidence.checks.push("Schedule Enabled: arrow entry on the checkbox named \"Enable Morning\"; Space sends exactly one enable request each way, keeps focus on the checkbox and announces the result; no Enable/Disable menu item");
+}
+
 async function journey(page, evidence) {
-  for (const host of ["#schedule-events", "#schedule-upcoming", "#schedule-runs", "#clock-list", "#clock-slots"]) await checkTable(page, host);
+  for (const host of ["#schedule-events", "#schedule-upcoming", "#schedule-runs", "#clock-list", "#clock-slots"]) await checkTable(page, host, evidence);
   await expect(page.locator("#clock-name")).toHaveAccessibleName("New clockwheel name");
   await expect(page.locator("#clock-name")).toHaveValue("");
   await page.locator("#clock-name").fill("Future wheel");
@@ -499,6 +561,7 @@ async function journey(page, evidence) {
   assert.equal(await page.locator(`${eventRow} [aria-haspopup="menu"]`).getAttribute("aria-expanded"), "false");
   assert.equal(await page.evaluate(() => window.collectionFixture.calls.filter(({ url }) => url.endsWith("/event-0/run")).length), 2);
   evidence.checks.push("Schedule: Space opens and activates once without reopening on focus return");
+  await enabledCheckbox(page, eventRow, evidence);
   await choose(page, eventRow, "delete");
   await confirmationScan(page, evidence, "Delete schedule event");
   await expect(page.locator("#confirm-dialog")).toHaveAccessibleDescription(await page.locator("#confirm-message").textContent());
@@ -790,7 +853,7 @@ async function emptyTable(page, host, evidence) {
   await page.locator(`${host} td.no-results`).waitFor();
   assert.equal(await page.locator(`${host} td.no-results`).count(), 1);
   assert.equal(Number(await page.locator(`${host} td.no-results`).getAttribute("colspan")), await page.locator(`${host} thead th`).count());
-  await checkTable(page, host);
+  await checkTable(page, host, evidence);
   evidence.checks.push(`${host}: one spanning empty row and one actual Tab stop`);
 }
 
@@ -837,7 +900,7 @@ async function showsJourney(page, evidence) {
   await page.locator(show).evaluate((row) => row.style.removeProperty("height"));
   await page.setViewportSize(viewport);
   evidence.checks.push("Show Options: real pointer opens the menu of a tall row at 320x640; Open list sends one detail GET and focuses its editor");
-  await checkTable(page, "#shows-list"); await tableArrows(page, "#shows-list");
+  await checkTable(page, "#shows-list", evidence); await tableArrows(page, "#shows-list");
   await menuJourney(page, show, evidence, "Show", "d");
   await choose(page, show, "edit");
   await focused(page, "#shows-name");
@@ -856,7 +919,7 @@ async function showsJourney(page, evidence) {
   await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
   await page.locator('#shows-songs tr[data-row-key]').first().waitFor();
-  await checkTable(page, "#shows-songs"); await tableArrows(page, "#shows-songs");
+  await checkTable(page, "#shows-songs", evidence); await tableArrows(page, "#shows-songs");
   const song = '#shows-songs tr[data-row-key]:first-child';
   await menuJourney(page, song, evidence, "Show song", "r");
   await choose(page, song, "info");
@@ -871,7 +934,7 @@ async function showsJourney(page, evidence) {
   await focused(page, '#shows-songs td[data-action="options"]');
   await page.locator("#shows-search").fill("song"); await page.locator("#shows-search-run").click();
   await page.locator('#shows-results tr[data-row-key]').waitFor();
-  await checkTable(page, "#shows-results"); await tableArrows(page, "#shows-results");
+  await checkTable(page, "#shows-results", evidence); await tableArrows(page, "#shows-results");
   await menuJourney(page, '#shows-results tr[data-row-key]', evidence, "Show search result", "a");
   await choose(page, '#shows-results tr[data-row-key]', "add");
   await page.waitForFunction(() => document.querySelectorAll('#shows-songs tr[data-row-key]').length === 2);
@@ -894,7 +957,7 @@ async function showsJourney(page, evidence) {
 async function editionsJourney(page, evidence) {
   const occurrence = '#edition-occurrences tr[data-row-key="first"]', take = '#edition-takes tr[data-row-key="speech"]';
   await page.locator(occurrence).waitFor();
-  for (const host of ["#edition-occurrences", "#edition-takes"]) { await checkTable(page, host); await tableArrows(page, host); }
+  for (const host of ["#edition-occurrences", "#edition-takes"]) { await checkTable(page, host, evidence); await tableArrows(page, host); }
   await menuJourney(page, occurrence, evidence, "Prepared occurrence", "r");
   await menuJourney(page, take, evidence, "Prepared take", "r");
   await choose(page, take, "review");
@@ -928,7 +991,7 @@ async function editionsJourney(page, evidence) {
 }
 
 async function queueJourney(page, evidence, calls) {
-  await checkTable(page, "#queue-list"); await tableArrows(page, "#queue-list");
+  await checkTable(page, "#queue-list", evidence); await tableArrows(page, "#queue-list");
   const row = '#queue-list tr[data-row-key]:first-child';
   await menuJourney(page, row, evidence, "Queued track", "r");
   await choose(page, row, "info");
@@ -974,7 +1037,7 @@ async function queueJourney(page, evidence, calls) {
 }
 
 async function requestsJourney(page, evidence) {
-  for (const host of ["#requests-list", "#requests-recent"]) { await checkTable(page, host); await tableArrows(page, host); }
+  for (const host of ["#requests-list", "#requests-recent"]) { await checkTable(page, host, evidence); await tableArrows(page, host); }
   const row = '#requests-list tr[data-row-key]:first-child';
   await menuJourney(page, row, evidence, "Listener request", "t");
   const offAirReason = "Start the station to change the queue.";
@@ -1053,7 +1116,7 @@ async function requestsJourney(page, evidence) {
 async function voiceJourney(page, evidence, state) {
   const host = "#vt-list", row = `${host} tr[data-row-key="${"a".repeat(32)}"]`, unavailable = `${host} tr[data-row-key="${"b".repeat(32)}"]`;
   await page.locator(row).waitFor();
-  await checkTable(page, host); await tableArrows(page, host);
+  await checkTable(page, host, evidence); await tableArrows(page, host);
   await menuJourney(page, row, evidence, "Voice booking", "c");
   await choose(page, unavailable, "cancel");
   assert.equal(await page.locator(`${unavailable} button[data-action="cancel"]`).getAttribute("aria-disabled"), "true");
@@ -1265,7 +1328,7 @@ async function batchThreeSurface(page, theme, surface, evidence) {
     ads: ["#ads-spots", "#ads-breaks"], liners: ["#ln-file-list"], profiles: ["#profile-list"], devices: ["#device-list"] }[surface];
   for (const host of hosts) {
     await page.locator(`${host} tr[data-row-key]`).first().waitFor();
-    await checkTable(page, host); await tableArrows(page, host);
+    await checkTable(page, host, evidence); await tableArrows(page, host);
   }
   const first = page.locator(`${hosts[0]} tr[data-row-key] td`).first();
   await first.focus();

@@ -89,7 +89,7 @@ export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, k
   if (!entry) {
     entry = {};
     entry.table = createCollectionTable({
-      host: fileList, label: "Liners", status, fallback: _listHeading(fileList),
+      host: fileList, label: "Liners", hideCaption: true, status, fallback: _listHeading(fileList),
       emptyText: "No liner files yet.", keyOf: (liner) => liner.id, nameOf: (liner) => liner.name,
       columns: [
         { key: "name", label: "Name", value: (liner) => liner.name },

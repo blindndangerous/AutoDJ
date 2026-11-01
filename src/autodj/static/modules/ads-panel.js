@@ -156,7 +156,7 @@ export function installAdsPanel({
 
   const bookedReason = "That spot is booked for a coming song change; delete it after it airs";
   const spotTable = createCollectionTable({
-    host: spotList, label: "Spots", keyOf: (spot) => spot.id,
+    host: spotList, label: "Spots", hideCaption: true, keyOf: (spot) => spot.id,
     nameOf: (spot) => `spot ${spot.title}, ${spot.advertiser}`, fallback: spotAdd, status,
     emptyText: "No spots yet.",
     columns: [
@@ -184,7 +184,7 @@ export function installAdsPanel({
     ],
   });
   const breakTable = createCollectionTable({
-    host: breakList, label: "Ad breaks", keyOf: (item) => item.id,
+    host: breakList, label: "Ad breaks", hideCaption: true, keyOf: (item) => item.id,
     nameOf: (item) => `ad break ${item.name}`, fallback: breakAdd, status, emptyText: "No ad breaks yet.",
     columns: [
       { key: "name", label: "Name", value: (item) => item.name },

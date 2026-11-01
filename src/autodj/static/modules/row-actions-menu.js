@@ -29,7 +29,7 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
   let spaceDown = false, nextReason = 0;
   let origin = null;  // the cell a context menu opened from, if any
   let pending = null;  // the item a just-shown menu is about to focus
-  let ownLabel = null;  // the origin cell's name while the menu sits in it
+  let ownLabel = null;  // the name of the cell the shown menu sits in
   const reasons = new Map();
   const inside = (node) => Boolean(node) && (element.contains(node) || menu.contains(node));
 
@@ -90,6 +90,15 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
     origin = from;
     const cell = from?.closest?.("td");
     if (cell && !cell.contains(button)) cell.append(menu);
+    // Its own Actions cell is named by the button alone while the shown menu
+    // is inside it: NVDA read the cell as the button and the menu's names.
+    if (ownLabel && !ownLabel.contains(menu)) releaseLabel();
+    const home = button.closest("td");
+    if (home?.contains(menu) && !home.hasAttribute("aria-label")) {
+      ownLabel = home;
+      home.dataset.menuLabel = "";
+      home.setAttribute("aria-label", button.getAttribute("aria-label"));
+    }
     menu.hidden = false;
     if (menu.showPopover && !menu.matches(":popover-open")) menu.showPopover();
     button.setAttribute("aria-expanded", "true");
@@ -111,6 +120,12 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
   function returnTarget() {
     return origin?.isConnected ? origin : button.isConnected ? tableFocusTarget(button) : null;
   }
+  function releaseLabel() {
+    if (!ownLabel) return;
+    ownLabel.removeAttribute("aria-label");
+    delete ownLabel.dataset.menuLabel;
+    ownLabel = null;
+  }
   function close(restore = false) {
     const back = returnTarget();
     if (openMenu === close) openMenu = null;
@@ -121,11 +136,7 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
     // so the cell is read once with its own words.
     if (menu.hidePopover && menu.matches(":popover-open")) menu.hidePopover();
     menu.hidden = true;
-    if (ownLabel) {
-      ownLabel.removeAttribute("aria-label");
-      delete ownLabel.dataset.menuLabel;
-      ownLabel = null;
-    }
+    releaseLabel();
     if (restore) back?.focus();
     // Back to its Actions cell only once focus has left it: Chromium drops
     // focus to the page when a focused element is moved.
@@ -159,6 +170,7 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
     choices = items;
     button.setAttribute("aria-label", `Options for ${rowName}`);
     menu.setAttribute("aria-label", `Options for ${rowName}`);
+    if (ownLabel?.contains(button)) ownLabel.setAttribute("aria-label", `Options for ${rowName}`);
     const existing = new Map([...menu.children].map((item) => [item.dataset.action, item]));
     const focused = doc.activeElement;
     const hadFocus = menu.contains(focused);

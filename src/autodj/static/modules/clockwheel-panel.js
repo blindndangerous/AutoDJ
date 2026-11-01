@@ -159,7 +159,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
 
   // ---- Saved clockwheels ---------------------------------------------
   const savedTable = createCollectionTable({
-    host: list, label: "Saved clockwheels", status, fallback: el("clock-create"),
+    host: list, label: "Saved clockwheels", hideCaption: true, status, fallback: el("clock-create"),
     emptyText: "No saved clockwheels.", keyOf: (name) => name, nameOf: (name) => name,
     columns: [
       { key: "name", label: "Name", value: (name) => isDraft(name) ? `${name}, Not saved` : name },
@@ -198,7 +198,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   const stepTable = createCollectionTable({
-    host: steps, label: "Clockwheel steps", status, fallback: newStep,
+    host: steps, label: "Clockwheel steps", hideCaption: true, status, fallback: newStep,
     emptyText: "No steps. Open or create a clockwheel, then press New step.",
     keyOf: stepKey, nameOf: (step, index) => `Step ${index + 1}, ${stepSummary(step)}`,
     columns: [{ key: "step", label: "Step", value: (step, index) => `${index + 1}. ${describe(step)}` }],

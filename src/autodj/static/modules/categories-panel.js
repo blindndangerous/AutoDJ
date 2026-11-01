@@ -100,7 +100,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   const source = () => el("categories-source-filters")?.checked ? "filters" : el("categories-source-m3u")?.checked ? "m3u" : "query";
   const byId = (id) => data.categories.find((category) => category.id === id);
   const collection = createCollectionTable({
-    host: list, label: "categories", keyOf: (category) => category.id, nameOf: (category) => category.name,
+    host: list, label: "categories", hideCaption: true, keyOf: (category) => category.id, nameOf: (category) => category.name,
     columns: [
       { key: "name", label: "Name", value: (category) => category.name },
       { key: "songs", label: "Songs", value: (category) => {

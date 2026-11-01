@@ -106,32 +106,40 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
   }
 
   // A column is data scanned down the table (#712): next times are in
-  // Upcoming, and an ended event says so where it says it is off.
+  // Upcoming. Enabled is a checkbox that turns the event on or off. The
+  // server will not turn on an ended event, so a turned-off one says so in
+  // words; one still on (a repeating event past its end date, which the
+  // server leaves enabled) keeps its checkbox, noted as ended, to turn off.
   function enabledText(event) {
     if (event.ended) return "No, ended, no runs left";
     return event.enabled ? "Yes" : "No";
   }
 
+  // The checkbox is named by its action and row, "Enable Morning show":
+  // in focus mode NVDA says no column heading, and "Enabled" again would
+  // repeat the heading in browse mode.
   const eventsTable = createCollectionTable({
-    host: get("events"), label: "Schedule events", status, fallback: addButton,
+    host: get("events"), label: "Schedule events", status, fallback: addButton, hideCaption: true,
     emptyText: "No events yet.", keyOf: (event) => event.id, nameOf: (event) => event.name,
     columns: [
       { key: "name", label: "Name", value: (event) => event.name },
       { key: "when", label: "When", value: eventWhen },
       { key: "action", label: "Action", value: (event) => event.action_text },
-      { key: "enabled", label: "Enabled", value: enabledText },
+      { key: "enabled", label: "Enabled", value: enabledText, toggle: {
+        available: (event) => event.enabled || !event.ended, checked: (event) => event.enabled,
+        note: (event) => event.ended ? "Ended, no runs left" : "",
+        label: (event) => `Enable ${event.name}`, run: (event, enabled) => toggleEvent(event, enabled) } },
     ],
     actions: (event) => [
       { id: "edit", label: "Edit", run: (button) => openForm(event, button.closest("td")) },
       // Run now changes what is on air at the station the page controls (#70).
       { id: "run", label: "Run now", run: () => runEvent(event),
         disabledReason: stationStopped ? "Start the station to run this event now" : "" },
-      { id: "toggle", label: event.enabled ? "Disable" : "Enable", run: () => toggleEvent(event) },
       { id: "delete", label: "Delete", run: (button) => deleteEvent(event, button) },
     ],
   });
   const upcomingTable = createCollectionTable({
-    host: get("upcoming"), label: "Next events", status, fallback: addButton,
+    host: get("upcoming"), label: "Next events", status, fallback: addButton, hideCaption: true,
     emptyText: "Nothing is scheduled.", keyOf: (run) => `${run.id}:${run.time}`, nameOf: (run) => run.name,
     columns: [
       { key: "name", label: "Name", value: (run) => run.name },
@@ -140,7 +148,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     ],
   });
   const runsTable = createCollectionTable({
-    host: get("runs"), label: "Recent runs", status, fallback: addButton,
+    host: get("runs"), label: "Recent runs", status, fallback: addButton, hideCaption: true,
     emptyText: "No events have run yet.", keyOf: (run) => run.key, nameOf: (run) => run.event,
     columns: [
       { key: "name", label: "Name", value: (run) => run.event },
@@ -200,19 +208,22 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
 
   // ---- Row buttons ----------------------------------------------------
 
-  async function toggleEvent(event) {
+  // The Enabled checkbox; the table then shows the reloaded state. A failed
+  // reload after the change leaves the list to the next schedule message.
+  async function toggleEvent(event, enabled) {
     const current = session;
+    let saved;
     try {
-      const saved = await request(`/api/schedule/${encodeURIComponent(event.id)}/enable`, {
-        method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ enabled: !event.enabled }),
+      saved = await request(`/api/schedule/${encodeURIComponent(event.id)}/enable`, {
+        method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ enabled }),
       });
-      if (current !== session) return;
-      await load();
-      if (current !== session) return;
-      say(`Event ${saved.name} ${saved.enabled ? "enabled" : "disabled"}`);
     } catch (error) {
       if (current === session) say(failureText(`change ${event.name}`, error), "error");
+      return;
     }
+    if (current !== session) return;
+    await load().catch(() => false);
+    if (current === session) say(`Event ${saved.name} ${saved.enabled ? "enabled" : "disabled"}`);
   }
 
   async function runEvent(event) {

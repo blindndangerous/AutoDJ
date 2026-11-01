@@ -450,6 +450,54 @@ headers setting, speaks a moved-to heading twice.
 Automated tests cover the focus order and placement; a fresh NVDA sample is still
 required. ADR disposition: `update_existing_adr`.
 
+### Toggle column and native captions, 2026-11-01
+
+The owner, testing with NVDA, found that a schedule event's **Enabled** cell
+only said on or off, while turning the event on or off was hidden in its menu.
+The same sample heard "Options for <row name>" twice when Enter opened a menu
+from its Actions cell. The owner decided:
+
+- **Toggle column.** A column may hold a native checkbox that turns its row on
+  or off in place, built once by the `toggle` option of `createCollectionTable`.
+  Schedule events use it for **Enabled**, and Enable/Disable leaves the Options
+  menu, so there is one way to do it. Arrow navigation enters the cell on the
+  checkbox, as the library folders' Add subfolders checkbox does, and Space sends
+  one enable request with the existing wording for success, failure and refusal.
+  The focused checkbox stays enabled and busy through `withDisabled`, ignores
+  another press until the reply, and once settled shows the row's current data:
+  the reloaded state after success, the server's state after a failure. It
+  stays enabled through `withDisabled`'s `keepEnabled` mode even when a click
+  left it unfocused, so NVDA never reports it unavailable.
+  It is named "Enable <event name>": NVDA says no heading in focus mode, so the
+  name gives the action and the row, and it does not repeat the "Enabled"
+  heading word for word in browse mode. The server refuses to enable an ended
+  event, so one that is off has no checkbox and keeps "No, ended, no runs
+  left". The server leaves a repeating event enabled past its end date
+  (`scheduler.py` disables only one-time events when they run), so an ended
+  event that is still on keeps its checked checkbox, with a visible "Ended, no
+  runs left" note that describes it, so it can be turned off.
+  Upcoming, Recent runs and the other read-only tables are unchanged. An
+  unavailable toggle stays focusable with `aria-disabled` and a linked reason,
+  like a menu item.
+- **Native captions.** Every table, built by the shared table or in the page
+  markup, is named by a native `<caption>` (WCAG technique H39) instead of
+  `aria-label` or `aria-labelledby`. A caption is visually hidden only where a
+  heading just above the table names the same collection; otherwise it is
+  visible. Captions do not change the column headings, the heading rule above
+  or announcements that use the collection's label.
+- **Actions cell name.** While a row's menu is shown inside its Actions cell,
+  that cell is named by its Options button alone, as a data cell holding a
+  moved menu already is, so the menu's own name is not added to the cell's.
+  axe's label-content-name-mismatch rule then counts the shown menu's items as
+  the cell's visible label; the browser audit records that one case as
+  reviewed rather than failed, because the items are separate named controls.
+
+Vitest and the collection browser audit cover these contracts; the static
+page's tables are also checked by the a11y contract test "names every table on
+the page by a native caption, hidden where a heading says it", which that file's
+ambiguous titles keep out of the mapping below. These checks do not establish
+NVDA speech or operator acceptance. ADR disposition: `update_existing_adr`.
+
 ## Current contracts
 
 | ID | Constraint | Method | Evidence |
@@ -495,3 +543,6 @@ required. ADR disposition: `update_existing_adr`.
 | `ADR-0021-39` | The #712 second pass keeps only scanned columns on the other collection screens, folding secondary facts into one Details or numbered cell; profiles and browser access keep theirs. | automated | `tests/jsmodules/shows-panel.test.js::uses shared show, song and search tables with one Actions menu`, `tests/jsmodules/prepared-editions.test.js::uses shared occurrence and take tables with dialog reattachment`, `tests/jsmodules/queue.test.js::uses the shared queue table with Track info and confirmed removal`, `tests/jsmodules/listener-requests.test.js::uses shared pending and recent request tables with focusable unavailable approval`, `tests/jsmodules/voice-tracker.test.js::uses a bounded shared bookings table with confirmed cancellation`, `tests/jsmodules/categories-panel.test.js::uses a named collection grid with Edit then Delete in one Actions menu`, `tests/jsmodules/intro-rules-panel.test.js::uses a named intro-rule collection grid and returns its menu to the Options cell`, `tests/jsmodules/matched-intros.test.js::uses collection cells and opens Add intro directly on Audio file`, `tests/jsmodules/ads-panel.test.js::uses shared spot and break columns with one Actions menu and disabled run reasons`, `tests/jsmodules/asset-collections.test.js::keeps liner rows keyed with dates and availability in Details and Options return focus` |
 | `ADR-0021-40` | A row menu is shown before its first item takes focus, and keys pressed before that focus are handled by the menu. The deferred focus goes to the current first item, only if focus has not moved elsewhere, and only one menu is open at a time. | automated | `tests/jsmodules/row-actions-menu.test.js::shows the menu before it focuses the first item and routes keys that arrive first`, `tests/jsmodules/row-actions-menu.test.js::focuses the replacement first item when an update replaces it while focus is pending`, `tests/jsmodules/row-actions-menu.test.js::closes quietly instead of taking focus that moved elsewhere before the deferred focus`, `tests/jsmodules/row-actions-menu.test.js::keeps one pending menu: opening a second closes the first and takes the next key` |
 | `ADR-0021-41` | A context menu opens inside its originating cell without focusing the Options button, beside that cell, survives data updates there, stays out of the cell's name and list-change announcements, and returns to its Actions cell on close. | automated | `tests/jsmodules/collection-table.test.js::opens a context menu inside its originating cell without focusing the Options button`, `tests/jsmodules/collection-table.test.js::keeps an open context menu out of its cell's name and the list-change announcement` |
+| `ADR-0021-42` | Every table is named by a native caption rather than `aria-label` or `aria-labelledby`, visually hidden only where a heading above says the same. | automated | `tests/jsmodules/collection-table.test.js::names each table by a native caption, hidden only when a heading says it` |
+| `ADR-0021-43` | While a row's menu is shown in its Actions cell, the cell is named by its Options button alone, never with the menu's name. | automated | `tests/jsmodules/collection-table.test.js::names the Actions cell by its Options button alone while its menu is open` |
+| `ADR-0021-44` | A toggle column holds a native checkbox named by its action and row; Space sends one request, keeps focus, stays enabled while busy (focused or not), ignores a second press and then shows the row's current server state; a row menu in the cell survives the checkbox coming or going. Schedule events use it for Enabled, with no Enable/Disable menu item, no checkbox on an ended event that is off, and a noted checkbox on an ended event still on. | automated | `tests/jsmodules/collection-table.test.js::turns a row on or off in place from a native checkbox cell with one request`, `tests/jsmodules/collection-table.test.js::shows the server's state once a toggle settles, after a reload or a failure`, `tests/jsmodules/collection-table.test.js::keeps a context menu open in a toggle cell when its checkbox comes or goes`, `tests/jsmodules/collection-table.test.js::keeps an unavailable checkbox focusable and says why instead of changing it`, `tests/jsmodules/scheduler-panel.test.js::turns an event off and on with Space on its Enabled checkbox, keeping focus there`, `tests/jsmodules/scheduler-panel.test.js::lets an ended event that is still enabled be turned off, and says it has ended` |

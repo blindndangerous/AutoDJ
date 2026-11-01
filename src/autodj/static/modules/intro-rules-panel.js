@@ -165,7 +165,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   }
 
   const collection = createCollectionTable({
-    host: list, label: "intro rules", keyOf: (rule) => rule.id, nameOf: ruleName,
+    host: list, label: "intro rules", hideCaption: true, keyOf: (rule) => rule.id, nameOf: ruleName,
     columns: [
       { key: "name", label: "Name", value: ruleName },
       { key: "conditions", label: "Conditions", value: (rule) => describeConditions(rule.conditions || [], rule.match, data.sources, data.categories) },

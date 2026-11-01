@@ -380,7 +380,11 @@ in PowerShell, use `$env:AUTODJ_BROWSERS = 'firefox'` before the command.
 It checks both themes, keyboard/menu/editor journeys, axe, minimum targets,
 including 44-pixel minimum height for collection buttons and menu items,
 computed button-text and focus-ring contrast, 320-pixel reflow and emulated forced
-colors. The report retains axe incomplete nodes. Hidden popup references are
+colors. The report retains axe incomplete nodes. A shown row menu sits inside
+its cell, so axe's label-content-name-mismatch rule counts the menu items' words
+as that cell's visible label. The audit sets aside only that case, where the
+cell's name is exactly its own words (its Options button's name, or its text),
+and lists it under `reviewed` in the report; any other node still fails. Hidden popup references are
 checked directly against the DOM; computed contrast supplements overlap cases
 that axe cannot resolve. Results go to
 `.codex-tmp/collections-audit.json`; `AUTODJ_COLLECTIONS_REPORT` overrides the
@@ -389,8 +393,11 @@ does not verify the live backend, persistence or screen-reader speech. Use the
 procedure below for the remaining visual and platform evidence.
 
 Use `collection-table.js`, the `.collection-table` class, `tableRow` and
-`installTableNavigation`. Each native table has real column headings, plain
-grid cells and one Tab stop. Preserve cell focus rather than moving onto an
+`installTableNavigation`. Each native table has a native `<caption>` naming it
+(WCAG technique H39) rather than `aria-label`, real column headings, plain
+grid cells and one Tab stop. The caption is visually hidden only where a
+heading just above the table already says the same; otherwise it stays visible.
+Every other table in the page has a caption the same way. Preserve cell focus rather than moving onto an
 ordinary action button: the established NVDA behavior avoids duplicate cell and
 button speech. Do not introduce row headers. Empty collections contain one
 `.no-results` row spanning all columns, including the Actions column.
@@ -399,7 +406,9 @@ cell an arrow key moves to until focus leaves it (#712): its text, then the
 column heading when the column changed, then the row's name cell when the row
 changed, for example "3:00, Length" or "Second artist, Second song". A cell
 holding a button, input or select keeps its control's own name and gets no
-label. Clear the temporary name on focusout. What NVDA speaks depends on its
+label. Clear the temporary name on focusout. While a row's menu is shown inside
+its Actions cell, that cell is named by its Options button alone, never by the
+button and the menu. What NVDA speaks depends on its
 configuration, notably the Document Formatting table headers setting, and an
 earlier sample heard headings twice with a different rule. Issue #712 chose
 this rule; record that NVDA setting with every future speech sample.
@@ -424,6 +433,20 @@ confirmation moves focus straight from the menu, and cancelling returns to the
 Actions cell. Standalone menus return to their button. Tab closes and leaves the menu. Disabled actions remain present
 and reachable with `aria-disabled`. Their reason is linked with
 `aria-describedby`, and activation announces it without performing the action.
+
+A column that turns its row on or off, such as a schedule event's **Enabled**,
+holds a native checkbox built by the shared table's `toggle` column option.
+Arrow navigation enters that cell on the checkbox, and Space turns the row on or
+off in place with one request. The checkbox keeps focus, is marked busy
+through `withDisabled` without `aria-disabled`, ignores a second press while
+saving, then shows the server's current state (its previous state when the
+change fails) and announces the
+result through the panel's status region. Its name is the action and the row,
+"Enable <event name>", so it is not the column heading again. An ended event
+that is off has no checkbox: its cell says "No, ended, no runs left". One still
+on keeps its checked checkbox, described by a visible "Ended, no runs left"
+note, so it can be turned off. The menu has no
+Enable or Disable.
 
 Keep keyed rows and controls mounted during refresh. The shared table reuses
 the focus-preserving placement from `dom-helpers`. Removing a focused row moves
@@ -459,13 +482,19 @@ and empty data:
    Activate one enabled item with Enter. Activate a disabled item and verify
    its reason is announced without mutation. Check that `aria-describedby`
    resolves to the same restriction before activation.
+   On a schedule event's **Enabled** checkbox, press Space: check that it is
+   announced as **Enable <event name>**, checkbox, with its state, that one
+   request turns the event off or on, that focus stays on the checkbox and the
+   result is announced once. Make the server refuse (for example an event whose
+   dates have passed) and check that the checkbox returns and the reason is said.
    Stop the station while an event menu is open. Run now must stay focusable,
    send no request on mouse, Enter, Space or type-ahead followed by Enter, and
    announce "Start the station to run this event now" on each attempt.
 3. Escape from an open menu. Check focus returns directly to the cell it opened
    from (the Actions cell, the focused cell or the clicked cell) and the expanded
    state becomes false. In NVDA, check that opening says only the menu and its
-   first item, without the Actions cell or button name, that NVDA's focus ends on
+   first item, without the Actions cell or button name (if NVDA names the cell,
+   it says **Options for <row name>** once, never followed by the menu's name), that NVDA's focus ends on
    that item rather than the menu, and that a single Escape closes the menu
    without switching to browse mode. Press Left and Right immediately and
    confirm cell movement without toggling NVDA mode. Repeat after cancelling
@@ -502,7 +531,8 @@ and empty data:
 7. Repeat in Light and Dark. Run axe's WCAG 2.2 A/AA rules; measure collection
    button/menu targets at least 24 CSS pixels wide and 44 CSS pixels high,
    text/control contrast and visible, unobscured focus.
-   Check 320-pixel reflow, 400% zoom, text spacing and forced colors. Menus must
+   Check 320-pixel reflow, 400% zoom, 200% text, text spacing and forced
+   colors, including visible table captions. Menus must
    stay visible and usable near viewport and scroll-container edges.
 8. Select Settings, then Tab forward from Skip to main content. The selected
    Settings tab must be the main strip's only Tab stop. Repeat for Library tools,

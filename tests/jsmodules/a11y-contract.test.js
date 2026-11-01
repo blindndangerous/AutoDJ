@@ -33,6 +33,31 @@ it("uses the shared polite atomic status-region markup throughout the page", () 
   }
 });
 
+it("names every table on the page by a native caption, hidden where a heading says it", () => {
+  const page = document.createElement("template");
+  page.innerHTML = htmlSource;
+  const tables = [...page.content.querySelectorAll("table")];
+  expect(tables.length).toBeGreaterThan(8);
+  for (const table of tables) {
+    const caption = table.querySelector(":scope > caption");
+    expect(caption?.textContent.trim(), table.id).toBeTruthy();
+    expect(table.firstElementChild, table.id).toBe(caption);
+    expect(table.hasAttribute("aria-label"), table.id).toBe(false);
+    expect(table.hasAttribute("aria-labelledby"), table.id).toBe(false);
+  }
+  const hidden = Object.fromEntries(tables.filter((table) => table.caption.classList.contains("visually-hidden"))
+    .map((table) => [table.id, table.caption.textContent.trim()]));
+  expect(hidden).toEqual({
+    "history-table": "History", "stations-table": "Stations on this server", "stream-relay-table": "Stream relays",
+    "live-dj-table": "DJ accounts", "library-results-table": "Library tracks",
+  });
+  expect(page.content.getElementById("live-dj-table").getAttribute("aria-describedby")).toBe("live-djs-desc");
+  // The certificate table is drawn by its module, under its own heading.
+  const certificates = readFileSync(staticPath("modules", "secure-connections.js"), "utf8");
+  expect(certificates).toContain('<table role="grid"><caption class="visually-hidden">Server certificate</caption>');
+  expect(certificates).not.toContain('aria-labelledby="sc-table-heading"');
+});
+
 const tokensByTheme = new Map(THEMES.map((theme) => [theme, themeTokens(cssSource, theme)]));
 const token = (theme, name) => tokensByTheme.get(theme).get(name);
 
@@ -2922,7 +2947,8 @@ describe("static accessibility contracts", () => {
       .toEqual([["Starts", "col"], ["What", "col"], ["Length", "col"], ["Status", "col"], ["Track info", "col"]]);
     const history = document.getElementById("history-table");
     expect(history.getAttribute("role")).toBe("grid");
-    expect(history.getAttribute("aria-label")).toBe("History");
+    expect(history.caption.textContent).toBe("History");
+    expect(history.hasAttribute("aria-label")).toBe(false);
     expect(history.parentElement.classList.contains("data-table-scroll")).toBe(true);
     expect([...history.querySelectorAll("thead th")].map((th) => [th.textContent.trim(), th.getAttribute("scope")]))
       .toEqual([["Played", "col"], ["Title", "col"], ["Artist", "col"], ["Duration", "col"], ["Track info", "col"]]);
@@ -3451,7 +3477,8 @@ describe("static accessibility contracts", () => {
     expect(document.querySelector("#live-talkover > legend").textContent).toBe("Talk over the music");
     const table = document.getElementById("live-dj-table");
     expect(table.getAttribute("role")).toBe("grid");
-    expect(document.getElementById(table.getAttribute("aria-labelledby")).textContent).toBe("DJ accounts");
+    expect(table.caption.textContent).toBe("DJ accounts");
+    expect(document.getElementById("live-djs-heading").textContent).toBe("DJ accounts");
     expect([...table.querySelectorAll("th")].map((th) => th.textContent))
       .toEqual(["DJ", "Password", "Edit", "Remove"]);
     expect(document.getElementById("live-djs-desc").textContent).toMatch(/backups leave them out/);
@@ -3522,7 +3549,8 @@ describe("static accessibility contracts", () => {
       const host = document.getElementById(id);
       expect(host.tagName, id).toBe("DIV");
       expect(host.querySelector("table").getAttribute("role"), id).toBe("grid");
-      expect(host.querySelector("table").getAttribute("aria-label"), id).toBe(label);
+      expect(host.querySelector("table").caption.textContent, id).toBe(label);
+      expect(host.querySelector("table").hasAttribute("aria-label"), id).toBe(false);
     }
     // The report (#712): plain tables with captions and column headers, each in
     // a named region that takes focus, so a narrow window scrolls it by keyboard.
@@ -3654,7 +3682,8 @@ describe("Batch 2 rendered collection accessibility", () => {
     const table = host.querySelector("table.collection-table");
     expect(table, id).not.toBeNull();
     expect(table.getAttribute("role")).toBe("grid");
-    expect(table.getAttribute("aria-label")).toBe(label);
+    expect(table.caption.textContent).toBe(label);
+    expect(table.hasAttribute("aria-label")).toBe(false);
     expect([...table.querySelectorAll("th")].map((cell) => cell.textContent))
       .toEqual([...columns, ...(actions ? ["Actions"] : [])]);
     expect(table.querySelector('[role="rowheader"]')).toBeNull();
@@ -3898,7 +3927,8 @@ describe("station switcher and station context contracts (#70)", () => {
     const table = document.getElementById("stations-table");
     expect(document.getElementById("stations-list").parentElement).toBe(table);
     expect(table.getAttribute("role")).toBe("grid");
-    expect(document.getElementById(table.getAttribute("aria-labelledby")).tagName).toBe("H4");
+    expect(table.caption.textContent).toBe(document.getElementById("stations-list-heading").textContent);
+    expect(document.getElementById("stations-list-heading").tagName).toBe("H4");
     expect([...table.querySelectorAll("th[scope=col]")].map((th) => th.textContent))
       .toEqual(["Station", "Now playing", "Listeners", "Start with the server", "Start or stop"]);
     const form = document.getElementById("station-create-form");

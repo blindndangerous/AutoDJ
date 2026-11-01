@@ -12,9 +12,13 @@ Use **Settings**, **Station**, **Schedule** to change a station at set times. Ev
 6. Save the event. Check **Next events** for its next run. In the event's row, open **Options for <event name>** and choose **Run now** to perform the real action immediately. Use it only when you intend that on the selected station, then read **Recent runs** for the result. Use a private practice station for rehearsal.
 
 The **Events** table shows each event's name, timing, action and enabled
-state; **Next events** shows when each runs next. **Options**, **Edit** opens its
-dialog. **Options** also contains **Run now**, **Enable** or **Disable**, and
-**Delete**; Delete asks for confirmation. **Next events** and
+state; **Next events** shows when each runs next. To turn an event off or on,
+move to its **Enabled** checkbox, named **Enable <event name>**, and press Space.
+An ended event that is off shows "No, ended, no runs left" instead; one still on
+keeps its checkbox, noted "Ended, no runs left", so you can turn it off. Edit an
+ended event's dates to use it
+again. **Options**, **Edit** opens its dialog. **Options** also contains
+**Run now** and **Delete**; Delete asks for confirmation. **Next events** and
 **Recent runs** are read-only tables. All three use the shared
 [table keyboard controls](keyboard-and-screen-reader.md).
 

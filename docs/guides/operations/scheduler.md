@@ -13,10 +13,13 @@ Without a window the count starts again at local midnight. An every-N-minutes ev
 to chosen days; leave every day unchecked to run every day.
 
 Press **Add event** to open the editor dialog. The **Events** table separates
-**Name**, **When**, **Action**, **Enabled** and **Actions**. Open **Options for
+**Name**, **When**, **Action**, **Enabled** and **Actions**. The **Enabled** cell is
+a checkbox named **Enable <event name>**: press Space on it to turn the event on
+or off in place. Focus stays on the checkbox, the result is announced, and a
+refused change puts the checkbox back and says why. Open **Options for
 <event name>** in the Actions column, or press Shift+F10 or the Applications key
-on any cell of the row, for **Edit**, **Run now**, **Enable** or **Disable**, and
-**Delete**. Delete asks for confirmation; its past runs remain in **Recent runs**.
+on any cell of the row, for **Edit**, **Run now** and **Delete**. Delete asks for
+confirmation; its past runs remain in **Recent runs**.
 **Next events** shows **Name**, **Due** (the date and time, then how soon) and
 **Action**; **Recent runs** shows **Name**, **When** it ran, **Action** and
 **Result**. Both are read-only tables. Each table uses one Tab stop and arrow-key
@@ -33,7 +36,9 @@ the **Next events** table skips the dates outside it. An active window that cros
 belongs to the day it starts: a Friday 18:00 until 02:00 window whose end date is that Friday
 runs until 02:00 on Saturday, and a window that started the day before the start date does not
 run. The event's **When** column says the range in words, such as "Every day at 00:00, from 27 November to 26
-December 2026". Its **Enabled** column says "No, ended, no runs left" when appropriate. An event whose range
+December 2026". Its **Enabled** column says "No, ended, no runs left", with no checkbox, when no run is left
+and the event is off: AutoDJ will not turn an ended event on. A repeating event that passes its end date while
+on stays on; its checkbox stays, checked, with the note "Ended, no runs left", so you can turn it off. An event whose range
 has no run left cannot be saved enabled; save it disabled, or move its end date. Schedule files
 from earlier versions load unchanged, and an event without a range is saved without the two
 fields.

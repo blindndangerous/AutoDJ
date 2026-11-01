@@ -654,7 +654,8 @@
     <span class="setting-desc" id="hist-show-liners-desc">Also lists ads, matched intros, time checks and other non-music items.</span>
     <p id="history-empty">No playback history yet.</p>
     <div class="data-table-scroll">
-    <table id="history-table" role="grid" aria-label="History" hidden>
+    <table id="history-table" role="grid" hidden>
+      <caption class="visually-hidden">History</caption>
       <!-- Proportional widths keep columns stable when the table scrolls
            inside its wrapper on narrow screens. -->
       <colgroup>
@@ -1946,7 +1947,8 @@
     </fieldset>
     <h4 id="stations-list-heading">Stations on this server</h4>
     <div class="data-table-scroll">
-      <table id="stations-table" role="grid" aria-labelledby="stations-list-heading">
+      <table id="stations-table" role="grid">
+        <caption class="visually-hidden">Stations on this server</caption>
         <thead>
           <tr>
             <th scope="col">Station</th>
@@ -2184,7 +2186,8 @@
         <summary><h4>Relays</h4></summary>
         <button type="button" id="stream-relay-add">Add relay</button>
         <div id="stream-relay-table-wrap">
-        <table id="stream-relay-table" role="grid" aria-label="Stream relays">
+        <table id="stream-relay-table" role="grid">
+          <caption class="visually-hidden">Stream relays</caption>
           <thead><tr><th scope="col">Relay</th><th scope="col">Status and error</th><th scope="col">Edit</th><th scope="col">Enable</th><th scope="col">Remove</th></tr></thead>
           <tbody id="stream-relay-rows"></tbody>
         </table>
@@ -2435,7 +2438,8 @@
       <h5 id="live-djs-heading">DJ accounts</h5>
       <p class="setting-desc" id="live-djs-desc">Passwords are never shown, and backups leave them out: after restoring a backup, set each DJ's password again.</p>
       <button type="button" id="live-dj-add">Add DJ</button>
-      <table id="live-dj-table" role="grid" aria-labelledby="live-djs-heading" aria-describedby="live-djs-desc" hidden>
+      <table id="live-dj-table" role="grid" aria-describedby="live-djs-desc" hidden>
+        <caption class="visually-hidden">DJ accounts</caption>
         <thead><tr><th scope="col">DJ</th><th scope="col">Password</th><th scope="col">Edit</th><th scope="col">Remove</th></tr></thead>
         <tbody id="live-dj-rows"></tbody>
       </table>

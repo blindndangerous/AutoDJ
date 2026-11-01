@@ -85,7 +85,7 @@ export function installMatchedIntros({ document: doc = document, request = reque
     const heading = el(host.getAttribute("aria-labelledby"));
     heading.tabIndex = -1;
     return [kind, createCollectionTable({
-      host, label: kind === "song" ? "song intros" : "artist intros", keyOf: (item) => item.id,
+      host, label: kind === "song" ? "song intros" : "artist intros", hideCaption: true, keyOf: (item) => item.id,
       nameOf: (item) => item.label || "Untitled intro",
       columns: [
         { key: "name", label: "Name", value: (item) => item.label || "Untitled intro" },

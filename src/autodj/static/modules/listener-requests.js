@@ -167,7 +167,7 @@ export function installListenerRequests({
     ],
   });
   const recentTable = createCollectionTable({
-    host: recent, label: "Recent decisions", status, fallback: heading,
+    host: recent, label: "Recent decisions", hideCaption: true, status, fallback: heading,
     keyOf: (item) => item.id, nameOf: songText, emptyText: "No recent decisions.",
     columns: [
       { key: "song", label: "Song", value: songText },

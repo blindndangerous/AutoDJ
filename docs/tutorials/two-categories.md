@@ -15,7 +15,7 @@ If you followed another lesson, choose **Activate** from **Options for Practice*
 in **Clockwheels**, then set
 **Settings**, **Song picking**, **Pick mode** to **Clockwheel**. Its step should
 still have **Follow the repeat rules** unchecked and no day or hour restrictions.
-Use each lesson event's **Options** menu to **Disable** it, and stop any show before continuing.
+In **Settings**, **Station**, **Schedule**, clear each lesson event's **Enabled** checkbox (press Space on it), and stop any show before continuing.
 
 This lesson saves two new categories and a new wheel, `Practice alternating`.
 It keeps the original Practice category and wheel so you can return to them.

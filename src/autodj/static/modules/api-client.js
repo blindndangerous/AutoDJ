@@ -344,13 +344,14 @@ function isButtonLike(control) {
 //   - any other focused field keeps working, and its requests run one
 //     after another so the server sees the changes in the order made.
 // An unfocused control is disabled as before, unless *keepEnabled* asks for
-// the focused button's treatment: a button whose disabled state NVDA would
-// report later, such as Save changes pressed from a dialog (#331).
+// the focused control's treatment: a button whose disabled state NVDA would
+// report later, such as Save changes pressed from a dialog (#331), or a
+// table's on/off checkbox that a click left unfocused (Safari).
 function startHold(control, keepEnabled) {
   // Containers expose pending state without disabling descendants or deferring
   // the operation. Their controllers own submission/cancellation guards.
   if (!control.matches("button, input, select, textarea, option, optgroup")) return { count: 0, mode: "container", restore: () => {} };
-  if (!holdsFocus(control) && !(keepEnabled && isButtonLike(control))) {
+  if (!holdsFocus(control) && !keepEnabled) {
     const wasDisabled = control.disabled;
     control.disabled = true;
     return { count: 0, mode: "disabled", restore: () => { control.disabled = wasDisabled; } };

@@ -715,7 +715,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   listHeading.setAttribute("tabindex", "-1");
   const bookingsTable = createCollectionTable({
-    host: list, label: "Voice-track bookings", status, fallback: listHeading,
+    host: list, label: "Voice-track bookings", hideCaption: true, status, fallback: listHeading,
     keyOf: (track) => track.break_id, nameOf: (track) => track.label || "Voice track",
     emptyText: "No voice tracks yet.",
     columns: [

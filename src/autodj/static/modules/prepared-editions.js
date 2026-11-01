@@ -66,7 +66,7 @@ export function installPreparedEditions({
     fallback: get("heading"), status: get("status"), emptyText: "No occurrences.",
   });
   const takeTable = createCollectionTable({
-    host: get("takes"), label: "Edition takes", keyOf: (take) => take.id, nameOf: takeDescription,
+    host: get("takes"), label: "Edition takes", hideCaption: true, keyOf: (take) => take.id, nameOf: takeDescription,
     columns: [
       { key: "name", label: "Name", value: (take) => take.label || "Speech" },
       { key: "placement", label: "Placement", value: takePlacement },

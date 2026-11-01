@@ -141,7 +141,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     onCancel: () => { editing = null; clearErrors(); say("Cancelled. Nothing was saved."); },
   });
   const showTable = createCollectionTable({
-    host: list, label: "Shows", status, fallback: addButton,
+    host: list, label: "Shows", hideCaption: true, status, fallback: addButton,
     keyOf: (show) => show.id, nameOf: (show) => show.name,
     emptyText: "No shows yet. Press Add show to plan one.",
     columns: [

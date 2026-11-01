@@ -14,7 +14,7 @@ comfortable volume. The [two-category lesson](two-categories.md) is optional.
 If you followed another lesson, choose **Activate** from **Options for Practice**
 in **Clockwheels**, then check
 **Settings**, **Song picking**, **Pick mode** is **Clockwheel**. Stop any show
-and choose **Disable** from each other practice event's **Options** menu. Keep this lesson separate from a
+and clear each other practice event's **Enabled** checkbox in **Settings**, **Station**, **Schedule**. Keep this lesson separate from a
 live schedule. You will save a show named `Practice short show` and a one-time
 event named `Practice show start`. No paid services or advanced analysis are needed.
 
@@ -22,7 +22,7 @@ Allow about twenty minutes, or longer for long songs. AutoDJ must stay running
 through the scheduled time. An event missed while the application is stopped
 does not run automatically when it returns.
 
-To stop early, choose **Disable** from **Options for Practice show start**, use **Stop show** in **Library tools**,
+To stop early, clear the **Enable Practice show start** checkbox in the event's **Enabled** column, use **Stop show** in **Library tools**,
 **Shows** if a show is active, and pause with **Play or Pause** in **Now Playing**.
 Pausing the browser alone does not disable a future event.
 
@@ -123,10 +123,11 @@ with delayed audio may simply be Soft timing waiting for the current song.
 Predict whether **Run now** can play the show when its schedule event is
 disabled. Does disabling remove the show, or just its automatic appointment?
 
-After the first show finishes, open **Options for Practice show start** and
-choose **Disable** if available. If that menu offers **Enable**, the event is
-already disabled. Confirm a song is playing, reopen the menu, then choose
-**Run now** once. Inspect **Recent runs**,
+After the first show finishes, find the event's **Enabled** cell. If it holds a
+checked **Enable Practice show start** checkbox, press Space to clear it. If the
+checkbox is clear, or the cell says "No, ended, no runs left", the event is
+already disabled. Confirm a song is playing, open **Options for Practice show
+start**, then choose **Run now** once. Inspect **Recent runs**,
 the on-air show text, and the next titles.
 
 Expected result: the action runs even though automatic scheduling is disabled.
@@ -138,7 +139,8 @@ Let this second run finish, or use **Stop show** to cancel its waiting songs.
 ## Stop and keep your work
 
 1. Leave Practice show start disabled. A completed one-time event normally
-   disables itself; check that its **Enabled** column says **No** rather than assuming it did.
+   disables itself; check that its **Enabled** cell says "No, ended, no runs
+   left" or holds a clear checkbox rather than assuming it did.
 2. If a show is still active, press **Stop show** in **Shows**. Wait until the
    text says “No show is on the air.” If it reports stopping, let the next
    song change complete the removal, then check again.

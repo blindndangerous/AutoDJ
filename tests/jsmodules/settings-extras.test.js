@@ -941,6 +941,8 @@ describe("browser access", () => {
     expect(els.pairToggle.hidden).toBe(true);
     expect(menuAction(els.list, "Phone", "revoke")).not.toBeNull();
     expect(els.list.textContent).not.toContain("Paired");
+    expect(els.list.querySelector("table").caption.textContent).toBe("Your browsers");
+    expect(els.list.querySelector("table").hasAttribute("aria-label")).toBe(false);
     expect(fetchImpl.mock.calls.some(([url]) => url === "/api/pairing-code")).toBe(false);
   });
 

@@ -1593,6 +1593,14 @@
       min-width: 4ch;
     }
     .collection-table th { font-weight: 600; }
+    /* The native caption names the table (H39). Visible ones read as a
+       short label over the columns and wrap at narrow widths. */
+    .collection-table caption:not(.visually-hidden) {
+      text-align: start;
+      font-weight: 600;
+      padding-bottom: 0.4rem;
+      overflow-wrap: anywhere;
+    }
     .collection-table tbody tr:nth-child(even) { background: var(--tint); }
     .collection-table td:focus-visible,
     .row-actions-menu button:focus-visible {

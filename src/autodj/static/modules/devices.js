@@ -93,7 +93,7 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
 
   const say = makeSay(status, { dwellMs: 3000, errorDwellMs: 6000 });
   const collection = createCollectionTable({
-    host: list, label: "Paired devices", status, fallback: refresh,
+    host: list, label: "Paired devices", hideCaption: true, status, fallback: refresh,
     emptyText: "No paired devices.", keyOf: (device) => device.device_id, nameOf: who,
     columns: [
       { key: "name", label: "Name", value: who },
@@ -114,7 +114,7 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
     const signature = JSON.stringify([sso, devices.map((device) => [device, lastSeenWords(device.last_seen_at)])]);
     if (signature === renderedDevices) return { focusLost: false, target: null };
     renderedDevices = signature;
-    collection.table.setAttribute("aria-label", sso ? "Your browsers" : "Paired devices");
+    collection.table.caption.textContent = sso ? "Your browsers" : "Paired devices";
     collection.table.querySelectorAll("thead th")[1].textContent = sso ? "Registered" : "Paired";
     const result = collection.update(devices, { announceFocus: false });
     if (!devices.length) collection.body.querySelector(".no-results").textContent = sso ? "No saved browsers." : "No paired devices.";

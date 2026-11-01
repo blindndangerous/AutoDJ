@@ -37,7 +37,7 @@ export function installProfiles(els) {
 
   const say = makeSay(status, { dwellMs: 3000, errorDwellMs: 6000 });
   const collection = createCollectionTable({
-    host: list, label: "saved profiles", status, fallback: nameInput,
+    host: list, label: "saved profiles", hideCaption: true, status, fallback: nameInput,
     emptyText: "No saved profiles yet.", keyOf: (name) => name, nameOf: (name) => name,
     columns: [
       { key: "name", label: "Name", value: (name) => name },
