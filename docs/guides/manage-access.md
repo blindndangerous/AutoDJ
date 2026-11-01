@@ -22,8 +22,8 @@ does not grant control.
 1. In **Settings, Global, Server**, find **Browser access** and choose
    **Show pairing code**. Enter the short-lived, single-use code on the new
    browser's pairing page; confirm its name appears in the device list.
-2. Use **Rename** for recognizable device names. For a lost or untrusted device,
-   open **Options for <device name>** and choose **Revoke access**. Confirm to end
+2. Open **Options for <device name>** and choose **Rename** for recognizable device
+   names. For a lost or untrusted device, choose **Revoke access** from that menu. Confirm to end
    its access without a restart.
    **Sign out this browser** ends the current session.
 3. If no browser remains, use the server terminal. Replace `./autodj` with

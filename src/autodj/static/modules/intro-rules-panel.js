@@ -3,21 +3,21 @@ import { createEditorDialog } from "./editor-dialog.js";
 // starts when that song matches a rule's conditions (genre, decade, artist,
 // a Beets field, a folder or a category), each station's own.
 //
-// The collection has primary Edit and Delete in Options; Add and Edit
+// Each rule's Options menu has Edit, then Delete; Add and Edit
 // share one form, which reuses the clockwheel and category condition rows
 // (condition-editor.js).  A refused field is marked aria-invalid, its error
 // is shown under it and linked to it with aria-describedby, and it takes
 // focus, which reads the error, so nothing else speaks.  Any other result is
 // said once in #intro-rules-status.
 //
-// Focus: Add and Edit move it to Label; Save to the saved rule's Edit
+// Focus: Add and Edit move it to Label; Save to the saved rule's Actions
 // cell, Cancel back to the opener cell, and Delete to the next rule's
-// Options cell (or Add intro rule).
+// Actions cell (or Add intro rule).
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, failureText, withDisabled } from "./api-client.js";
 import { describeConditions } from "./clockwheel-step.js";
 import { createConditionRow, readConditionRows, renumberConditionRows, updateConditionCategories } from "./condition-editor.js";
 import { deleteCollectionItem } from "./collection-delete.js";
-import { focusAfterDialog, clearFieldError, showFieldError, applyServerFieldError } from "./dom-helpers.js";
+import { focusAfterDialog, clearFieldError, sentences, showFieldError, applyServerFieldError } from "./dom-helpers.js";
 import { createCollectionTable } from "./collection-table.js";
 import { parsePointTime } from "./library-folders.js";
 import { makeSay } from "./live-region.js";
@@ -169,20 +169,21 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     columns: [
       { key: "name", label: "Name", value: ruleName },
       { key: "conditions", label: "Conditions", value: (rule) => describeConditions(rule.conditions || [], rule.match, data.sources, data.categories) },
-      { key: "clips", label: "Clips", value: (rule) => {
+      { key: "details", label: "Details", value: (rule) => {
         const liners = new Map(data.liners.map((item) => [item.id, item.label]));
         const clips = (rule.clip_ids || []).map((id) => liners.get(id) || "a liner that is no longer registered");
         if (rule.filename_pattern) clips.push(`Filename pattern "${rule.filename_pattern}" in ${rule.liner_folder || "the selected folder"}`);
         else if (rule.liner_folder) clips.push(`Any liner in ${rule.liner_folder}`);
-        return `${clips.length > 1 ? "One of " : ""}${clips.join(", ")}`;
+        return sentences(`${clips.length > 1 ? "One of " : ""}${clips.join(", ")}`,
+          `${rule.chance ?? 100}% chance, ${waitWords(rule.cooldown_minutes)}, ${PRIORITY_WORDS[rule.priority] || PRIORITY_WORDS.after_artist}`,
+          rule.not_before && rule.not_after ? `From ${dayWords(rule.not_before)} until ${dayWords(rule.not_after)}`
+            : rule.not_before ? `From ${dayWords(rule.not_before)}` : rule.not_after && `Until ${dayWords(rule.not_after)}`);
       } },
-      { key: "playback", label: "Playback", value: (rule) => `${rule.chance ?? 100}% chance, ${waitWords(rule.cooldown_minutes)}, ${PRIORITY_WORDS[rule.priority] || PRIORITY_WORDS.after_artist}.` },
-      { key: "dates", label: "Dates", value: (rule) => rule.not_before && rule.not_after
-        ? `From ${dayWords(rule.not_before)} until ${dayWords(rule.not_after)}`
-        : rule.not_before ? `From ${dayWords(rule.not_before)}` : rule.not_after ? `Until ${dayWords(rule.not_after)}` : "Any date" },
     ],
-    primary: (rule) => ({ id: "edit", label: "Edit", run: (button) => openForm(rule, button) }),
-    actions: (rule) => [{ id: "delete", label: "Delete", run: (button) => void remove(rule.id, button) }],
+    actions: (rule) => [
+      { id: "edit", label: "Edit", run: (button) => openForm(rule, button) },
+      { id: "delete", label: "Delete", run: (button) => void remove(rule.id, button) },
+    ],
     fallback: addButton, status, emptyText: "No intro rules yet.",
   });
 
@@ -193,8 +194,8 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     collection.update(data.rules, { announceFocus: !listFocusAnnouncementSuppressed });
   }
 
-  function rowControl(id, action = "edit") {
-    return collection.target(id, action === "delete" ? "options" : action);
+  function rowControl(id) {
+    return collection.target(id);
   }
 
   function apply(value) {
@@ -532,7 +533,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
         result = `Deleted intro rule ${name}.`;
         listFocusAnnouncementSuppressed = true;
         try { await refresh().catch(() => {}); } finally { listFocusAnnouncementSuppressed = false; }
-        return rowControl(data.rules[Math.min(index, data.rules.length - 1)]?.id, "delete") || addButton;
+        return rowControl(data.rules[Math.min(index, data.rules.length - 1)]?.id) || addButton;
       },
     });
     if (confirmed && result && current(epoch, mine)) say(result, tone);

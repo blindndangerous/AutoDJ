@@ -1,7 +1,7 @@
 // Pure-function tests for ./modules/dom-helpers.js.
 
 import { vi } from "vitest";
-import { reconcileRows } from "../../src/autodj/static/modules/dom-helpers.js";
+import { reconcileRows, sentences } from "../../src/autodj/static/modules/dom-helpers.js";
 import { describe, it, expect } from "vitest";
 import * as domHelpers from "../../src/autodj/static/modules/dom-helpers.js";
 import { clearFormErrors, fmtTime, fmtTrack, escHtml, focusAfterDialog, focusRevealed, isTypingTarget, placeRows } from
@@ -94,6 +94,13 @@ it("clears stale error descriptions even after the invalid marker was removed", 
   expect(input.getAttribute("aria-describedby")).toBe("help");
   expect(form.querySelector("#problem").hidden).toBe(true);
   expect(form.querySelector("#problem").textContent).toBe("");
+});
+
+describe("sentences", () => {
+  it("joins only the set facts, one sentence each", () => {
+    expect(sentences("From Music, target 60 minutes", "", false, null, "Played by Morning.", 0)).toBe("From Music, target 60 minutes. Played by Morning.");
+    expect(sentences()).toBe("");
+  });
 });
 
 describe("fmtTrack", () => {

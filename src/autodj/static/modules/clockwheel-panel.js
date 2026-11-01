@@ -5,7 +5,8 @@
 // back only when Save clockwheel is pressed; nothing is saved on its own.
 //
 // Saved wheels and steps use the shared collection table. Cell focus retains
-// the native table keyboard model; Options menus contain secondary actions.
+// the native table keyboard model; each row's Options menu has its actions.
+// A step is one cell, its numbered sentence, as before #707 (#712).
 // Alt+Up/Down moves the focused step, Delete removes it, and Ctrl+Z undoes
 // step changes. Edits remain in the working copy until Save clockwheel.
 //
@@ -24,7 +25,7 @@ import { createConditionRow, readConditionRows, renumberConditionRows, updateCon
 import { describeConditions, describeStep } from "./clockwheel-step.js";
 import { addBrowseButton, libraryFolderSource } from "./path-picker.js";
 export { describeStep } from "./clockwheel-step.js";
-import { fillStepHours, installStepHours, readStepHours, stepHoursText } from "./step-hours.js";
+import { fillStepHours, installStepHours, readStepHours } from "./step-hours.js";
 import { checkStationName, isStationNameError } from "./station-name-field.js";
 
 const NAME = /^[A-Za-z0-9 _-]{1,64}$/;
@@ -43,7 +44,7 @@ const FIELDS_FOR = {
 const ALL_FIELDS = ["conditions", "source", "path", "preset", "ad-spots", "selection", "enforce-rules", "require-following"];
 const AD_ERROR = "clock-step-ad-error";
 const AD_FIELDS = ["clock-step-ad-spots", "clock-step-ad-seconds", "clock-step-ad-advertiser", "clock-step-ad-category"];
-// Row buttons, in tab order.
+// A step's menu, in order.
 const ROW_ACTIONS = [["edit", "Edit"], ["move-up", "Move up"], ["move-down", "Move down"], ["duplicate", "Duplicate"], ["delete", "Delete"]];
 
 export function parseResyncMinutes(text) {
@@ -93,9 +94,6 @@ export function installClockwheelPanel({ document: doc = document, request = req
   let undoHistory = [];
   let dirty = false;
   let editing = null; // index of the step in the form, or null when adding
-  const savedStepCounts = new Map();
-  let savedCountSweepRunning = false;
-  let savedCountGeneration = 0;
   const stepKeys = new WeakMap();
   let nextStepKey = 0;
   let optionsSignature = "";
@@ -119,7 +117,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       resetForm();
       renderSteps();
       say("Edit cancelled.");
-      return index === null ? newStep : rowTarget(index, "edit");
+      return index === null ? newStep : rowTarget(index);
     },
   });
 
@@ -166,11 +164,9 @@ export function installClockwheelPanel({ document: doc = document, request = req
     columns: [
       { key: "name", label: "Name", value: (name) => isDraft(name) ? `${name}, Not saved` : name },
       { key: "active", label: "Active", value: (name) => !isDraft(name) && name === data.active ? "Yes" : "No" },
-      { key: "steps", label: "Steps", value: (name) => isDraft(name) ? clock.steps.length : savedStepCounts.get(name) ?? "Not loaded" },
     ],
-    primary: (name) => ({ id: "open", label: "Open", run: () => isDraft(name)
-      ? (rowTarget(0, "edit") || newStep)?.focus() : openClock(name) }),
     actions: (name) => [
+      { id: "open", label: "Open", run: () => isDraft(name) ? (rowTarget(0) || newStep)?.focus() : openClock(name) },
       { id: "duplicate", label: "Duplicate", disabledReason: isDraft(name) ? "Save this clockwheel before duplicating it." : "", run: (button) => openNameEditor("duplicate", name, button) },
       { id: "rename", label: "Rename", disabledReason: savedActionReason(name), run: (button) => openNameEditor("rename", name, button) },
       { id: "activate", label: !isDraft(name) && name === data.active ? "Turn off" : "Activate", disabledReason: !isDraft(name) && name === data.active ? "" : savedActionReason(name), run: () => activateClock(name) },
@@ -186,13 +182,13 @@ export function installClockwheelPanel({ document: doc = document, request = req
     return isNew && clock ? [...data.names.filter((name) => name !== clock.name), clock.name] : data.names;
   }
 
+  // The open wheel's name cell is marked current.
   function renderList() {
     savedTable.update(clockNames());
     for (const row of savedTable.body.querySelectorAll("tr[data-row-key]")) {
-      const button = row.querySelector('button[data-action="open"]');
-      const selected = clock?.name === row.dataset.rowKey;
-      if (selected) button.setAttribute("aria-current", "true");
-      else button.removeAttribute("aria-current");
+      const name = row.querySelector("td[data-name]");
+      if (clock?.name === row.dataset.rowKey) name.setAttribute("aria-current", "true");
+      else name.removeAttribute("aria-current");
     }
   }
 
@@ -202,19 +198,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   const stepTable = createCollectionTable({
-    host: steps, label: "Clockwheel steps", status, fallback: newStep, nameIndex: 1,
+    host: steps, label: "Clockwheel steps", status, fallback: newStep,
     emptyText: "No steps. Open or create a clockwheel, then press New step.",
     keyOf: stepKey, nameOf: (step, index) => `Step ${index + 1}, ${stepSummary(step)}`,
-    columns: [
-      { key: "number", label: "#", value: (step, index) => index + 1 },
-      { key: "step", label: "Step", value: stepSummary },
-      { key: "kind", label: "Kind", value: (step) => String(step.type === "category" ? "music" : step.type).replaceAll("_", " ") },
-      { key: "target", label: "Length or target", value: stepTarget },
-      { key: "selection", label: "Selection", value: stepSelection },
-      { key: "rules", label: "Rules and hours", value: stepRules },
-    ],
-    primary: (step) => ({ id: "edit", label: "Edit", run: () => startEdit(clock.steps.indexOf(step)) }),
-    actions: (step, index) => ROW_ACTIONS.slice(1).map(([id, label]) => ({
+    columns: [{ key: "step", label: "Step", value: (step, index) => `${index + 1}. ${describe(step)}` }],
+    actions: (step, index) => ROW_ACTIONS.map(([id, label]) => ({
       id, label, run: () => rowAction(id, clock.steps.indexOf(step)),
       disabledReason: id === "move-up" && index === 0 ? "This is already the first step."
         : id === "move-down" && index === clock.steps.length - 1 ? "This is already the last step."
@@ -231,34 +219,6 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (step.type === "track") return `track ${step.path}`;
     if (step.type === "settings") return `switch to preset ${step.preset}`;
     return `${String(step.type).replaceAll("_", " ")}${step.type === "ad_break" ? "" : " step"}`;
-  }
-
-  function stepRules(step) {
-    const rules = [];
-    if ((FOLDER_TYPES.has(step.type) || step.type === "category") && step.enforce_rules === false) rules.push("ignoring repeat rules");
-    if (step.type === "liner" && step.require_following) rules.push("only if the following track fits before the next reset");
-    if (step.type === "ad_break") {
-      if (step.advertiser) rules.push(`from ${step.advertiser}`);
-      if (step.category) rules.push(`category ${step.category}`);
-    }
-    const hours = stepHoursText(step);
-    if (hours) rules.push(hours);
-    return rules.join(", ") || "None";
-  }
-
-  function stepTarget(step) {
-    if (step.type === "track") return step.path || "";
-    if (step.type === "settings") return step.preset || "";
-    if (step.type === "ad_break") {
-      const spots = step.max_spots ?? 3;
-      return `${spots} ${Number(spots) === 1 ? "spot" : "spots"}${step.max_seconds ? `, ${step.max_seconds} seconds` : ""}`;
-    }
-    return "Not specified";
-  }
-
-  function stepSelection(step) {
-    if (!FOLDER_TYPES.has(step.type) && step.type !== "category") return "Not applicable";
-    return step.selection === "random" ? "Random selection" : "Least recently played";
   }
 
   function renderOptions() {
@@ -508,7 +468,9 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (apply) apply.hidden = !clock || isNew || clock.name !== data.active;
   }
 
-  function renderSteps(focusIndex = null, action = "edit", announceFocus = focusIndex === null) {
+  // *column* keeps focus in that column of the step (Alt+Up/Down); otherwise
+  // it goes to the step's Actions cell, where its actions return.
+  function renderSteps(focusIndex = null, { column, announceFocus = focusIndex === null } = {}) {
     if (editing !== null) {
       if (legend) legend.textContent = `Edit step ${editing + 1}`;
       addButton.textContent = `Update step ${editing + 1}`;
@@ -521,7 +483,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     [...stepTable.body.querySelectorAll("tr[data-row-key]")].forEach((row, index) => { row.dataset.index = String(index); });
     renderHeading();
     renderNext();
-    if (focusIndex !== null) focusRow(focusIndex, action);
+    if (focusIndex !== null) focusRow(focusIndex, column);
   }
 
   // A category renamed or deleted under Categories changes the words of the
@@ -531,24 +493,24 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (clock) renderSteps();
   }
 
-  // A menu action returns to its Options cell; Edit returns to its own cell.
-  function rowTarget(index, action) {
+  // A step's cell in *column*, or its Actions cell, where its actions return.
+  function rowTarget(index, column) {
     const step = clock?.steps[index];
-    return step ? stepTable.target(stepKey(step), action === "edit" ? "primary" : "options") : null;
+    return step ? stepTable.target(stepKey(step), column) : null;
   }
 
-  function focusRow(index, action) {
-    rowTarget(index, action)?.focus();
+  function focusRow(index, column) {
+    rowTarget(index, column)?.focus();
   }
 
-  function changed(message, focusIndex, action) {
+  function changed(message, focusIndex, column) {
     dirty = true;
     renderList();
-    renderSteps(focusIndex, action);
+    renderSteps(focusIndex, { column });
     say(`${message} Not saved yet.`);
   }
 
-  function move(index, by, action) {
+  function move(index, by, column) {
     const to = index + by;
     if (to < 0 || to >= clock.steps.length) {
       say(by < 0 ? "This is already the first step." : "This is already the last step.");
@@ -559,7 +521,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     clock.steps.splice(to, 0, step);
     if (editing === index) editing = to;
     else if (editing === to) editing = index;
-    changed(`Moved. ${position(to)}.`, to, action);
+    changed(`Moved. ${position(to)}.`, to, column);
   }
 
   // Removes a step and renders the list; returns what to say and where focus belongs.
@@ -570,13 +532,13 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (editing !== null) resetForm();
     dirty = true;
     renderList();
-    renderSteps(null, "edit", false);
+    renderSteps(null, { announceFocus: false });
     const left = clock.steps.length;
     const message = `Deleted step ${index + 1}, ${gone}.`;
     if (!left) return { message: `${message} No steps are left. Not saved yet.`, target: newStep };
     return {
       message: `${message} ${left === 1 ? "1 step remains" : `${left} steps remain`}. Not saved yet.`,
-      target: rowTarget(Math.min(index, left - 1), "edit"),
+      target: rowTarget(Math.min(index, left - 1)),
     };
   }
 
@@ -603,7 +565,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     clock.steps = previous.steps;
     resetForm();
     const index = clock.steps.length ? Math.min(previous.index, clock.steps.length - 1) : null;
-    changed("Undid the last step change.", index, "edit");
+    changed("Undid the last step change.", index);
     if (index === null) newStep?.focus();
   }
 
@@ -622,13 +584,13 @@ export function installClockwheelPanel({ document: doc = document, request = req
   function rowAction(action, index) {
     if (!clock || (action === "delete" && editing !== null)) return;
     if (action === "edit") startEdit(index);
-    else if (action === "move-up") move(index, -1, action);
-    else if (action === "move-down") move(index, 1, action);
+    else if (action === "move-up") move(index, -1);
+    else if (action === "move-down") move(index, 1);
     else if (action === "duplicate") {
       rememberSteps(index);
       clock.steps.splice(index + 1, 0, copy(clock.steps[index]));
       if (editing !== null && editing > index) editing += 1;
-      changed(`Duplicated as ${position(index + 1)}.`, index + 1, action);
+      changed(`Duplicated as ${position(index + 1)}.`, index + 1);
     } else if (action === "delete") remove(index);
   }
 
@@ -640,7 +602,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
         && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
       event.preventDefault();
       if (!event.repeat) move(Number(row.dataset.index), event.key === "ArrowUp" ? -1 : 1,
-        event.target.dataset?.action === "options" ? "options" : "edit");
+        event.target.closest?.("td")?.dataset.action);
     } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "Delete") {
       event.preventDefault();
       if (!event.repeat) rowAction("delete", Number(row.dataset.index));
@@ -712,7 +674,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     addButton.textContent = `Update step ${index + 1}`;
     fillStepHours(doc, step);
     scheduleStepCount();
-    stepEditor.open(typeSelect, rowTarget(index, "edit"));
+    stepEditor.open(typeSelect, rowTarget(index));
     say(`Editing ${position(index)}.`);
   }
 
@@ -876,11 +838,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
       stepKeys.set(step, stepKey(clock.steps[index]));
       clock.steps[index] = step;
       resetForm();
-      changed(`Updated ${position(index)}.`, index, "edit");
+      changed(`Updated ${position(index)}.`, index);
     } else {
       clock.steps.push(step);
       resetForm();
-      changed(`Added ${position(clock.steps.length - 1)}.`, clock.steps.length - 1, "edit");
+      changed(`Added ${position(clock.steps.length - 1)}.`, clock.steps.length - 1);
     }
   }
   newStep?.addEventListener("click", () => {
@@ -920,10 +882,6 @@ export function installClockwheelPanel({ document: doc = document, request = req
   function load(value, { fresh = false } = {}) {
     undoHistory = [];
     clock = copy(value);
-    if (!fresh) {
-      savedCountGeneration += 1;
-      savedStepCounts.set(value.name, value.steps.length);
-    }
     isNew = fresh;
     dirty = fresh;
     savedPicking = fresh ? null : picking(value);
@@ -966,7 +924,6 @@ export function installClockwheelPanel({ document: doc = document, request = req
       if (!current(epoch, mine) || requestId !== listGeneration) return;
       loadFailed = false;
       data = { ...empty(), ...value };
-      for (const name of savedStepCounts.keys()) if (!data.names.includes(name)) savedStepCounts.delete(name);
       renderList();
       renderOptions();
       renderStepWords();
@@ -974,36 +931,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
       // The first look at the panel opens the active clockwheel, silently.
       if (!clock && data.active && data.names.includes(data.active)) await openClock(data.active, { quiet: true });
       else renderNext();
-      if (current(epoch, mine)) void refreshSavedCounts();
     } catch (error) {
       // A failed automatic refresh is said once, not on every retry.
       if (current(epoch, mine) && !loadFailed) say(failureText("load clockwheels", error), "error");
       if (current(epoch, mine)) loadFailed = true;
     }
-  }
-
-  // The index exposes names only. Count reads run separately, one at a time,
-  // so a slow saved file cannot block controls or create overlapping sweeps.
-  async function refreshSavedCounts() {
-    if (savedCountSweepRunning) return;
-    savedCountSweepRunning = true;
-    const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
-    const names = [...data.names];
-    try {
-      for (const name of names) {
-        if (!current(epoch, mine)) break;
-        if (!data.names.includes(name)) continue;
-        const countVersion = savedCountGeneration;
-        let count;
-        try { count = (await request(clockUrl(name))).steps.length; }
-        catch { count = "Unavailable"; }
-        if (!current(epoch, mine)) break;
-        // Opening or saving a wheel may already have supplied fresher counts.
-        if (countVersion !== savedCountGeneration || !data.names.includes(name)) continue;
-        savedStepCounts.set(name, count);
-        renderList();
-      }
-    } finally { savedCountSweepRunning = false; }
   }
 
   // Runs one change on the server, applies its result and reloads the list.
@@ -1021,7 +953,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
         if (isStationNameError(error.message)) { refuseStationName(error.message); return null; }
         say(error.message, "error");
         const step = /^Step (\d+):/.exec(error.message);
-        if (step && clock) focusRow(Number(step[1]) - 1, "edit");
+        if (step && clock) focusRow(Number(step[1]) - 1);
       }
       return null;
     }
@@ -1236,7 +1168,6 @@ export function installClockwheelPanel({ document: doc = document, request = req
     undoHistory = [];
     clock = null; isNew = false; dirty = false;
     optionsSignature = ""; lastNotice = null; lastPendingUpdate = false;
-    savedStepCounts.clear();
     savedTable.clear();
     nameEditor.close();
     nameInput.value = "";

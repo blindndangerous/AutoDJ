@@ -393,25 +393,35 @@ Use `collection-table.js`, the `.collection-table` class, `tableRow` and
 grid cells and one Tab stop. Preserve cell focus rather than moving onto an
 ordinary action button: the established NVDA behavior avoids duplicate cell and
 button speech. Do not introduce row headers. Empty collections contain one
-`.no-results` row spanning all columns, including action columns.
-Native column headers supply the column name. Data-cell accessible labels must
-not append that heading; otherwise NVDA announces it twice. Check older native
-tables as well as migrated collections. On vertical movement to a different row,
-plain data cells include their text followed by the row name, where available.
-Clear that temporary name on focusout. Name cells and cells containing controls
-keep their existing accessible names; horizontal movement adds no row context.
+`.no-results` row spanning all columns, including the Actions column.
+NVDA says no table headings in focus mode, so `table-navigation.js` names the
+cell an arrow key moves to until focus leaves it (#712): its text, then the
+column heading when the column changed, then the row's name cell when the row
+changed, for example "3:00, Length" or "Second artist, Second song". A cell
+holding a button, input or select keeps its control's own name and gets no
+label. Clear the temporary name on focusout. What NVDA speaks depends on its
+configuration, notably the Document Formatting table headers setting, and an
+earlier sample heard headings twice with a different rule. Issue #712 chose
+this rule; record that NVDA setting with every future speech sample.
 
-Each editable row has at most one visible primary action and an **Options for
-<row name>** button for every other action. `row-actions-menu.js` implements the
+Each row with actions ends in one **Actions** column holding only its **Options
+for <row name>** button. Its menu holds every action of the row, the most
+frequent first, such as Edit or Open. Read-only tables have no Actions column.
+Shift+F10, the Applications (Menu) key and right-click on any cell of a row
+open that row's menu through one `contextmenu` listener on the table body; the
+browser's own menu remains on rows without actions. `row-actions-menu.js` implements the
 menu-button contract: `aria-haspopup="menu"`, `aria-expanded`, `aria-controls`,
 `role="menu"` and `menuitem` children. Enter/Space opens from the grid cell.
 When the button itself receives focus, Enter, Space or Down opens on the first
 item and Up opens on the last. Grid-cell arrows keep their existing navigation.
 Inside the popup, Up/Down, Home/End and type-ahead move through choices. Enter
-activates. Escape closes and returns to the Options grid cell, which remains the
-table's only Tab stop; arrows immediately continue table navigation. Completed
-actions and cancelled confirmations restore this cell too. Standalone menus
-return to their button. Tab closes and leaves the menu. Disabled actions remain present
+activates. Escape closes and returns to the cell the menu opened from: the
+Actions cell from its button, the focused cell for Shift+F10 or the Applications
+key, the clicked cell for right-click. That cell remains the table's only Tab
+stop; arrows immediately continue table navigation. An action that does not
+move focus restores this cell too. An action that opens an editor or
+confirmation moves focus straight from the menu, and cancelling returns to the
+Actions cell. Standalone menus return to their button. Tab closes and leaves the menu. Disabled actions remain present
 and reachable with `aria-disabled`. Their reason is linked with
 `aria-describedby`, and activation announces it without performing the action.
 
@@ -434,13 +444,16 @@ and empty data:
 
 1. Tab into and out of each table. Check exactly one table stop, arrow movement,
    Home/End and Ctrl+Home/End. Confirm no extra stops on row buttons or closed
-   menu items. Read data and column headings in browse mode as well as focus mode;
-   each heading should be spoken once, including in older native tables. In a
-   plain data column, move vertically between differently named rows: hear the
-   destination row name without a repeated column heading. Move horizontally,
-   then leave the cell; check no stale row context remains.
+   menu items. Read data and column headings in browse mode as well as focus mode.
+   In focus mode, move horizontally: hear the cell's text, then its column
+   heading. Move vertically between differently named rows: hear the text, then
+   the destination row's name. Leave the cell and check no stale label remains.
+   Record NVDA's Document Formatting table headers setting with the sample.
 2. Open Options with Enter/Space from its cell, then test the focused button's
-   Down/Up keys. Space on the button opens on release and must not immediately
+   Down/Up keys. From a data cell, open the same row's menu with Shift+F10 and
+   with the Applications key, and by right-clicking another row; each opens the
+   intended row's menu. Right-click a read-only table and check the browser's
+   own menu appears. Space on the button opens on release and must not immediately
    close the popup or reopen it after activating an item. Check first/last item
    focus, arrows, Home/End and type-ahead.
    Activate one enabled item with Enter. Activate a disabled item and verify
@@ -449,8 +462,9 @@ and empty data:
    Stop the station while an event menu is open. Run now must stay focusable,
    send no request on mouse, Enter, Space or type-ahead followed by Enter, and
    announce "Start the station to run this event now" on each attempt.
-3. Escape from an open menu. Check focus returns directly to the Options grid cell
-   and the expanded state becomes false. Press Left and Right immediately and
+3. Escape from an open menu. Check focus returns directly to the cell it opened
+   from (the Actions cell, the focused cell or the clicked cell) and the expanded
+   state becomes false. Press Left and Right immediately and
    confirm cell movement without toggling NVDA mode. Repeat after cancelling
    Delete and after a completed menu action. Tab and Shift+Tab must close the menu without
    trapping focus or exposing its hidden items in the page Tab sequence.
@@ -477,9 +491,11 @@ and empty data:
    Name dialog. Clear the panel's name, open a saved wheel, and check it stays
    empty. Type a new name and repeat; preserve the exact text after Open, Save,
    Create, Import .PAL, Duplicate and Rename. Duplicate starts with its own empty
-   Name; Rename starts with the selected saved wheel's name. Check steps have separate **Length or target** and **Selection**
-   columns: music, liner and category steps have no specified length; track and
-   preset targets and ad-break spot/seconds limits retain their values.
+   Name; Rename starts with the selected saved wheel's name. Check saved
+   wheels show Name, Active and Actions, and steps show Step and Actions. Each
+   Step cell reads its number and full sentence, such as "1. music from Rock,
+   least recently played", with track and preset targets, ad-break spot and
+   seconds limits, picking mode, rules and hours when they apply.
 7. Repeat in Light and Dark. Run axe's WCAG 2.2 A/AA rules; measure collection
    button/menu targets at least 24 CSS pixels wide and 44 CSS pixels high,
    text/control contrast and visible, unobscured focus.
@@ -499,21 +515,24 @@ a person listened. Unperformed platform or speech checks remain explicit limits.
 
 For the remaining collection panels, repeat the keyboard and speech checks above:
 
-- Categories and intro rules: Edit opens on Name, errors retain the field's help,
-  and Save returns to the saved Edit cell. Options, Delete returns to its Options
-  cell when cancelled and a nearby row or Add when confirmed.
+- Categories and intro rules: Edit, first in Options, opens on Name, errors retain
+  the field's help, and Save returns to the saved row's Actions cell. Delete
+  returns to that cell when cancelled and a nearby row or Add when confirmed.
 - Matched intros: Add intro opens on Audio file. Upload returns to the saved
-  Listen cell. Listen retains its pressed state until stopped or ended; Options,
-  Remove confirms before deletion. Check both song and artist tables.
-- Liner files: Play dates opens its editor; Save and Cancel return to the same
-  action cell. Options offers Track info and Delete, with readable restrictions
-  for legacy entries.
+  row's Actions cell. The Listen item reads Stop listening until the clip is
+  stopped or ends; Remove confirms before deletion. Check both song and artist
+  tables.
+- Liner files: Play dates, first in Options, opens its editor; Save and Cancel
+  return to the row's Actions cell. The menu also offers Track info and Delete,
+  with readable restrictions for legacy entries.
 - Ads: Edit opens the spot or break editor. Options contains Delete and, for
-  breaks, Run now. Check booked-spot and station restrictions, plus empty and
-  populated delivery report tables without action menus.
-- Profiles and Browser access: test Activate and Rename, then the secondary
-  Reset/Delete or Revoke access/Forget actions. Cancelled confirmations return
-  to Options; a renamed device returns to its Rename cell with the new name.
+  breaks, Run now. Check booked-spot and station restrictions. The delivery
+  report's Totals and Every spot are plain tables with row headers in Tab-reachable
+  scrolling regions: read them with NVDA's browse-mode table keys, and check an
+  empty report hides both.
+- Profiles and Browser access: test Activate and Rename, first in Options, then
+  Reset/Delete or Revoke access/Forget. Cancelled confirmations and a renamed
+  device return to the row's Actions cell, with the new name.
 
 These are procedures to perform, not records of completed platform testing.
 
@@ -526,7 +545,7 @@ all add/edit operations. Keep feature validation and API operations in
 their panel; pass the save callback the controller's current-request guard and
 check it after every await before changing the UI. Close the controller when
 station or authentication state is cleared. Save closes onto the saved row's
-primary action cell in a shared collection table; Cancel and Escape
+Actions cell in a shared collection table; Cancel and Escape
 return to the opener, asking before discarding changed fields. A pending save
 prevents another submission or dismissal.
 Preserve caller-provided short help as the dialog description. Otherwise the
@@ -676,8 +695,8 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   Opus quality read with their help, a choice saved once it settles and said once ("Opus stream
   on at 64 kbps."), the address list read as plain text with a named Copy button for each
   format; Listener statistics read by heading, the summary as one paragraph, both tables with
-  their captions and native column headers (vertical movement adds available row
-  context to plain data cells),
+  their captions and native column headers (arrow moves add the column heading and
+  available row context to plain data cells),
   the session lengths as a list, Refresh statistics, Show and Days to keep each said once, and
   nothing said while the tables are being read.
 - DMCA mode (on in Settings > Station > Broadcasting): the "DMCA mode is on" line under the feed links read as
@@ -724,8 +743,8 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   - The confirmation is read with the song and the optional name field, with its hint.
   - Each answer page's title and first heading say what happened.
 - Queue & Search, Listener requests: the card is read with its summary.
-  - Waiting requests expose Song, Requester, Time and Fit columns, primary Approve,
-    and Options for the song containing Play next and Turn down. Unavailable
+  - Waiting requests expose Song, Requested ("by <name> at <time>") and Fit columns and an
+    Actions column whose Options for the song contains Approve, Play next and Turn down. Unavailable
     Approve stays reachable and explains why. Recent decisions are a read-only table.
     Turn down asks before rejecting; Cancel retains the request and restores focus.
   - A button's result is said once, and focus moves to the next request, or to the card's heading
@@ -751,8 +770,8 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Queue & Search, browsing: Tab to Type, Folder, Search text and Search; one result grid with
   arrows, Home and End, and Enter or Space activating each action; the track count said once per
   search and page, with focus staying on Previous or Next (or moving to the other when a page ends);
-  and Track info returning focus to its result. Under Settings > Voice liners, check primary Play dates and Options, Delete.
-  Saving or cancelling dates returns to the Play dates cell. Confirmed deletion
+  and Track info returning focus to its result. Under Settings > Voice liners, check Options, Play dates and Options, Delete.
+  Saving or cancelling dates returns to the row's Actions cell. Confirmed deletion
   moves to a nearby row or the panel fallback and announces the destination.
 - Track info, Tags: each field read with its label and, for Year, BPM, Key and ISRC, its help;
   Save tags with a refused field marking it invalid, focusing the first one and reading its
@@ -762,7 +781,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Library tools, Categories: Add category and Edit landing on Name; the source radio buttons
   showing the query or the playlist field; Check saying the count once while the count line
   stays silent; a missing name or a refused query said once, marked invalid and focused; Save
-  saying the count once and landing on the category's Edit cell; Cancel returning to the
+  saying the count once and landing on the category's Actions cell; Cancel returning to the
   opening cell or Add category; Options, Delete naming the clockwheels that use the category
   and landing on a nearby row or Add category; and the table never spoken on its 15-second refresh.
   In Clockwheels, a Music condition with Field Category showing the named Category choice;
@@ -782,22 +801,23 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   Saved clockwheel actions must name and affect their row, even while another
   wheel is open. Upcoming and Runs must expose their data without action menus.
 - Library tools, Clockwheels, the step table: Tab enters a plain grid cell with
-  no row-header announcement; arrows, Home/End and Ctrl+Home/End navigate its data
-  and action columns. Enter/Space activates Edit or opens Options. Alt+Up/Down
+  no row-header announcement; arrows, Home/End and Ctrl+Home/End navigate its Step
+  and Actions columns. Enter/Space in the Actions cell, Shift+F10 or the
+  Applications key opens Options, whose first item is Edit. Alt+Up/Down
   moves the step and says its new position once. Delete behaves like Options,
   Delete, with Undo and no confirmation. Disabled menu actions remain reachable
   and explain their reason. Undo step change and Ctrl+Z restore the step and its
   focus, including after deleting the last step; Ctrl+Z still undoes text in inputs.
 - Library tools, Shows: Add show and Options, Edit open the shared dialog on Name;
   check validation, dirty cancellation and focus return. Open list moves to its heading
-  and says the total once. Each song has Track info and Options for Move up, Move down
+  and says the total once. Each song's Options has Track info, Move up, Move down
   and Remove; Alt+Up/Down reorder the focused song. Move up on the first song remains
   reachable and explains why it is unavailable. Remove confirms and moves focus to a
   remaining song or the search field. Preserve generation restrictions, duplicate-song
-  warnings and quiet refresh. Search results have Add and Options, Add to edition.
+  warnings and quiet refresh. Search results have Options with Add and Add to edition.
   Check Generate list and Stop show announcements and focus as before.
-- Prepared editions: occurrences and takes each have one table Tab stop. Take Listen
-  stays primary; Options contains Re-record, Review, Approve, Reattach and Remove.
+- Prepared editions: occurrences and takes each have one table Tab stop. A take's
+  Options contains Listen, Re-record, Review, Approve, Reattach and Remove.
   Check disabled reasons, receipt-dependent approval, confirmed removals and the
   Reattach Position dialog's cancel/save focus return. Verify reordering preserves
   distinct repeated-song occurrences and existing take bindings. During a pending

@@ -1,16 +1,16 @@
 // Track info, Matched intros (#127): voice clips that play as a song starts,
 // for this song or for any song by its artist.  Upload, Listen and Remove.
 //
-// Shared collection tables preserve row and Listen control identity on updates.  A refused field is marked
+// Shared collection tables preserve row and menu identity on updates.  A refused field is marked
 // aria-invalid, its error is linked to it with aria-describedby and it takes
 // focus, which reads the error, so nothing else speaks.  Any other result is
-// said once in #intros-status.  Listen is a toggle: aria-pressed says it is
-// playing, and the clip plays on the Preview output device.
+// said once in #intros-status.  Listen is a toggle: while an intro plays, its
+// menu item says Stop listening, and the clip plays on the Preview output device.
 import { createEditorDialog } from "./editor-dialog.js";
 import { createCollectionTable } from "./collection-table.js";
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, failureText } from "./api-client.js";
 import { deleteCollectionItem } from "./collection-delete.js";
-import { clearFieldError, showFieldError, applyServerFieldError, focusAfterDialog } from "./dom-helpers.js";
+import { clearFieldError, sentences, showFieldError, applyServerFieldError, focusAfterDialog } from "./dom-helpers.js";
 import { makeSay } from "./live-region.js";
 import { stationApi } from "./stations.js";
 
@@ -73,7 +73,7 @@ export function installMatchedIntros({ document: doc = document, request = reque
   let track = null;  // { id, title, artist }
   let limits = {};
   let generation = 0;
-  let playing = null;  // the Listen button pressed now
+  let playing = null;  // { kind, id } of the intro playing now
   let saved = { song: [], artist: [] };
   const listSignatures = { song: null, artist: null };
   let listFocusAnnouncementSuppressed = false;
@@ -89,17 +89,17 @@ export function installMatchedIntros({ document: doc = document, request = reque
       nameOf: (item) => item.label || "Untitled intro",
       columns: [
         { key: "name", label: "Name", value: (item) => item.label || "Untitled intro" },
-        { key: "playback", label: "Playback", value: (item) => item.rules_text },
-        { key: "dates", label: "Dates", value: (item) => item.dates_text || "Any date" },
-        { key: "availability", label: "Availability", value: (item) => item.playable === false ? `Skipped now: ${item.unplayable_text || "Unavailable"}` : "Available" },
-        { key: "speech", label: "Speech", value: (item) => {
+        { key: "details", label: "Details", value: (item) => {
           const seconds = Math.round(Number(item.speech_s) || 0);
-          return `${seconds} second${seconds === 1 ? "" : "s"}`;
+          return sentences(item.rules_text, item.dates_text,
+            item.playable === false && `Skipped now: ${item.unplayable_text || "Unavailable"}`,
+            `${seconds} second${seconds === 1 ? "" : "s"} of speech`);
         } },
       ],
-      primary: (item) => ({ id: "listen", label: "Listen", ariaPressed: playing?.dataset.intro === item.id,
-        run: (button) => { button.dataset.intro = item.id; void listen(item, button); } }),
-      actions: (item) => [{ id: "remove", label: "Remove", run: (button) => void remove(kind, item, button) }],
+      actions: (item) => [
+        { id: "listen", label: isPlaying(kind, item) ? "Stop listening" : "Listen", run: () => void listen(kind, item) },
+        { id: "remove", label: "Remove", run: (button) => void remove(kind, item, button) },
+      ],
       fallback: heading, status, emptyText: kind === "song" ? "No intros for this song." : "No intros for the artist.",
     })];
   }));
@@ -111,8 +111,17 @@ export function installMatchedIntros({ document: doc = document, request = reque
     showFieldError(inputs[field], message, errors[field], editor.region(status));
   }
 
+  // Listen's label follows *playing*; refresh the menus of these lists.
+  function relabel(...kinds) {
+    for (const kind of new Set(kinds)) if (kind) collections[kind].update(saved[kind], { announceFocus: false });
+  }
+
+  // One id can be in both lists; the list it plays from tells them apart.
+  function isPlaying(kind, item) {
+    return playing?.kind === kind && playing.id === item.id;
+  }
+
   function stopListening() {
-    if (playing) playing.setAttribute("aria-pressed", "false");
     playing = null;
     if (playback && playback.getAttribute("src")) {
       playback.pause();
@@ -121,18 +130,18 @@ export function installMatchedIntros({ document: doc = document, request = reque
     }
   }
 
-  async function listen(item, button) {
-    if (playing === button) { stopListening(); return; }
+  async function listen(kind, item) {
+    const was = playing;
     stopListening();
-    if (!playback) return;
-    playing = button;
-    button.setAttribute("aria-pressed", "true");
+    if ((was?.kind === kind && was.id === item.id) || !playback) { relabel(was?.kind); return; }
+    playing = { kind, id: item.id };
+    relabel(was?.kind, kind);
     // An element's own request, so it is sent to the page's station here.
     playback.src = stationApi(`/api/intros/${encodeURIComponent(item.id)}/audio`);
     try {
       await playback.play();
     } catch (_) {
-      if (playing === button) stopListening();
+      if (isPlaying(kind, item)) { stopListening(); relabel(kind); }
       say("This browser could not play the intro.", "error");
     }
   }
@@ -158,7 +167,7 @@ export function installMatchedIntros({ document: doc = document, request = reque
           return button.closest("td");
         }
         if (!isAuthenticatedRequestCurrent(epoch)) return null;
-        if (playing && list.contains(playing)) stopListening();
+        if (playing?.kind === kind) stopListening();
         result = `Removed ${name}.`;
         listFocusAnnouncementSuppressed = true;
         try { await refresh(); } finally { listFocusAnnouncementSuppressed = false; }
@@ -175,7 +184,7 @@ export function installMatchedIntros({ document: doc = document, request = reque
 
   function renderList(kind, items) {
     const list = lists[kind];
-    if (playing && list.contains(playing) && !items.some((item) => item.id === playing.dataset.intro)) stopListening();
+    if (playing?.kind === kind && !items.some((item) => item.id === playing.id)) stopListening();
     const heading = doc.getElementById(list.getAttribute("aria-labelledby"));
     if (heading && heading.tabIndex !== -1) heading.tabIndex = -1;
     const signature = JSON.stringify(items);
@@ -311,7 +320,11 @@ export function installMatchedIntros({ document: doc = document, request = reque
     const field = FIELDS.find((name) => inputs[name] === event.target || (name === "applies" && event.target?.name === "intro-applies"));
     if (field && (field === "applies" ? errors.applies.hidden === false : inputs[field].getAttribute("aria-invalid") === "true")) clearError(field);
   };
-  const onEnded = () => stopListening();
+  const onEnded = () => {
+    const was = playing;
+    stopListening();
+    relabel(was?.kind);
+  };
   const openForm = () => { resetForm(); editor.open(inputs.file, addButton); };
   addButton.addEventListener("click", openForm);
   form.addEventListener("input", onInput);

@@ -16,8 +16,8 @@ otherwise Track info says why and they do not play.
 
 Open **Track info** for the song (from Now Playing, History, or the lists in Queue & Search) and
 go to **Matched intros**, below the cue points. The **For this song** and **For any song by**
-tables show each intro's name, playback rules, dates, availability, and speech length.
-Use **Listen** in its action cell, or choose **Remove** from **Options for <name>**.
+tables show each intro's **Name** and a **Details** sentence: playback rules, dates when set, whether it is skipped now, and speech length.
+Choose **Listen** or **Remove** from **Options for <name>**; while an intro plays, Listen reads **Stop listening**.
 Listen plays the clip on the Preview
 output device when one is chosen in Settings, Global, Browser preferences, and is pressed until the clip ends or you
 press it again. Remove asks first and deletes the clip.
@@ -38,7 +38,7 @@ Press **Add intro** to open the editor at **Audio file**:
 
 Choose **Upload intro**. A field the page or the server refuses is marked, its error is shown under
 it and it takes focus; any other result is said once. A successful upload closes the editor
-and focuses the saved intro's Listen cell. **Cancel** or Escape returns to **Add intro** and
+and focuses the saved intro's Actions cell. **Cancel** or Escape returns to **Add intro** and
 asks before discarding a changed draft.
 
 ## How one is chosen and placed

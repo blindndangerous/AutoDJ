@@ -2,8 +2,8 @@
 // Every cell is a plain grid cell: a row header made NVDA say "row header"
 // each time focus landed on the name.  The name cell (*nameIndex*) is
 // marked data-name, so Enter on it opens the row's Track info.
-// Native column headers supply context. Navigation adds row context only
-// when crossing into another row's plain data cell.
+// Navigation names a moved-to data cell with its column heading and row
+// name as the move changes them (table-navigation.js, #712).
 export function tableRow(doc, cells, { colspan = [], nameIndex = 0 } = {}) {
   const row = doc.createElement("tr");
   cells.forEach((content, index) => {

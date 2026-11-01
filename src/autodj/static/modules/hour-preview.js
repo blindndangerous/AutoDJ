@@ -101,6 +101,7 @@ export function renderRows(doc, tbody, items) {
         button = doc.createElement("button");
         button.type = "button";
         button.textContent = "Track info";
+        button.dataset.action = "info";
         actionCell.append(button);
       }
       button.dataset.path = path;

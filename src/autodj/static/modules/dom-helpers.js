@@ -48,6 +48,11 @@ export function fmtTime(sec) {
   return `${minutes}:${String(s).padStart(2, "0")}`;
 }
 
+// A Details cell (#712): the facts that are set, one sentence each.
+export function sentences(...parts) {
+  return parts.filter(Boolean).map((part) => (/[.!?]$/.test(part) ? part : `${part}.`)).join(" ");
+}
+
 export function fmtTrack(t) {
   if (!t) return "—";
   if (t.artist && t.title) return `${t.artist} — ${t.title}`;

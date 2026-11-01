@@ -41,7 +41,7 @@ not generate a new list.
 3. Under **Songs come from**, choose **A clockwheel**. Set **Clockwheel**
    to **Practice**, using its unrestricted, repeat-rules-off step.
 4. Set **Target length (minutes)** to `5`, then press **Save show**.
-5. In **Saved shows**, use **Open list** for Practice short show.
+5. In **Saved shows**, choose **Open list** from the **Options** menu of Practice short show.
 6. Leave **Pick as if at** empty and press **Generate list**. Wait for the
    result and read the song count, total length, and any note.
 
@@ -51,8 +51,7 @@ this list does not start the show or change what is playing.
 
 Make the example exactly two different songs. If generation produced more than
 two, choose **Remove** from each extra entry's **Options** menu and confirm. If it produced only one, enter another
-practice title in **Search the library**, press **Search**, then **Add** for a
-different song. Use **Move up** or **Move down** in each song's **Options** menu to set an order
+practice title in **Search the library**, press **Search**, then choose **Add** from a different song's **Options** menu. Use **Move up** or **Move down** in each song's **Options** menu to set an order
 you recognize. These edits save immediately. Write down the two titles in order.
 
 Checkpoint: the list has two songs and a total duration; the saved show no longer

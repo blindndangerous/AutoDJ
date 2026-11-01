@@ -1170,6 +1170,8 @@ async function openShowStates(page, visit) {
   };
   page.on("response", record);
   try {
+    // Open list is the first item of the show's Options menu (#712).
+    await page.locator("#shows-list [aria-haspopup='menu']").first().click();
     await page.locator("#shows-list button[data-action='open']").first().click();
     await page.locator("#shows-songs tbody tr[data-row-key]").first().waitFor({ state: "visible" });
   } catch (error) {
@@ -1548,7 +1550,7 @@ async function standInForAds(page) {
 // Ads with the spot form refused (its error linked to the file field), the
 // break form open, and the report shown as its two tables.
 async function openAdsStates(page, visit) {
-  await page.locator("#ads-spots tbody button[data-action=edit]").first().waitFor({ state: "visible" });
+  await page.locator("#ads-spots tbody [aria-haspopup=menu]").first().waitFor({ state: "visible" });
   await page.locator("#ads-spot-add").click();
   await page.locator("#ads-spot-save").click();
   await page.locator("#ads-spot-error").waitFor({ state: "visible" });
@@ -1574,7 +1576,7 @@ async function adsProblems(page) {
   await standInForAds(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-ads").click();
-  await page.locator("#ads-spots tbody button[data-action=edit]").first().waitFor({ state: "visible" });
+  await page.locator("#ads-spots tbody [aria-haspopup=menu]").first().waitFor({ state: "visible" });
   const problems = [];
   await page.evaluate(() => {
     window.__adsSaid = [];
@@ -1633,17 +1635,17 @@ async function adsProblems(page) {
   const report = await page.evaluate(() => ({
     focus: document.activeElement?.id,
     said: [...window.__adsSaid],
-    headers: [...document.querySelectorAll("#ads-rows thead th[scope='col']")].length,
+    headers: [...document.querySelectorAll("#ads-rows-table thead th[scope='col']")].length,
     rowHeaders: [...document.querySelectorAll("#ads-rows tr > th[scope='row']")].length,
   }));
   if (report.focus !== "ads-report-show") problems.push(`Show report moved focus to ${report.focus}`);
   if (report.said.length !== 1 || !/^Ad report from/.test(report.said[0])) problems.push(`Show report said ${JSON.stringify(report.said)}`);
-  if (report.headers !== 6 || report.rowHeaders !== 0) problems.push("the report table lacks its headers");
-  // Past the export controls, enter the totals table's sole cell Tab stop.
+  if (report.headers !== 6 || report.rowHeaders !== 2) problems.push("the report table lacks its headers");
+  // Past the export controls, the totals table's region takes focus.
   await page.locator("#ads-report-export").focus();
   await page.keyboard.press("Tab");
-  const inTotals = await page.evaluate(() => document.activeElement?.matches('#ads-totals [role="gridcell"]'));
-  if (!inTotals) problems.push(`Tab after Export reached ${await focusId()}, not the totals table cell`);
+  const region = await focusId();
+  if (region !== "ads-totals-wrap") problems.push(`Tab after Export reached ${region}, not the totals table`);
   return problems;
 }
 

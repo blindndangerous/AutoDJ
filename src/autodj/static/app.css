@@ -1024,6 +1024,47 @@
     #ads-spot-add, #ads-break-add { margin-top: 0.5rem; }
     #ads-spot-form, #ads-break-form { margin-top: 0.75rem; }
     #ads-report-summary { margin: 0.75rem 0; }
+    /* Report tables are plain native tables, read with browse-mode table
+       keys; their first cell is the row header (#712). */
+    .ads-table-wrap {
+      max-width: 100%;
+      overflow-x: auto;
+      margin-bottom: 0.75rem;
+    }
+    .ads-table-wrap:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .ads-table {
+      width: 100%;
+      min-width: 36rem;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    .ads-table caption {
+      text-align: left;
+      font-weight: 600;
+      padding-bottom: 0.4rem;
+    }
+    .ads-table th,
+    .ads-table td {
+      padding: 0.5rem 0.7rem;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+      overflow-wrap: anywhere;
+    }
+    .ads-table thead th {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+    }
+    .ads-table tbody th { font-weight: 600; }
+    .ads-table tbody tr:nth-child(even) { background: var(--tint); }
+    .ads-table tbody tr:last-child > * { border-bottom: none; }
+    .ads-table td.ads-number { font-variant-numeric: tabular-nums; }
     /* Track info, Song structure (#60): plain text items in time order.
        Not flex: each item is a sentence whose time spans must run on. */
     .landmark-list { list-style: none; padding: 0; margin: 0.5rem 0; }

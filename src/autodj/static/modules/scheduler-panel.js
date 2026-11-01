@@ -8,8 +8,8 @@ import { createEditorDialog } from "./editor-dialog.js";
 // tables; each result of a button is said once through #schedule-status.
 //
 // Focus: Add event and Edit move to the Name field.  Save and Cancel move
-// to the event's Edit cell (Add event when there is none). Delete moves
-// to the Edit cell of the event that took its place.  A bad field is
+// to the event's Actions cell (Add event when there is none). Delete moves
+// to the Actions cell of the event that took its place.  A bad field is
 // named in words, marked aria-invalid, described by the error text and
 // focused.  Rows are updated in place, so a refresh never takes focus away
 // from a row's cell or open menu.
@@ -105,13 +105,11 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     return `${event.repeat_text}. ${timing}.`;
   }
 
-  function nextRun(event) {
-    if (event.ended) return "Ended, no runs left";
-    if (!event.enabled) return "Disabled";
-    const upcoming = data.upcoming.find((run) => run.id === event.id);
-    // The schedule endpoint returns only the next five occurrences, not
-    // each event's next time. Absence from that window does not mean ended.
-    return upcoming ? `${formatWhen(upcoming.time)}, ${relative(upcoming.time)}` : "Not in next 5 runs";
+  // A column is data scanned down the table (#712): next times are in
+  // Upcoming, and an ended event says so where it says it is off.
+  function enabledText(event) {
+    if (event.ended) return "No, ended, no runs left";
+    return event.enabled ? "Yes" : "No";
   }
 
   const eventsTable = createCollectionTable({
@@ -121,11 +119,10 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
       { key: "name", label: "Name", value: (event) => event.name },
       { key: "when", label: "When", value: eventWhen },
       { key: "action", label: "Action", value: (event) => event.action_text },
-      { key: "next", label: "Next run", value: nextRun },
-      { key: "enabled", label: "Enabled", value: (event) => event.enabled ? "Yes" : "No" },
+      { key: "enabled", label: "Enabled", value: enabledText },
     ],
-    primary: (event) => ({ id: "edit", label: "Edit", run: (button) => openForm(event, button.closest("td")) }),
     actions: (event) => [
+      { id: "edit", label: "Edit", run: (button) => openForm(event, button.closest("td")) },
       // Run now changes what is on air at the station the page controls (#70).
       { id: "run", label: "Run now", run: () => runEvent(event),
         disabledReason: stationStopped ? "Start the station to run this event now" : "" },
@@ -138,8 +135,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     emptyText: "Nothing is scheduled.", keyOf: (run) => `${run.id}:${run.time}`, nameOf: (run) => run.name,
     columns: [
       { key: "name", label: "Name", value: (run) => run.name },
-      { key: "when", label: "When", value: (run) => formatWhen(run.time) },
-      { key: "relative", label: "Due", value: (run) => relative(run.time) },
+      { key: "due", label: "Due", value: (run) => `${formatWhen(run.time)}, ${relative(run.time)}` },
       { key: "action", label: "Action", value: (run) => run.action_text },
     ],
   });
@@ -198,8 +194,8 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     });
   }
 
-  function focusRowButton(id, role) {
-    focusAfterDialog(eventsTable.target(id, role === "edit" ? "primary" : "options") || addButton);
+  function focusRowButton(id) {
+    focusAfterDialog(eventsTable.target(id) || addButton);
   }
 
   // ---- Row buttons ----------------------------------------------------
@@ -511,12 +507,12 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     }
     if (current !== session || !active()) return;
     // The list is updated before the form closes, so focus goes from Save
-    // straight to the event's Edit cell. A failed reload leaves the
+    // straight to the event's Actions cell. A failed reload leaves the
     // list to the next schedule message.
     await load().catch(() => false);
     if (current !== session || !active()) return;
     closeForm();
-    focusRowButton(saved.id, "edit");
+    focusRowButton(saved.id);
     say(`Event ${saved.name} saved`);
   }
 

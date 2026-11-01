@@ -67,7 +67,7 @@ shows each run as a fixed point to time to.
 
 Choose **Run now** from **Options for ad break <name>** to book the next song change the
 break can join. An unavailable action explains its restriction when activated.
-The same menu contains confirmed **Delete**. **Edit** remains the row's primary action.
+The same menu starts with **Edit** and contains confirmed **Delete**.
 
 ## Ad breaks in a clockwheel
 
@@ -132,9 +132,10 @@ and **Show report**. The summary is said once; below it are two tables with colu
 **Totals by advertiser and campaign** (aired, aired late, missed, may have aired, waiting and
 seconds aired) and
 **Every spot** (the break's time, when it aired, the result, the spot, the break and the reason).
-Each report table has one Tab stop. Use arrows to move between its data cells; the focused
-cell scrolls into view on narrow windows. Empty reports show one row spanning all columns.
-The report tables have no Options menus. The page lists the first 1000 spots; **Export report** saves them all as CSV:
+They are plain tables: the first cell of each row is its row header, and a screen
+reader's table keys (Ctrl+Alt+arrows in NVDA browse mode) move through them. Each table
+sits in a region that Tab reaches, so arrow keys scroll it on a narrow window. A report
+with no ad breaks says so and shows no tables. The report tables have no Options menus. The page lists the first 1000 spots; **Export report** saves them all as CSV:
 **Every spot** for an affidavit, or the **Totals**. The play log export (History, and `autodj
 export-plays`) also lists the spots that aired, as `kind` `ad`, with the advertiser as the artist
 and the campaign as the album; the SoundExchange report leaves them out.

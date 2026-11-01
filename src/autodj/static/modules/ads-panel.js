@@ -5,7 +5,7 @@ import { failureText, requestFile, requestJson, withDisabled } from "./api-clien
 import { deleteCollectionItem } from "./collection-delete.js";
 import { createCollectionTable } from "./collection-table.js";
 import {
-  applyServerFieldError, clearFieldError, clearFormErrors, focusAfterDialog, showFieldError, stationDay,
+  applyServerFieldError, clearFieldError, clearFormErrors, focusAfterDialog, sentences, showFieldError, stationDay,
 } from "./dom-helpers.js";
 import { exportFilename, saveFile } from "./history-export.js";
 import { makeSay } from "./live-region.js";
@@ -162,22 +162,26 @@ export function installAdsPanel({
     columns: [
       { key: "title", label: "Title", value: (spot) => spot.title },
       { key: "advertiser", label: "Advertiser", value: (spot) => spot.advertiser },
-      { key: "campaign", label: "Campaign", value: (spot) => spot.campaign || "None" },
-      { key: "seconds", label: "Seconds", value: (spot) => spot.seconds },
-      { key: "category", label: "Competing category", value: (spot) => spot.category || "None" },
-      { key: "dates", label: "Flight dates", value: (spot) => spot.dates_text || "No flight dates" },
-      { key: "day", label: "Plays a day", value: (spot) => spot.max_per_day || "No limit" },
-      { key: "hour", label: "Plays an hour", value: (spot) => spot.max_per_hour || "No limit" },
-      { key: "plays", label: "Aired or booked today", value: (spot) => spot.plays_today },
       { key: "status", label: "Status", value: (spot) => [
         !spot.enabled ? "Turned off" : !spot.in_flight ? `Not airing: ${spot.flight_text}` : "Airs",
         spot.missing ? "Its audio file is missing" : "",
         spot.booked ? "Booked for a coming song change" : "",
       ].filter(Boolean).join(". ") },
+      // Every fact of the spot's pre-#707 sentence, unset states included.
+      { key: "details", label: "Details", value: (spot) => {
+        const limits = [spot.max_per_day && `at most ${spot.max_per_day} a day`, spot.max_per_hour && `at most ${spot.max_per_hour} an hour`]
+          .filter(Boolean);
+        return sentences(spot.campaign && `Campaign ${spot.campaign}`, `${spot.seconds} seconds`,
+          spot.category && `Competing category ${spot.category}`, spot.dates_text || "No flight dates",
+          limits.length ? `Airs ${limits.join(" and ")}` : "No play limits",
+          `Aired or booked ${spot.plays_today} ${spot.plays_today === 1 ? "time" : "times"} today`);
+      } },
     ],
-    primary: (spot) => ({ id: "edit", label: "Edit", run: (button) => openSpotForm(spot, button) }),
-    actions: (spot) => [{ id: "delete", label: "Delete", disabledReason: spot.booked ? bookedReason : "",
-      run: (button) => deleteSpot(spot, button) }],
+    actions: (spot) => [
+      { id: "edit", label: "Edit", run: (button) => openSpotForm(spot, button) },
+      { id: "delete", label: "Delete", disabledReason: spot.booked ? bookedReason : "",
+        run: (button) => deleteSpot(spot, button) },
+    ],
   });
   const breakTable = createCollectionTable({
     host: breakList, label: "Ad breaks", keyOf: (item) => item.id,
@@ -185,49 +189,26 @@ export function installAdsPanel({
     columns: [
       { key: "name", label: "Name", value: (item) => item.name },
       { key: "when", label: "When", value: (item) => item.when_text },
-      { key: "spots", label: "Spots in the break", value: (item) => item.max_spots },
-      { key: "seconds", label: "Longest break in seconds", value: (item) => item.max_seconds || "No limit" },
       { key: "next", label: "Next run", value: (item) => item.enabled ? item.next_text || "None" : "None" },
-      { key: "enabled", label: "Airs", value: (item) => item.enabled ? "Yes" : "Turned off" },
+      { key: "details", label: "Details", value: (item) => sentences(
+        `Up to ${item.max_spots} ${Number(item.max_spots) === 1 ? "spot" : "spots"}`,
+        item.max_seconds && `At most ${item.max_seconds} seconds`, item.enabled ? "Airs" : "Turned off") },
     ],
-    primary: (item) => ({ id: "edit", label: "Edit", run: (button) => openBreakForm(item, button) }),
     actions: (item) => [
+      { id: "edit", label: "Edit", run: (button) => openBreakForm(item, button) },
       { id: "run-now", label: "Run now", disabledReason: data?.reason || "",
         run: (button) => withDisabled(button, () => runBreak(item)) },
       { id: "delete", label: "Delete", run: (button) => deleteBreak(item, button) },
     ],
   });
-  const totalsTable = createCollectionTable({
-    host: get("totals"), label: "Totals by advertiser and campaign",
-    keyOf: (group) => JSON.stringify([group.advertiser, group.campaign]),
-    nameOf: (group) => `${group.advertiser}${group.campaign ? `, ${group.campaign}` : ""}`,
-    fallback: get("report-from"), status, emptyText: "No totals for these dates.",
-    columns: [
-      { key: "advertiser", label: "Advertiser", value: (group) => group.advertiser },
-      { key: "campaign", label: "Campaign", value: (group) => group.campaign || "None" },
-      { key: "aired", label: "Aired", value: (group) => group.aired },
-      { key: "late", label: "Aired late", value: (group) => group.late },
-      { key: "missed", label: "Missed", value: (group) => group.missed },
-      { key: "interrupted", label: "May have aired", value: (group) => group.interrupted ?? 0 },
-      { key: "waiting", label: "Waiting", value: (group) => group.waiting },
-      { key: "seconds", label: "Seconds aired", value: (group) => group.seconds },
-    ],
-  });
-  const reportTable = createCollectionTable({
-    host: get("rows"), label: "Every spot", keyOf: (entry) => entry.id,
-    nameOf: (entry) => `${entry.scheduled_text}, ${entry.title || "No spot"}`,
-    fallback: get("report-from"), status, emptyText: "No ad breaks ran for these dates.",
-    columns: [
-      { key: "scheduled", label: "Break time", value: (entry) => entry.scheduled_text },
-      { key: "aired", label: "Aired", value: (entry) => entry.aired_text || "Did not air" },
-      { key: "result", label: "Result", value: (entry) => entry.status_text
-        + (entry.delay_minutes == null ? "" : `, ${entry.delay_minutes} minutes after its time`) },
-      { key: "spot", label: "Spot", value: (entry) => entry.spot_id
-        ? `${entry.advertiser}: ${entry.title}${entry.campaign ? `, campaign ${entry.campaign}` : ""}` : "No spot" },
-      { key: "break", label: "Break", value: (entry) => `${entry.break_name}, ${entry.source_text}` },
-      { key: "reason", label: "Reason", value: (entry) => entry.reason || "None" },
-    ],
-  });
+  // A report cell; the first of each row is its row header.
+  function cell(tag, text, className = "") {
+    const element = doc.createElement(tag);
+    if (tag === "th") element.scope = "row";
+    if (className) element.className = className;
+    element.textContent = text;
+    return element;
+  }
 
   function render({ announceFocus = true } = {}) {
     setText(get("timezone"), data.timezone || "");
@@ -595,11 +576,40 @@ export function installAdsPanel({
   }
 
   function renderReport(report) {
-    const rows = report.rows || [];
-    totalsTable.update(report.summary || [], { announceFocus: false });
-    reportTable.update(rows, { announceFocus: false });
-    get("totals-wrap").hidden = false;
-    get("rows-wrap").hidden = false;
+    const totals = (report.summary || []).map((group) => {
+      const row = doc.createElement("tr");
+      row.append(
+        cell("th", group.advertiser),
+        cell("td", group.campaign || "None"),
+        cell("td", String(group.aired), "ads-number"),
+        cell("td", String(group.late), "ads-number"),
+        cell("td", String(group.missed), "ads-number"),
+        cell("td", String(group.interrupted ?? 0), "ads-number"),
+        cell("td", String(group.waiting), "ads-number"),
+        cell("td", String(group.seconds), "ads-number"),
+      );
+      return row;
+    });
+    get("totals").replaceChildren(...totals);
+    get("totals-wrap").hidden = !totals.length;
+    const rows = (report.rows || []).map((entry) => {
+      const row = doc.createElement("tr");
+      const result = entry.status_text
+        + (entry.delay_minutes == null ? "" : `, ${entry.delay_minutes} minutes after its time`);
+      const spot = entry.spot_id
+        ? `${entry.advertiser}: ${entry.title}${entry.campaign ? `, campaign ${entry.campaign}` : ""}` : "No spot";
+      row.append(
+        cell("th", entry.scheduled_text),
+        cell("td", entry.aired_text || "Did not air"),
+        cell("td", result),
+        cell("td", spot),
+        cell("td", `${entry.break_name}, ${entry.source_text}`),
+        cell("td", entry.reason || "None"),
+      );
+      return row;
+    });
+    get("rows").replaceChildren(...rows);
+    get("rows-wrap").hidden = !rows.length;
     const summary = get("report-summary");
     summary.textContent = rows.length ? reportSummary(report) : `No ad breaks ran from ${report.from} to ${report.to}.`;
     summary.hidden = false;
@@ -682,8 +692,8 @@ export function installAdsPanel({
       breakTable.clear();
       get("pending").replaceChildren();
       get("recent").replaceChildren();
-      totalsTable.clear();
-      reportTable.clear();
+      get("totals").replaceChildren();
+      get("rows").replaceChildren();
       get("totals-wrap").hidden = true;
       get("rows-wrap").hidden = true;
       get("report-summary").hidden = true;

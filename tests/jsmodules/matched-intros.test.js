@@ -24,6 +24,7 @@ const LISTING = {
 
 const apiError = (message, { status, field = null }) => Object.assign(new Error(message), { status, field });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+const listenItem = () => document.getElementById("intros-song-list").querySelector('[role="menuitem"][data-action="listen"]');
 const el = (id) => document.getElementById(id);
 const installed = [];
 function install(request) {
@@ -67,14 +68,14 @@ describe("intro form rules", () => {
 });
 
 describe("Track info matched intros", () => {
-  // ADR-0021-28
+  // ADR-0021-28 ADR-0021-39
   it("uses collection cells and opens Add intro directly on Audio file", async () => {
     const editor = install(vi.fn(async () => LISTING));
     editor.load(RECORD);
     await settle();
     const table = el("intros-song-list").querySelector("table.collection-table");
     expect(table).not.toBeNull();
-    expect([...table.querySelector("thead tr").cells].map((cell) => cell.textContent)).toEqual(["Name", "Playback", "Dates", "Availability", "Speech", "Actions", "Options"]);
+    expect([...table.querySelector("thead tr").cells].map((cell) => cell.textContent)).toEqual(["Name", "Details", "Actions"]);
     expect(table.querySelector('[aria-haspopup="menu"]').getAttribute("aria-label")).toBe("Options for Brand new");
     el("intro-add").click();
     expect(el("intros-form-dialog").open).toBe(true);
@@ -103,7 +104,7 @@ describe("Track info matched intros", () => {
     expect(document.activeElement).toBe(el("intro-add"));
   });
 
-  it("shows song and artist intro data with primary Listen and Remove in Options", async () => {
+  it("shows song and artist intro data with Listen and Remove in Options", async () => {
     const request = vi.fn(async () => LISTING);
     const editor = install(request);
     editor.load(RECORD);
@@ -115,9 +116,9 @@ describe("Track info matched intros", () => {
     expect(el("intros-song-list").querySelector("tbody tr").cells[0].textContent).toBe("Brand new");
     const buttons = [...el("intros-song-list").querySelectorAll("button")];
     expect(buttons.map((button) => [button.textContent, button.getAttribute("aria-label")])).toEqual([
-      ["Listen", "Listen Brand new"], ["Options", "Options for Brand new"], ["Remove", "Remove"],
+      ["Options", "Options for Brand new"], ["Listen", "Listen"], ["Remove", "Remove"],
     ]);
-    expect(buttons[0].getAttribute("aria-pressed")).toBe("false");
+    expect(buttons.some((button) => button.hasAttribute("aria-pressed"))).toBe(false);
     const cells = [...el("intros-song-list").querySelectorAll("tbody td")];
     expect(cells.filter((cell) => cell.tabIndex === 0)).toHaveLength(1);
     cells[0].focus();
@@ -128,16 +129,15 @@ describe("Track info matched intros", () => {
     expect(el("intros-inactive").hidden).toBe(true);
   });
 
-  it("shows dates, unavailable audio and speech duration in separate cells", async () => {
+  it("says playback, dates, unavailable audio and speech duration in one Details sentence", async () => {
     const editor = install(vi.fn(async () => ({ ...LISTING, song: [{ ...ITEM, label: "", speech_s: 1,
       dates_text: "Plays until 26 December 2026", playable: false, unplayable_text: "expired after 26 December 2026" }] })));
     editor.load(RECORD);
     await settle();
     const cells = el("intros-song-list").querySelector("tbody tr").cells;
     expect(cells[0].textContent).toBe("Untitled intro");
-    expect(cells[2].textContent).toBe("Plays until 26 December 2026");
-    expect(cells[3].textContent).toBe("Skipped now: expired after 26 December 2026");
-    expect(cells[4].textContent).toBe("1 second");
+    expect(cells[1].textContent).toBe(`${ITEM.rules_text} Plays until 26 December 2026. `
+      + "Skipped now: expired after 26 December 2026. 1 second of speech.");
   });
 
   it("shows, in words and never live, intros the station's file skips", async () => {
@@ -183,7 +183,7 @@ describe("Track info matched intros", () => {
     await settle();
     stations.selectStation("nightowl");
     try {
-      el("intros-song-list").querySelector("button").click();
+      listenItem().click();
       await settle();
       expect(el("intro-playback").getAttribute("src"))
         .toBe(`/api/stations/nightowl/intros/${ITEM.id}/audio`);
@@ -199,36 +199,55 @@ describe("Track info matched intros", () => {
     const editor = install(vi.fn(async () => LISTING));
     editor.load(RECORD);
     await settle();
-    const listen = el("intros-song-list").querySelector("button");
+    const listen = listenItem();
     listen.click();
     await settle();
-    expect(listen.getAttribute("aria-pressed")).toBe("true");
+    expect(listen.textContent).toBe("Stop listening");
     expect(el("intro-playback").getAttribute("src")).toBe(`/api/intros/${ITEM.id}/audio`);
     expect(el("intro-playback").play).toHaveBeenCalled();
     listen.click();
-    expect(listen.getAttribute("aria-pressed")).toBe("false");
+    expect(listen.textContent).toBe("Listen");
     expect(el("intro-playback").getAttribute("src")).toBeNull();
     listen.click();
     await settle();
+    expect(listen.textContent).toBe("Stop listening");
     el("intro-playback").dispatchEvent(new Event("ended"));
-    expect(listen.getAttribute("aria-pressed")).toBe("false");
+    expect(listen.textContent).toBe("Listen");
   });
 
-  it("keeps the same focused and pressed Listen button when refreshed item details change", async () => {
+  it("keeps Listen per list when the same intro id appears in the song and artist lists", async () => {
+    const shared = { ...ARTIST_ITEM, id: ITEM.id };
+    const editor = install(vi.fn(async () => ({ ...LISTING, artist: [shared] })));
+    editor.load(RECORD);
+    await settle();
+    const item = (kind) => el(`intros-${kind}-list`).querySelector('[role="menuitem"][data-action="listen"]');
+    item("song").click();
+    await settle();
+    expect(item("song").textContent).toBe("Stop listening");
+    expect(item("artist").textContent).toBe("Listen");
+    item("artist").click();
+    await settle();
+    expect(item("song").textContent).toBe("Listen");
+    expect(item("artist").textContent).toBe("Stop listening");
+    expect(el("intro-playback").getAttribute("src")).toBe(`/api/intros/${ITEM.id}/audio`);
+  });
+
+  it("keeps the same focused cell and playing Listen item when refreshed item details change", async () => {
     const request = vi.fn(async () => LISTING);
     const editor = install(request);
     editor.load(RECORD);
     await settle();
-    const listen = el("intros-song-list").querySelector("button");
-    listen.focus();
+    const options = el("intros-song-list").querySelector('[aria-haspopup="menu"]');
+    const listen = listenItem();
+    options.click();
     listen.click();
     await settle();
     request.mockResolvedValueOnce({ ...LISTING, song: [{ ...ITEM, label: "Updated intro" }] });
     await editor.refresh();
-    expect(el("intros-song-list").querySelector("button")).toBe(listen);
+    expect(listenItem()).toBe(listen);
     expect(document.activeElement).toBe(listen.closest("td"));
-    expect(listen.getAttribute("aria-pressed")).toBe("true");
-    expect(listen.getAttribute("aria-label")).toBe("Listen Updated intro");
+    expect(listen.textContent).toBe("Stop listening");
+    expect(options.getAttribute("aria-label")).toBe("Options for Updated intro");
   });
 
   it("does not mutate the saved list on an unchanged refresh", async () => {
@@ -430,7 +449,7 @@ describe("Track info matched intros", () => {
     editor.load(RECORD);
     await settle();
     el("intros-song-list").querySelector('[aria-haspopup="menu"]').click();
-    document.activeElement.click();
+    el("intros-song-list").querySelector('[role="menuitem"][data-action="remove"]').click();
     await settle();
     expect(el("confirm-dialog").open).toBe(true);
     expect(el("confirm-title").textContent).toBe("Remove intro Brand new?");
@@ -440,7 +459,7 @@ describe("Track info matched intros", () => {
     await settle();
     expect(request).toHaveBeenCalledWith(`/api/intros/${ITEM.id}`, { method: "DELETE" });
     expect(el("intros-song-list").querySelectorAll("tbody tr[data-row-key]")).toHaveLength(0);
-    expect(el("intros-song-list").querySelector(".no-results").colSpan).toBe(7);
+    expect(el("intros-song-list").querySelector(".no-results").colSpan).toBe(3);
     expect(document.activeElement).toBe(el("intros-song-heading"));
     expect(el("intros-status").textContent).toBe("Removed Brand new.");
   });

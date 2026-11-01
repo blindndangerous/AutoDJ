@@ -8,7 +8,7 @@
 import { createCollectionTable } from "./collection-table.js";
 import { deleteCollectionItem } from "./collection-delete.js";
 import { createEditorDialog } from "./editor-dialog.js";
-import { applyServerFieldError, clearFieldError, dbg, showFieldError, stationDay } from "./dom-helpers.js";
+import { applyServerFieldError, clearFieldError, dbg, sentences, showFieldError, stationDay } from "./dom-helpers.js";
 import { tableFocusTarget } from "./table-row.js";
 import { makeSay } from "./live-region.js";
 import { parseSettingValue, refusalText } from "./mix-settings.js";
@@ -93,13 +93,13 @@ export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, k
       emptyText: "No liner files yet.", keyOf: (liner) => liner.id, nameOf: (liner) => liner.name,
       columns: [
         { key: "name", label: "Name", value: (liner) => liner.name },
-        { key: "play-dates", label: "Play dates", value: (liner) => liner.dates_text || "Any day" },
-        { key: "availability", label: "Availability", value: (liner) => liner.playable === false ? `Skipped now: ${liner.unplayable_text}` : "Playable" },
+        { key: "details", label: "Details", value: (liner) => sentences(liner.dates_text || "Any day",
+          liner.playable === false && `Skipped now: ${liner.unplayable_text}`) },
       ],
-      primary: (liner) => ({ id: "dates", label: "Play dates",
-        disabledReason: liner.legacy ? "Play dates are unavailable for this liner." : "",
-        run: (button) => entry.onDates(liner, button) }),
       actions: (liner) => [
+        { id: "dates", label: "Play dates",
+          disabledReason: liner.legacy ? "Play dates are unavailable for this liner." : "",
+          run: (button) => entry.onDates(liner, button) },
         { id: "info", label: "Track info",
           disabledReason: !liner.path || liner.editable === false ? "Track info is unavailable for this liner." : "",
           run: (button) => entry.onEdit(liner.path, "liner", button) },
@@ -217,7 +217,7 @@ async function _refreshLibrary(els) {
 
 // The delete runs while the confirmation is still open, so the list is
 // already updated when it closes and focus goes straight to the next
-// row's Options cell, or the list itself when none is left (see confirmAction).
+// row's Actions cell, or the list itself when none is left (see confirmAction).
 // The result is said after the dialog has closed, in the status region
 // beside the list (Queue & Search), since the Settings one is hidden there.
 async function _deleteLiner(els, name, button, label = name) {

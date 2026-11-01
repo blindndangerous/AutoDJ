@@ -246,7 +246,7 @@ for installations managed another way.
    **Global**, **Server**. **Browser access** should show `Signed in as`
    followed by the account's name, and a **Your browsers** list. There
    should be no **Show pairing code** control.
-3. Use that browser row's **Rename** control, enter `Practice laptop` in
+3. Choose **Rename** from that browser row's **Options** menu, enter `Practice laptop` in
    **Device name**, select **Save**, then refresh the page. The name should
    persist.
 4. Open `https://radio.example.org/api/auth/status` in another tab of the

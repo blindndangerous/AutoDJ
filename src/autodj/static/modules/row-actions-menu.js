@@ -25,6 +25,7 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
   let choices = actions;
   let typed = "", typedAt = 0;
   let spaceDown = false, nextReason = 0;
+  let origin = null;  // the cell a context menu opened from, if any
   const reasons = new Map();
 
   function position() {
@@ -38,8 +39,10 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
   function outside(event) {
     if (!element.contains(event.target)) close();
   }
-  function open(last = false) {
-    if (!choices.length) return;
+  // *from* is where focus returns on close; the button's cell by default.
+  function open(last = false, from = null) {
+    if (!choices.length) return false;
+    origin = from;
     menu.hidden = false;
     if (menu.showPopover && !menu.matches(":popover-open")) menu.showPopover();
     button.setAttribute("aria-expanded", "true");
@@ -50,9 +53,15 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
     doc.defaultView.addEventListener("resize", position);
     doc.addEventListener("scroll", position, true);
     menu.children[last ? menu.children.length - 1 : 0]?.focus();
+    return true;
+  }
+  function returnTarget() {
+    return origin?.isConnected ? origin : button.isConnected ? tableFocusTarget(button) : null;
   }
   function close(restore = false) {
-    if (restore && button.isConnected) tableFocusTarget(button).focus();
+    const back = returnTarget();
+    origin = null;
+    if (restore) back?.focus();
     if (menu.hidePopover && menu.matches(":popover-open")) menu.hidePopover();
     menu.hidden = true;
     button.setAttribute("aria-expanded", "false");
@@ -68,8 +77,15 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
       announceStatus(status, action.disabledReason, { force: true });
       return;
     }
-    close(true);
-    action.run(button);
+    // An action that moves focus, such as opening an editor, takes it
+    // straight from the menu; otherwise focus returns where the menu opened.
+    const back = returnTarget();
+    close();
+    try { action.run(button); }
+    finally {
+      const active = doc.activeElement;
+      if (!active || active === doc.body || element.contains(active)) back?.focus();
+    }
   }
   function update(rowName, items) {
     choices = items;
@@ -172,7 +188,7 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
     if (!element.contains(event.relatedTarget)) close();
   });
   update(name, actions);
-  return { element, button, update, close };
+  return { element, button, update, close, open: (from) => open(false, from) };
 }
 
 export function rowActionsCell(doc, menu) {

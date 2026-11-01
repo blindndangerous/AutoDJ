@@ -56,12 +56,8 @@ export function installPreparedEditions({
   }
   const occurrenceTable = createCollectionTable({
     host: get("occurrences"), label: "Edition occurrences", keyOf: (item) => item.id,
-    nameOf: (item, index) => `Item ${index + 1}, ${label(item, index)}`, nameIndex: 1,
-    columns: [
-      { key: "position", label: "Position", value: (_item, index) => index + 1 },
-      { key: "name", label: "Item", value: label },
-      { key: "kind", label: "Kind", value: (item) => item.kind === "segment" ? "Segment" : "Song" },
-    ],
+    nameOf: (item, index) => `Item ${index + 1}, ${label(item, index)}`,
+    columns: [{ key: "name", label: "Item", value: (item, index) => `${index + 1}. ${label(item, index)}` }],
     actions: (item, index) => [
       { id: "up", label: "Move up", disabledReason: busy ? "Wait for the edition save to finish." : index === 0 ? "This is already the first item." : "", run: () => moveOccurrence(item, index, -1) },
       { id: "down", label: "Move down", disabledReason: busy ? "Wait for the edition save to finish." : index === edition.occurrences.length - 1 ? "This is already the last item." : "", run: () => moveOccurrence(item, index, 1) },
@@ -76,10 +72,10 @@ export function installPreparedEditions({
       { key: "placement", label: "Placement", value: takePlacement },
       { key: "status", label: "Status", value: (take) => take.status === "needs_review" ? "Needs review" : take.status === "unattached" ? "Unattached" : take.status },
     ],
-    primary: (take) => ({ id: "listen", label: "Listen", disabledReason: audioRestriction(take), run: () => {
-      stopAudio(); get("audio").src = stationApi(endpoint(`/assets/${encodeURIComponent(take.asset_id)}`));
-    } }),
     actions: (take) => [
+      { id: "listen", label: "Listen", disabledReason: audioRestriction(take), run: () => {
+        stopAudio(); get("audio").src = stationApi(endpoint(`/assets/${encodeURIComponent(take.asset_id)}`));
+      } },
       { id: "rerecord", label: "Re-record", run: () => void rerecordTake(take) },
       { id: "review", label: "Review", disabledReason: reviewRestriction(take), run: () => reviewTake(take) },
       { id: "approve", label: "Approve", disabledReason: approving.has(take.id) ? "Approval is already being saved."

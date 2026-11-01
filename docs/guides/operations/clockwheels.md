@@ -22,9 +22,10 @@ in the dialog. The new wheel appears in the table marked **Not saved**; add its
 steps and press **Save clockwheel** to persist it. To abandon it, open that row's
 **Options for \<name\>**, choose **Delete**, and confirm discarding the unsaved wheel.
 
-Each saved row shows **Name**, **Active** and **Steps**. Press its **Open** action
-to edit its steps. Use **Options for \<name\>** for **Duplicate**, **Rename**,
-**Activate** or **Turn off**, and **Delete**. Duplicate and Rename ask for the new
+Each saved row shows **Name**, **Active** and **Actions**; the open wheel's name is
+marked current. Choose **Open** from its **Options for \<name\>** menu to edit its
+steps. The same menu has **Duplicate**, **Rename**, **Activate** or **Turn off**,
+and **Delete**. Duplicate and Rename ask for the new
 name in a dialog and leave **New clockwheel name** alone. These actions target their row, even when another wheel is
 open. Duplicate opens the copy, so it first asks before discarding unsaved work
 in the currently open wheel. Saved-wheel Delete asks for confirmation; step
@@ -46,26 +47,26 @@ Step types:
   continues and the report records a missed break with the reason. JSON example:
   `{"type":"ad_break","max_spots":3,"max_seconds":60,"advertiser":"","category":""}`.
 
-The step table separates **#**, **Step**, **Kind**, **Length or target**,
-**Selection**, and **Rules and hours**. Length or target shows the track path,
-preset name, or ad-break spot limit and optional seconds. Music, liner and category
-steps say **Not specified** because their lengths are not known here. Selection
-shows **Least recently played** or **Random selection** for those steps, and
-**Not applicable** for track, preset and ad-break steps.
-Each row has **Edit** and **Options for <step name>**;
-Options contains **Move up**, **Move down**, **Duplicate** and **Delete**.
+The step table has two columns, **Step** and **Actions**. The Step cell is the
+step's number and one sentence, for example "2. liner from Top, at random,
+ignoring repeat rules, only on Friday from 08:00 until 09:00". The sentence
+names the track path, preset, or ad-break spot and seconds limits, how music
+and liner steps pick, and their rules and hours when they apply.
+The Actions cell holds **Options for <step name>**, which contains **Edit**,
+**Move up**, **Move down**, **Duplicate** and **Delete**.
 Tab enters the table once. Up and Down move between rows in the same column;
 Left and Right move between cells. Home and End reach the row's first or last
 cell; Ctrl+Home and Ctrl+End reach the first or last row in the same column.
-Enter or Space activates an action cell. Within Options, arrows and Home/End
-move between choices, typing matches their names, Enter activates, and Escape
-returns to the Options cell, where arrows continue table navigation. Cancelling
-a menu action's confirmation also returns there. Disabled choices explain their restriction when activated.
+Enter or Space in the Actions cell opens Options; Shift+F10, the Applications
+key or right-click opens it from any cell of the row. Within Options, arrows and
+Home/End move between choices, typing matches their names, Enter activates, and
+Escape returns to the cell you opened it from, where arrows continue table
+navigation. Cancelling a menu action's confirmation returns to the Actions cell. Disabled choices explain their restriction when activated.
 Tab leaves the table or closes and leaves its menu. Delete removes the focused
 step immediately, like **Options**, **Delete**. Alt+Up and Alt+Down reorder it,
 and focus moves with it. See the [keyboard guide](../keyboard-and-screen-reader.md).
 
-**New step** and a step's **Edit** action use the shared modal editor. Cancel or Escape
+**New step** and a step's **Options**, **Edit** use the shared modal editor. Cancel or Escape
 asks before discarding changed step fields. **Add step** or **Update step** changes
 only the working copy; **Save clockwheel** still saves the wheel to disk.
 

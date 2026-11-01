@@ -161,16 +161,19 @@ async function editorDescription(page) {
     : "Use Tab to move between fields and actions.");
 }
 
+// #712: until focus leaves, a moved-to data cell is named by its text, the
+// column heading when the column changed and the row's name when the row did.
 async function dataCellNames(page, host) {
   const cells = page.locator(`${host} tbody tr[data-row-key]:first-child > td`);
   if (!await cells.count()) return;
+  const headings = (await page.locator(`${host} thead th`).allTextContents()).map((text) => text.trim());
   await cells.first().focus();
   for (let index = 0; index < await cells.count(); index += 1) {
     const cell = cells.nth(index);
     if (index) await page.keyboard.press("ArrowRight");
     if (await cell.locator("button, input, select").count()) continue;
     const content = (await cell.textContent()).replace(/\s+/g, " ").trim();
-    await expect(cell).toHaveAccessibleName(content);
+    await expect(cell).toHaveAccessibleName(index ? [content, headings[index]].filter(Boolean).join(", ") : content);
   }
   const rows = page.locator(`${host} tbody tr[data-row-key]`);
   if (await rows.count() < 2) return;
@@ -186,13 +189,17 @@ async function dataCellNames(page, host) {
     await page.keyboard.press("ArrowDown");
     await expect(cell).toBeFocused();
     const content = (await cell.textContent()).replace(/\s+/g, " ").trim();
-    await expect(cell).toHaveAccessibleName(`${content}, ${rowName}`);
+    await expect(cell).toHaveAccessibleName([content, rowName].filter(Boolean).join(", "));
     await named.focus();
     await expect(cell).toHaveAccessibleName(content);
   }
 }
 
-async function traceEditorOpen(page, trigger, first, evidence) {
+async function traceEditorOpen(page, trigger, first, evidence, row = null) {
+  if (row) {
+    await page.locator(`${row} td[data-action="options"]`).focus();
+    await page.keyboard.press("Enter");
+  }
   await page.locator(trigger).focus();
   await page.evaluate(() => {
     window.editorFocusTrace = [];
@@ -345,6 +352,48 @@ async function menuJourney(page, row, evidence, state, typeahead = "d") {
   evidence.checks.push(`${state}: Enter/Space, wrapping menu arrows, Home/End, type-ahead, Escape to exact cell and arrow continuation; Tab exit and Shift+Tab cell re-entry`);
 }
 
+// Each entry point opens the row's own menu; Escape returns to the cell it
+// was opened from. A table without actions keeps the browser's menu.
+async function contextMenuJourney(page, row, evidence, state) {
+  const button = page.locator(`${row} [aria-haspopup="menu"]`);
+  const menu = `#${await button.getAttribute("aria-controls")}`;
+  const data = page.locator(`${row} > td:not([data-action="options"])`);
+  const first = data.first(), last = data.last();
+  await page.evaluate(() => {
+    window.contextMenuEvents = [];
+    window.recordContextMenu = (event) => window.contextMenuEvents.push(event.defaultPrevented);
+    window.addEventListener("contextmenu", window.recordContextMenu);
+  });
+  const synthetic = [];
+  for (const [how, cell] of [["Shift+F10", first], ["ContextMenu", last], ["right-click", first]]) {
+    if (how === "right-click") await cell.click({ button: "right" });
+    else {
+      await cell.focus();
+      const before = await page.evaluate(() => window.contextMenuEvents.length);
+      await page.keyboard.press(how);
+      // Playwright's Firefox key input bypasses the widget layer that turns
+      // these keys into contextmenu, so send the event the browser would.
+      if (await page.evaluate((count) => window.contextMenuEvents.length === count, before)) {
+        synthetic.push(how);
+        await page.evaluate(() => document.activeElement.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+      }
+    }
+    await focused(page, `${menu} [role="menuitem"]:first-child`);
+    assert.equal(await button.getAttribute("aria-expanded"), "true", `${state} ${how} opens the row menu`);
+    assert.equal(await page.locator('[role="menu"]:visible').count(), 1, `${state} ${how} opens one menu`);
+    await page.keyboard.press("Escape");
+    await expect(cell).toBeFocused();
+    assert.equal(await button.getAttribute("aria-expanded"), "false");
+  }
+  const prevented = await page.evaluate(() => {
+    window.removeEventListener("contextmenu", window.recordContextMenu);
+    return window.contextMenuEvents;
+  });
+  assert.deepEqual(prevented, [true, true, true], `${state}: each entry point fires one contextmenu event and suppresses the browser menu`);
+  evidence.checks.push(`${state}: Shift+F10, Applications key and right-click open the row's menu; Escape returns to the originating cell${
+    synthetic.length ? ` (${synthetic.join(" and ")}: this engine's automated key input fired no contextmenu, so the audit dispatched it on the focused cell)` : ""}`);
+}
+
 async function stoppedStation(page, row, evidence) {
   const button = page.locator(`${row} [aria-haspopup="menu"]`);
   await button.focus();
@@ -395,22 +444,33 @@ async function journey(page, evidence) {
   await expect(page.locator("#clock-name")).toHaveAccessibleName("New clockwheel name");
   await expect(page.locator("#clock-name")).toHaveValue("");
   await page.locator("#clock-name").fill("Future wheel");
-  await page.locator('#clock-list tr[data-row-key="Evening"] td[data-action="open"]').focus();
-  await page.keyboard.press("Enter");
+  await choose(page, '#clock-list tr[data-row-key="Evening"]', "open");
   await expect(page.locator("#clock-name")).toHaveValue("Future wheel");
-  await page.locator('#clock-list tr[data-row-key="Morning"] td[data-action="open"]').focus();
-  await page.keyboard.press("Enter");
+  await choose(page, '#clock-list tr[data-row-key="Morning"]', "open");
   await expect(page.locator("#clock-name")).toHaveValue("Future wheel");
   await page.locator("#clock-name").fill("");
-  await expect(page.locator('#clock-slots th').filter({ hasText: /^Selection$/ })).toHaveCount(1);
-  await expect(page.locator('#clock-slots tr[data-index="0"] td[data-action="selection"]')).toHaveAccessibleName("Least recently played");
-  await expect(page.locator('#clock-slots tr[data-index="0"] td[data-action="target"]')).toHaveAccessibleName("Not specified");
-  evidence.checks.push("All five tables: computed data names omit redundant headers, one Tab stop, actual Tab/Shift+Tab entry/exit; Selection separated from Length or target and New clockwheel name computed label");
+  assert.deepEqual(await page.locator("#schedule-events thead th").allTextContents(), ["Name", "When", "Action", "Enabled", "Actions"]);
+  assert.deepEqual(await page.locator("#schedule-upcoming thead th").allTextContents(), ["Name", "Due", "Action"]);
+  assert.deepEqual(await page.locator("#schedule-runs thead th").allTextContents(), ["Name", "When", "Action", "Result"]);
+  assert.deepEqual(await page.locator("#clock-list thead th").allTextContents(), ["Name", "Active", "Actions"]);
+  assert.deepEqual(await page.locator("#clock-slots thead th").allTextContents(), ["Step", "Actions"]);
+  await expect(page.locator('#clock-slots tr[data-index="0"] td[data-action="step"]')).toHaveAccessibleName("1. music from Music, least recently played");
+  evidence.checks.push("All five tables: horizontal moves add the column heading and vertical moves the row name to computed cell names, one Tab stop, actual Tab/Shift+Tab entry/exit; #712 column sets and numbered step sentences");
   const eventRow = '#schedule-events tr[data-row-key="event-0"]';
+  await contextMenuJourney(page, eventRow, evidence, "Schedule event");
+  await contextMenuJourney(page, '#clock-slots tr[data-index="0"]', evidence, "Clockwheel step");
+  const nativeMenu = await page.locator("#schedule-upcoming tbody td").first().evaluate((cell) => {
+    const event = new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    cell.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  assert.equal(nativeMenu, false, "a read-only table leaves the browser's own menu");
+  evidence.checks.push("Upcoming: a table without actions does not suppress the browser's context menu");
   await menuJourney(page, eventRow, evidence, "Schedule");
   await stoppedStation(page, eventRow, evidence);
   await page.locator(`${eventRow} td[data-action="options"]`).focus();
   await page.keyboard.press("Enter");
+  await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => window.collectionFixture.calls.some(({ url }) => url.endsWith("/event-0/run")));
   assert.equal(await page.evaluate(() => window.collectionFixture.calls.filter(({ url }) => url.endsWith("/event-0/run")).length), 1);
@@ -418,6 +478,8 @@ async function journey(page, evidence) {
   evidence.checks.push("Schedule: Enter invokes Run now once and returns to exact Options cell with arrow continuation");
   await page.locator(`${eventRow} [aria-haspopup="menu"]`).focus();
   await page.keyboard.press("Space");
+  await focused(page, `${eventRow} [role="menuitem"][data-action="edit"]`);
+  await page.keyboard.press("ArrowDown");
   await focused(page, `${eventRow} [role="menuitem"][data-action="run"]`);
   await page.keyboard.press("Space");
   await cellReturn(page, `${eventRow} td[data-action="options"]`);
@@ -430,23 +492,26 @@ async function journey(page, evidence) {
   await page.locator("#confirm-cancel").click();
   await cellReturn(page, `${eventRow} td[data-action="options"]`);
 
-  await traceEditorOpen(page, `${eventRow} td[data-action="edit"]`, "#schedule-name", evidence);
+  await traceEditorOpen(page, `${eventRow} [role="menuitem"][data-action="edit"]`, "#schedule-name", evidence, eventRow);
   await editorDescription(page);
   await axe(page, evidence, "Schedule editor");
   await page.keyboard.press("Escape");
-  await cellReturn(page, `${eventRow} td[data-action="edit"]`);
+  await cellReturn(page, `${eventRow} td[data-action="options"]`);
+  await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
   await page.locator("#schedule-name").fill("Morning revised");
   await page.locator("#schedule-save").focus();
   await page.keyboard.press("Enter");
-  await cellReturn(page, `${eventRow} td[data-action="edit"]`);
+  await cellReturn(page, `${eventRow} td[data-action="options"]`);
   assert.equal(await page.locator(`${eventRow} td`).first().textContent(), "Morning revised");
-  evidence.checks.push("Schedule editor: keyboard open, Escape cancel, save and return to Edit cell");
+  evidence.checks.push("Schedule editor: keyboard open from the menu's first item, Escape cancel, save and return to the Actions cell");
 
   const stepRow = '#clock-slots tr[data-index="0"]';
   await menuJourney(page, stepRow, evidence, "Clockwheel step");
   await page.locator(`${stepRow} td[data-action="options"]`).focus();
   await page.keyboard.press("Enter");
+  await focused(page, `${stepRow} [data-action="edit"]`);
+  await page.keyboard.press("ArrowDown");
   await focused(page, `${stepRow} [data-action="move-up"]`);
   assert.equal(await page.locator(`${stepRow} button[data-action="move-up"]`).getAttribute("aria-disabled"), "true");
   await page.keyboard.press("Enter");
@@ -454,13 +519,13 @@ async function journey(page, evidence) {
   assert.equal(await page.locator('#clock-slots tr[data-index]').count(), 2);
   await page.keyboard.press("Escape");
   evidence.checks.push("Clockwheel step: disabled Move up stays reachable and announces its reason without mutation");
-  await traceEditorOpen(page, `${stepRow} td[data-action="edit"]`, "#clock-step-type", evidence);
+  await traceEditorOpen(page, `${stepRow} [role="menuitem"][data-action="edit"]`, "#clock-step-type", evidence, stepRow);
   await editorDescription(page);
   await axe(page, evidence, "Clockwheel step editor");
   await page.locator("#clock-step-selection").selectOption("random");
   await page.locator("#clock-add-step").focus();
   await page.keyboard.press("Enter");
-  await focused(page, `${stepRow} td[data-action="edit"]`);
+  await focused(page, `${stepRow} td[data-action="options"]`);
   await page.keyboard.press("Alt+ArrowDown");
   await page.waitForFunction(() => document.activeElement.closest("tr")?.dataset.index === "1");
   await page.keyboard.press("Control+z");
@@ -486,7 +551,7 @@ async function journey(page, evidence) {
   await page.locator("#clock-editor-name").fill("Evening revised");
   await page.locator('#clock-name-form button[type="submit"]').focus();
   await page.keyboard.press("Enter");
-  await focused(page, '#clock-list tr[data-row-key="Evening revised"] td[data-action="open"]');
+  await focused(page, '#clock-list tr[data-row-key="Evening revised"] td[data-action="options"]');
   assert.equal(await page.locator("#clock-open-name").textContent(), "Morning");
   evidence.checks.push("Saved Rename targets Evening while Morning stays open; editor returns to renamed row");
 
@@ -506,7 +571,7 @@ async function journey(page, evidence) {
   assert.equal(await page.locator("#clock-slots .no-results").count(), 1);
   evidence.checks.push("Create: modal cancel/save round trip, explicit unsaved wheel and empty steps state");
 
-  await page.locator(`${eventRow} td[data-action="edit"]`).focus();
+  await page.locator(`${eventRow} td[data-action="options"]`).focus();
   await axe(page, evidence, "Panels and empty steps");
   await visuals(page, evidence, "Panels");
   await page.setViewportSize({ width: 320, height: 800 });
@@ -736,7 +801,7 @@ async function trackInfoRoundtrip(page, row, evidence, state) {
   await axe(page, evidence, `${state} real Track info`);
   await page.locator("#track-info-return").focus();
   await page.keyboard.press("Enter");
-  await focused(page, `${row} td[data-action="info"]`);
+  await focused(page, `${row} td[data-action="options"]`);
   evidence.checks.push(`${state}: actual library Track info controller and tab router return directly to the originating cell`);
 }
 
@@ -749,14 +814,15 @@ async function showsJourney(page, evidence) {
   await page.locator(show).evaluate((row) => { row.style.height = "900px"; });
   assert.ok((await page.locator(show).boundingBox()).height > 640, "pointer regression uses a tall row");
   const beforeOpen = await page.evaluate(() => window.batchFixture.calls.filter((call) => call.url === "/api/shows/sample-show" && call.method === "GET").length);
-  await page.locator(`${show} button[data-action="open"]`).click();
+  await page.locator(`${show} [aria-haspopup="menu"]`).click();
+  await page.locator(`${show} [role="menuitem"][data-action="open"]`).click();
   await page.waitForFunction(() => !document.getElementById("shows-editor").hidden && document.querySelectorAll('#shows-songs tr[data-row-key]').length === 2);
   assert.equal(await page.evaluate(() => window.batchFixture.calls.filter((call) => call.url === "/api/shows/sample-show" && call.method === "GET").length), beforeOpen + 1, "real pointer opens the show once");
   await focused(page, "#shows-editor-heading");
   await page.locator("#shows-close").click();
   await page.locator(show).evaluate((row) => row.style.removeProperty("height"));
   await page.setViewportSize(viewport);
-  evidence.checks.push("Show primary: real pointer opens a tall row at320x640, sends one detail GET and focuses its editor");
+  evidence.checks.push("Show Options: real pointer opens the menu of a tall row at 320x640; Open list sends one detail GET and focuses its editor");
   await checkTable(page, "#shows-list"); await tableArrows(page, "#shows-list");
   await menuJourney(page, show, evidence, "Show", "d");
   await choose(page, show, "edit");
@@ -771,14 +837,15 @@ async function showsJourney(page, evidence) {
     await page.keyboard.press("Tab"); await focused(page, `#${id}`);
   }
   await page.keyboard.press("Enter");
-  await focused(page, `${show} td[data-action="open"]`);
+  await focused(page, `${show} td[data-action="options"]`);
   assert.equal(await page.locator(`${show} td[data-action="name"]`).textContent(), "Evening revised");
+  await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
   await page.locator('#shows-songs tr[data-row-key]').first().waitFor();
   await checkTable(page, "#shows-songs"); await tableArrows(page, "#shows-songs");
   const song = '#shows-songs tr[data-row-key]:first-child';
   await menuJourney(page, song, evidence, "Show song", "r");
-  await page.locator(`${song} td[data-action="info"]`).focus(); await page.keyboard.press("Enter");
+  await choose(page, song, "info");
   assert.deepEqual(await page.evaluate(() => ({ path: window.batchFixture.trackInfo.path, kind: window.batchFixture.trackInfo.kind,
     liveOpener: window.batchFixture.trackInfo.opener.isConnected })), { path: "/music/1.flac", kind: "music", liveOpener: true });
   await trackInfoRoundtrip(page, song, evidence, "Show song");
@@ -792,7 +859,7 @@ async function showsJourney(page, evidence) {
   await page.locator('#shows-results tr[data-row-key]').waitFor();
   await checkTable(page, "#shows-results"); await tableArrows(page, "#shows-results");
   await menuJourney(page, '#shows-results tr[data-row-key]', evidence, "Show search result", "a");
-  await page.locator('#shows-results td[data-action="add"]').focus(); await page.keyboard.press("Enter");
+  await choose(page, '#shows-results tr[data-row-key]', "add");
   await page.waitForFunction(() => document.querySelectorAll('#shows-songs tr[data-row-key]').length === 2);
   for (let count = 2; count > 0; count -= 1) {
     await choose(page, song, "remove"); await page.locator("#confirm-accept").click();
@@ -850,7 +917,7 @@ async function queueJourney(page, evidence, calls) {
   await checkTable(page, "#queue-list"); await tableArrows(page, "#queue-list");
   const row = '#queue-list tr[data-row-key]:first-child';
   await menuJourney(page, row, evidence, "Queued track", "r");
-  await page.locator(`${row} td[data-action="info"]`).focus(); await page.keyboard.press("Enter");
+  await choose(page, row, "info");
   assert.equal(await page.evaluate(() => window.batchFixture.trackInfo.path), "/music/1.flac");
   await trackInfoRoundtrip(page, row, evidence, "Queued track");
   const last = '#queue-list tr[data-row-key]:last-child';
@@ -912,7 +979,7 @@ async function requestsJourney(page, evidence) {
     await page.waitForFunction((reason) => document.getElementById("requests-status").textContent === reason, offAirReason);
     assert.equal(await page.evaluate(() => window.batchFixture.calls.length), stoppedCalls, "stopped pointer action sends no request");
   }
-  await page.locator(`${row} td[data-action="approve"]`).focus(); await page.keyboard.press("Enter");
+  await choose(page, row, "approve");
   await refused(page.locator(`${row} button[data-action="approve"]`));
   await choose(page, row, "play-next");
   await refused(page.locator(`${row} button[data-action="play-next"]`));
@@ -937,14 +1004,15 @@ async function requestsJourney(page, evidence) {
   assert.equal(await page.locator(`#${reason}`).textContent(), "No smooth position is available.");
   const beforeRefusal = await page.evaluate(() => ({ count: window.batchFixture.calls.length,
     order: window.batchFixture.state.pending.map((item) => item.id) }));
-  await page.locator(`${unavailable} td[data-action="approve"]`).focus();
-  await page.keyboard.press("Enter");
+  await choose(page, unavailable, "approve");
   await page.waitForFunction(() => document.getElementById("requests-status").textContent === "No smooth position is available.");
   assert.deepEqual(await page.evaluate(() => ({ count: window.batchFixture.calls.length,
     order: window.batchFixture.state.pending.map((item) => item.id) })), beforeRefusal, "unavailable Approve sends no request and preserves waiting requests");
-  await focused(page, `${unavailable} td[data-action="approve"]`);
+  await focused(page, `${unavailable} [role="menuitem"][data-action="approve"]`);
   await axe(page, evidence, "Unavailable listener approval");
-  await page.locator(`${row} td[data-action="approve"]`).focus(); await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  await cellReturn(page, `${unavailable} td[data-action="options"]`);
+  await choose(page, row, "approve");
   await page.waitForFunction(() => document.querySelectorAll('#requests-list tr[data-row-key]').length === 2);
   assert.deepEqual(await page.evaluate(() => window.batchFixture.calls.filter((call) => call.method === "POST")),
     [offAirPost, { url: "/api/requests/request-0/approve", method: "POST", body: null }], "Approve keeps its route and empty payload");
@@ -1160,19 +1228,21 @@ async function mountBatchThree(page, theme, surface) {
 }
 
 async function batchThreeEditor(page, evidence, { row, action = "edit", field, save, value, label }) {
-  const cell = `${row} td[data-action="${action}"]`;
-  await traceEditorOpen(page, cell, field, evidence);
+  const cell = `${row} td[data-action="options"]`;
+  await traceEditorOpen(page, `${row} [role="menuitem"][data-action="${action}"]`, field, evidence, row);
   await editorDescription(page);
   await axe(page, evidence, `${label} editor`);
   await visuals(page, evidence, `${label} editor`);
   await page.keyboard.press("Escape");
   await cellReturn(page, cell);
+  // The former primary action is the first menu item.
+  await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
   await page.locator(field).fill(value);
   await page.locator(save).focus();
   await page.keyboard.press("Enter");
   await cellReturn(page, cell);
-  evidence.checks.push(`${label}: keyboard editor open, one focus event, Escape to exact cell, edit/save and grid navigation after return`);
+  evidence.checks.push(`${label}: keyboard editor open from its menu, one focus event, Escape to the Actions cell, edit/save and grid navigation after return`);
 }
 
 async function batchThreeSurface(page, theme, surface, evidence) {
@@ -1213,10 +1283,11 @@ async function batchThreeSurface(page, theme, surface, evidence) {
     for (const host of hosts) {
       const row = `${host} tr[data-row-key]`;
       await menuJourney(page, row, evidence, host, "r");
-      await page.locator(`${row} td[data-action="listen"]`).focus(); await page.keyboard.press("Enter");
-      await expect(page.locator(`${row} button[data-action="listen"]`)).toHaveAttribute("aria-pressed", "true");
-      await page.keyboard.press("Enter");
-      await expect(page.locator(`${row} button[data-action="listen"]`)).toHaveAttribute("aria-pressed", "false");
+      await choose(page, row, "listen");
+      await expect(page.locator(`${row} button[data-action="listen"]`)).toHaveText("Stop listening");
+      await focused(page, `${row} td[data-action="options"]`);
+      await choose(page, row, "listen");
+      await expect(page.locator(`${row} button[data-action="listen"]`)).toHaveText("Listen");
       await choose(page, row, "remove"); await confirmationScan(page, evidence, `${host} remove`);
       await page.keyboard.press("Escape"); await cellReturn(page, `${row} td[data-action="options"]`);
     }
@@ -1227,13 +1298,13 @@ async function batchThreeSurface(page, theme, surface, evidence) {
   } else if (surface === "profiles") {
     const row = '#profile-list tr[data-row-key="Evening"]';
     await menuJourney(page, row, evidence, "Profile");
-    await page.locator(`${row} td[data-action="activate"]`).focus(); await page.keyboard.press("Enter");
+    await choose(page, row, "activate");
     await expect(page.locator(`${row} td[data-action="active"]`)).toHaveText("Yes");
     await choose(page, row, "reset"); await confirmationScan(page, evidence, "Profile reset");
     await page.keyboard.press("Escape"); await cellReturn(page, `${row} td[data-action="options"]`);
     await choose(page, row, "delete"); await confirmationScan(page, evidence, "Profile delete");
     await page.keyboard.press("Escape"); await cellReturn(page, `${row} td[data-action="options"]`);
-    evidence.checks.push("Profiles: keyboard Activate updates Active column; Reset/Delete confirmations cancel to exact Options cell");
+    evidence.checks.push("Profiles: keyboard Activate from the menu updates Active column; Reset/Delete confirmations cancel to exact Actions cell");
   } else {
     for (const spec of [
       { row: '#ads-spots tr[data-row-key="spot1"]', field: "#ads-spot-title", save: "#ads-spot-save", value: "Sale revised", label: "Ad spot" },
@@ -1251,27 +1322,39 @@ async function batchThreeSurface(page, theme, surface, evidence) {
     await page.locator("#ads-report-from").fill("2026-10-01");
     await page.locator("#ads-report-to").fill("2026-10-31");
     await page.locator("#ads-report-show").focus(); await page.keyboard.press("Enter");
+    // #712: plain native tables with row headers inside focusable scrolling
+    // regions, read with browse-mode table keys rather than grid arrows.
     for (const host of ["#ads-totals", "#ads-rows"]) {
-      await page.locator(`${host} tr[data-row-key]`).first().waitFor();
-      await checkTable(page, host); await tableArrows(page, host);
-      assert.equal(await page.locator(`${host} button`).count(), 0, `${host} is read only`);
+      await page.locator(`${host} tr`).first().waitFor();
+      const rows = await page.locator(`${host} tr`).count();
+      assert.equal(await page.locator(`${host} tr > th:first-child[scope="row"]`).count(), rows, `${host} rows start with a row header`);
+      assert.equal(await page.locator(`${host} [tabindex], ${host} button, ${host} [role]`).count(), 0, `${host} is a plain read-only table`);
+      const wrap = page.locator(`${host}-wrap`);
+      await expect(wrap).toHaveAttribute("role", "region");
+      await expect(wrap).toHaveAccessibleName(await page.locator(`${host}-wrap caption`).textContent());
     }
+    await page.locator("#ads-report-export").focus();
+    await page.keyboard.press("Tab");
+    await focused(page, "#ads-totals-wrap");
+    await page.keyboard.press("Tab");
+    await focused(page, "#ads-rows-wrap");
     await axe(page, evidence, "Ad report"); await visuals(page, evidence, "Ad report");
-    await page.locator('#ads-rows tr[data-row-key] td').first().evaluate((element) => element.blur());
+    await page.locator("#ads-rows-wrap").evaluate((element) => element.blur());
     await page.setViewportSize({ width: 320, height: 800 });
-    await page.locator('#ads-rows tr[data-row-key] td').first().focus();
+    await page.locator("#ads-rows-wrap").focus();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "Ad report 320px page reflow");
     await visuals(page, evidence, "Ad report 320px");
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.locator('#ads-rows tr[data-row-key] td').last().focus();
+    await page.locator("#ads-report-show").focus();
     await page.evaluate(() => {
       Object.assign(window.batchThree.adReport, { rows: [], summary: [], count: 0 });
       document.getElementById("ads-report-form").requestSubmit();
     });
-    await focused(page, "#ads-report-from");
-    for (const host of ["#ads-totals", "#ads-rows"]) await emptyTable(page, host, evidence);
+    await expect(page.locator("#ads-report-summary")).toContainText("No ad breaks ran");
+    await expect(page.locator("#ads-totals-wrap")).toBeHidden();
+    await expect(page.locator("#ads-rows-wrap")).toBeHidden();
     await axe(page, evidence, "Empty ad report");
-    evidence.checks.push("Ads: both editors and menus, booked Delete linked reason/no request; report totals and outcomes use read-only keyboard grids and empty refresh returns to From date");
+    evidence.checks.push("Ads: both editors and menus, booked Delete linked reason/no request; report totals and outcomes are plain native tables with row headers in Tab-reachable scrolling regions, hidden when empty");
   }
   evidence.checks.push(`${surface}: collection Tab/Shift+Tab and cell arrows, axe, 320px reflow, target sizes and forced-colors focus`);
 }

@@ -3003,6 +3003,7 @@ function historyRowHtml(it, withType = false) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "history-info";
+    button.dataset.action = "info";
     button.dataset.path = it.path || "";
     button.dataset.kind = kind === "liner" ? "liner" : "music";
     button.dataset.historyId = historyId;

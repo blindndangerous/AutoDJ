@@ -179,7 +179,8 @@ describe("words", () => {
 });
 
 describe("the Ads tab", () => {
-  it("uses shared spot and break columns with one primary action and disabled run reasons", async () => {
+  // ADR-0021-39
+  it("uses shared spot and break columns with one Actions menu and disabled run reasons", async () => {
     await start({ spots: [SPOT], breaks: [BREAK], reason: "Ad breaks are off for this station." });
     expect(byId("ads-reason").textContent).toBe("Ad breaks are off for this station.");
     expect(byId("ads-timezone").textContent).toBe("UTC");
@@ -190,14 +191,20 @@ describe("the Ads tab", () => {
       expect(table.querySelectorAll('td[tabindex="0"]')).toHaveLength(1);
       const row = table.querySelector("tbody tr");
       expect([...row.querySelectorAll("button")].filter((button) => !button.closest("[hidden]"))
-        .map((button) => button.textContent)).toEqual(["Edit", "Options"]);
+        .map((button) => button.textContent)).toEqual(["Options"]);
       row.cells[0].focus();
       row.cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
       expect(document.activeElement).toBe(row.cells[1]);
     }
     const spot = byId("ads-spots").querySelector("tbody tr");
-    expect([...spot.cells].slice(0, 4).map((cell) => cell.textContent))
-      .toEqual(["Fall sale", "Example Motors", "Autumn", "30"]);
+    expect([...byId("ads-spots").querySelectorAll("th")].map((cell) => cell.textContent))
+      .toEqual(["Title", "Advertiser", "Status", "Details", "Actions"]);
+    expect([...byId("ads-breaks").querySelectorAll("th")].map((cell) => cell.textContent))
+      .toEqual(["Name", "When", "Next run", "Details", "Actions"]);
+    expect([...spot.cells].slice(0, 2).map((cell) => cell.textContent)).toEqual(["Fall sale", "Example Motors"]);
+    // Every fact of the pre-#707 spot sentence, unset states included.
+    expect(spot.cells[3].textContent).toBe("Campaign Autumn. 30 seconds. Competing category Car dealers. Flight from 1 October 2026 until 31 October 2026. "
+      + "Airs at most 4 a day and at most 1 an hour. Aired or booked 1 time today.");
     openOptions("ads-breaks");
     const run = byId("ads-breaks").querySelector('[role="menuitem"][data-action="run-now"]');
     expect(run.getAttribute("aria-disabled")).toBe("true");
@@ -224,7 +231,13 @@ describe("the Ads tab", () => {
     await flush();
     expect(document.activeElement).toBe(options.closest("td"));
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
-    expect(document.activeElement.dataset.action).toBe("edit");
+    expect(document.activeElement.dataset.action).toBe("details");
+  });
+
+  it("says a spot's unset flight dates and play limits in its Details", async () => {
+    await start({ spots: [{ ...SPOT, campaign: "", category: "", dates_text: "", max_per_day: 0, max_per_hour: 0, plays_today: 2 }] });
+    expect(byId("ads-spots").querySelector('tbody tr td[data-action="details"]').textContent)
+      .toBe("30 seconds. No flight dates. No play limits. Aired or booked 2 times today.");
   });
 
   it("explains booked spot deletion and rechecks a booking before confirming", async () => {
@@ -290,7 +303,7 @@ describe("the Ads tab", () => {
     const post = server.calls.find((call) => call.method === "POST");
     expect(post.body.get("advertiser")).toBe("Example Motors");
     expect(post.body.get("max_per_day")).toBe("0");
-    expect(document.activeElement.dataset.action).toBe("edit");
+    expect(document.activeElement.dataset.action).toBe("options");
     expect(document.activeElement.closest("tr").dataset.rowName).toBe("spot Fall sale, Example Motors");
     expect(status()).toBe("Spot Fall sale saved");
   });
@@ -306,7 +319,7 @@ describe("the Ads tab", () => {
     expect(document.activeElement).toBe(byId("ads-spot-day"));
     expect(byId("ads-spot-day").getAttribute("aria-invalid")).toBe("true");
     byId("ads-spot-cancel").click();
-    expect(document.activeElement.dataset.action).toBe("edit");
+    expect(document.activeElement.dataset.action).toBe("options");
     expect(document.activeElement.closest("tr").dataset.rowName).toBe("spot Fall sale, Example Motors");
   });
 
@@ -364,7 +377,7 @@ describe("the Ads tab", () => {
     expect(byId("confirm-title").textContent).toBe("Delete spot Fall sale?");
     byId("confirm-accept").click();
     await vi.waitFor(() => expect(status()).toBe("Spot Fall sale deleted"));
-    expect(document.activeElement.dataset.action).toBe("edit");
+    expect(document.activeElement.dataset.action).toBe("options");
     expect(document.activeElement.closest("tr").dataset.rowName).toBe("spot Winter sale, Example Motors");
   });
 
@@ -391,7 +404,7 @@ describe("the Ads tab", () => {
     await vi.waitFor(() => expect(status()).toBe("Ad break Quarter past saved"));
     const post = server.calls.find((call) => call.method === "POST" && call.url === "/api/ads/breaks");
     expect(JSON.parse(post.body)).toMatchObject({ minutes: [15, 45], days: [0], from_hour: 20, until_hour: 24 });
-    expect(document.activeElement.dataset.action).toBe("edit");
+    expect(document.activeElement.dataset.action).toBe("options");
     expect(document.activeElement.closest("tr").dataset.rowName).toBe("ad break Quarter past");
     openOptions("ads-breaks");
     byId("ads-breaks").querySelector('[role="menuitem"][data-action="run-now"]').click();
@@ -405,7 +418,7 @@ describe("the Ads tab", () => {
     byId("ads-break-form").requestSubmit();
     await vi.waitFor(() => expect(status()).toBe("Ad break Evening ads saved"));
     expect(server.view.breaks[0].name).toBe("Evening ads");
-    expect(document.activeElement.dataset.action).toBe("edit");
+    expect(document.activeElement.dataset.action).toBe("options");
     openOptions("ads-breaks");
     byId("ads-breaks").querySelector('[role="menuitem"][data-action="delete"]').click();
     expect(byId("confirm-title").textContent).toBe("Delete ad break Evening ads?");
@@ -503,11 +516,12 @@ describe("the Ads tab", () => {
     await vi.waitFor(() => expect(byId("ads-rows-wrap").hidden).toBe(false));
     expect(document.activeElement).toBe(byId("ads-report-show"));
     expect(status()).toBe(reportSummary(REPORT));
-    const totals = byId("ads-totals").querySelector("tbody tr");
-    expect(totals.firstElementChild.tagName).toBe("TD");
-    expect(totals.firstElementChild.hasAttribute("scope")).toBe(false);
+    // Plain native tables (#712): the first cell is the row header.
+    const totals = byId("ads-totals").querySelector("tr");
+    expect(totals.firstElementChild.tagName).toBe("TH");
+    expect(totals.firstElementChild.getAttribute("scope")).toBe("row");
     expect([...totals.children].map((cell) => cell.textContent)).toEqual(["Example Motors", "Autumn", "1", "1", "1", "0", "0", "30"]);
-    const rows = [...byId("ads-rows").querySelectorAll("tbody tr")];
+    const rows = [...byId("ads-rows").querySelectorAll("tr")];
     expect([...rows[0].children].map((cell) => cell.textContent)).toEqual([
       "13 October 2026 at 12:15:00", "13 October 2026 at 12:31:00", "Aired late, 16 minutes after its time",
       "Example Motors: Fall sale, campaign Autumn", "Quarter past, Minutes past the hour", "None",
@@ -521,34 +535,24 @@ describe("the Ads tab", () => {
     expect(byId("ads-report-to").getAttribute("aria-invalid")).toBe("true");
   });
 
-  it("keeps report rows keyed on refresh and supplies shared empty states without menus", async () => {
+  it("keeps the report out of grid navigation in scrollable regions and hides empty tables", async () => {
     await start();
     byId("ads-report-form").requestSubmit();
     await vi.waitFor(() => expect(byId("ads-rows-wrap").hidden).toBe(false));
     for (const id of ["ads-rows", "ads-totals"]) {
-      const table = byId(id).querySelector(".collection-table");
-      expect(table).not.toBeNull();
-      expect(table.querySelectorAll("button")).toHaveLength(0);
-      expect(table.querySelectorAll('td[tabindex="0"]')).toHaveLength(1);
+      const wrap = byId(`${id}-wrap`);
+      expect(wrap.getAttribute("role")).toBe("region");
+      expect(wrap.tabIndex).toBe(0);
+      expect(wrap.querySelector('[role="grid"], .collection-table, [tabindex], button')).toBeNull();
+      expect(wrap.querySelector("caption").textContent).toBeTruthy();
     }
-    const row = byId("ads-rows").querySelector("tbody tr");
-    row.cells[2].focus();
-    byId("ads-report-form").requestSubmit();
-    await flush();
-    expect(byId("ads-rows").querySelector("tbody tr")).toBe(row);
-    expect(document.activeElement).toBe(row.cells[2]);
     const request = server.request.getMockImplementation();
     server.request.mockImplementation((url, options) => url.startsWith("/api/ads/report?")
       ? Promise.resolve({ ...REPORT, rows: [], summary: [], count: 0 }) : request(url, options));
     byId("ads-report-form").requestSubmit();
     await vi.waitFor(() => expect(byId("ads-report-summary").textContent).toContain("No ad breaks ran"));
-    expect(byId("ads-rows-wrap").hidden).toBe(false);
-    expect(document.activeElement).toBe(byId("ads-report-from"));
-    for (const id of ["ads-rows", "ads-totals"]) {
-      const table = byId(id).querySelector(".collection-table");
-      expect(table.querySelectorAll("tbody tr")).toHaveLength(1);
-      expect(table.querySelector(".no-results").colSpan).toBe(table.querySelectorAll("thead th").length);
-    }
+    expect(byId("ads-rows-wrap").hidden).toBe(true);
+    expect(byId("ads-totals-wrap").hidden).toBe(true);
   });
 
   it("exports the report through the page and says how many rows", async () => {

@@ -1,10 +1,9 @@
-import { reconcileRows, rowButton } from "./dom-helpers.js";
+import { reconcileRows } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
-import { tableRow } from "./table-row.js";
+import { tableFocusTarget, tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { createRowActionsMenu, rowActionsCell } from "./row-actions-menu.js";
 
-let nextReason = 0;
 const hosts = new WeakMap();
 
 // Consumers identify the owning collection without depending on its wrappers.
@@ -15,8 +14,11 @@ export function collectionHost(element) {
 
 // Collections share row identity, cell navigation, popup actions, empty
 // state and focus recovery. Panels supply data and action descriptors only.
+// A row's actions, most used first, share one last Actions column: its
+// Options menu (#712). Shift+F10, the Applications key and right-click open
+// the same menu; tables without actions keep the browser's own menu.
 export function createCollectionTable({ host, label, columns, keyOf, nameOf,
-  primary, actions, fallback, status, emptyText = "No items.", nameIndex = 0 }) {
+  actions, fallback, status, emptyText = "No items.", nameIndex = 0 }) {
   const doc = host.ownerDocument;
   const scroll = doc.createElement("div");
   scroll.className = "data-table-scroll";
@@ -26,7 +28,7 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
   table.setAttribute("role", "grid");
   table.setAttribute("aria-label", label);
   const head = table.createTHead().insertRow();
-  for (const title of [...columns.map((column) => column.label), ...(primary ? ["Actions"] : []), ...(actions ? ["Options"] : [])]) {
+  for (const title of [...columns.map((column) => column.label), ...(actions ? ["Actions"] : [])]) {
     const cell = doc.createElement("th");
     cell.scope = "col";
     cell.textContent = title;
@@ -37,26 +39,18 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
   host.replaceChildren(scroll);
   const navigation = installTableNavigation(body);
   const records = new WeakMap();
+  // Browsers fire contextmenu for Shift+F10, the Applications key and
+  // right-click alike, on the focused or the clicked element.
+  body.addEventListener("contextmenu", (event) => {
+    if (event.target.closest?.('[role="menu"]')) return;
+    const menu = records.get(event.target.closest?.("tr"))?.menu;
+    if (menu?.open(tableFocusTarget(event.target))) event.preventDefault();
+  });
 
   function createRow() {
     const row = tableRow(doc, columns.map(() => ""), { nameIndex });
     const record = {};
     columns.forEach((column, index) => { row.cells[index].dataset.action = column.key; });
-    if (primary) {
-      const button = rowButton(doc, "", "", () => {
-        if (record.primary.disabledReason) {
-          announceStatus(status, record.primary.disabledReason, { force: true });
-        } else record.primary.run(button);
-      });
-      record.button = button;
-      const cell = tableRow(doc, [button], { nameIndex: -1 }).firstElementChild;
-      const reason = doc.createElement("span");
-      reason.id = `collection-action-reason-${++nextReason}`;
-      reason.hidden = true;
-      cell.append(reason);
-      record.reason = reason;
-      row.append(cell);
-    }
     if (actions) {
       record.menu = createRowActionsMenu({ doc, name: "", actions: [], status });
       row.append(rowActionsCell(doc, record.menu));
@@ -73,21 +67,6 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
       const cell = row.cells[at];
       if (cell.textContent !== value) cell.textContent = value;
     });
-    if (primary) {
-      record.primary = primary(item, index);
-      const action = record.primary;
-      const button = record.button;
-      if (button.textContent !== action.label) button.textContent = action.label;
-      button.dataset.action = action.id;
-      button.setAttribute("aria-label", `${action.label} ${name}`);
-      button.setAttribute("aria-disabled", String(Boolean(action.disabledReason)));
-      if (action.ariaPressed === undefined) button.removeAttribute("aria-pressed");
-      else button.setAttribute("aria-pressed", String(action.ariaPressed));
-      record.reason.textContent = action.disabledReason || "";
-      if (action.disabledReason) button.setAttribute("aria-describedby", record.reason.id);
-      else button.removeAttribute("aria-describedby");
-      button.parentElement.dataset.action = action.id;
-    }
     record.menu?.update(name, actions(item, index));
   }
   function removedMenus(items) {
@@ -121,11 +100,12 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
     navigation.refresh();
     return result;
   }
-  function target(key, action = "primary") {
+  // A data column's cell by its key; any action belongs to the Actions cell.
+  function target(key, column) {
     const row = [...body.children].find((item) => item.dataset.rowKey === String(key));
     if (!row) return null;
-    if (action === "primary") return row.cells[primary ? columns.length : nameIndex];
-    return [...row.cells].find((cell) => cell.dataset.action === action) || null;
+    return [...row.cells].find((cell) => cell.dataset.action === column)
+      || row.cells[actions ? columns.length : nameIndex];
   }
   function clear() {
     const removed = removedMenus([]);

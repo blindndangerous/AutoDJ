@@ -116,19 +116,21 @@ describe("categories markup", () => {
 });
 
 describe("categories list", () => {
-  // ADR-0021-27
-  it("uses a named collection grid with one primary action and a Delete menu", async () => {
+  // ADR-0021-27 ADR-0021-39
+  it("uses a named collection grid with Edit then Delete in one Actions menu", async () => {
     await open();
     const table = byId("categories-list").querySelector("table.collection-table");
     expect(table).not.toBeNull();
-    expect([...table.querySelector("thead tr").cells].map((cell) => cell.textContent)).toEqual(["Name", "Songs", "Source", "Availability", "Used by", "Actions", "Options"]);
+    expect([...table.querySelector("thead tr").cells].map((cell) => cell.textContent)).toEqual(["Name", "Songs", "Details", "Actions"]);
     const row = table.querySelector("tbody tr");
     expect(row.cells[0].textContent).toBe(DECADE.name);
     expect(row.querySelector('[aria-haspopup="menu"]').getAttribute("aria-label")).toBe(`Options for ${DECADE.name}`);
     row.querySelector('[aria-haspopup="menu"]').click();
+    expect(document.activeElement.textContent).toBe("Edit");
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     expect(document.activeElement.textContent).toBe("Delete");
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    expect(document.activeElement).toBe(row.cells[6]);
+    expect(document.activeElement).toBe(row.cells[3]);
   });
   it("says the counts in words", () => {
     expect(countsText(DECADE)).toBe("1,284 songs; 12 use the release year because the first-release year is missing");
@@ -138,16 +140,15 @@ describe("categories list", () => {
 
   });
 
-  it("lists category data with primary Edit and Delete in Options without announcing", async () => {
+  it("lists category data with Edit and Delete in Options without announcing", async () => {
     await open();
     expect(items()[0].cells[1].textContent).toBe(countsText(DECADE));
-    expect(items()[0].cells[2].textContent).toBe("Query original_year:2000..2009");
-    expect(items()[0].cells[4].textContent).toBe("Throwback");
+    expect(items()[0].cells[2].textContent).toBe("Query original_year:2000..2009. Used by Throwback.");
     expect(items()[1].cells[1].textContent).toBe("300 songs; 7 playlist lines match no library track. Not in the library: one.flac, two.flac, three.flac, four.flac, five.flac, and 2 more.");
-    expect(items()[1].cells[2].textContent).toBe("Playlist A.m3u8");
-    expect(items()[1].cells[4].textContent).toBe("No clockwheel uses it.");
+    expect(items()[1].cells[2].textContent).toBe("Playlist A.m3u8. No clockwheel uses it.");
     expect(rowButton(1, "edit").textContent).toBe("Edit");
-    expect(rowButton(1, "edit").getAttribute("aria-label")).toBe("Edit A");
+    expect(rowButton(1, "edit").getAttribute("aria-label")).toBe("Edit");
+    expect(rowButton(1, "edit").closest('[role="menu"]').getAttribute("aria-label")).toBe("Options for A");
     expect(rowButton(1, "delete").getAttribute("aria-label")).toBe("Delete");
     expect(status()).toBe("");
     const cells = [...byId("categories-list").querySelectorAll("tbody td")];
@@ -549,7 +550,7 @@ describe("categories form", () => {
     expect(byId("confirm-message").textContent).toBe("Morning, Evening have steps for it. Those steps are skipped until you change them.");
     // The row's words changed in place; Delete keeps focus under the dialog.
     expect(rowButton(1, "delete")).toBe(button);
-    expect(items()[1].cells[4].textContent).toBe("Morning, Evening");
+    expect(items()[1].cells[2].textContent).toBe("Playlist A.m3u8. Used by Morning, Evening.");
     byId("confirm-cancel").click();
     expect(server.calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
   });

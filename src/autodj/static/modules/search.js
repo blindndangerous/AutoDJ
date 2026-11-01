@@ -129,7 +129,7 @@ export function installSearch({
         makeButton("Play now", { now: "true" }),
         makeButton("Play next", { now: "false", next: "true" }),
         makeButton("Add to queue", { now: "false" }),
-        makeButton("Track info", { points: "true", kind: track.kind || "music" }),
+        makeButton("Track info", { action: "info", points: "true", kind: track.kind || "music" }),
       ], { nameIndex: 0 });
       return row;
     }));

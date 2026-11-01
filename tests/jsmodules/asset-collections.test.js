@@ -7,8 +7,8 @@ afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 const json = (body) => new globalThis.Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
 const press = (key) => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
 
-// ADR-0021-31
-it("keeps liner rows keyed with separate dates and availability cells and Options return focus", () => {
+// ADR-0021-31 ADR-0021-39
+it("keeps liner rows keyed with dates and availability in Details and Options return focus", () => {
   document.body.innerHTML = '<div id="files"></div>';
   const host = document.getElementById("files");
   const liners = [
@@ -18,10 +18,9 @@ it("keeps liner rows keyed with separate dates and availability cells and Option
   renderLinerFileList(host, liners, vi.fn());
   const row = host.querySelector('tr[data-row-key="b"]');
   expect(row).not.toBeNull();
-  expect([...row.cells].slice(0, 3).map((cell) => cell.textContent)).toEqual(["Second.wav", "Until tomorrow", "Skipped now: Not before tomorrow"]);
-  expect(row.querySelectorAll('button:not([role="menuitem"])')).toHaveLength(2);
-  expect(row.querySelectorAll('td[data-action="dates"]')).toHaveLength(1);
-  expect(row.querySelector('td[data-action="dates"]').querySelector("button").textContent).toBe("Play dates");
+  expect([...row.cells].slice(0, 2).map((cell) => cell.textContent)).toEqual(["Second.wav", "Until tomorrow. Skipped now: Not before tomorrow."]);
+  expect(row.querySelectorAll('button:not([role="menuitem"])')).toHaveLength(1);
+  expect([...row.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)).toEqual(["Play dates", "Track info", "Delete"]);
   const options = row.querySelector('[aria-haspopup="menu"]');
   options.click();
   press("Escape");
@@ -44,7 +43,7 @@ it("shows profile active state in its own cell and keeps reset and deletion in O
   expect([...row.cells].slice(0, 2).map((cell) => cell.textContent)).toEqual(["Morning", "Yes"]);
   expect(row.querySelector('button[data-action="activate"]').getAttribute("aria-disabled")).toBe("false");
   row.querySelector('[aria-haspopup="menu"]').click();
-  expect([...row.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)).toEqual(["Reset", "Delete"]);
+  expect([...row.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)).toEqual(["Activate", "Reset", "Delete"]);
   press("Escape");
   expect(document.activeElement.dataset.action).toBe("options");
   controls.clear();
@@ -63,9 +62,11 @@ it("shows paired device data in columns with Rename and a revocation menu", asyn
   await vi.waitFor(() => expect($("list").querySelector('tbody tr[data-row-key]')).not.toBeNull());
   const row = $("list").querySelector('tbody tr[data-row-key]');
   expect(row.cells[0].textContent).toBe("Desk, this browser");
-  expect([...$("list").querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["Name", "Paired", "Last seen", "Actions", "Options"]);
-  expect(row.querySelectorAll('button:not([role="menuitem"])')).toHaveLength(2);
+  expect([...$("list").querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["Name", "Paired", "Last seen", "Actions"]);
+  expect(row.querySelectorAll('button:not([role="menuitem"])')).toHaveLength(1);
   row.querySelector('[aria-haspopup="menu"]').click();
+  expect(document.activeElement.textContent).toBe("Rename");
+  press("ArrowDown");
   expect(document.activeElement.textContent).toBe("Revoke access");
   controls.clear();
   expect($("list").querySelectorAll("tbody tr[data-row-key]")).toHaveLength(0);

@@ -138,7 +138,7 @@ the replaced files within five minutes.
 ## Paired devices
 
 In native mode, the web page's Settings, Global, Server lists every paired device with when it was paired and
-when it was last seen, and marks this browser. Each row has **Rename**; its **Options** menu contains **Revoke access**. Names are 1 to 64
+when it was last seen, and marks this browser. Each row's **Options** menu contains **Rename** and **Revoke access**. Names are 1 to 64
 printable characters. **Show pairing code** shows a code with a Copy button and how long it stays
 valid; the code changes by itself every five minutes and cannot be edited. Each code pairs one
 device. While the code is shown the page checks the list every five seconds; when a device pairs

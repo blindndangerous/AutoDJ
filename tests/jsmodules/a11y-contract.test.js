@@ -3524,17 +3524,19 @@ describe("static accessibility contracts", () => {
       expect(host.querySelector("table").getAttribute("role"), id).toBe("grid");
       expect(host.querySelector("table").getAttribute("aria-label"), id).toBe(label);
     }
-    // Read-only reports use the same labelled table and column headers.
-    for (const [wrapId, hostId, label, columns] of [
-      ["ads-totals-wrap", "ads-totals", "Totals by advertiser and campaign", ["Advertiser", "Campaign", "Aired", "Aired late", "Missed", "May have aired", "Waiting", "Seconds aired"]],
-      ["ads-rows-wrap", "ads-rows", "Every spot", ["Break time", "Aired", "Result", "Spot", "Break", "Reason"]],
+    // The report (#712): plain tables with captions and column headers, each in
+    // a named region that takes focus, so a narrow window scrolls it by keyboard.
+    for (const [wrapId, tableId, columns] of [
+      ["ads-totals-wrap", "ads-totals-table", ["Advertiser", "Campaign", "Aired", "Aired late", "Missed", "May have aired", "Waiting", "Seconds aired"]],
+      ["ads-rows-wrap", "ads-rows-table", ["Break time", "Aired", "Result", "Spot", "Break", "Reason"]],
     ]) {
       const wrap = document.getElementById(wrapId);
-      const table = document.querySelector(`#${hostId} table`);
+      const table = document.getElementById(tableId);
       expect(wrap.hidden).toBe(true);
-      expect(table.getAttribute("role")).toBe("grid");
-      expect(table.getAttribute("aria-label")).toBe(label);
-      expect(table.parentElement.classList.contains("data-table-scroll")).toBe(true);
+      expect(wrap.getAttribute("role")).toBe("region");
+      expect(wrap.getAttribute("tabindex")).toBe("0");
+      expect(wrap.getAttribute("aria-labelledby")).toBe(table.querySelector("caption").id);
+      expect(table.hasAttribute("role")).toBe(false);
       const headers = [...table.querySelectorAll("thead th")];
       expect(headers.map((th) => th.textContent)).toEqual(columns);
       expect(headers.every((th) => th.getAttribute("scope") === "col")).toBe(true);
@@ -3647,14 +3649,14 @@ describe("listener request contracts", () => {
 });
 
 describe("Batch 2 rendered collection accessibility", () => {
-  function collection(id, label, columns, primary = null, actions = null) {
+  function collection(id, label, columns, actions = null) {
     const host = document.getElementById(id);
     const table = host.querySelector("table.collection-table");
     expect(table, id).not.toBeNull();
     expect(table.getAttribute("role")).toBe("grid");
     expect(table.getAttribute("aria-label")).toBe(label);
     expect([...table.querySelectorAll("th")].map((cell) => cell.textContent))
-      .toEqual([...columns, ...(primary ? ["Actions"] : []), ...(actions ? ["Options"] : [])]);
+      .toEqual([...columns, ...(actions ? ["Actions"] : [])]);
     expect(table.querySelector('[role="rowheader"]')).toBeNull();
     expect(table.closest('[aria-live], [role="status"], [role="alert"]')).toBeNull();
     expect(table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
@@ -3662,8 +3664,7 @@ describe("Batch 2 rendered collection accessibility", () => {
     expect(row).not.toBeNull();
     expect([...row.cells].every((cell) => cell.getAttribute("role") === "gridcell")).toBe(true);
     const buttons = [...row.querySelectorAll('button:not([role="menuitem"])')];
-    expect(buttons.map((button) => button.textContent)).toEqual([...(primary ? [primary] : []), ...(actions ? ["Options"] : [])]);
-    if (primary) expect(buttons[0].getAttribute("aria-label")).toMatch(new RegExp(`^${primary} .+`));
+    expect(buttons.map((button) => button.textContent)).toEqual(actions ? ["Options"] : []);
     if (actions) {
       const options = row.querySelector('[aria-haspopup="menu"]');
       expect(options.getAttribute("aria-label")).toMatch(/^Options for .+/);
@@ -3684,7 +3685,7 @@ describe("Batch 2 rendered collection accessibility", () => {
     return row;
   }
 
-  it("renders Shows, songs and search with named grids and one primary action", async () => {
+  it("renders Shows, songs and search with named grids and one Actions menu", async () => {
     installDocument({ css: cssSource });
     document.getElementById("panel-library").hidden = false;
     const { installShowsPanel } = await import("../../src/autodj/static/modules/shows-panel.js");
@@ -3699,14 +3700,14 @@ describe("Batch 2 rendered collection accessibility", () => {
     } });
     try {
       await controls.refresh();
-      const row = collection("shows-list", "Shows", ["Name", "Source", "Songs", "Length", "Target", "Missing", "Station name while active", "Schedule events"], "Open list", ["Edit", "Delete"]);
+      const row = collection("shows-list", "Shows", ["Name", "Songs", "Length", "Details"], ["Open list", "Edit", "Delete"]);
       row.querySelector('button[data-action="open"]').click();
       await vi.waitFor(() => expect(document.querySelector("#shows-songs tbody tr[data-row-key]")).not.toBeNull());
-      collection("shows-songs", "Show songs", ["Number", "Song", "Length", "Availability", "Repeated"], "Track info", ["Move up", "Move down", "Remove"]);
+      collection("shows-songs", "Show songs", ["Song", "Length"], ["Track info", "Move up", "Move down", "Remove"]);
       document.getElementById("shows-search").value = "found";
       document.getElementById("shows-search-run").click();
       await vi.waitFor(() => expect(document.querySelector("#shows-results tbody tr[data-row-key]")).not.toBeNull());
-      collection("shows-results", "Show search results", ["Song", "Length"], "Add", ["Add to edition"]);
+      collection("shows-results", "Show search results", ["Song", "Length"], ["Add", "Add to edition"]);
     } finally { controls.destroy(); }
   });
 
@@ -3722,8 +3723,8 @@ describe("Batch 2 rendered collection accessibility", () => {
       await controls.openShow({ id: "show", name: "Morning", songs: [] });
       document.getElementById("edition-load").click();
       await vi.waitFor(() => expect(document.querySelector("#edition-occurrences tbody tr[data-row-key]")).not.toBeNull());
-      collection("edition-occurrences", "Edition occurrences", ["Position", "Item", "Kind"], null, ["Move up", "Move down", "Remove"]);
-      const row = collection("edition-takes", "Edition takes", ["Name", "Placement", "Status"], "Listen", ["Re-record", "Review", "Approve", "Reattach", "Remove"]);
+      collection("edition-occurrences", "Edition occurrences", ["Item"], ["Move up", "Move down", "Remove"]);
+      const row = collection("edition-takes", "Edition takes", ["Name", "Placement", "Status"], ["Listen", "Re-record", "Review", "Approve", "Reattach", "Remove"]);
       const listen = row.querySelector('button[data-action="listen"]');
       expect(listen.disabled).toBe(false);
       expect(listen.getAttribute("aria-disabled")).toBe("true");
@@ -3737,10 +3738,10 @@ describe("Batch 2 rendered collection accessibility", () => {
     applyQueueState([{ path: "/bridge.flac", display_name: "Bridge song", bridge_to: "Requested song" }], {
       queueList: document.getElementById("queue-list"), queueAnnounce: document.getElementById("queue-announce"),
     });
-    const row = collection("queue-list", "Queued tracks", ["Position", "Track", "Bridge"], "Track info", ["Move to top", "Move up", "Move down", "Remove"]);
-    expect(row.querySelector('td[data-action="bridge"]').textContent).toBe("Bridge to Requested song");
+    const row = collection("queue-list", "Queued tracks", ["Track"], ["Track info", "Move to top", "Move up", "Move down", "Remove"]);
+    expect(row.querySelector('td[data-action="track"]').textContent).toBe("1. Bridge song, bridge to Requested song");
     expect(row.querySelector('[aria-haspopup="menu"]').getAttribute("aria-label")).toBe("Options for Bridge song, bridge to Requested song");
-    expect(row.querySelector('button[data-action="info"]').getAttribute("aria-label")).toBe("Track info Bridge song, bridge to Requested song");
+    expect(row.querySelector('button[data-action="info"]').getAttribute("aria-label")).toBe("Track info");
   });
 
   it("renders Listener waiting and recent tables with names and silent data", async () => {
@@ -3751,10 +3752,10 @@ describe("Batch 2 rendered collection accessibility", () => {
       recent: [{ id: "recent", title: "Other", requested_at: 90, status: "queued" }] };
     const controls = installListenerRequests({ doc: document, request: async () => state, setTimer: () => null, formatTime: () => "10:00" });
     await controls.refresh();
-    const row = collection("requests-list", "Waiting requests", ["Song", "Requester", "Time", "Fit"], "Approve", ["Play next", "Turn down"]);
-    collection("requests-recent", "Recent decisions", ["Song", "Requester", "Time", "Decision", "Reason"]);
+    const row = collection("requests-list", "Waiting requests", ["Song", "Requested", "Fit"], ["Approve", "Play next", "Turn down"]);
+    collection("requests-recent", "Recent decisions", ["Song", "Requested", "Decision"]);
     const approve = row.querySelector('button[data-action="approve"]');
-    expect(approve.getAttribute("aria-label")).toBe("Approve Song by Artist");
+    expect(approve.getAttribute("aria-label")).toBe("Approve");
     expect(approve.disabled).toBe(false);
     expect(approve.getAttribute("aria-disabled")).toBe("true");
     expect(document.getElementById(approve.getAttribute("aria-describedby")).textContent).toBe("No smooth place is available.");
@@ -3772,7 +3773,7 @@ describe("Batch 2 rendered collection accessibility", () => {
     const controls = installVoiceTracker(undefined, { interval: () => null, media: () => null, Recorder: () => null });
     try {
       await controls.refresh();
-      const row = collection("vt-list", "Voice-track bookings", ["Booking", "State", "Details"], null, ["Cancel"]);
+      const row = collection("vt-list", "Voice-track bookings", ["Booking", "State"], ["Cancel"]);
       const cancel = row.querySelector('button[data-action="cancel"]');
       expect(cancel.disabled).toBe(false);
       expect(cancel.getAttribute("aria-disabled")).toBe("true");

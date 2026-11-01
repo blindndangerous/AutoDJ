@@ -99,17 +99,20 @@ async function open(server = fakeServer()) {
 beforeEach(installIndex);
 afterEach(() => { controls?.destroy(); controls = null; });
 
+// ADR-0021-39
 it("uses a named intro-rule collection grid and returns its menu to the Options cell", async () => {
   await open();
   const table = byId("intro-rules-list").querySelector("table.collection-table");
   expect(table).not.toBeNull();
-  expect([...table.querySelector("thead tr").cells].map((cell) => cell.textContent)).toEqual(["Name", "Conditions", "Clips", "Playback", "Dates", "Actions", "Options"]);
+  expect([...table.querySelector("thead tr").cells].map((cell) => cell.textContent)).toEqual(["Name", "Conditions", "Details", "Actions"]);
   const row = table.querySelector("tbody tr");
   expect(row.cells[0].textContent).toBe("Eighties");
   row.querySelector('[aria-haspopup="menu"]').click();
+  expect(document.activeElement.textContent).toBe("Edit");
+  document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
   expect(document.activeElement.textContent).toBe("Delete");
   document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  expect(document.activeElement).toBe(row.cells[6]);
+  expect(document.activeElement).toBe(row.cells[3]);
 });
 
 describe("intro rules markup", () => {
@@ -166,15 +169,15 @@ describe("intro rules in words", () => {
 });
 
 describe("intro rules list and form", () => {
-  it("lists rule data with primary Edit and Delete in Options without announcing", async () => {
+  it("lists rule data with Edit and Delete in Options without announcing", async () => {
     await open();
     expect(items()[0].cells[1].textContent).toBe("Year between 1980 and 1989");
-    expect(items()[0].cells[2].textContent).toBe("eighties.wav");
-    expect(items()[0].cells[3].textContent).toContain("50% chance, at most once every 1 hour 30 minutes");
+    expect(items()[0].cells[2].textContent).toMatch(/^eighties\.wav\. 50% chance, at most once every 1 hour 30 minutes, /);
     expect(items()[1].cells[1].textContent).toMatch(/Rock.* or .*Gold/);
-    expect(items()[1].cells[4].textContent).toBe("From 1 December 2026 until 26 December 2026");
+    expect(items()[1].cells[2].textContent).toMatch(/ From 1 December 2026 until 26 December 2026\.$/);
     expect(button(0, "edit").textContent).toBe("Edit");
-    expect(button(0, "edit").getAttribute("aria-label")).toBe("Edit Eighties");
+    expect(button(0, "edit").getAttribute("aria-label")).toBe("Edit");
+    expect(button(0, "edit").closest('[role="menu"]').getAttribute("aria-label")).toBe("Options for Eighties");
     expect(button(1, "delete").getAttribute("aria-label")).toBe("Delete");
     expect(byId("intro-rules-list").querySelector(".no-results")).toBeNull();
     expect(status()).toBe("");
@@ -185,11 +188,11 @@ describe("intro rules list and form", () => {
     expect(document.activeElement).toBe(cells[1]);
   });
 
-  it("shows unavailable clips and filename selection in their own data column", async () => {
+  it("shows unavailable clips and filename selection in the rule's Details", async () => {
     const server = fakeServer();
     server.rules = [{ ...EIGHTIES, clip_ids: ["gone", "l2"] }, { ...ROCK, clip_ids: [], filename_pattern: "{artist} - *.wav" }];
     await open(server);
-    expect(items()[0].cells[2].textContent).toBe("One of a liner that is no longer registered, rock.wav");
+    expect(items()[0].cells[2].textContent).toMatch(/^One of a liner that is no longer registered, rock\.wav\. /);
     expect(items()[1].cells[2].textContent).toContain('Filename pattern "{artist} - *.wav"');
   });
 
@@ -397,7 +400,7 @@ describe("intro rules list and form", () => {
     const server = await open();
     controls.clear();
     expect(items()).toEqual([]);
-    expect(byId("intro-rules-list").querySelector(".no-results").colSpan).toBe(7);
+    expect(byId("intro-rules-list").querySelector(".no-results").colSpan).toBe(4);
     server.rules = [copy(ROCK)];
     controls.refresh();
     await vi.waitFor(() => expect(items()).toHaveLength(1));

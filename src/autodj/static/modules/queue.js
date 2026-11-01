@@ -27,23 +27,19 @@ function controller(els) {
   state.say = makeSay(() => state.els.queueAnnounce, { dwellMs: 3000, errorDwellMs: 6000 });
   state.grid = createCollectionTable({
     host: queueList, label: "Queued tracks", status: els.queueAnnounce, fallback: queueList,
-    emptyText: EMPTY_TEXT, nameIndex: 1,
-    columns: [
-      { key: "position", label: "Position", value: (_, index) => index + 1 },
-      { key: "track", label: "Track", value: (entry) => fmtTrack(entry.track) },
-      { key: "bridge", label: "Bridge", value: (entry) => bridgeText(entry.track) },
-    ],
+    emptyText: EMPTY_TEXT,
+    // The position and any bridge share the track's cell, as before #707.
+    columns: [{ key: "track", label: "Track", value: (entry, index) => `${index + 1}. ${entryName(entry)}` }],
     keyOf: (entry) => entry.id, nameOf: entryName,
-    primary: (entry) => ({ id: "info", label: "Track info", run: (button) => {
+    actions: (entry, index) => [{ id: "info", label: "Track info", run: (button) => {
       // Track info keeps its existing editor and return-to-collection event.
       button.dataset.path = entry.track.path;
       queueList.ownerDocument.dispatchEvent(new CustomEvent("autodj:edit-points", {
         detail: { path: entry.track.path, kind: "music", opener: button },
       }));
-    } }),
-    actions: (entry, index) => [["top", "Move to top"], ["up", "Move up"], ["down", "Move down"], ["remove", "Remove"]]
+    } }, ...[["top", "Move to top"], ["up", "Move up"], ["down", "Move down"], ["remove", "Remove"]]
       .map(([id, label]) => ({ id, label, disabledReason: actionReason(state, id, index),
-        run: (button) => changeQueue(state, id, entry.id, button) })),
+        run: (button) => changeQueue(state, id, entry.id, button) }))],
   });
   return state;
 }

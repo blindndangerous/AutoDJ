@@ -320,13 +320,17 @@ The browser UI uses native HTML and shared rules in
 list. Use `.dialog-actions` for a right-aligned, wrapping button row.
 Collections, including clockwheel steps and dense data tables, use the shared
 `.collection-table` class and `modules/collection-table.js`, built on `tableRow`
-and `installTableNavigation`. Keep real data columns, one Tab stop, at most one
-visible primary row action, and an **Options for <row name>** menu for the rest.
-Let native column headings supply column names; do not repeat them in data-cell
-accessible labels. Moving vertically to a different row adds only that row's name
-to a plain data cell; clear this temporary context on focusout. Name cells and
-control cells retain their own names. Escape, completed menu actions and cancelled confirmations
-return to the Options grid cell so arrow navigation continues. Standalone menus
+and `installTableNavigation`. Keep one Tab stop and only columns an operator
+scans or compares down the table; fold secondary facts into one cell sentence.
+A row with actions ends in one **Actions** column holding only its **Options for
+<row name>** menu button; the menu lists every action, the most used first, and
+Shift+F10, the Applications key and right-click open it too. NVDA says no table
+headings in focus mode, so a moved-to data cell is named by its text, then the
+column heading when the column changed, then the row's name when the row
+changed (#712); clear this temporary name on focusout. Control cells retain
+their own names. Escape and actions that leave focus alone return to the cell
+the menu opened from, and cancelled confirmations to the Actions cell, so arrow
+navigation continues. Standalone menus
 return to their buttons. Editor descriptions contain short help only, never the
 whole form or its live status region. Opening an editor focuses its requested
 field directly, without an intermediate focus target. In tab strips, the selected

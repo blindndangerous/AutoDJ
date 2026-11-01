@@ -4465,6 +4465,7 @@ describe("several stations (#70)", () => {
     const requestOptions = requests.querySelector('[aria-haspopup="menu"]');
     requestOptions.focus();
     requestOptions.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
     const playNext = requests.querySelector('button[data-action="play-next"]');
     expect(document.activeElement).toBe(playNext);
     expect(playNext.getAttribute("aria-disabled")).toBe("true");

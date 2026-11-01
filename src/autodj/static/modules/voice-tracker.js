@@ -720,8 +720,11 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     emptyText: "No voice tracks yet.",
     columns: [
       { key: "booking", label: "Booking", value: (track) => track.label || "Voice track" },
-      { key: "state", label: "State", value: (track) => String(track.state || "Unknown").replaceAll("_", " ") },
-      { key: "details", label: "Details", value: (track) => stateWords(track, data?.slot, wallClock()) },
+      // The state's words already name it, so they are the whole cell.
+      { key: "state", label: "State", value: (track) => {
+        const words = String(stateWords(track, data?.slot, wallClock()) || "Unknown");
+        return words.charAt(0).toUpperCase() + words.slice(1);
+      } },
     ],
     actions: (track) => [{ id: "cancel", label: "Cancel",
       disabledReason: track.cancellable === true ? "" : `This booking cannot be canceled: ${stateWords(track, data?.slot, wallClock())}.`,

@@ -69,7 +69,9 @@ async function audit(name, launcher) {
     await page.keyboard.press("Escape");
     await expect(page.locator('#shows-list td[data-action="options"]')).toBeFocused();
     await page.keyboard.press("ArrowLeft");
-    await expect(page.locator('#shows-list td[data-action="open"]')).toBeFocused();
+    await expect(page.locator('#shows-list td[data-action="details"]')).toBeFocused();
+    // Open list is the first item of the show's Options menu (#712).
+    await page.locator('#shows-list [aria-haspopup="menu"]').click();
     await page.locator("#shows-list button[data-action='open']").click();
     await expect(page.locator("#shows-editor")).toBeVisible();
     await page.locator("#edition-card > summary").click();
@@ -103,20 +105,23 @@ async function audit(name, launcher) {
       return result.violations.map((entry) => ({ id: entry.id, nodes: entry.nodes.map((node) => node.target) }));
     });
     assert.deepEqual(accessibility, []);
+    // #712: a horizontal move adds the column heading to the cell's name.
     const cells = page.locator('#edition-occurrences tr[data-row-key]:first-child > td');
+    const headings = (await page.locator("#edition-occurrences thead th").allTextContents()).map((text) => text.trim());
     await cells.first().focus();
     for (let index = 0; index < await cells.count(); index += 1) {
       if (index) await page.keyboard.press("ArrowRight");
       const cell = cells.nth(index);
       if (!await cell.locator("button, input, select").count()) {
-        await expect(cell).toHaveAccessibleName((await cell.textContent()).replace(/\s+/g, " ").trim());
+        const content = (await cell.textContent()).replace(/\s+/g, " ").trim();
+        await expect(cell).toHaveAccessibleName(index ? [content, headings[index]].filter(Boolean).join(", ") : content);
       }
     }
     await takeAction("reattach");
     await page.keyboard.press("Escape");
     await takeCellReturn();
-    report.steps.push("production edition: axe WCAG2.2 A/AA; computed data names; Escape returns to exact Options cell with arrow continuation");
-    await page.locator("#edition-takes button[data-action='listen']").click();
+    report.steps.push("production edition: axe WCAG2.2 A/AA; computed data names with the heading after a horizontal move; Escape returns to exact Options cell with arrow continuation");
+    await (await takeAction("listen")).click();
     await expect(page.locator("#edition-audio")).toHaveAttribute("src", new RegExp(`/assets/${take.asset_id}$`));
     await page.locator("#edition-audio").focus(); await page.keyboard.press("Space");
     await expect.poll(() => page.locator("#edition-audio").evaluate((audio) => audio.currentTime)).toBeGreaterThan(0);
@@ -142,7 +147,7 @@ async function audit(name, launcher) {
     await expect(page.locator("#edition-record")).toHaveText("Stop recording");
     await page.locator("#edition-record").click();
     await expect(page.locator("#edition-save-take")).toBeEnabled();
-    await page.locator("#edition-takes button[data-action='listen']").click();
+    await (await takeAction("listen")).click();
     await expect(page.locator("#edition-save-take")).toBeEnabled();
     await (await takeAction("rerecord")).click();
     await expect(page.locator("#confirm-title")).toHaveText("Discard unsaved recording?");
@@ -167,7 +172,7 @@ async function audit(name, launcher) {
     const approve = await takeAction("approve");
     await expect(approve).toHaveAttribute("aria-disabled", "false"); await approve.click();
     await expect(page.locator("#edition-takes")).toContainText("ready");
-    await takeCellReturn("listen");
+    await takeCellReturn();
     assert.ok((await view()).takes[0].approval);
     report.steps.push("pending target full-context real OVC generation returns to edition; only explicit approval marks ready");
     await page.locator("#edition-name").fill("Unrelated renamed edition");

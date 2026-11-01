@@ -16,8 +16,10 @@ function mount(extra = {}) {
   return createCollectionTable({ host, label: "Examples", status, fallback,
     columns: [{ key: "name", label: "Name", value: (item) => item.name }, { key: "count", label: "Count", value: (item) => item.count }],
     keyOf: (item) => item.id, nameOf: (item) => item.name,
-    primary: (item) => ({ id: "edit", label: "Edit", run: () => extra.edit?.(item) }),
-    actions: (item) => [{ id: "delete", label: "Delete", run: () => extra.remove?.(item) }], ...extra,
+    actions: (item) => [
+      { id: "edit", label: "Edit", run: () => extra.edit?.(item) },
+      { id: "delete", label: "Delete", run: () => extra.remove?.(item) },
+    ], ...extra,
   });
 }
 describe("collection tables", () => {
@@ -26,7 +28,7 @@ describe("collection tables", () => {
     const grid = mount({ emptyText: "No items loaded." });
     const empty = grid.body.querySelector(".no-results");
     expect(empty).not.toBeNull();
-    expect(empty.colSpan).toBe(4);
+    expect(empty.colSpan).toBe(3);
     expect(empty.textContent).toBe("No items loaded.");
     expect(grid.table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
     grid.update([{ id: "a", name: "Ready", count: 1 }]);
@@ -47,20 +49,111 @@ describe("collection tables", () => {
     await vi.waitFor(() => expect(status.textContent).toBe("The Examples list changed. Focus moved to Profile name."));
   });
 
-  it("preserves a primary toggle's pressed state across keyed updates", () => {
-    const grid = mount({ primary: (item) => ({ id: "listen", label: "Listen", ariaPressed: item.playing, run() {} }) });
-    grid.update([{ id: "a", name: "Intro", playing: false }]);
-    const button = grid.target("a").querySelector("button");
-    expect(button.getAttribute("aria-pressed")).toBe("false");
-    grid.target("a").focus();
-    grid.update([{ id: "a", name: "Intro", playing: true }]);
-    expect(grid.target("a").querySelector("button")).toBe(button);
-    expect(button.getAttribute("aria-pressed")).toBe("true");
-    expect(document.activeElement).toBe(button.parentElement);
-    grid.update([{ id: "a", name: "Intro" }]);
-    expect(button.hasAttribute("aria-pressed")).toBe(false);
+  // ADR-0021-34
+  it("puts every row action in one Actions column menu with the former primary action first", () => {
+    const grid = mount();
+    grid.update([{ id: "a", name: "First", count: 1 }]);
+    expect([...grid.table.querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["Name", "Count", "Actions"]);
+    const row = grid.body.firstElementChild;
+    expect(row.cells).toHaveLength(3);
+    const buttons = [...row.querySelectorAll("button")].filter((button) => !button.closest('[role="menu"]'));
+    expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual(["Options for First"]);
+    expect(buttons[0].textContent).toBe("Options");
+    expect(buttons[0].closest("td")).toBe(row.cells[2]);
+    expect(grid.target("a")).toBe(row.cells[2]);
+    expect(grid.target("a", "edit")).toBe(row.cells[2]);
+    expect(grid.target("a", "count")).toBe(row.cells[1]);
+    expect([...row.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)).toEqual(["Edit", "Delete"]);
+    const readOnly = mount({ actions: undefined, host: document.body.appendChild(document.createElement("div")) });
+    readOnly.update([{ id: "a", name: "Earlier", count: 2 }]);
+    expect([...readOnly.table.querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["Name", "Count"]);
+    expect(readOnly.table.querySelector("button")).toBeNull();
+    expect(readOnly.target("a")).toBe(readOnly.body.firstElementChild.cells[0]);
   });
-  // ADR-0021-23
+  // ADR-0021-35
+  it("opens a row's menu from the context menu key or right-click and returns to the originating cell", () => {
+    const remove = vi.fn();
+    const grid = mount({ remove });
+    grid.update([{ id: "a", name: "First", count: 1 }, { id: "b", name: "Second", count: 2 }]);
+    const context = (target) => {
+      const event = new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      return event;
+    };
+    const count = grid.target("a", "count");
+    const button = grid.target("a").querySelector('[aria-haspopup="menu"]');
+    count.focus();
+    expect(context(count).defaultPrevented).toBe(true);
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement.textContent).toBe("Edit");
+    press("Escape");
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(count);
+    press("ArrowLeft");
+    expect(document.activeElement).toBe(grid.target("a", "name"));
+    const name = grid.target("b", "name");
+    expect(context(name).defaultPrevented).toBe(true);
+    const second = grid.target("b").querySelector('[aria-haspopup="menu"]');
+    expect(second.getAttribute("aria-expanded")).toBe("true");
+    press("Tab");
+    expect(second.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(name);
+    context(name);
+    press("End");
+    press("Enter");
+    expect(remove).toHaveBeenCalledWith({ id: "b", name: "Second", count: 2 });
+    expect(document.activeElement).toBe(name);
+    button.click();
+    press("Escape");
+    expect(document.activeElement).toBe(grid.target("a"));
+    expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+  });
+  // ADR-0021-25
+  it("lets a menu action that moves focus take it straight from the menu", () => {
+    const field = document.createElement("input");
+    document.body.append(field);
+    const grid = mount({ edit: () => field.focus() });
+    grid.update([{ id: "a", name: "First" }]);
+    grid.target("a", "name").focus();
+    grid.target("a", "name").dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    const seen = [];
+    const record = (event) => seen.push(event.target);
+    document.addEventListener("focusin", record, true);
+    press("Enter");
+    document.removeEventListener("focusin", record, true);
+    expect(seen).toEqual([field]);
+    expect(grid.target("a").querySelector('[aria-haspopup="menu"]').getAttribute("aria-expanded")).toBe("false");
+  });
+  it("opens a row's Track info by its action id from the name cell and honours its disabled reason", async () => {
+    const info = vi.fn();
+    const grid = mount({ actions: (item) => [{ id: "info", label: "Details", disabledReason: item.reason || "", run: info }] });
+    grid.update([{ id: "a", name: "Song" }, { id: "b", name: "Gone", reason: "This song is no longer in the library." }]);
+    grid.target("a", "name").focus();
+    press("Enter");
+    expect(info).toHaveBeenCalledOnce();
+    grid.target("b", "name").focus();
+    press("Enter");
+    expect(info).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(status.textContent).toBe("This song is no longer in the library."));
+  });
+  // ADR-0021-35
+  it("leaves the browser menu on rows and tables without actions", () => {
+    const grid = mount({ actions: (item) => item.locked ? [] : [{ id: "edit", label: "Edit", run() {} }] });
+    grid.update([{ id: "a", name: "Locked", locked: true }]);
+    const event = new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    grid.target("a", "name").dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    grid.update([]);
+    const empty = new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    grid.body.querySelector(".no-results").dispatchEvent(empty);
+    expect(empty.defaultPrevented).toBe(false);
+    const readOnly = mount({ actions: undefined, host: document.body.appendChild(document.createElement("div")) });
+    readOnly.update([{ id: "a", name: "Plain" }]);
+    const plain = new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    readOnly.target("a").dispatchEvent(plain);
+    expect(plain.defaultPrevented).toBe(false);
+  });
+  // ADR-0021-36
   it("refreshes the focused row context after keyed data changes", () => {
     const grid = mount();
     grid.update([{ id: "a", name: "First", count: 1 }, { id: "b", name: "Second", count: 2 }]);
@@ -74,8 +167,8 @@ describe("collection tables", () => {
     press("ArrowLeft");
     expect(count.hasAttribute("aria-label")).toBe(false);
   });
-  // ADR-0021-17
-  it("keeps computed data names free of native headers after navigation and updates", () => {
+  // ADR-0021-36
+  it("adds a changed column heading to computed data names after navigation and updates", () => {
     const grid = mount();
     grid.update([{ id: "a", name: "Evening", count: 2 }]);
     grid.target("a", "name").focus();
@@ -84,14 +177,16 @@ describe("collection tables", () => {
       axe.setup(document);
       try {
         const row = grid.body.firstElementChild;
-        return [row.cells[0], row.cells[1], row.querySelector('button[data-action="edit"]'), row.querySelector('[aria-haspopup="menu"]')]
+        return [row.cells[0], row.cells[1], row.querySelector('[aria-haspopup="menu"]')]
           .map((element) => axe.commons.text.accessibleText(element));
       }
       finally { axe.teardown(); }
     };
-    expect(names()).toEqual(["Evening", "2", "Edit Evening", "Options for Evening"]);
+    expect(names()).toEqual(["Evening", "2, Count", "Options for Evening"]);
     grid.update([{ id: "a", name: "Later", count: 3 }]);
-    expect(names()).toEqual(["Later", "3", "Edit Later", "Options for Later"]);
+    expect(names()).toEqual(["Later", "3, Count", "Options for Later"]);
+    press("ArrowLeft");
+    expect(names()).toEqual(["Later, Name", "3", "Options for Later"]);
   });
   it("finds a collection's owning host independently of internal wrappers", () => {
     const grid = mount();
@@ -121,6 +216,8 @@ describe("collection tables", () => {
     expect(document.activeElement).toBe(target);
     expect(first.cells[0].textContent).toBe("Renamed");
     press("Enter");
+    expect(document.activeElement.textContent).toBe("Edit");
+    press("Enter");
     expect(edit).toHaveBeenCalledWith({ id: "a", name: "Renamed", count: 4 });
     expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
     expect(host.querySelector('[role="rowheader"]')).toBeNull();
@@ -131,7 +228,7 @@ describe("collection tables", () => {
     grid.update([]);
     expect(grid.body.children).toHaveLength(1);
     expect(grid.body.querySelector(".no-results").textContent).toBe("No examples.");
-    expect(grid.body.children[0].cells[0].colSpan).toBe(4);
+    expect(grid.body.children[0].cells[0].colSpan).toBe(3);
     expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
   });
   // ADR-0021-03
@@ -141,7 +238,7 @@ describe("collection tables", () => {
     grid.target("a").focus();
     grid.update([{ id: "b", name: "Second" }]);
     expect(document.activeElement).toBe(grid.target("b"));
-    await vi.waitFor(() => expect(status.textContent).toContain("The Examples list changed. Focus moved to Edit Second."));
+    await vi.waitFor(() => expect(status.textContent).toContain("The Examples list changed. Focus moved to Options for Second."));
     grid.update([]);
     expect(document.activeElement).toBe(fallback);
   });
@@ -159,32 +256,9 @@ describe("collection tables", () => {
     expect(document.activeElement).toBe(grid.target("a", "options"));
     expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
     press("Enter");
+    press("End");
     press("Enter");
     expect(remove).toHaveBeenCalledWith({ id: "a", name: "Renamed", count: 2 });
-  });
-  it("keeps disabled primary actions focusable and explains them", async () => {
-    const run = vi.fn();
-    const grid = mount({ primary: () => ({ id: "edit", label: "Edit", disabledReason: "Save first.", run }) });
-    grid.update([{ id: "a", name: "First" }]);
-    grid.target("a").focus();
-    press("Enter");
-    expect(run).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(status.textContent).toBe("Save first."));
-    expect(grid.target("a").querySelector("button").disabled).toBe(false);
-  });
-  // ADR-0021-15
-  it("associates the current disabled primary reason before activation", () => {
-    const grid = mount({ primary: (item) => ({ id: "edit", label: "Edit", disabledReason: item.reason, run() {} }) });
-    grid.update([{ id: "a", name: "First", reason: "Save first." }]);
-    const button = grid.target("a").querySelector("button");
-    const id = button.getAttribute("aria-describedby");
-    expect(id).toBeTruthy();
-    expect(document.getElementById(id).textContent).toBe("Save first.");
-    grid.update([{ id: "a", name: "First", reason: "Still saving." }]);
-    expect(button.getAttribute("aria-describedby")).toBe(id);
-    expect(document.getElementById(id).textContent).toBe("Still saving.");
-    grid.update([{ id: "a", name: "First" }]);
-    expect(button.hasAttribute("aria-describedby")).toBe(false);
   });
   it("preserves focus on an unchanged empty state", () => {
     const grid = mount();
@@ -214,6 +288,6 @@ describe("collection tables", () => {
     press("Escape");
     expect(document.activeElement).toBe(grid.target("a", "options"));
     press("ArrowLeft");
-    expect(document.activeElement).toBe(grid.target("a"));
+    expect(document.activeElement).toBe(grid.target("a", "count"));
   });
 });

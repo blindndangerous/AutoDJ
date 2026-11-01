@@ -237,6 +237,11 @@ describe("mix settings", () => {
   });
 });
 
+// A row's menu item, found without opening its menu.
+function rowItem(host, name, action) {
+  return host.querySelector(`[role="menu"][aria-label="Options for ${name}"] [role="menuitem"][data-action="${action}"]`);
+}
+
 function menuAction(host, name, action) {
   const button = [...host.querySelectorAll('[aria-haspopup="menu"]')]
     .find((item) => item.getAttribute("aria-label") === `Options for ${name}`);
@@ -370,11 +375,11 @@ describe("profiles", () => {
     await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(1));
 
     const row = els.list.querySelector("tbody tr[data-row-key]");
-    const apply = row.querySelector("button");
+    const apply = rowItem(els.list, "Late", "activate");
     expect(row.cells[0].textContent).toBe("Late");
     expect(row.cells[1].textContent).toBe("Yes");
     expect(apply.textContent).toBe("Activate");
-    expect(apply.getAttribute("aria-label")).toBe("Activate Late");
+    expect(apply.getAttribute("aria-disabled")).toBe("false");
     expect(apply.disabled).toBe(false);
 
     apply.click();
@@ -393,10 +398,10 @@ describe("profiles", () => {
     const { els, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
     expect(els.list.querySelectorAll("[tabindex='0']")).toHaveLength(1);
-    const firstApply = els.list.querySelector('[aria-label="Activate Early"]');
+    const firstApply = rowItem(els.list, "Early", "activate");
     firstApply.closest("td").focus();
     firstApply.closest("td").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(document.activeElement.querySelector("button").getAttribute("aria-label")).toBe("Activate Late");
+    expect(document.activeElement.querySelector("button").getAttribute("aria-label")).toBe("Options for Late");
 
     menuAction(els.list, "Early", "delete").click();
     await answer("confirm");
@@ -443,7 +448,7 @@ describe("profiles", () => {
     const fetchImpl = vi.fn(() => json({ profiles: ["Early", "Late"] }));
     const { els } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
-    const apply = els.list.querySelector('[aria-label="Activate Early"]');
+    const apply = rowItem(els.list, "Early", "activate");
     const rows = [...els.list.children];
     const mutations = [];
     const observer = new window.MutationObserver((records) => mutations.push(...records));
@@ -453,7 +458,7 @@ describe("profiles", () => {
     await vi.waitFor(() => expect(fetchImpl.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect([...els.list.children]).toEqual(rows);
-    expect(els.list.querySelector('[aria-label="Activate Early"]')).toBe(apply);
+    expect(rowItem(els.list, "Early", "activate")).toBe(apply);
     expect([...mutations, ...observer.takeRecords()]).toEqual([]);
     observer.disconnect();
   });
@@ -527,16 +532,17 @@ describe("profiles", () => {
       ? json({ detail: "Profile Late uses a preset that does not exist" }, 400)
       : json({ profiles: ["Late"] })));
     const { els } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll('button:not([role="menuitem"])')).toHaveLength(2));
-    const apply = els.list.querySelector('[aria-label="Activate Late"]');
-    els.nameInput.focus();
+    await vi.waitFor(() => expect(els.list.querySelectorAll('button:not([role="menuitem"])')).toHaveLength(1));
+    const apply = menuAction(els.list, "Late", "activate");
+    expect(document.activeElement).toBe(apply);
 
     apply.click();
 
     await vi.waitFor(() => expect(els.status.textContent).toBe(
       "Could not activate profile Late: Profile Late uses a preset that does not exist",
     ));
-    expect(document.activeElement).toBe(els.nameInput);
+    // The closed menu's cell keeps focus; the failure moves it nowhere else.
+    expect(document.activeElement).toBe(apply.closest("td"));
   });
 });
 
@@ -610,7 +616,7 @@ describe("browser access", () => {
     expect(spokenCode("12345678")).toBe("1 2 3 4, 5 6 7 8");
   });
 
-  it("renames a device, says so once and puts focus back on its Rename", async () => {
+  it("renames a device, says so once and puts focus back on its Actions cell", async () => {
     let listed = devices;
     const fetchImpl = vi.fn((url, init = {}) => {
       if (init.method === "PATCH") {
@@ -623,7 +629,7 @@ describe("browser access", () => {
     const { els } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
     const said = spoken(els.status);
-    const button = els.list.querySelector('[aria-label="Rename Phone"]');
+    const button = rowItem(els.list, "Phone", "rename");
     button.focus();
     button.click();
     const input = document.getElementById("device-rename-name");
@@ -637,20 +643,20 @@ describe("browser access", () => {
     await vi.waitFor(() => expect(said).toEqual(["Renamed to Hall speaker."]));
     expect(document.getElementById("device-rename-dialog").hasAttribute("open")).toBe(false);
     expect(document.activeElement).toBe(button.closest("td"));
-    expect(button.getAttribute("aria-label")).toBe("Rename Hall speaker");
+    expect(button.closest('[role="menu"]').getAttribute("aria-label")).toBe("Options for Hall speaker");
     expect(els.list.querySelector("tbody tr[data-row-key]").cells[0].textContent).toBe("Hall speaker");
     const patch = fetchImpl.mock.calls.find(([, init = {}]) => init.method === "PATCH");
     expect(JSON.parse(patch[1].body)).toEqual({ name: "Hall speaker" });
   });
 
   // #631: show() and aria-modal, not showModal(), so NVDA keeps its place on
-  // the page; Cancel last; Escape puts focus straight back on Rename.
-  it("opens Rename with show() and aria-modal, Cancel last, and Escape returns focus straight to Rename", async () => {
+  // the page; Cancel last; Escape puts focus straight back on the row's Actions cell.
+  it("opens Rename with show() and aria-modal, Cancel last, and Escape returns focus straight to the row", async () => {
     const fetchImpl = vi.fn(() => json({ pairing: true, devices }));
     const { els } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
     const dialog = document.getElementById("device-rename-dialog");
-    const button = els.list.querySelector('[aria-label="Rename Phone"]');
+    const button = rowItem(els.list, "Phone", "rename");
     button.focus();
     button.click();
     expect(dialog.show).toHaveBeenCalledOnce();
@@ -680,9 +686,9 @@ describe("browser access", () => {
     const { els } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
     const rows = [...els.list.children];
-    const rename = els.list.querySelector('[aria-label="Rename Phone"]');
-    rename.closest("td").focus();
-    rename.closest("td").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+    const rename = rowItem(els.list, "Phone", "rename");
+    rename.closest("tr").cells[0].focus();
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }));
     expect(document.activeElement.querySelector("button").getAttribute("aria-label")).toBe("Options for Phone");
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
     expect(document.activeElement.querySelector("button").getAttribute("aria-label")).toBe("Options for Tablet, this browser");
@@ -695,7 +701,7 @@ describe("browser access", () => {
     await vi.waitFor(() => expect(fetchImpl.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect([...els.list.children]).toEqual(rows);
-    expect(els.list.querySelector('[aria-label="Rename Phone"]')).toBe(rename);
+    expect(rowItem(els.list, "Phone", "rename")).toBe(rename);
     expect([...mutations, ...observer.takeRecords()]).toEqual([]);
     observer.disconnect();
   });
@@ -719,7 +725,7 @@ describe("browser access", () => {
       : json({ pairing: true, devices })));
     const { els } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
-    els.list.querySelector('[aria-label="Rename Phone"]').click();
+    rowItem(els.list, "Phone", "rename").click();
     const input = document.getElementById("device-rename-name");
     const error = document.getElementById("device-rename-error");
 
@@ -738,7 +744,7 @@ describe("browser access", () => {
     const fetchImpl = vi.fn(() => json({ pairing: true, devices }));
     const { els, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
-    const rename = els.list.querySelector('[aria-label="Rename Phone"]');
+    const rename = rowItem(els.list, "Phone", "rename");
     rename.click();
     const input = document.getElementById("device-rename-name");
     input.value = "New name";
@@ -761,7 +767,7 @@ describe("browser access", () => {
       ? new Promise((resolve) => { finish = resolve; }) : json({ pairing: true, devices }));
     const { els } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
-    els.list.querySelector('[aria-label="Rename Phone"]').click();
+    rowItem(els.list, "Phone", "rename").click();
     const form = document.getElementById("device-rename-form");
     const dialog = document.getElementById("device-rename-dialog");
     document.getElementById("device-rename-name").value = "New name";

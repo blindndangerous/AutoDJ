@@ -14,7 +14,7 @@ import { createEditorDialog } from "./editor-dialog.js";
 import { failureText, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, withDisabled } from "./api-client.js";
 import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
 import { makeSay } from "./live-region.js";
-import { applyServerFieldError, clearFieldError, fmtTime, selectOnFocus, showFieldError } from "./dom-helpers.js";
+import { applyServerFieldError, clearFieldError, fmtTime, selectOnFocus, sentences, showFieldError } from "./dom-helpers.js";
 import { installPreparedEditions } from "./prepared-editions.js";
 import { checkStationName } from "./station-name-field.js";
 
@@ -30,13 +30,13 @@ const number = (n) => Number(n || 0).toLocaleString("en-US");
 const plural = (n, one, many) => `${number(n)} ${n === 1 ? one : many}`;
 
 export function describeShow(show) {
-  const sentences = [`${show.name}: ${plural(show.count, "song", "songs")}, ${show.count ? show.total_text : "no list yet"}.`];
-  sentences.push(`From ${show.source_text}, target ${plural(show.target_minutes, "minute", "minutes")}.`);
-  if (show.missing) sentences.push(`${plural(show.missing, "song is", "songs are")} no longer in the library.`);
-  if (show.station_name) sentences.push(`Station name while on the air: ${show.station_name}.`);
+  const parts = [`${show.name}: ${plural(show.count, "song", "songs")}, ${show.count ? show.total_text : "no list yet"}.`];
+  parts.push(`From ${show.source_text}, target ${plural(show.target_minutes, "minute", "minutes")}.`);
+  if (show.missing) parts.push(`${plural(show.missing, "song is", "songs are")} no longer in the library.`);
+  if (show.station_name) parts.push(`Station name while on the air: ${show.station_name}.`);
   const events = show.events || [];
-  sentences.push(events.length ? `Played by ${events.join(", ")}.` : "No schedule event plays it.");
-  return sentences.join(" ");
+  parts.push(events.length ? `Played by ${events.join(", ")}.` : "No schedule event plays it.");
+  return parts.join(" ");
 }
 
 // The show on the air, in words.
@@ -146,16 +146,16 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     emptyText: "No shows yet. Press Add show to plan one.",
     columns: [
       { key: "name", label: "Name", value: (show) => show.name },
-      { key: "source", label: "Source", value: (show) => show.source_text },
       { key: "count", label: "Songs", value: (show) => number(show.count) },
       { key: "length", label: "Length", value: (show) => show.count ? show.total_text : "No list yet" },
-      { key: "target", label: "Target", value: (show) => plural(show.target_minutes, "minute", "minutes") },
-      { key: "missing", label: "Missing", value: (show) => number(show.missing) },
-      { key: "station", label: "Station name while active", value: (show) => show.station_name || "Unchanged" },
-      { key: "events", label: "Schedule events", value: (show) => show.events?.join(", ") || "None" },
+      { key: "details", label: "Details", value: (show) => sentences(
+        `From ${show.source_text}, target ${plural(show.target_minutes, "minute", "minutes")}`,
+        show.missing && `${plural(show.missing, "song is", "songs are")} no longer in the library`,
+        show.station_name && `Station name while active: ${show.station_name}`,
+        show.events?.length ? `Played by ${show.events.join(", ")}` : "No schedule event plays it") },
     ],
-    primary: (show) => ({ id: "open", label: "Open list", run: () => void openEditor(show.id) }),
     actions: (show) => [
+      { id: "open", label: "Open list", run: () => void openEditor(show.id) },
       { id: "edit", label: "Edit", run: (button) => openForm(show, button) },
       { id: "delete", label: "Delete", run: () => void remove(show.id) },
     ],
@@ -171,22 +171,19 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   const songTable = createCollectionTable({
     host: songsList, label: "Show songs", status, fallback: searchInput,
     keyOf: songKey, nameOf: (song) => song.title,
-    emptyText: "No songs yet. Press Generate list, or add songs below.", nameIndex: 1,
+    emptyText: "No songs yet. Press Generate list, or add songs below.",
     columns: [
-      { key: "number", label: "Number", value: (_song, index) => number(index + 1) },
-      { key: "title", label: "Song", value: (song) => song.title },
-      { key: "length", label: "Length", value: (song) => song.missing ? "Unknown" : song.length_text },
-      { key: "availability", label: "Availability", value: (song) => song.missing ? "Not in the library; skipped on the air" : "Available" },
-      { key: "repeated", label: "Repeated", value: (song, index) => {
+      // The song's number and its warnings, as the list read before #707.
+      { key: "title", label: "Song", value: (song, index) => {
         const others = (repeated.get(song.path) || []).filter((place) => place !== index + 1);
-        return others.length ? `Warning: also number ${others.join(" and ")} in the list` : "No";
+        return `${number(index + 1)}. ${song.title}${song.missing ? ", not in the library; skipped on the air" : ""}`
+          + (others.length ? `; warning: also number ${others.join(" and ")} in the list` : "");
       } },
+      { key: "length", label: "Length", value: (song) => song.missing ? "Unknown" : song.length_text },
     ],
-    primary: (song) => ({ id: "info", label: "Track info",
-      disabledReason: song.missing ? "This song is no longer in the library." : "",
-      run: (button) => doc.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: song.path, kind: "music", opener: button } })),
-    }),
     actions: (song, index) => [
+      { id: "info", label: "Track info", disabledReason: song.missing ? "This song is no longer in the library." : "",
+        run: (button) => doc.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: song.path, kind: "music", opener: button } })) },
       { id: "up", label: "Move up", disabledReason: generationReason() || (index === 0 ? "Already the first song." : ""), run: () => move(index, -1) },
       { id: "down", label: "Move down", disabledReason: generationReason() || (index === songs.length - 1 ? "Already the last song." : ""), run: () => move(index, 1) },
       { id: "remove", label: "Remove", disabledReason: generationReason(), run: () => void removeSong(song) },
@@ -201,11 +198,11 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       { key: "title", label: "Song", value: (song) => song.title },
       { key: "length", label: "Length", value: (song) => song.length_text },
     ],
-    primary: (song) => ({ id: "add", label: "Add", disabledReason: generationReason(), run: () => addSong(song) }),
-    actions: (song) => [{ id: "edition-add", label: "Add to edition",
-      disabledReason: editions.active() ? "" : "Open a prepared edition first.",
-      run: () => void editions.addSong({ path: song.path, title: song.title }),
-    }],
+    actions: (song) => [
+      { id: "add", label: "Add", disabledReason: generationReason(), run: () => addSong(song) },
+      { id: "edition-add", label: "Add to edition", disabledReason: editions.active() ? "" : "Open a prepared edition first.",
+        run: () => void editions.addSong({ path: song.path, title: song.title }) },
+    ],
   });
 
   function updateEditionSearch() { searchTable.update(searchSongs); }

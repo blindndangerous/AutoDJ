@@ -100,9 +100,10 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
       { key: "paired", label: "Paired", value: (device) => pairedDate(device.paired_at) },
       { key: "seen", label: "Last seen", value: (device) => lastSeenWords(device.last_seen_at) },
     ],
-    primary: (device) => ({ id: "rename", label: "Rename", run: (button) => renameDevice(device, button) }),
-    actions: (device) => [{ id: "revoke", label: sso ? "Forget" : "Revoke access",
-      run: (button) => void revokeDevice(device, button) }],
+    actions: (device) => [
+      { id: "rename", label: "Rename", run: (button) => renameDevice(device, button) },
+      { id: "revoke", label: sso ? "Forget" : "Revoke access", run: (button) => void revokeDevice(device, button) },
+    ],
   });
 
   function who(device) {
@@ -219,7 +220,7 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
 
   // The revoke runs while the confirmation is still open, so the list is
   // already updated when it closes and focus goes straight to the next
-  // row's Options cell, or Refresh when none is left (see confirmAction).  The
+  // row's Actions cell, or Refresh when none is left (see confirmAction).  The
   // result is said after the dialog has closed.
   async function revokeDevice(device, button) {
     const index = devices.findIndex((item) => item.device_id === device.device_id);
@@ -294,7 +295,7 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
         await load();
         if (!current()) return;
         renameEditor.close({ restore: true });
-        const target = collection.target(device.device_id, "rename") || refresh;
+        const target = collection.target(device.device_id) || refresh;
         if (doc.activeElement !== target) target.focus();
         say(`Renamed to ${reply.name}.`);
       } catch (errorValue) {

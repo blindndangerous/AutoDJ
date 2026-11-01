@@ -43,8 +43,8 @@ export function installProfiles(els) {
       { key: "name", label: "Name", value: (name) => name },
       { key: "active", label: "Active", value: (name) => active === name ? "Yes" : "No" },
     ],
-    primary: (name) => ({ id: "activate", label: "Activate", run: () => void applyProfile(name) }),
     actions: (name) => [
+      { id: "activate", label: "Activate", run: () => void applyProfile(name) },
       { id: "reset", label: "Reset", run: () => void resetProfile(name) },
       { id: "delete", label: "Delete", run: (button) => void deleteProfile(name, button) },
     ],
@@ -209,7 +209,7 @@ export function installProfiles(els) {
 
   // The delete runs while the confirmation is still open, so the list is
   // already updated when it closes and focus goes straight to the next
-  // row's Options cell, or the name field when none is left (see confirmAction).
+  // row's Actions cell, or the name field when none is left (see confirmAction).
   // The result is said after the dialog has closed: the status region is
   // behind it until then.
   async function deleteProfile(name, button) {

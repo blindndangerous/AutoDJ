@@ -3,10 +3,10 @@
 // on to the button made NVDA read the cell and then the button.  Enter or
 // Space on the cell presses the button, which is for the mouse and browse
 // mode.  A checkbox takes focus itself, so its state is read.
-// NVDA reports native column headers in focus mode. It does not report the
-// row name because these tables deliberately avoid row headers. Add only
-// that name when crossing rows into a plain data cell, until focus leaves.
-// Name cells and controls already identify themselves and get no extra label.
+// NVDA says no table headings in focus mode, so until focus leaves, a
+// moved-to cell's name is its text, then the column heading (in another
+// column) and the row's name cell, such as its song (on another row) (#712).
+// A button, input or select already names itself, so its cell gets nothing.
 import { tableFocusTarget } from "./table-row.js";
 
 export function installTableNavigation(body) {
@@ -19,18 +19,25 @@ export function installTableNavigation(body) {
   const stop = (cell) => controls(cell).some((item) => item.tagName === "BUTTON") ? cell
     : controls(cell).find((item) => !item.disabled && item.matches("input, select")) || cell;
   const text = (cell) => cell?.textContent.replace(/\s+/g, " ").trim();
-  let labelledCell = null;
+  const place = (cell) => {
+    const row = [...cell.parentElement.children];
+    return row.slice(0, row.indexOf(cell)).reduce((sum, item) => sum + item.colSpan, 0);
+  };
+  const heading = (cell) => text(cell.closest("table")?.querySelector("thead tr")?.children[place(cell)]);
+  let labelled = null;
   function clearRowLabel() {
-    labelledCell?.removeAttribute("aria-label");
-    labelledCell = null;
+    labelled?.cell.removeAttribute("aria-label");
+    labelled = null;
   }
-  function labelRow(cell) {
-    const name = !cell.hasAttribute("data-name") && !controls(cell).length
+  // *column* and *row* say what the move changed.
+  function labelCell(cell, { column, row }) {
+    const header = column && heading(cell);
+    const name = row && !cell.hasAttribute("data-name")
       && text(cell.parentElement.querySelector("[data-name]"));
-    if (!name) { clearRowLabel(); return; }
-    const label = `${text(cell)}, ${name}`;
+    if (controls(cell).length || (!header && !name)) { clearRowLabel(); return; }
+    const label = [text(cell), header, name].filter(Boolean).join(", ");
     if (cell.getAttribute("aria-label") !== label) cell.setAttribute("aria-label", label);
-    labelledCell = cell;
+    labelled = { cell, column, row };
   }
   function setRovingFocus(active) {
     for (const cell of cells()) {
@@ -41,8 +48,8 @@ export function installTableNavigation(body) {
   function refresh() {
     const items = cells();
     const focused = body.ownerDocument.activeElement;
-    if (labelledCell) {
-      if (focused === labelledCell && body.contains(labelledCell)) labelRow(labelledCell);
+    if (labelled) {
+      if (focused === labelled.cell && body.contains(focused)) labelCell(focused, labelled);
       else clearRowLabel();
     }
     // A row menu owns its focus until it closes; refreshing data must not
@@ -88,11 +95,11 @@ export function installTableNavigation(body) {
       if (event.repeat) { event.preventDefault(); return; }
       const control = controls(cell).find((item) => !item.disabled);
       if (control) { event.preventDefault(); control.click(); return; }
-      // Enter on a track's name opens its Track info.
+      // Enter on a track's name opens its Track info, found by its action
+      // id. A menu item's own activation announces a disabled reason.
       const info = event.key === "Enter" && cell.hasAttribute("data-name")
-        && [...cell.closest("tr").querySelectorAll("button")]
-          .find((item) => item.textContent.trim() === "Track info" && !item.disabled);
-      if (info) { event.preventDefault(); info.click(); }
+        && cell.closest("tr").querySelector('button[data-action="info"]');
+      if (info && !info.disabled) { event.preventDefault(); info.click(); }
       return;
     }
     const row = cell.closest("tr");
@@ -116,11 +123,11 @@ export function installTableNavigation(body) {
     // Clear the old temporary label before focusing: focusout must not
     // clear the destination's label when focus moves between named rows.
     clearRowLabel();
-    if (target.parentElement !== row) labelRow(target);
+    labelCell(target, { column: place(target) !== place(cell), row: target.parentElement !== row });
     stop(target).focus();
   });
   body.addEventListener("focusout", (event) => {
-    if (event.target === labelledCell) clearRowLabel();
+    if (event.target === labelled?.cell) clearRowLabel();
   });
   refresh();
   return { refresh };

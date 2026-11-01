@@ -10,7 +10,7 @@ this production's list or recordings. Keep one active take at each opening, clos
 transition or segment position; choose **Re-record** from the take's **Options** menu to replace its audio while
 retaining the previous source asset.
 
-The occurrence table shows Position, Item and Kind. Use its row's **Options** menu for
+The occurrence table shows each item as "N. label", such as "2. Segment 2", and its Actions. Use its row's **Options** menu for
 **Move up**, **Move down** or **Remove**. Remove asks for confirmation. To add a song,
 search the library above and choose **Add to edition** from the result's **Options** menu. Changes use a revision check: if another page
 saved first, reload rather than overwriting its work. Read the estimated duration
@@ -47,9 +47,9 @@ Station playout can stay stopped throughout preparation.
    server checks the exact source asset, adjacent occurrences, cues and applicable
    mixing inputs. A missing, shortened or placeholder target cannot approve speech.
 
-The takes table shows Name, Placement and Status. **Listen** loads a saved take into the
-private player. Its **Options** menu contains **Re-record**, **Review**, **Approve**, **Reattach**
-and **Remove**.
+The takes table shows Name, Placement and Status. A take's **Options** menu starts with
+**Listen**, which loads it into the private player, then **Re-record**, **Review**, **Approve**,
+**Reattach** and **Remove**.
 Remove asks for confirmation. While an edition save is pending, Remove stays
 reachable and explains that you must wait; it cannot start another change.
 Unavailable actions remain reachable and explain their restriction.
@@ -71,7 +71,7 @@ A standalone segment follows its occurrence when you move it, add a song after
 it or remove a neighbour. Changed neighbours require review and approval again.
 If an edit separates a transition's pair, its take shows **Unattached**. In that
 take's **Options** menu, choose **Reattach**. In the dialog, select the new adjacent pair
-in **Position** and press **Reattach**. Focus returns to the take's Options cell.
+in **Position** and press **Reattach**. Focus returns to the take's Actions cell.
 Then review and approve it again. Reattaching keeps the saved audio. An unattached
 opening or closing take offers the current first or last item in the same dialog.
 

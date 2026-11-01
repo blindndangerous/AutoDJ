@@ -29,7 +29,7 @@ function submitReattach() {
 }
 async function settle() { for (let i = 0; i < 30; i += 1) await Promise.resolve(); }
 
-// ADR-0021-11
+// ADR-0021-11 ADR-0021-39
 it("uses shared occurrence and take tables with dialog reattachment", async () => {
   const detached = { ...edition, takes: [{ ...take, status: "unattached" }] };
   const request = vi.fn(async (url) => url.includes("?") ? { editions: [detached] }
@@ -40,12 +40,15 @@ it("uses shared occurrence and take tables with dialog reattachment", async () =
     expect(get(name).querySelector("table.collection-table")).not.toBeNull();
     expect(get(name).querySelector("[role='rowheader']")).toBeNull();
   }
+  expect([...get("occurrences").querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["Item", "Actions"]);
+  expect(get("occurrences").querySelector("tbody tr").cells[0].textContent).toMatch(/^1\. /);
+  expect([...get("takes").querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["Name", "Placement", "Status", "Actions"]);
   const row = get("takes").querySelector("tbody tr");
   expect(row.querySelector("button[data-action='listen']").textContent).toBe("Listen");
   const options = row.querySelector("button[aria-haspopup='menu']");
   options.click();
   expect([...row.querySelectorAll("[role='menuitem']")].map((item) => item.textContent))
-    .toEqual(["Re-record", "Review", "Approve", "Reattach", "Remove"]);
+    .toEqual(["Listen", "Re-record", "Review", "Approve", "Reattach", "Remove"]);
   const review = row.querySelector("button[data-action='review']");
   expect(review.getAttribute("aria-disabled")).toBe("true");
   expect(review.disabled).toBe(false);

@@ -21,9 +21,10 @@ asking before discarding a changed category draft. The saved category remains av
 even if you later cancel the step or rule.
 
 Keep them in the **Library tools** tab, **Categories**, next to the clockwheels that use them. The
-table separates Name, Songs, Source, Availability, and Used by. Songs includes the unique-song
-count, unmatched playlist lines, and songs placed by their release year. Used by names the
-clockwheels that use the category. **Add
+table shows **Name**, **Songs**, **Details** and **Actions**. Songs includes the unique-song
+count, unmatched playlist lines, and songs placed by their release year. Details says where the
+songs come from, its hours or season when set (and when it is outside them now), and which
+clockwheels use the category, or that none does. **Add
 category** and **Edit** open the same modal form; the count refreshes after a short pause, and **Check** gives
 immediate feedback. Counts describe the matching selection before playback limits and hours.
 Settled category and clock-step counts are also announced to screen readers after each completed
@@ -33,7 +34,7 @@ conditions require a newer AutoDJ release: older versions refuse a categories fi
 such a category.
 **Save category** refuses a query that cannot run or names a field no song has. Choose
 **Delete** from **Options for <name>**. The confirmation names clockwheels with a step for the category.
-Save returns to the category's Edit cell; cancelling deletion returns to its Options cell.
+**Edit** is first in the same menu. Save and a cancelled deletion return to the category's Actions cell.
 
 ## Beets paths and `music_dir`
 

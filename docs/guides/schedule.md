@@ -11,9 +11,10 @@ Use **Settings**, **Station**, **Schedule** to change a station at set times. Ev
 5. Choose **Timing**. **Soft** waits for a song change. **Hard** acts at the event time and may fade out the current song. **Wait up to seconds** lets a hard event wait briefly for a song that is nearly finished.
 6. Save the event. Check **Next events** for its next run. In the event's row, open **Options for <event name>** and choose **Run now** to perform the real action immediately. Use it only when you intend that on the selected station, then read **Recent runs** for the result. Use a private practice station for rehearsal.
 
-The **Events** table shows each event's name, timing, action, next run and enabled
-state. **Edit** opens its dialog. **Options** also contains **Enable** or
-**Disable**, and **Delete**; Delete asks for confirmation. **Next events** and
+The **Events** table shows each event's name, timing, action and enabled
+state; **Next events** shows when each runs next. **Options**, **Edit** opens its
+dialog. **Options** also contains **Run now**, **Enable** or **Disable**, and
+**Delete**; Delete asks for confirmation. **Next events** and
 **Recent runs** are read-only tables. All three use the shared
 [table keyboard controls](keyboard-and-screen-reader.md).
 

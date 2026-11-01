@@ -6,12 +6,12 @@ import { createEditorDialog } from "./editor-dialog.js";
 // deletes them through one form. Button results and each settled background
 // count are announced once through #categories-status.
 //
-// Add/Edit focus Name; Save returns to the saved row's Edit cell. Cancel
+// Add/Edit focus Name; Save returns to the saved row's Actions cell. Cancel
 // returns to the opener cell; Delete chooses an adjacent row or Add category.  A refused field gets
 // aria-invalid, the error text as part of its description, and focus; the
 // words stay visible in the form.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, failureText } from "./api-client.js";
-import { focusAfterDialog, clearFieldError, showFieldError, applyServerFieldError } from "./dom-helpers.js";
+import { focusAfterDialog, clearFieldError, sentences, showFieldError, applyServerFieldError } from "./dom-helpers.js";
 import { createCollectionTable } from "./collection-table.js";
 import { deleteCollectionItem } from "./collection-delete.js";
 import { makeSay } from "./live-region.js";
@@ -109,15 +109,18 @@ export function installCategoriesPanel({ document: doc = document, request = req
         return countsText(category) + (category.missing && examples.length
           ? `. Not in the library: ${examples.join(", ")}${more > 0 ? `, and ${number(more)} more` : ""}.` : "");
       } },
-      { key: "source", label: "Source", value: (category) => category.source === "m3u" ? `Playlist ${category.playlist}`
-        : category.source === "filters" ? `Filters: ${describeConditions(category.conditions, category.match, data.folders)}`
-          : `Query ${category.query}` },
-      { key: "availability", label: "Availability", value: (category) => (category.daypart_text || "Any time")
-        + (category.allowed_now === false ? `. Outside its ${["days", "dates"].includes(category.outside_now) ? category.outside_now : "hours"} now.` : "") },
-      { key: "used", label: "Used by", value: (category) => category.used_by?.join(", ") || "No clockwheel uses it." },
+      { key: "details", label: "Details", value: (category) => sentences(
+        category.source === "m3u" ? `Playlist ${category.playlist}`
+          : category.source === "filters" ? `Filters: ${describeConditions(category.conditions, category.match, data.folders)}`
+            : `Query ${category.query}`,
+        category.daypart_text,
+        category.allowed_now === false && `Outside its ${["days", "dates"].includes(category.outside_now) ? category.outside_now : "hours"} now`,
+        category.used_by?.length ? `Used by ${category.used_by.join(", ")}` : "No clockwheel uses it") },
     ],
-    primary: (category) => ({ id: "edit", label: "Edit", run: (button) => openForm(category, button) }),
-    actions: (category) => [{ id: "delete", label: "Delete", run: () => void remove(category.id) }],
+    actions: (category) => [
+      { id: "edit", label: "Edit", run: (button) => openForm(category, button) },
+      { id: "delete", label: "Delete", run: () => void remove(category.id) },
+    ],
     fallback: addButton, status, emptyText: "No categories yet. Press Add category to make one.",
   });
 
@@ -128,8 +131,8 @@ export function installCategoriesPanel({ document: doc = document, request = req
     collection.update(data.categories, { announceFocus: !listFocusAnnouncementSuppressed });
   }
 
-  function rowFor(id, action = "edit") {
-    return collection.target(id, action === "delete" ? "options" : action);
+  function rowFor(id) {
+    return collection.target(id);
   }
 
   function renderPlaylists() {

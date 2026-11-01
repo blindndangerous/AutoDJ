@@ -145,19 +145,18 @@ export function installListenerRequests({
   const say = makeSay(() => isEnabled() ? status : null, { dwellMs: 4000, errorDwellMs: 6000 });
   let pending = new AbortController();
 
+  // Under the Requested heading: who, if they gave a name, and when.
+  const requestedCell = (item) => `${item.name ? `by ${item.name} ` : ""}at ${formatTime(item.requested_at)}`;
   const pendingTable = createCollectionTable({
     host: list, label: "Waiting requests", status, fallback: heading,
     keyOf: (item) => item.id, nameOf: songText, emptyText: "No requests waiting.",
     columns: [
       { key: "song", label: "Song", value: songText },
-      { key: "requester", label: "Requester", value: (item) => item.name || "Anonymous" },
-      { key: "time", label: "Time", value: (item) => formatTime(item.requested_at) },
+      { key: "requested", label: "Requested", value: requestedCell },
       { key: "fit", label: "Fit", value: fitText },
     ],
-    primary: (item) => ({ id: "approve", label: "Approve",
-      disabledReason: actionReason(item, "approve"),
-      run: (button) => decide(item, "approve", button) }),
     actions: (item) => [
+      { id: "approve", label: "Approve", disabledReason: actionReason(item, "approve"), run: (button) => decide(item, "approve", button) },
       { id: "play-next", label: "Play next", disabledReason: actionReason(item, "play-next"), run: (button) => decide(item, "play-next", button) },
       { id: "reject", label: "Turn down", run: (button) => {
         const mine = settingsGeneration;
@@ -172,10 +171,11 @@ export function installListenerRequests({
     keyOf: (item) => item.id, nameOf: songText, emptyText: "No recent decisions.",
     columns: [
       { key: "song", label: "Song", value: songText },
-      { key: "requester", label: "Requester", value: (item) => item.name || "Anonymous" },
-      { key: "time", label: "Time", value: (item) => formatTime(item.requested_at) },
-      { key: "decision", label: "Decision", value: (item) => STATUS_WORDS[item.status] || item.status },
-      { key: "reason", label: "Reason", value: (item) => fitText({ ...item, reason: item.note || "" }) },
+      { key: "requested", label: "Requested", value: requestedCell },
+      { key: "decision", label: "Decision", value: (item) => {
+        const reason = fitText({ ...item, reason: item.note || "" });
+        return `${STATUS_WORDS[item.status] || item.status}${reason ? `: ${reason}` : ""}`;
+      } },
     ],
   });
 
@@ -359,7 +359,7 @@ export function installListenerRequests({
         lastJson = null;
         render(state, { announceFocus: false });
         const next = state.pending[Math.min(index, state.pending.length - 1)];
-        const target = next ? pendingTable.target(next.id, next.can_approve === false ? "options" : "approve") : heading;
+        const target = next ? pendingTable.target(next.id) : heading;
         target?.focus();
         const done = action === "reject" ? `Turned down ${song}.` : `Queued ${song}.`;
         later(() => { if (mine === settingsGeneration) say(done); }, ANNOUNCE_DELAY_MS);

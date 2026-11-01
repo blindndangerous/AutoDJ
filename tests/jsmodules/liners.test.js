@@ -812,7 +812,8 @@ describe("liner play dates", () => {
     return { list, fetchImpl, controls, status: document.getElementById("ln-browse-status") };
   }
 
-  const datesButton = (list, name) => list.querySelector(`button[aria-label="Play dates ${name}"]`);
+  const datesButton = (list, name) => [...list.querySelectorAll('[role="menuitem"][data-action="dates"]')]
+    .find((item) => item.closest("tr").dataset.rowName === name);
 
   it("closes a pending dates editor on station clear and ignores its late save", async () => {
     let finish;
@@ -836,8 +837,8 @@ describe("liner play dates", () => {
 
   it("says each liner's dates in words and that an expired one is skipped", async () => {
     const { list } = await install();
-    expect([...list.querySelector("tbody tr").cells].slice(0, 3).map((cell) => cell.textContent)).toEqual(
-      ["promo.mp3", "Plays until 26 December 2026", "Skipped now: expired after 26 December 2026"]);
+    expect([...list.querySelector("tbody tr").cells].slice(0, 2).map((cell) => cell.textContent)).toEqual(
+      ["promo.mp3", "Plays until 26 December 2026. Skipped now: expired after 26 December 2026."]);
     expect(list.querySelectorAll("tbody tr")[1].cells[0].textContent).toBe("id.wav");
     expect(datesButton(list, "id.wav").textContent).toBe("Play dates");
   });
@@ -888,7 +889,7 @@ describe("liner play dates", () => {
       const listed = { timezone: "America/Denver", today: "2026-12-26", items: [open, ID] };
       const { list, fetchImpl, status } = await install(undefined, listed);
       const row = list.querySelector('tr[data-row-key="promo.mp3"]');
-      expect(row.cells[1].textContent).toBe("Plays until 26 December 2026");
+      expect(row.cells[1].textContent).toBe("Plays until 26 December 2026.");
       const button = datesButton(list, "promo.mp3");
       button.closest("td").focus();
       const said = status.textContent;
@@ -897,8 +898,8 @@ describe("liner play dates", () => {
       vi.setSystemTime(new Date("2026-12-27T07:01:00Z"));
       Object.assign(listed, { today: "2026-12-27", items: [PROMO, ID] }); // as the server says then
       vi.advanceTimersByTime(60_000);
-      await vi.waitFor(() => expect(row.cells[2].textContent).toBe(
-        "Skipped now: expired after 26 December 2026"));
+      await vi.waitFor(() => expect(row.cells[1].textContent).toBe(
+        "Plays until 26 December 2026. Skipped now: expired after 26 December 2026."));
       expect(list.querySelector('tr[data-row-key="promo.mp3"]')).toBe(row); // not redrawn
       expect(document.activeElement).toBe(button.closest("td"));
       expect(status.textContent).toBe(said);
@@ -971,7 +972,7 @@ describe("liner play dates", () => {
     expect(fetchImpl.mock.calls.some(([url]) => url === "/api/liners/test")).toBe(false);
   });
 
-  it("edits a liner's dates and returns focus to its Play dates button", async () => {
+  it("edits a liner's dates and returns focus to its Actions cell", async () => {
     const { list, fetchImpl, status } = await install();
     datesButton(list, "id.wav").click();
     const form = document.getElementById("ln-dates-form");
@@ -986,7 +987,7 @@ describe("liner play dates", () => {
     expect(JSON.parse(options.body)).toEqual({ not_before: null, not_after: "2027-01-31" });
     expect(document.activeElement).toBe(datesButton(list, "id.wav").closest("td"));
     await vi.waitFor(() => expect(status.textContent).toBe("Saved: id.wav. Plays until 31 January 2027."));
-    expect(list.querySelectorAll("tbody tr")[1].cells[1].textContent).toBe("Plays until 31 January 2027");
+    expect(list.querySelectorAll("tbody tr")[1].cells[1].textContent).toBe("Plays until 31 January 2027.");
 
     datesButton(list, "promo.mp3").click();
     expect(document.getElementById("ln-not-after").value).toBe("2026-12-26");

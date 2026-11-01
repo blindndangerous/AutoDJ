@@ -58,7 +58,7 @@ stage's count is the check that this choice worked.
 6. Confirm that exactly one song matches, then press **Save category**.
 
 Check the **Name** and **Songs** columns in **Saved categories** for Practice anchor and its count. If zero songs
-match, press that row's **Edit** action, compare **Value** with the library title, and
+match, choose **Edit** from that row's **Options** menu, compare **Value** with the library title, and
 check the folder selection. Press **Check** again before saving. If more than
 one matches, choose a unique title and replace **Value**. Do not continue until
 this pool contains one song.
@@ -99,8 +99,8 @@ again, and save. This is why checking counts comes before hearing the rotation.
 7. In **Settings**, **Song picking**, confirm **Pick mode** is **Clockwheel**.
 
 The saved wheel should show two steps in order: Practice anchor, then Practice
-other. Its **Active** column should say **Yes**. Each step's **Rules and hours**
-column should say it ignores repeat rules. With a one-song pool, repeat rules can interfere with
+other. Its **Active** column should say **Yes**. Each step's sentence should say
+it ignores repeat rules. With a one-song pool, repeat rules can interfere with
 the very repetition we are trying to observe; this small lesson deliberately
 leaves them off.
 

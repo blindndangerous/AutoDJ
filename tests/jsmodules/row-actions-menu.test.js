@@ -122,6 +122,7 @@ describe("row action menus", () => {
       expect(stops()).toHaveLength(1);
     }
   });
+  // ADR-0021-15
   it("describes a disabled choice before activation and updates or removes its reason", () => {
     document.body.innerHTML = "";
     const disabled = (disabledReason) => [{ id: "run", label: "Run now", disabledReason, run() {} }];
