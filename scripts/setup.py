@@ -33,6 +33,7 @@ from setup_support import (
 )
 
 from autodj.host_tools import ensure_ffmpeg
+from autodj.runtime_sync import mark_synced
 from autodj.terminal_text import format_text
 from autodj.version import _project_version
 
@@ -482,6 +483,8 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     write_json(
         root / STATE, {"environment": str(environment), "backend": backend, "external": external}
     )
+    if not external:
+        mark_synced(root, environment, backend, getattr(hardware, "amd_arch", None))
     print(
         "\nRuntime updated."
         if updating

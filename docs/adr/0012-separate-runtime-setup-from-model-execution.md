@@ -94,6 +94,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0012-10` | Managed synchronization is exact: the final install removes packages that the lock, the backend wheel profile and playback support do not need. | automated | `tests/unit/test_setup_flow.py::test_managed_sync_removes_packages_the_lock_no_longer_lists`; `tests/unit/test_setup_flow.py::test_no_model_sync_keeps_installed_sound_card_output` |
 | `ADR-0012-11` | Interactive setup asks once whether to enable MuQ; Yes verifies a real generated-audio embedding before saving the runtime, while No retains existing weights without invoking model verification. Unattended setup requires an explicit choice. | automated | `tests/unit/test_setup_flow.py::test_interactive_model_choice_is_asked_once_and_does_not_import_tracks`; `tests/unit/test_setup_flow.py::test_unattended_setup_requires_explicit_model_choice`; `tests/unit/test_setup_flow.py::test_model_verification_failure_does_not_save_runtime`; `tests/unit/test_setup_model.py::test_cached_model_is_loaded_offline_without_downloading` |
 | `ADR-0012-12` | Setup refuses detected active AutoDJ processes before mutation; updater maintenance excludes its own stopped-server supervisor but still refuses other launchers. Updates preserve model mode without new weight downloads. | automated | `tests/unit/test_setup_flow.py::test_running_autodj_refuses_setup_before_mutations`; `tests/unit/test_setup_flow.py::test_web_update_preserves_model_mode_without_downloading`; `tests/unit/test_setup_activity.py::test_update_ignores_its_own_supervisor_but_not_other_launchers` |
+| `ADR-0012-13` | Serving synchronizes changed managed dependency inputs before startup, skips unchanged inputs and stops on installation failure. | automated | `tests/unit/test_launcher_runtime_sync.py::test_dependency_input_changes_require_sync`; `tests/unit/test_launcher_runtime_sync.py::test_sync_completes_before_supervisor`; `tests/unit/test_launcher_runtime_sync.py::test_install_failure_prevents_server_and_releases_lock` |
 
 ## Amendment 2026-10-18: optional no-model serving runtime
 
@@ -175,6 +176,27 @@ such as pip, are kept. This replaces the 2026-10-27 statement that existing opti
 are not removed, except that a no-model runtime that already has the sound-card output
 package keeps the `play` extra. Adopted external runtimes remain unchanged. This amendment
 preserves the ADR's Proposed status and evidence limits.
+
+## Amendment 2026-10-31: synchronize managed packages before serving
+
+[Issue #709](https://github.com/blindndangerous/AutoDJ/issues/709) adds a dependency
+check before the saved launcher's `serve` path starts its supervisor or server.
+A fingerprint of the lock, project metadata, Python version, installer/profile
+inputs and selected environment records the last successful synchronization.
+An absent or changed fingerprint uses setup's existing locked installer and
+package compatibility check, preserving the saved backend and model choice.
+Successful setup also records this fingerprint. Unchanged starts do not invoke
+the installer. The installer does not run the setup wizard, configuration
+initialization, Doctor or model downloads.
+
+Synchronization holds the checkout's existing update lock and checks for active
+AutoDJ processes before changing packages. Installation invalidates the previous
+fingerprint; failure stops startup and allows a retry. Installer output is retained in
+`.uv/runtime-sync.log`. External environments, explicit current-environment
+launches, Doctor and help do not trigger this automatic synchronization.
+The activity guard retains its documented process-detection limits; this does
+not provide staged environments or rollback for a manual Git update. This
+amendment preserves the record's Proposed status.
 
 ## Amendment 2026-10-29: explicit MuQ choice and setup verification
 

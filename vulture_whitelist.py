@@ -6,6 +6,9 @@ tests use is dead: delete it, and move what the tests need into tests/.
 
 # ruff: noqa: B018, F821
 
+# Loaded by name through runpy in the dependency-light launcher.
+synchronize
+
 # sqlite3.Connection attribute.
 _.row_factory
 # shlex.shlex attributes.
