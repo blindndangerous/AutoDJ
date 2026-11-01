@@ -72,12 +72,13 @@ export async function audit(_name, launcher) {
     await expect(page.locator("#access-pairing")).not.toBeVisible();
     await expect(page.getByRole("button", { name: "Show pairing code", exact: true })).not.toBeVisible();
     const renamed = `SSO audit ${randomUUID().slice(0, 8)}`;
-    await page.getByRole("button", { name: `Rename ${initial.device_name}, this browser`, exact: true }).click();
+    await page.getByRole("button", { name: `Options for ${initial.device_name}, this browser`, exact: true }).click();
+    await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
     const rename = page.getByRole("dialog", { name: `Rename ${initial.device_name}, this browser`, exact: true });
     await rename.getByRole("textbox", { name: "Device name", exact: true }).fill(renamed);
     await rename.getByRole("button", { name: "Save", exact: true }).click();
     await expect(rename).not.toBeVisible();
-    await expect(page.getByRole("button", { name: `Rename ${renamed}, this browser`, exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: `Options for ${renamed}, this browser`, exact: true })).toBeVisible();
 
     const second = await browser.newContext();
     const secondPage = await second.newPage();
@@ -95,7 +96,7 @@ export async function audit(_name, launcher) {
     const deviceRow = page.locator(`#device-list tr[data-row-key="${other.device_id}"]`);
     await deviceRow.locator('button[aria-haspopup="menu"]').click();
     const forget = deviceRow.locator('[role="menuitem"][data-action="revoke"]');
-    await expect(forget).toHaveAccessibleName(`Forget ${other.device_name}`);
+    await expect(forget).toHaveAccessibleName("Forget");
     await forget.click();
     const confirmation = page.getByRole("dialog", { name: `Forget ${other.device_name}?`, exact: true });
     await expect(confirmation).toContainText("does not revoke SSO access");

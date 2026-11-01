@@ -1350,8 +1350,10 @@ def create_app(
             + ". Run `autodj doctor --fix` to repair the installed profile."
         )
         _index_html_cache = _index_html_cache.replace(
-            '<p id="runtime-package-warning" role="status" hidden></p>',
-            '<p id="runtime-package-warning" role="status">' + escape_html(warning) + "</p>",
+            '<p id="runtime-package-warning" role="status" hidden aria-live="polite" aria-atomic="true"></p>',
+            '<p id="runtime-package-warning" role="status" aria-live="polite" aria-atomic="true">'
+            + escape_html(warning)
+            + "</p>",
         )
 
     @app.get("/", response_class=HTMLResponse)
