@@ -203,6 +203,7 @@ describe("listener requests card", () => {
     let answer;
     request.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
     const save = byId("requests-settings-save");
+    save.focus();
     byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
     // Busy while it saves: aria-busy, never aria-disabled (#331); a second press waits.
     expect(save.getAttribute("aria-busy")).toBe("true");
@@ -329,14 +330,14 @@ describe("listener requests card", () => {
     expect(row(B).querySelector('button[data-action="approve"]').getAttribute("aria-disabled")).toBe("true");
   });
 
-  // ADR-0021-13
+  // ADR-0021-13 ADR-0021-39
   it("uses shared pending and recent request tables with focusable unavailable approval", async () => {
     install();
     await flush();
     const table = byId("requests-list").querySelector("table.collection-table");
     expect(table).not.toBeNull();
     expect([...table.querySelectorAll("th")].map((cell) => cell.textContent))
-      .toEqual(["Song", "Requester", "Time", "Fit", "Actions", "Options"]);
+      .toEqual(["Song", "Requested", "Fit", "Actions"]);
     expect(table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
     const second = table.querySelector(`tr[data-row-key="${B}"]`);
     const approve = second.querySelector('button[data-action="approve"]');
@@ -371,12 +372,12 @@ describe("listener requests card", () => {
     expect(byId("requests-summary").textContent).toBe(summaryText(STATE));
     const items = requestRows();
     expect(items).toHaveLength(2);
-    expect([...items[0].cells].slice(0, 3).map((cell) => cell.textContent)).toEqual(["Song by Artist", "Sam", "2:05 PM"]);
+    expect([...items[0].cells].slice(0, 2).map((cell) => cell.textContent)).toEqual(["Song by Artist", "by Sam at 2:05 PM"]);
     expect(items[0].textContent).toContain("Fits after Other: same key.");
     const names = [...items[0].querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
-    expect(names).toEqual(["Approve Song by Artist", "Options for Song by Artist", "Play next", "Turn down"]);
+    expect(names).toEqual(["Options for Song by Artist", "Approve", "Play next", "Turn down"]);
     const second = [...items[1].querySelectorAll("button")].map((b) => b.dataset.action);
-    expect(second).toEqual(["approve", undefined, "play-next", "reject"]);
+    expect(second).toEqual([undefined, "approve", "play-next", "reject"]);
     // Plain text: the lists never speak on their own.
     expect(byId("requests-list").closest("[aria-live]")).toBeNull();
     expect(byId("requests-recent-heading").hidden).toBe(false);
@@ -403,9 +404,9 @@ describe("listener requests card", () => {
     expect(first.querySelector('button[data-action="reject"]')).toBe(reject);
     expect(document.activeElement).toBe(reject);
     expect(first.textContent).toContain("Fits after Else.");
-    // Approve appears where it now fits, before the other buttons.
+    // Approve appears where it now fits, first in the menu.
     expect([...row(B).querySelectorAll("button")].map((b) => b.dataset.action))
-      .toEqual(["approve", undefined, "play-next", "reject"]);
+      .toEqual([undefined, "approve", "play-next", "reject"]);
     expect(requestRows().map((item) => item.dataset.rowKey)).toEqual([A, B, C]);
     expect(byId("requests-status").textContent).toBe("");
   });
@@ -451,7 +452,7 @@ describe("listener requests card", () => {
     expect(said).toBeTruthy();
     said.callback();
     await vi.waitFor(() => expect(byId("requests-status").textContent).toBe("Queued Song by Artist."));
-    expect([...byId("requests-recent").querySelector("tbody tr").cells].map((cell) => cell.textContent)).toEqual(["Song by Artist", "Sam", "2:05 PM", "Queued", "Fits after Other."]);
+    expect([...byId("requests-recent").querySelector("tbody tr").cells].map((cell) => cell.textContent)).toEqual(["Song by Artist", "by Sam at 2:05 PM", "Queued: Fits after Other."]);
     expect(byId("requests-recent-heading").hidden).toBe(false);
   });
 
@@ -472,7 +473,7 @@ describe("listener requests card", () => {
     expect(byId("requests-summary").textContent).toContain("1 request waiting.");
   });
 
-  it("lands on the next request's Approve where it is offered", async () => {
+  it("lands on the next request's Actions cell after a decision", async () => {
     const third = { ...WAITING[0], id: C, title: "Three" };
     request = vi.fn(async (url, options) => (options?.method === "POST"
       ? { ...STATE, pending: [third] }
@@ -481,8 +482,8 @@ describe("listener requests card", () => {
     await flush();
     await decideRequest(A, "reject");
     await vi.waitFor(() => expect(row(A)).toBeUndefined());
-    expect(document.activeElement.closest("tr").dataset.rowKey).toBe(C);
-    expect(document.activeElement.dataset.action).toBe("approve");
+    await vi.waitFor(() => expect(document.activeElement.closest("tr")?.dataset.rowKey).toBe(C));
+    expect(document.activeElement.dataset.action).toBe("options");
   });
 
   it("puts focus on the card's summary when the last request is decided", async () => {
@@ -518,13 +519,14 @@ describe("listener requests card", () => {
       ? new Promise((resolve) => { release = () => resolve({ ...STATE, pending: [WAITING[1]] }); })
       : Promise.resolve(STATE)));
     const approve = row(A).querySelector('button[data-action="approve"]');
-    approve.focus();
+    const options = row(A).querySelector('[aria-haspopup="menu"]');
+    options.click();
     approve.click();
-    expect(approve.getAttribute("aria-disabled")).toBe("false");
-    expect(approve.classList.contains("is-pending")).toBe(true);
+    expect(options.getAttribute("aria-disabled")).not.toBe("true");
+    expect(options.classList.contains("is-pending")).toBe(true);
     // Busy, a state NVDA can report, in place of "unavailable".
-    expect(approve.getAttribute("aria-busy")).toBe("true");
-    expect(document.activeElement).toBe(approve.closest("td"));
+    expect(options.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(options.closest("td"));
     // A second press while the first sends sends nothing.
     approve.click();
     expect(request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
@@ -663,8 +665,8 @@ describe("smooth transitions (#49)", () => {
     expect(byId("requests-max-bridges").value).toBe("2");
     expect(byId("requests-threshold").value).toBe("1.5");
     expect(byId("requests-no-smooth-wait").checked).toBe(true);
-    expect(byId("requests-recent").querySelector("tbody tr").cells[4].textContent)
-      .toBe("Bridge to Ballad — Singer through Middle — Band.");
+    expect(byId("requests-recent").querySelector("tbody tr").cells[2].textContent)
+      .toMatch(/: Bridge to Ballad — Singer through Middle — Band\.$/);
   });
 
   it("saves the settings and says so once", async () => {

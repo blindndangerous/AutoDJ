@@ -1,9 +1,11 @@
 import {
   AuthenticationRequiredError,
   requestJson,
+  withDisabled,
 } from "./api-client.js";
 import { closeDialog, openDialog } from "./dialog-guard.js";
-import { NBSP } from "./live-region.js";
+import { makeSay } from "./live-region.js";
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
 
 let latestAuthState = {};
 
@@ -69,36 +71,21 @@ export function initAuthDialog({
   }
 
   let pendingSubmit = null;
-  let lastError = "";
   let signInStarted = false;
+  const say = makeSay(status, { force: false });
 
   function clearError() {
-    error.textContent = "";
-    token.removeAttribute("aria-invalid");
+    clearFieldError(token, error);
   }
 
-  // The role=alert region speaks the message; the field is focused
-  // afterwards but does not also reference it, or NVDA reads it twice.
-  // Chrome can merge the clear and the new text into one change, so the
-  // same message again (a second wrong code) is not spoken.  A trailing
-  // no-break space on every other repeat makes the text itself change,
-  // as announceStatus does (#316).
-  async function announceError(message) {
-    const text = message === lastError ? message + NBSP : message;
-    lastError = text;
-    error.textContent = "";
-    await Promise.resolve();
-    error.textContent = text;
-    token.setAttribute("aria-invalid", "true");
-    token.focus();
+  function announceError(message) {
+    showFieldError(token, message, error, status);
   }
 
   function setBusy(busy) {
-    form.setAttribute("aria-busy", String(busy));
     token.readOnly = busy;
-    submitButton.disabled = busy;
     deviceName.readOnly = busy;
-    status.textContent = busy ? "Pairing browser…" : "";
+    say(busy ? "Pairing browser…" : "");
   }
 
   async function performSubmit() {
@@ -113,14 +100,14 @@ export function initAuthDialog({
     setBusy(true);
     let failureMessage = null;
     try {
-      const response = await fetchImpl("/api/pair", {
+      const response = await withDisabled(form, () => withDisabled(submitButton, () => fetchImpl("/api/pair", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           code: candidate,
           device_name: deviceName.value.trim() || "Paired browser",
         }),
-      });
+      })));
       if (!response.ok) failureMessage = await pairingFailureMessage(response);
     } catch (_errorValue) {
       failureMessage = "Pairing failed. Check the server and try again.";

@@ -410,10 +410,13 @@ async function openTrackTags(page, visit) {
   await visit("track-info/tags-errors");
   // Matched intros: both lists shown, then Upload intro with no file chosen,
   // its error shown under the field and linked to it.
-  await page.locator("#intros-artist-list li").first().waitFor({ state: "visible" });
+  await page.locator("#intros-artist-list tbody tr[data-row-key]").first().waitFor({ state: "visible" });
+  await page.locator("#intro-add").click();
+  await page.locator("#intros-form").waitFor({ state: "visible" });
   await page.locator("#intro-upload").click();
   await page.locator("#intro-file-error").waitFor({ state: "visible" });
-  await visit("track-info/intros-error");
+  await inspectEditorModal(page, "intros-form", visit, "track-info/intros-error");
+  await cancelEditor(page, "intros-form", "intro-cancel");
   // Choosing another song with those edits unsaved opens Save, Discard or
   // Keep editing; Keep editing closes it again with the edits kept.
   await page.evaluate((path) => document.dispatchEvent(new CustomEvent("autodj:edit-points",
@@ -1094,7 +1097,7 @@ async function standInForIntroRules(page) {
 // liners, linked to the first liner's checkbox and focused.  Nothing is
 // sent; Cancel closes the form again.
 async function openIntroRuleError(page, visit) {
-  await page.locator("#intro-rules-list li").first().waitFor({ state: "visible" });
+  await page.locator("#intro-rules-list tbody tr[data-row-key]").first().waitFor({ state: "visible" });
   await page.locator("#intro-rules-add").click();
   await page.locator("#intro-rules-form").waitFor({ state: "visible" });
   await page.locator("#intro-rules-label").fill("Audit draft");
@@ -1167,6 +1170,8 @@ async function openShowStates(page, visit) {
   };
   page.on("response", record);
   try {
+    // Open list is the first item of the show's Options menu (#712).
+    await page.locator("#shows-list [aria-haspopup='menu']").first().click();
     await page.locator("#shows-list button[data-action='open']").first().click();
     await page.locator("#shows-songs tbody tr[data-row-key]").first().waitFor({ state: "visible" });
   } catch (error) {
@@ -1545,7 +1550,7 @@ async function standInForAds(page) {
 // Ads with the spot form refused (its error linked to the file field), the
 // break form open, and the report shown as its two tables.
 async function openAdsStates(page, visit) {
-  await page.locator("#ads-spots li button").first().waitFor({ state: "visible" });
+  await page.locator("#ads-spots tbody [aria-haspopup=menu]").first().waitFor({ state: "visible" });
   await page.locator("#ads-spot-add").click();
   await page.locator("#ads-spot-save").click();
   await page.locator("#ads-spot-error").waitFor({ state: "visible" });
@@ -1566,12 +1571,12 @@ async function openAdsStates(page, visit) {
 // with no file names it in words, links the words to it, says them once
 // and keeps focus there; Cancel goes back to Add spot; Show report keeps
 // focus on its button, says the totals once and shows two tables with
-// headers, each in a region that takes focus.
+// headers and one cell Tab stop in each shared table.
 async function adsProblems(page) {
   await standInForAds(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-ads").click();
-  await page.locator("#ads-spots li button").first().waitFor({ state: "visible" });
+  await page.locator("#ads-spots tbody [aria-haspopup=menu]").first().waitFor({ state: "visible" });
   const problems = [];
   await page.evaluate(() => {
     window.__adsSaid = [];
@@ -2607,8 +2612,8 @@ async function toastBehaviourProblems(page) {
 // The preview output device setting, in whatever this engine supports.
 // Settings > General > Server with an announcer token chosen: the Station
 // choice shows (#88).  Back to the default choice with `false`.
-// New station by keyboard: a refused create marks, links and focuses
-// Station ID and says nothing else; a stood-in create says it once and
+// New station by keyboard: an already-focused refused Station ID is said
+// once; Create moves focus to the error without duplicate speech. A create says it once and
 // moves focus to Switch to <name>.  Nothing reaches the server.
 async function stationCreateProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
@@ -2616,6 +2621,14 @@ async function stationCreateProblems(page) {
   await clickSubtabUnprompted(page, "stab-stations");
   await page.locator("#station-create-name").waitFor({ state: "visible" });
   const problems = [];
+  await page.evaluate(() => {
+    window.__stationCreateSaid = [];
+    const region = document.getElementById("stations-status");
+    window.__stationCreateObserver = new window.MutationObserver(() => {
+      if (region.textContent) window.__stationCreateSaid.push(region.textContent.trim());
+    });
+    window.__stationCreateObserver.observe(region, { childList: true, characterData: true, subtree: true });
+  });
   const state = () => page.evaluate(() => {
     const slug = document.getElementById("station-create-slug");
     return {
@@ -2624,6 +2637,7 @@ async function stationCreateProblems(page) {
       error: document.getElementById("station-create-error").textContent.trim(),
       focus: document.activeElement?.id,
       said: document.getElementById("stations-status").textContent.trim(),
+      announcements: [...window.__stationCreateSaid],
       done: !document.getElementById("station-create-done").hidden,
     };
   });
@@ -2631,13 +2645,34 @@ async function stationCreateProblems(page) {
   await page.locator("#station-create-slug").fill("audit-refused");
   await page.locator("#station-create-slug").press("Enter");
   await page.locator("#station-create-error").waitFor({ state: "visible" });
+  const message = `Could not create the station. ${CREATE_REFUSAL.detail}`;
+  await expect(page.locator("#stations-status")).toHaveText(message);
   const refused = await state();
   if (!refused.error) problems.push("a refused create shows no error");
   if (refused.invalid !== "true") problems.push("Station ID is not marked invalid");
   if (!refused.linked.includes("station-create-error")) problems.push("the error is not linked to Station ID");
   if (!refused.linked.includes("station-create-slug-help")) problems.push("the ID's format hint lost its link");
   if (refused.focus !== "station-create-slug") problems.push(`a refused create moved focus to ${refused.focus}`);
-  if (refused.said) problems.push(`a refused create also said ${JSON.stringify(refused.said)}`);
+  if (refused.said !== message || JSON.stringify(refused.announcements) !== JSON.stringify([message])) {
+    problems.push(`an already-focused refusal did not say the exact error once: ${JSON.stringify(refused.announcements)}`);
+  }
+  // Submitting from Create must instead move focus to the described field.
+  await page.locator("#station-create-slug").fill("audit-refused");
+  await page.evaluate(() => {
+    document.getElementById("stations-status").textContent = "";
+    window.__stationCreateSaid = [];
+  });
+  await page.locator("#station-create-submit").focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#station-create-error").waitFor({ state: "visible" });
+  const fromButton = await state();
+  if (fromButton.error !== message || fromButton.invalid !== "true"
+      || !fromButton.linked.includes("station-create-error") || !fromButton.linked.includes("station-create-slug-help")) {
+    problems.push("a button-submitted refusal lost its exact field error or hint association");
+  }
+  if (fromButton.focus !== "station-create-slug") problems.push(`Create refusal moved focus to ${fromButton.focus}`);
+  if (fromButton.said || fromButton.announcements.length) problems.push(`Create refusal also said ${JSON.stringify(fromButton.announcements)}`);
+  await page.evaluate(() => window.__stationCreateObserver.disconnect());
 
   const created = {
     ...STAND_IN_STATION, slug: "audit-created", name: "Audit Created Station",

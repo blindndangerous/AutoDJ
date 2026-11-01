@@ -5,6 +5,8 @@ import { invalidateAuthenticatedRequestEpoch } from "../../src/autodj/static/mod
 
 const { applyQueueState, installQueueButtons, installQueueClear, resetQueueState } = queueModule;
 const track = (path, display_name = path) => ({ path, display_name });
+// The Track cell reads "N. title", then any bridge (#712).
+const title = (row) => row.cells[0].textContent.replace(/^\d+\. /, "").replace(/, bridge to .*$/, "");
 const initial = () => [track("a.mp3", "Alpha"), track("b.mp3", "Bravo"), track("c.mp3", "Charlie")];
 const response = (body = { ok: true }, status = 200) => new globalThis.Response(JSON.stringify(body), {
   status, headers: { "Content-Type": "application/json" },
@@ -30,6 +32,7 @@ function setup(tracks = initial()) {
   applyQueueState(tracks, els);
   installQueueButtons(els);
   installQueueClear(els);
+  watchBusy(els.queueList);
   const rows = () => [...els.queueList.querySelectorAll("tbody tr[data-row-key]")];
   const options = (index) => rows()[index].querySelector('[aria-haspopup="menu"]');
   const action = (index, id) => {
@@ -40,7 +43,26 @@ function setup(tracks = initial()) {
   return { els, dialog, rows, options, action, answer: (yes = true) =>
     document.getElementById(yes ? "confirm-accept" : "confirm-cancel").click() };
 }
-const settled = (els) => vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+// The aria-busy values the list has left since setup or the last settled().
+// Each record's old value is kept, so a busy state set and removed in one
+// task is still seen.
+const busyHistory = new WeakMap();
+function watchBusy(list) {
+  const seen = [];
+  busyHistory.set(list, seen);
+  new window.MutationObserver((records) => seen.push(...records.map((record) => record.oldValue)))
+    .observe(list, { attributes: true, attributeFilter: ["aria-busy"], attributeOldValue: true });
+}
+// The action marked the list busy while it ran, and the shared helper then
+// removed the attribute again.
+async function settled(els) {
+  const seen = busyHistory.get(els.queueList);
+  await vi.waitFor(() => {
+    expect(seen).toContain("true");
+    expect(els.queueList.hasAttribute("aria-busy")).toBe(false);
+  });
+  seen.length = 0;
+}
 const bodies = (fetch) => fetch.mock.calls.map(([, init]) => JSON.parse(init.body));
 afterEach(() => { selectStation("default"); vi.unstubAllGlobals(); });
 
@@ -49,41 +71,43 @@ describe("queue collection", () => {
     expect(queueModule).not.toHaveProperty("renderQueue");
   });
 
-  // ADR-0021-12
+  // ADR-0021-12 ADR-0021-39
   it("uses the shared queue table with Track info and confirmed removal", async () => {
     const fetch = vi.fn(async () => response()); vi.stubGlobal("fetch", fetch);
     const { els, rows, action, answer, dialog } = setup();
     expect(els.queueList.querySelector("table.collection-table[role=grid]")).not.toBeNull();
     expect([...els.queueList.querySelectorAll("th")].map((cell) => cell.textContent))
-      .toEqual(["Position", "Track", "Bridge", "Actions", "Options"]);
+      .toEqual(["Track", "Actions"]);
     expect(els.queueList.querySelector('[role="rowheader"]')).toBeNull();
     expect([...rows()[0].querySelectorAll('button:not([role="menuitem"])')].map((button) => button.textContent))
-      .toEqual(["Track info", "Options"]);
+      .toEqual(["Options"]);
     expect([...rows()[0].querySelectorAll('[role="menuitem"]')].map((button) => button.textContent))
-      .toEqual(["Move to top", "Move up", "Move down", "Remove"]);
+      .toEqual(["Track info", "Move to top", "Move up", "Move down", "Remove"]);
     const info = vi.fn(); document.addEventListener("autodj:edit-points", info, { once: true });
-    const button = rows()[0].querySelector('button[data-action="info"]'); button.click();
+    const button = rows()[0].querySelector('[aria-haspopup="menu"]');
+    rows()[0].querySelector('[role="menuitem"][data-action="info"]').click();
     expect(info.mock.calls[0][0].detail).toEqual({ path: "a.mp3", kind: "music", opener: button });
     action(1, "remove");
     expect(dialog.open).toBe(true); expect(fetch).not.toHaveBeenCalled();
     answer(false); expect(rows()).toHaveLength(3);
     action(1, "remove"); answer();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Removed Bravo from queue. Focus moved to Charlie."));
     await settled(els);
     expect(fetch.mock.calls[0][0]).toBe("/api/queue/remove");
     expect(bodies(fetch)).toEqual([{ path: "b.mp3", position: 1 }]);
-    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Alpha", "Charlie"]);
+    expect(rows().map(title)).toEqual(["Alpha", "Charlie"]);
     expect(rows()[1].contains(document.activeElement)).toBe(true);
     await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Removed Bravo from queue. Focus moved to Charlie."));
     expect(document.getElementById("status-toast").textContent).toBe("Removed Bravo from queue. Focus moved to Charlie.");
     expect(document.getElementById("status-toast").hidden).toBe(false);
   });
 
-  it("uses one table Tab stop with cell arrows and menu opening keys", () => {
+  it("uses one table Tab stop with cell arrows and menu opening keys", async () => {
     const { els, rows, options } = setup();
     expect(els.queueList.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
-    rows()[0].cells[1].focus(); press("ArrowDown"); expect(document.activeElement).toBe(rows()[1].cells[1]);
-    press("End"); expect(document.activeElement).toBe(rows()[1].cells[4]);
-    press("Enter"); expect(document.activeElement.dataset.action).toBe("top");
+    rows()[0].cells[0].focus(); press("ArrowDown"); expect(document.activeElement).toBe(rows()[1].cells[0]);
+    press("End"); expect(document.activeElement).toBe(rows()[1].cells[1]);
+    press("Enter"); await vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem")); expect(document.activeElement.dataset.action).toBe("info");
     press("Escape"); expect(document.activeElement).toBe(options(1).closest("td"));
     press("ArrowUp"); expect(document.activeElement).toBe(options(0).closest("td"));
     press("Enter");
@@ -94,7 +118,9 @@ describe("queue collection", () => {
   it("keeps disabled boundary actions reachable and describes their reasons", async () => {
     const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     const { rows, options, els } = setup([track("a.mp3")]);
-    options(0).focus(); press("Enter");
+    options(0).focus(); press("Enter"); await vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem"));
+    expect(document.activeElement.dataset.action).toBe("info");
+    press("ArrowDown");
     expect(document.activeElement.dataset.action).toBe("top");
     for (const id of ["top", "up", "down"]) {
       const item = rows()[0].querySelector(`[role=menuitem][data-action=${id}]`);
@@ -112,7 +138,7 @@ describe("queue collection", () => {
     queueModule.setQueueDisabledReason(els, "Start the station to change its queue.");
     answer();
     await vi.waitFor(() => expect(document.getElementById("confirm-dialog").open).toBe(false));
-    options(1).focus(); press("Enter"); press("Enter");
+    options(1).focus(); press("Enter"); press("ArrowDown"); press("Enter");
     expect(document.activeElement.getAttribute("aria-disabled")).toBe("true");
     expect(fetch).not.toHaveBeenCalled();
     const info = vi.fn(); document.addEventListener("autodj:edit-points", info, { once: true });
@@ -121,23 +147,23 @@ describe("queue collection", () => {
     expect(rows()[1].querySelector('[data-action="up"]').getAttribute("aria-disabled")).toBe("false");
   });
 
-  it("refreshes metadata and bridge names without replacing focused rows or open menus", () => {
+  it("refreshes metadata and bridge names without replacing focused rows or open menus", async () => {
     const { els, rows, options } = setup([track("a.mp3", "Alpha"), track("b.mp3", "Bravo")]);
-    const row = rows()[1]; options(1).focus(); press("Enter"); const focused = document.activeElement;
+    const row = rows()[1]; options(1).focus(); press("Enter"); await vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem")); const focused = document.activeElement;
     expect(focused.getAttribute("role")).toBe("menuitem");
     applyQueueState([track("a.mp3", "Alpha"), { ...track("b.mp3", "Renamed"), bridge_to: "Request" }], els);
     expect(rows()[1]).toBe(row); expect(document.activeElement).toBe(focused);
-    expect(row.cells[2].textContent).toBe("Bridge to Request");
+    expect(row.cells[0].textContent).toBe("2. Renamed, bridge to Request");
     expect(options(1).getAttribute("aria-label")).toBe("Options for Renamed, bridge to Request");
-    expect(row.querySelector('button[data-action="info"]').getAttribute("aria-label")).toContain("bridge to Request");
+    expect(row.querySelector('[role="menu"]').getAttribute("aria-label")).toContain("bridge to Request");
   });
 
   it("uses current row positions after a refresh while a menu is open", async () => {
     const fetch = vi.fn(async () => response()); vi.stubGlobal("fetch", fetch);
     const { els, options } = setup(); options(2).focus(); press("Enter");
-    expect(document.activeElement.getAttribute("role")).toBe("menuitem");
+    await vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem"));
     applyQueueState([initial()[2], initial()[0], initial()[1]], els);
-    press("ArrowDown"); press("ArrowDown"); press("Enter"); await settled(els);
+    press("ArrowDown"); press("ArrowDown"); press("ArrowDown"); press("Enter"); await settled(els);
     expect(bodies(fetch)[0]).toEqual({ paths: ["a.mp3", "c.mp3", "b.mp3"],
       from_paths: ["c.mp3", "a.mp3", "b.mp3"], order: [1, 0, 2] });
   });
@@ -195,10 +221,36 @@ describe("queue collection", () => {
     reply(response()); await settled(els);
   });
 
+  it("keeps a new session's mutation pending when an older mutation finishes", async () => {
+    const replies = [];
+    const fetch = vi.fn(() => new Promise((resolve) => replies.push(resolve)));
+    vi.stubGlobal("fetch", fetch);
+    const { els, action, rows } = setup();
+    action(1, "down");
+    invalidateAuthenticatedRequestEpoch();
+    resetQueueState(els);
+    applyQueueState(initial(), els);
+    action(2, "top");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    replies[0](response());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(els.queueList.getAttribute("aria-busy")).toBe("true");
+    applyQueueState(initial(), els);
+    expect(rows().map(title)).toEqual(["Charlie", "Alpha", "Bravo"]);
+    action(1, "down");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    replies[1](response());
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).not.toBe("true"));
+    action(1, "down");
+    expect(fetch).toHaveBeenCalledTimes(3);
+    replies[2](response());
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).not.toBe("true"));
+  });
+
   it("ignores a push of the original queue while the reorder is pending", async () => {
     let reply; vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { reply = resolve; })));
     const { els, rows, action } = setup(); action(2, "top"); applyQueueState(initial(), els);
-    expect(rows()[0].cells[1].textContent).toBe("Charlie"); reply(response()); await settled(els);
+    expect(title(rows()[0])).toBe("Charlie"); reply(response()); await settled(els);
   });
 
   it.each([200, 500])("keeps newer websocket rows and focus when a pending response is %s", async (status) => {
@@ -207,7 +259,7 @@ describe("queue collection", () => {
     applyQueueState([initial()[2], track("d.mp3", "Delta")], els);
     const focused = document.activeElement;
     reply(response(status === 200 ? { ok: true } : { detail: "write failed" }, status)); await settled(els);
-    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Charlie", "Delta"]);
+    expect(rows().map(title)).toEqual(["Charlie", "Delta"]);
     expect(document.activeElement).toBe(focused);
   });
 
@@ -215,7 +267,7 @@ describe("queue collection", () => {
     let reply; vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { reply = resolve; })));
     const { els, rows, action } = setup(); action(1, "down");
     document.getElementById("outside").focus(); reply(response({ detail: "write failed" }, 500)); await settled(els);
-    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Alpha", "Bravo", "Charlie"]);
+    expect(rows().map(title)).toEqual(["Alpha", "Bravo", "Charlie"]);
     expect(document.activeElement.id).toBe("outside"); expect(els.queueAnnounce.textContent).toContain("write failed");
   });
 
@@ -227,8 +279,10 @@ describe("queue collection", () => {
 
   it("restores the removed occurrence and its focus after a rejected removal", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => response({ detail: "write failed" }, 500)));
-    const { els, rows, action, answer } = setup(); action(1, "remove"); answer(); await settled(els);
-    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Alpha", "Bravo", "Charlie"]);
+    const { els, rows, action, answer } = setup(); action(1, "remove"); answer();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("write failed"));
+    await settled(els);
+    expect(rows().map(title)).toEqual(["Alpha", "Bravo", "Charlie"]);
     expect(rows()[1].contains(document.activeElement)).toBe(true);
   });
 
@@ -236,8 +290,10 @@ describe("queue collection", () => {
     setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
     let reply; vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { reply = resolve; })));
     const { els, rows, action } = setup(); action(1, "down"); selectStation("night"); resetQueueState(els);
-    reply(response()); await settled(els);
-    expect(rows()).toHaveLength(0); expect(els.queueAnnounce.textContent).toContain("Done on Main");
+    reply(response());
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("Done on Main"));
+    await settled(els);
+    expect(rows()).toHaveLength(0);
   });
 
   it("does not send a removal confirmed after station or auth context changed", async () => {
@@ -256,28 +312,30 @@ describe("queue collection", () => {
 
   it("uses a shared empty row and named fallback after removing the last occurrence", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => response()));
-    const { els, action, answer } = setup([track("a.mp3", "Alpha")]); action(0, "remove"); answer(); await settled(els);
-    const empty = els.queueList.querySelector("td.no-results"); expect(empty.colSpan).toBe(5);
+    const { els, action, answer } = setup([track("a.mp3", "Alpha")]); action(0, "remove"); answer();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Removed Alpha from queue. Focus moved to Queued tracks."));
+    await settled(els);
+    const empty = els.queueList.querySelector("td.no-results"); expect(empty.colSpan).toBe(2);
     expect(document.activeElement).toBe(els.queueList);
   });
 
   it("recovers to an adjacent cell on a passive removal and leaves outside focus alone", () => {
-    const { els, rows } = setup(); rows()[1].cells[1].focus(); applyQueueState([initial()[0], initial()[2]], els);
-    expect(document.activeElement).toBe(rows()[1].cells[1]);
+    const { els, rows } = setup(); rows()[1].cells[0].focus(); applyQueueState([initial()[0], initial()[2]], els);
+    expect(document.activeElement).toBe(rows()[1].cells[0]);
     document.getElementById("outside").focus(); applyQueueState([], els); expect(document.activeElement.id).toBe("outside");
   });
 
   it("keeps bridge duplicates separate and refreshes changed labels", () => {
     const { els, rows } = setup([{ ...track("same.mp3", "Mid"), bridge_to: "Ballad" }, track("same.mp3", "Mid")]);
-    expect(rows()[0].cells[2].textContent).toBe("Bridge to Ballad"); expect(rows()[1].cells[2].textContent).toBe("");
+    expect(rows()[0].cells[0].textContent).toBe("1. Mid, bridge to Ballad"); expect(rows()[1].cells[0].textContent).toBe("2. Mid");
     applyQueueState([track("same.mp3", "Mid"), track("same.mp3", "Mid")], els);
-    expect(rows()[0].cells[2].textContent).toBe("");
+    expect(rows()[0].cells[0].textContent).toBe("1. Mid");
   });
 
   it("does not collide queue keys containing delimiter characters", () => {
     const { els, rows } = setup([track("a|b", "First"), track("c", "Tail")]);
     applyQueueState([track("a", "Second"), track("b|c", "Other")], els);
-    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Second", "Other"]);
+    expect(rows().map(title)).toEqual(["Second", "Other"]);
   });
 
   it("reasks on new voice revisions and retries the exact confirmed removal", async () => {
@@ -298,7 +356,7 @@ describe("queue collection", () => {
     vi.stubGlobal("fetch", vi.fn(async () => response({ detail: { code: "voice_track_conflict", revision: "one" } }, 409)));
     const { els, rows, action, answer } = setup(); action(2, "top");
     await vi.waitFor(() => expect(document.getElementById("confirm-dialog").open).toBe(true)); answer(false); await settled(els);
-    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Alpha", "Bravo", "Charlie"]);
+    expect(rows().map(title)).toEqual(["Alpha", "Bravo", "Charlie"]);
     expect(els.queueAnnounce.textContent).toBe("Queue change canceled.");
   });
 

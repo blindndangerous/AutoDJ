@@ -8,8 +8,9 @@
 // first one takes focus, which reads the error, so nothing else speaks.
 // Any other result is said once in #tags-status.  Focus stays on Save tags
 // throughout: the button is never disabled while the save runs.
-import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
-import { announceStatus } from "./live-region.js";
+import { failureText, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, withDisabled } from "./api-client.js";
+import { applyServerFieldError, clearFieldError, showFieldError } from "./dom-helpers.js";
+import { makeSay } from "./live-region.js";
 
 const TAG_FIELDS = ["title", "artist", "album", "genre", "year", "bpm", "key", "isrc"];
 const TEXT_FIELDS = new Set(["title", "artist", "album", "genre"]);
@@ -84,29 +85,14 @@ export function installTagEditor({ document: doc = document, request = requestJs
   let loaded = {};
   let saving = null;  // the save in flight, if any
   let generation = 0;
+  let busyController = null;
 
-  function linkError(field, linked) {
-    const input = inputs[field];
-    const error = errors[field];
-    const ids = (input.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== error.id);
-    if (linked) ids.unshift(error.id);
-    if (ids.length) input.setAttribute("aria-describedby", ids.join(" "));
-    else input.removeAttribute("aria-describedby");
-  }
-  function clearError(field) {
-    inputs[field].removeAttribute("aria-invalid");
-    errors[field].textContent = "";
-    errors[field].hidden = true;
-    linkError(field, false);
-  }
+  function clearError(field) { clearFieldError(inputs[field], errors[field]); }
   function showError(field, message) {
-    inputs[field].setAttribute("aria-invalid", "true");
-    errors[field].textContent = message;
-    errors[field].hidden = false;
-    linkError(field, true);
+    showFieldError(inputs[field], message, errors[field], null, { focus: false });
   }
   function clearErrors() { for (const field of TAG_FIELDS) clearError(field); }
-  function say(message, tone = "info") { announceStatus(status, message, { force: true, tone }); }
+  const say = makeSay(status, {});
 
   function changes() {
     const changed = {};
@@ -121,6 +107,7 @@ export function installTagEditor({ document: doc = document, request = requestJs
 
   function load(record) {
     generation += 1;
+    busyController?.abort();
     if ((record?.path || null) !== path && fileBox) fileBox.checked = false;
     path = record?.path || null;
     loaded = { ...(record?.tags || {}) };
@@ -139,6 +126,7 @@ export function installTagEditor({ document: doc = document, request = requestJs
 
   function clear() {
     generation += 1;
+    busyController?.abort();
     saving = null;
     path = null;
     loaded = {};
@@ -172,6 +160,8 @@ export function installTagEditor({ document: doc = document, request = requestJs
     }
     const token = {};
     saving = token;
+    const busy = new AbortController();
+    busyController = busy;
     const mine = generation;
     const epoch = captureAuthenticatedRequestEpoch();
     const station = getStation();
@@ -180,11 +170,11 @@ export function installTagEditor({ document: doc = document, request = requestJs
     const previewSrc = preview?.getAttribute("src") || "";
     if (previewSrc) { preview.pause(); preview.removeAttribute("src"); preview.load(); }
     try {
-      const record = await request("/api/library/tags", {
+      const record = await withDisabled(form, () => request("/api/library/tags", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path, tags: changed, beets: !!(beets && !beetsLabel?.hidden && beets.checked), write_file: file, ...(station !== "default" ? { station } : {}) }),
-      });
+      }), { signal: busy.signal });
       if (mine !== generation || !isAuthenticatedRequestCurrent(epoch) || !isCurrent() || getStation() !== station) return false;
       const keepBeets = beets?.checked;
       load(record);
@@ -207,12 +197,11 @@ export function installTagEditor({ document: doc = document, request = requestJs
       return true;
     } catch (error) {
       if (mine !== generation || !isAuthenticatedRequestCurrent(epoch)) return false;
-      if (error.field && inputs[error.field]) {
-        showError(error.field, error.message);
+      if (applyServerFieldError(error, inputs, errors[error.field], null, { focus: false })) {
         if (errorTarget) errorTarget.textContent = "Some tags need correcting. Press Escape to return to editing.";
         else inputs[error.field].focus();
       } else {
-        const message = `Could not save the tags: ${error.message}`;
+        const message = failureText("save the tags", error);
         if (errorTarget) errorTarget.textContent = `${message} Press Escape to return to editing.`;
         else say(message, "error");
       }

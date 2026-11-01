@@ -4,13 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installIndexMarkup } from "./helpers.js";
 
 import {
-  dayWords, describeRule, installIntroRulesPanel, ruleFormError, waitWords,
+  dayWords, installIntroRulesPanel, ruleFormError, waitWords,
 } from "../../src/autodj/static/modules/intro-rules-panel.js";
 
 const byId = (id) => document.getElementById(id);
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const status = () => (byId("intro-rules-form-dialog")?.open ? byId("intro-rules-form-status") : byId("intro-rules-status")).textContent;
-const items = () => [...byId("intro-rules-list").querySelectorAll("li")];
+const items = () => [...byId("intro-rules-list").querySelectorAll("tbody tr[data-row-key]")];
 const button = (index, action) => items()[index].querySelector(`button[data-action="${action}"]`);
 
 const EIGHTIES = {
@@ -99,6 +99,23 @@ async function open(server = fakeServer()) {
 beforeEach(installIndex);
 afterEach(() => { controls?.destroy(); controls = null; });
 
+// ADR-0021-39
+it("uses a named intro-rule collection grid and returns its menu to the Options cell", async () => {
+  await open();
+  const table = byId("intro-rules-list").querySelector("table.collection-table");
+  expect(table).not.toBeNull();
+  expect([...table.querySelector("thead tr").cells].map((cell) => cell.textContent)).toEqual(["Name", "Conditions", "Details", "Actions"]);
+  const row = table.querySelector("tbody tr");
+  expect(row.cells[0].textContent).toBe("Eighties");
+  row.querySelector('[aria-haspopup="menu"]').click();
+  // The menu focuses its first item a frame after it is shown (#712).
+  await vi.waitFor(() => expect(document.activeElement.textContent).toBe("Edit"));
+  document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+  expect(document.activeElement.textContent).toBe("Delete");
+  document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(document.activeElement).toBe(row.cells[3]);
+});
+
 describe("intro rules markup", () => {
   it("is its own card in Library tools with labelled native controls and one status", () => {
     const section = byId("intro-rules");
@@ -113,7 +130,7 @@ describe("intro rules markup", () => {
       expect(control.hasAttribute("aria-label"), control.id).toBe(false);
     }
     const list = byId("intro-rules-list");
-    expect(list.getAttribute("role")).toBe("list");
+    expect(list.tagName).toBe("DIV");
     expect(byId(list.getAttribute("aria-labelledby")).textContent).toBe("Saved intro rules");
     expect(byId("intro-rules-form").hidden).toBe(true);
     expect(byId("intro-rules-form").hasAttribute("novalidate")).toBe(true);
@@ -132,19 +149,12 @@ describe("intro rules markup", () => {
 });
 
 describe("intro rules in words", () => {
-  it("says each rule, its liners, chance, wait, priority and dates", () => {
+  it("formats rule dates and cooldown intervals", () => {
     expect(dayWords("2026-12-01")).toBe("1 December 2026");
     expect(waitWords(0)).toBe("with no wait between plays");
     expect(waitWords(90)).toBe("at most once every 1 hour 30 minutes");
     expect(waitWords(1441)).toBe("at most once every 1 day 1 minute");
-    expect(describeRule(EIGHTIES, 0, CHOICES)).toBe(
-      "Eighties: when the next song matches Year between 1980 and 1989. Plays eighties.wav. "
-      + "50% chance, at most once every 1 hour 30 minutes, after the song’s and the artist’s own intros.");
-    expect(describeRule(ROCK, 1, CHOICES)).toMatch(/^Rule 2: when the next song matches .*Rock.* or .*Gold.*\. Plays any liner in D:\\Liners\\Rock\. 100% chance, with no wait between plays, before the song’s and the artist’s own intros\. Plays from 1 December 2026 until 26 December 2026\.$/);
-    expect(describeRule({ ...EIGHTIES, clip_ids: ["gone", "l2"] }, 0, CHOICES))
-      .toContain("Plays one of a liner that is no longer registered, rock.wav.");
-    expect(describeRule({ ...EIGHTIES, clip_ids: [], filename_pattern: "{artist} - *.wav", liner_folder: "D:\\Liners" }, 0, CHOICES))
-      .toContain('Plays liners matching filename pattern "{artist} - *.wav" in D:\\Liners.');
+
   });
 
   it("checks the form's values before sending", () => {
@@ -160,22 +170,34 @@ describe("intro rules in words", () => {
 });
 
 describe("intro rules list and form", () => {
-  it("lists each rule as plain text with named Edit and Delete buttons, and says nothing", async () => {
+  it("lists rule data with Edit and Delete in Options without announcing", async () => {
     await open();
-    expect(items()[0].querySelector(".intro-text").textContent).toBe(describeRule(EIGHTIES, 0, CHOICES));
+    expect(items()[0].cells[1].textContent).toBe("Year between 1980 and 1989");
+    expect(items()[0].cells[2].textContent).toMatch(/^eighties\.wav\. 50% chance, at most once every 1 hour 30 minutes, /);
+    expect(items()[1].cells[1].textContent).toMatch(/Rock.* or .*Gold/);
+    expect(items()[1].cells[2].textContent).toMatch(/ From 1 December 2026 until 26 December 2026\.$/);
     expect(button(0, "edit").textContent).toBe("Edit");
-    expect(button(0, "edit").getAttribute("aria-label")).toBe("Edit intro rule Eighties");
-    expect(button(1, "delete").getAttribute("aria-label")).toBe("Delete intro rule Rule 2");
-    expect(byId("intro-rules-empty").hidden).toBe(true);
+    expect(button(0, "edit").getAttribute("aria-label")).toBe("Edit");
+    expect(button(0, "edit").closest('[role="menu"]').getAttribute("aria-label")).toBe("Options for Eighties");
+    expect(button(1, "delete").getAttribute("aria-label")).toBe("Delete");
+    expect(byId("intro-rules-list").querySelector(".no-results")).toBeNull();
     expect(status()).toBe("");
-    const actions = [...byId("intro-rules-list").querySelectorAll("button")];
-    expect(actions.filter((item) => item.tabIndex === 0)).toHaveLength(1);
-    actions[0].focus();
-    actions[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    expect(document.activeElement).toBe(actions[1]);
+    const cells = [...byId("intro-rules-list").querySelectorAll("tbody td")];
+    expect(cells.filter((item) => item.tabIndex === 0)).toHaveLength(1);
+    cells[0].focus();
+    cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(cells[1]);
   });
 
-  it("adds a rule: focus to Label, then to the saved rule's Edit button, said once", async () => {
+  it("shows unavailable clips and filename selection in the rule's Details", async () => {
+    const server = fakeServer();
+    server.rules = [{ ...EIGHTIES, clip_ids: ["gone", "l2"] }, { ...ROCK, clip_ids: [], filename_pattern: "{artist} - *.wav" }];
+    await open(server);
+    expect(items()[0].cells[2].textContent).toMatch(/^One of a liner that is no longer registered, rock\.wav\. /);
+    expect(items()[1].cells[2].textContent).toContain('Filename pattern "{artist} - *.wav"');
+  });
+
+  it("adds a rule: focus to Label, then to the saved rule's Edit cell, said once", async () => {
     const server = await open();
     byId("intro-rules-add").click();
     expect(byId("intro-rules-form").hidden).toBe(false);
@@ -202,7 +224,7 @@ describe("intro rules list and form", () => {
       conditions: [{ field: "artist", operator: "is", value: "Example" }], clip_ids: ["l2"], filename_pattern: null,
     });
     expect(byId("intro-rules-form").hidden).toBe(true);
-    expect(document.activeElement).toBe(button(2, "edit"));
+    expect(document.activeElement).toBe(button(2, "edit").closest("td"));
   });
 
   it("refuses a rule with no liner in the page: error linked, field focused, nothing sent", async () => {
@@ -273,7 +295,7 @@ describe("intro rules list and form", () => {
       filename_pattern: null,
       conditions: [{ field: "genre", operator: "is", value: "Rock" }, { field: "category", category: "c1" }],
     });
-    expect(document.activeElement).toBe(button(1, "edit"));
+    expect(document.activeElement).toBe(button(1, "edit").closest("td"));
   });
 
   it("saves filename patterns, inserts a token at the caret, and tests a chosen song", async () => {
@@ -352,7 +374,7 @@ describe("intro rules list and form", () => {
     byId("confirm-accept").click();
     await vi.waitFor(() => expect(status()).toBe("Deleted intro rule Eighties."));
     expect(server.rules.map((rule) => rule.id)).toEqual([ROCK.id]);
-    expect(document.activeElement).toBe(button(0, "delete"));
+    expect(document.activeElement).toBe(button(0, "delete").closest("td"));
   });
 
   it("cancels back to the opener, and removing a condition moves focus to the next one", async () => {
@@ -379,7 +401,7 @@ describe("intro rules list and form", () => {
     const server = await open();
     controls.clear();
     expect(items()).toEqual([]);
-    expect(byId("intro-rules-empty").hidden).toBe(false);
+    expect(byId("intro-rules-list").querySelector(".no-results").colSpan).toBe(4);
     server.rules = [copy(ROCK)];
     controls.refresh();
     await vi.waitFor(() => expect(items()).toHaveLength(1));
@@ -397,6 +419,29 @@ describe("intro modal lifecycle", () => {
     expect(byId("intro-rules-form-dialog").open).toBe(true);
     expect(document.activeElement).toBe(byId("intro-rules-label"));
     expect(byId("intro-rules-label").nextElementSibling.textContent).toBe("Label was refused");
+  });
+
+  it("says a refusal it cannot place on a field in the editor status", async () => {
+    byId("intro-rules-label-error").remove();
+    byId("intro-rules-test-song-error").remove();
+    const server = await open();
+    button(0, "edit").click();
+    server.refuse = Object.assign(new Error("Label was refused"), { field: "label" });
+    byId("intro-rules-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Could not save the intro rule: Label was refused"));
+    expect(byId("intro-rules-form-dialog").open).toBe(true);
+    server.refuse = null;
+    byId("intro-rules-selection-mode").value = "pattern";
+    byId("intro-rules-selection-mode").dispatchEvent(new Event("change"));
+    byId("intro-rules-pattern").value = "{artist} - {title}.wav";
+    byId("intro-rules-pattern-folder").value = "D:\\Liners";
+    byId("intro-rules-test-query").value = "Song";
+    byId("intro-rules-test-query").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(byId("intro-rules-test-results").querySelectorAll("button")).toHaveLength(1));
+    byId("intro-rules-test-results").querySelector("button").click();
+    server.testRefuse = new FieldError("Track not found", "path");
+    byId("intro-rules-test").click();
+    await vi.waitFor(() => expect(status()).toBe("Could not test the pattern: Track not found"));
   });
 
   it("ignores a pending save after station clear and prevents duplicate submissions", async () => {

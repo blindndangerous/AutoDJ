@@ -48,6 +48,11 @@ export function fmtTime(sec) {
   return `${minutes}:${String(s).padStart(2, "0")}`;
 }
 
+// A Details cell (#712): the facts that are set, one sentence each.
+export function sentences(...parts) {
+  return parts.filter(Boolean).map((part) => (/[.!?]$/.test(part) ? part : `${part}.`)).join(" ");
+}
+
 export function fmtTrack(t) {
   if (!t) return "—";
   if (t.artist && t.title) return `${t.artist} — ${t.title}`;
@@ -135,6 +140,10 @@ export function focusRevealed(control, options) {
 
 // Keep field errors associated with their control without dropping its help.
 export function clearFieldError(control, error) {
+  if (Array.isArray(control)) {
+    control.forEach((field) => clearFieldError(field, error));
+    return;
+  }
   control?.removeAttribute("aria-invalid");
   if (!control || !error?.id) return;
   const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== error.id);
@@ -160,22 +169,44 @@ export function clearFormErrors(form, error = null) {
   });
 }
 
-export function showFieldError(control, message, error, status) {
+// *status* is the live region that says the error when focus does not move
+// to the field (the focused field reads its own error), or a feature's
+// announcer, called as status(message, "error") in that case.
+export function showFieldError(control, message, error, status, { focus = true } = {}) {
+  const controls = (Array.isArray(control) ? control : [control]).filter(Boolean);
+  control = controls[0];
   error.textContent = message;
   error.hidden = false;
-  if (!control) { announceStatus(status, message, { force: true, tone: "error" }); return; }
-  control.setAttribute("aria-invalid", "true");
+  const announce = () => {
+    if (typeof status === "function") status(message, "error");
+    else announceStatus(status, message, { force: true, tone: "error" });
+  };
+  if (!control) { announce(); return; }
   // The error comes first, so it is read before a field's longer help.
-  const ids = new Set([error.id, ...(control.getAttribute("aria-describedby") || "").split(/\s+/)].filter(Boolean));
-  if (ids.size) control.setAttribute("aria-describedby", [...ids].join(" "));
+  for (const field of controls) {
+    field.setAttribute("aria-invalid", "true");
+    const ids = new Set([error.id, ...(field.getAttribute("aria-describedby") || "").split(/\s+/)].filter(Boolean));
+    if (ids.size) field.setAttribute("aria-describedby", [...ids].join(" "));
+  }
   const following = control.nextElementSibling;
   const label = control.closest("label") || (following?.htmlFor === control.id ? following : null);
   (label || control).after(error);
   const before = control.ownerDocument.activeElement;
-  focusRevealed(control);
-  if (before === control || control.ownerDocument.activeElement !== control) {
-    announceStatus(status, message, { force: true, tone: "error" });
-  }
+  if (focus) focusRevealed(control);
+  if (!focus || before === control || control.ownerDocument.activeElement !== control) announce();
+}
+
+// The server names its public field; each feature maps that key to its own
+// controls. Unknown keys stay with the caller's ordinary failure message.
+export function applyServerFieldError(error, fieldMap, errorNode, status, options) {
+  if (!errorNode || !Object.hasOwn(fieldMap, error?.field)) return false;
+  const mapped = fieldMap[error.field];
+  const controls = (Array.isArray(mapped) ? mapped : [mapped])
+    .map((field) => typeof field === "string" ? errorNode.ownerDocument.getElementById(field) : field)
+    .filter(Boolean);
+  if (!controls.length) return false;
+  showFieldError(controls, error.message, errorNode, status, options);
+  return true;
 }
 
 // ----------------------------------------------------------------

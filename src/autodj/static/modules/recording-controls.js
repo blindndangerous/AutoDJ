@@ -4,8 +4,9 @@
 // The status and error lines are plain text, refreshed by every state push.
 // Results of a press, and a new or cleared recording error, are spoken once
 // through the status live region.
-import { requestJson, withDisabled } from "./api-client.js";
-import { announceStatus } from "./live-region.js";
+import { failureText, requestJson, withDisabled } from "./api-client.js";
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
+import { makeSay } from "./live-region.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 
 function formatSize(bytes) {
@@ -20,15 +21,14 @@ export function createRecordingControls(doc, liveRegion) {
   const splitNow = doc.getElementById("recording-split-now");
   const status = doc.getElementById("recording-status");
   const error = doc.getElementById("recording-error");
+  const settingsError = doc.getElementById("recording-settings-error");
   const split = doc.getElementById("recording-split");
   const retention = doc.getElementById("recording-retention-days");
   const freeSpace = doc.getElementById("recording-free-space-mb");
   let current = null;
   let lastError = null;
 
-  function say(message, tone = "info") {
-    announceStatus(liveRegion, message, { force: true, dwellMs: 6000, tone });
-  }
+  const say = makeSay(liveRegion, { dwellMs: 6000 });
 
   function apply(value) {
     if (!value) return;
@@ -61,32 +61,27 @@ export function createRecordingControls(doc, liveRegion) {
     if (value.split != null) split.value = value.split;
     if (value.retention_days != null) retention.value = String(value.retention_days);
     if (value.free_space_mb != null) freeSpace.value = String(value.free_space_mb);
-    for (const input of [retention, freeSpace]) input.removeAttribute("aria-invalid");
+    clearFieldError([retention, freeSpace], settingsError);
   }
   function readWholeNumber(input) {
     const text = input.value.trim();
     const number = Number(text);
     return text !== "" && Number.isInteger(number) && number >= 0 ? number : null;
   }
-  function wholeNumber(input) {
-    const number = readWholeNumber(input);
-    const valid = number !== null;
-    if (valid) input.removeAttribute("aria-invalid");
-    else input.setAttribute("aria-invalid", "true");
-    return valid ? number : null;
-  }
   const draft = registerSettingsGroup({
     panel: doc.getElementById("spanel-stream"), group: "recording",
     controls: [split, retention, freeSpace],
+    fields: { split, retention_days: retention, free_space_mb: freeSpace },
     read: () => ({ split: split.value, retention_days: readWholeNumber(retention),
       free_space_mb: readWholeNumber(freeSpace) }),
     write,
     validate() {
-      const days = wholeNumber(retention);
-      const floor = wholeNumber(freeSpace);
+      clearFieldError([retention, freeSpace], settingsError);
+      const days = readWholeNumber(retention);
+      const floor = readWholeNumber(freeSpace);
       if (days !== null && floor !== null) return true;
-      say("Days to keep recordings and minimum free space must be whole numbers, 0 or more.", "error");
-      (days === null ? retention : freeSpace).focus();
+      showFieldError([days === null && retention, floor === null && freeSpace].filter(Boolean),
+        "Days to keep recordings and minimum free space must be whole numbers, 0 or more.", settingsError, liveRegion);
       return false;
     },
   });
@@ -104,7 +99,7 @@ export function createRecordingControls(doc, liveRegion) {
       apply(value);
       say(value.running ? "Recording started." : "Recording stopped.");
     } catch (failure) {
-      say(`Could not change recording: ${failure.message}`, "error");
+      say(failureText("change recording", failure), "error");
     }
   }));
 
@@ -122,7 +117,7 @@ export function createRecordingControls(doc, liveRegion) {
       apply(await requestJson("/api/recording/split", { method: "POST" }));
       say("Recording split. The next audio starts a new file.");
     } catch (failure) {
-      say(`Could not split recording: ${failure.message}`, "error");
+      say(failureText("split recording", failure), "error");
     }
   }));
 

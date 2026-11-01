@@ -35,6 +35,20 @@ describe("shared condition editor", () => {
     try { readConditionRows([controls.row]); } catch (error) { expect(error.control).toBe(controls.input); }
   });
 
+  it("leaves field presentation to callers and preserves existing errors during reads", () => {
+    const controls = row({ field: "year" });
+    document.body.append(controls.row);
+    controls.input.setAttribute("aria-describedby", "existing-error year-help");
+    controls.input.setAttribute("aria-invalid", "true");
+    controls.field.focus();
+    expect(() => readConditionRows([controls.row], { interactive: false })).toThrow("Enter a value for year.");
+    expect(controls.input.getAttribute("aria-invalid")).toBe("true");
+    expect(controls.input.getAttribute("aria-describedby")).toBe("existing-error year-help");
+    expect(() => readConditionRows([controls.row])).toThrow("Enter a value for year.");
+    expect(document.activeElement).toBe(controls.field);
+    controls.row.remove();
+  });
+
   it("reads the folder, genre, Beets, and category controls by name", () => {
     const folder = row({ field: "folder", source: "music", folder: "Rock", recursive: true });
     expect(readConditionRows([folder.row])).toEqual([{ field: "folder", source: "music", folder: "Rock", recursive: true }]);
@@ -60,7 +74,7 @@ describe("shared condition editor", () => {
     for (const bad of ["0", "3651", "1.5", "-2", "ten"]) {
       condition.input.value = bad;
       expect(() => readConditionRows([condition.row])).toThrow("Enter a whole number of days from 1 to 3650.");
-      expect(condition.input.getAttribute("aria-invalid")).toBe("true");
+      expect(condition.input.hasAttribute("aria-invalid")).toBe(false);
     }
     condition.operator.value = "gt";
     condition.operator.dispatchEvent(new Event("change"));

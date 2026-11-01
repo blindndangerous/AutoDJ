@@ -53,7 +53,7 @@ supported format; changing its filename suffix is not a conversion.
 
 ## Audition the clip before placing it
 
-1. In **Voice liner files**, press **Track info** for your uploaded liner.
+1. In **Voice liner files**, open **Options** for your uploaded liner and choose **Track info**.
 2. Check **Type** is **Voice liner**, the filename is correct, and **Duration**
    is plausible. Advanced analysis should say **Not needed for liners**.
 3. Expand **Cue points**. Inspect **Start time**, **Segue time**, **End time**
@@ -145,7 +145,7 @@ any preview player. Check the music's elapsed time stops advancing.
 
 The uploaded clip and its play dates remain saved. Disabling automatic liners
 does not stop a clip already playing, delete files, or cancel explicit placements.
-No scheduled event or clockwheel liner step was created here. Later, **Delete**
+No scheduled event or clockwheel liner step was created here. Later, **Options**, **Delete**
 for the station's uploaded file removes that station copy after confirmation;
 your original local recording remains.
 

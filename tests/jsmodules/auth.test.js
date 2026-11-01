@@ -11,7 +11,6 @@ import {
 } from "../../src/autodj/static/modules/auth.js";
 import { AuthenticationRequiredError } from
   "../../src/autodj/static/modules/api-client.js";
-import { NBSP } from "../../src/autodj/static/modules/live-region.js";
 
 function installDialogMarkup() {
   document.body.innerHTML = `<dialog id="auth-dialog"
@@ -24,8 +23,7 @@ function installDialogMarkup() {
       <input id="auth-token" name="code" required>
       <label for="auth-device-name">Device name</label>
       <input id="auth-device-name" name="device_name">
-      <p id="auth-error" role="alert" aria-live="assertive"
-         aria-atomic="true"></p>
+      <p id="auth-error" class="field-error" hidden></p>
       <button id="auth-submit" type="submit">Pair browser</button>
     </form><p id="auth-status" role="status" aria-live="polite"
       aria-atomic="true"></p>
@@ -59,6 +57,16 @@ function response({ ok, status, json, retryAfter } = {}) {
 }
 
 describe("initAuthDialog", () => {
+  it("associates pairing refusals with the code field without replacing its help", async () => {
+    const els = installDialogMarkup();
+    els.token.setAttribute("aria-describedby", "auth-help");
+    const auth = initAuthDialog({ document, fetchImpl: vi.fn().mockResolvedValue(response({ ok: false, status: 401 })) });
+    els.token.value = "wrong";
+    await auth.submit();
+    expect(els.token.getAttribute("aria-describedby")).toBe("auth-error auth-help");
+    expect(els.error.textContent).toBe("That pairing code is invalid or expired.");
+    expect(document.activeElement).toBe(els.token);
+  });
   let localStorageSet;
   let sessionStorageSet;
 
@@ -185,34 +193,23 @@ describe("initAuthDialog", () => {
         response({ ok: false, status: 401 }),
       ),
     });
-    const mutations = [];
-    const observer = new window.MutationObserver(
-      () => mutations.push(els.error.textContent),
-    );
-    observer.observe(els.error, { childList: true });
-
     els.token.value = "bad-one";
     await auth.submit();
-    const first = els.error.textContent;
+    const message = "That pairing code is invalid or expired.";
+    expect(els.error.textContent).toBe(message);
+    expect(document.activeElement).toBe(els.token);
+    // The first refusal comes from the focused field's description. A repeat
+    // while focus stays there is announced through the shared status region.
     els.token.value = "bad-two";
     await auth.submit();
-    await Promise.resolve();
-    observer.disconnect();
-
-    expect(first).toBe("That pairing code is invalid or expired.");
-    // Chrome merges the clear and the same text into no change, so NVDA
-    // stayed silent on the second wrong code: the repeat ends in a no-break
-    // space, and the third is plain again.
-    expect(els.error.textContent).toBe(`${first}${NBSP}`);
-    expect(mutations).toContain("");
+    await vi.waitFor(() => expect(els.status.textContent.trim()).toBe(message));
+    expect(els.error.textContent).toBe(message);
     els.token.value = "bad-three";
     await auth.submit();
-    expect(els.error.textContent).toBe(first);
+    await vi.waitFor(() => expect(els.status.textContent.trim()).toBe(message));
     expect(els.token.getAttribute("aria-invalid")).toBe("true");
-    // Spoken once, by the alert; the refocused field does not repeat it.
-    expect(els.token.getAttribute("aria-describedby") ?? "").not.toContain("auth-error");
-    expect(els.form.getAttribute("aria-busy")).toBe("false");
-    expect(els.status.textContent).toBe("");
+    expect(els.token.getAttribute("aria-describedby")).toContain("auth-error");
+    expect(els.form.hasAttribute("aria-busy")).toBe(false);
     expect(els.token.readOnly).toBe(false);
     expect(els.token.disabled).toBe(false);
     expect(els.submitButton.disabled).toBe(false);
@@ -958,9 +955,9 @@ describe("pairing dialog markup", () => {
     expect(input?.maxLength).toBe(8);
     // Described once, by the dialog: on the field too it was read twice.
     expect(input?.hasAttribute("aria-describedby")).toBe(false);
-    expect(error?.getAttribute("role")).toBe("alert");
-    expect(error?.getAttribute("aria-live")).toBe("assertive");
-    expect(error?.getAttribute("aria-atomic")).toBe("true");
+    expect(error?.classList.contains("field-error")).toBe(true);
+    expect(error?.hasAttribute("role")).toBe(false);
+    expect(error?.hidden).toBe(true);
     expect(parsed.querySelector("#auth-status")?.getAttribute("role"))
       .toBe("status");
     expect(parsed.querySelector("#auth-form")?.contains(

@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { installIndexMarkup } from "./helpers.js";
 
-import { countsText, describeCategory, installCategoriesPanel } from "../../src/autodj/static/modules/categories-panel.js";
+import { countsText, installCategoriesPanel } from "../../src/autodj/static/modules/categories-panel.js";
 
 const byId = (id) => document.getElementById(id);
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const status = () => (byId("categories-form-dialog")?.open ? byId("categories-form-status") : byId("categories-status")).textContent;
-const items = () => [...byId("categories-list").querySelectorAll("li[data-id]")];
+const items = () => [...byId("categories-list").querySelectorAll("tbody tr[data-row-key]")];
 const rowButton = (index, action) => items()[index].querySelector(`button[data-action="${action}"]`);
 
 const DECADE = {
@@ -116,37 +116,63 @@ describe("categories markup", () => {
 });
 
 describe("categories list", () => {
+  // ADR-0021-27 ADR-0021-39
+  it("uses a named collection grid with Edit then Delete in one Actions menu", async () => {
+    await open();
+    const table = byId("categories-list").querySelector("table.collection-table");
+    expect(table).not.toBeNull();
+    expect([...table.querySelector("thead tr").cells].map((cell) => cell.textContent)).toEqual(["Name", "Songs", "Details", "Actions"]);
+    const row = table.querySelector("tbody tr");
+    expect(row.cells[0].textContent).toBe(DECADE.name);
+    expect(row.querySelector('[aria-haspopup="menu"]').getAttribute("aria-label")).toBe(`Options for ${DECADE.name}`);
+    row.querySelector('[aria-haspopup="menu"]').click();
+    // The menu focuses its first item a frame after it is shown (#712).
+    await vi.waitFor(() => expect(document.activeElement.textContent).toBe("Edit"));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement.textContent).toBe("Delete");
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(document.activeElement).toBe(row.cells[3]);
+  });
   it("says the counts in words", () => {
     expect(countsText(DECADE)).toBe("1,284 songs; 12 use the release year because the first-release year is missing");
     expect(countsText({ tracks: 1, missing: 1, fallback: 1 })).toBe(
       "1 song; 1 playlist line matches no library track; 1 uses the release year because the first-release year is missing");
     expect(countsText({ error: "The playlist file A.m3u is missing" })).toBe("The playlist file A.m3u is missing");
-    expect(describeCategory(DECADE)).toBe(
-      "Remembering the 2000s: 1,284 songs; 12 use the release year because the first-release year is missing. "
-      + "From query original_year:2000..2009. Used by Throwback.");
-    expect(describeCategory(ROTATION_A)).toBe(
-      "A: 300 songs; 7 playlist lines match no library track. From playlist A.m3u8. "
-      + "Not in the library: one.flac, two.flac, three.flac, four.flac, five.flac, and 2 more. No clockwheel uses it.");
+
   });
 
-  it("lists each category as plain text with named Edit and Delete buttons, and says nothing", async () => {
+  it("lists category data with Edit and Delete in Options without announcing", async () => {
     await open();
-    expect(items()[0].querySelector("span").textContent).toBe(describeCategory(DECADE));
+    expect(items()[0].cells[1].textContent).toBe(countsText(DECADE));
+    expect(items()[0].cells[2].textContent).toBe("Query original_year:2000..2009. Used by Throwback.");
+    expect(items()[1].cells[1].textContent).toBe("300 songs; 7 playlist lines match no library track. Not in the library: one.flac, two.flac, three.flac, four.flac, five.flac, and 2 more.");
+    expect(items()[1].cells[2].textContent).toBe("Playlist A.m3u8. No clockwheel uses it.");
     expect(rowButton(1, "edit").textContent).toBe("Edit");
-    expect(rowButton(1, "edit").getAttribute("aria-label")).toBe("Edit A");
-    expect(rowButton(1, "delete").getAttribute("aria-label")).toBe("Delete A");
+    expect(rowButton(1, "edit").getAttribute("aria-label")).toBe("Edit");
+    expect(rowButton(1, "edit").closest('[role="menu"]').getAttribute("aria-label")).toBe("Options for A");
+    expect(rowButton(1, "delete").getAttribute("aria-label")).toBe("Delete");
     expect(status()).toBe("");
-    const actions = [...byId("categories-list").querySelectorAll("button")];
-    expect(actions.filter((item) => item.tabIndex === 0)).toHaveLength(1);
-    actions[0].focus();
-    actions[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    expect(document.activeElement).toBe(actions[1]);
+    const cells = [...byId("categories-list").querySelectorAll("tbody td")];
+    expect(cells.filter((item) => item.tabIndex === 0)).toHaveLength(1);
+    cells[0].focus();
+    cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(cells[1]);
     expect(byId("categories-playlist").options).toHaveLength(3);
     expect(byId("categories-folder").textContent).toBe("D:\\Radio\\playlists");
   });
 });
 
 describe("categories form", () => {
+  it("keeps a refused field's error when another field changes", async () => {
+    await open();
+    byId("categories-add").click();
+    byId("categories-save").click();
+    await vi.waitFor(() => expect(byId("categories-name").getAttribute("aria-invalid")).toBe("true"));
+    byId("categories-query").value = "genre:Rock";
+    byId("categories-query").dispatchEvent(new Event("input", { bubbles: true }));
+    expect(byId("categories-form-error").hidden).toBe(false);
+    expect(byId("categories-form-error").textContent).toBe("Enter a name for the category.");
+  });
   it("reports incomplete filter conditions from Check and Save", async () => {
     const server = await open();
     byId("categories-add").click();
@@ -210,7 +236,7 @@ describe("categories form", () => {
     await vi.waitFor(() => expect(status()).toBe("Saved Rock gold: 42 songs."));
     expect(byId("categories-form").hidden).toBe(true);
     expect(items()).toHaveLength(3);
-    expect(document.activeElement).toBe(rowButton(2, "edit"));
+    expect(document.activeElement).toBe(rowButton(2, "edit").closest("td"));
     expect(changed).toHaveBeenCalledTimes(1);
   });
 
@@ -227,7 +253,7 @@ describe("categories form", () => {
     expect(server.calls.filter((call) => call.url === "/api/categories/check")).toHaveLength(1);
   });
 
-  it("edits a playlist category with the playlist choice, and Cancel goes back to its Edit button", async () => {
+  it("edits a playlist category with the playlist choice, and Cancel goes back to its Edit cell", async () => {
     const server = await open();
     rowButton(1, "edit").click();
     expect(byId("categories-form-legend").textContent).toBe("Edit category A");
@@ -237,7 +263,7 @@ describe("categories form", () => {
     expect(byId("categories-playlist").value).toBe("A.m3u8");
     expect(byId("categories-match").textContent).toBe("Matching selection: 300 songs; 7 playlist lines match no library track.");
     byId("categories-cancel").click();
-    expect(document.activeElement).toBe(rowButton(1, "edit"));
+    expect(document.activeElement).toBe(rowButton(1, "edit").closest("td"));
     await vi.waitFor(() => expect(status()).toBe("Cancelled. Nothing was saved."));
 
     rowButton(1, "edit").click();
@@ -247,7 +273,7 @@ describe("categories form", () => {
     const put = server.calls.find((call) => call.method === "PUT");
     expect(put.url).toBe("/api/categories/c2");
     expect(put.body).toEqual({ name: "A", source: "m3u", query: "", playlist: "Gold/C.m3u8" });
-    expect(document.activeElement).toBe(rowButton(1, "edit"));
+    expect(document.activeElement).toBe(rowButton(1, "edit").closest("td"));
   });
 
   it("saves allowed days and hours, fills them in on Edit and says them in the list", async () => {
@@ -271,7 +297,7 @@ describe("categories form", () => {
       daypart_text: "Plays only on Friday and Saturday from 22:00 until 02:00", allowed_now: false,
     };
     await controls.refresh();
-    expect(items()[2].querySelector("span").textContent).toContain(
+    expect(items()[2].textContent).toContain(
       "Plays only on Friday and Saturday from 22:00 until 02:00. Outside its hours now.");
     rowButton(2, "edit").click();
     expect(byId("categories-day-4").checked).toBe(true);
@@ -299,7 +325,7 @@ describe("categories form", () => {
       allowed_now: false, outside_now: "dates",
     };
     await controls.refresh();
-    expect(items()[2].querySelector("span").textContent).toContain(
+    expect(items()[2].textContent).toContain(
       "Plays only between 1 December 2026 and 26 December 2026. Outside its dates now.");
     rowButton(2, "edit").click();
     expect(byId("categories-not-before").value).toBe("2026-12-01");
@@ -321,7 +347,7 @@ describe("categories form", () => {
     server.categories[0] = { ...server.categories[0], allowed_now: false, outside_now: "dates" };
     await controls.refresh();
     expect(items()[0]).toBe(row);
-    expect(row.querySelector("span").textContent).toContain(
+    expect(row.textContent).toContain(
       "Plays only until 26 December 2026. Outside its dates now.");
     expect(document.activeElement).toBe(button);
     expect(status()).toBe(said);
@@ -504,13 +530,13 @@ describe("categories form", () => {
     byId("confirm-accept").click();
     await vi.waitFor(() => expect(status()).toBe("Deleted Remembering the 2000s."));
     expect(items()).toHaveLength(1);
-    expect(document.activeElement).toBe(rowButton(0, "edit"));
+    expect(document.activeElement).toBe(rowButton(0, "edit").closest("td"));
     expect(changed).toHaveBeenCalledTimes(1);
     rowButton(0, "delete").click();
     await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
     byId("confirm-accept").click();
     await vi.waitFor(() => expect(status()).toBe("Deleted A."));
-    expect(byId("categories-list").textContent).toBe("No categories yet. Press Add category to make one.");
+    expect(byId("categories-list").querySelector(".no-results").textContent).toBe("No categories yet. Press Add category to make one.");
     expect(document.activeElement).toBe(byId("categories-add"));
   });
 
@@ -525,7 +551,7 @@ describe("categories form", () => {
     expect(byId("confirm-message").textContent).toBe("Morning, Evening have steps for it. Those steps are skipped until you change them.");
     // The row's words changed in place; Delete keeps focus under the dialog.
     expect(rowButton(1, "delete")).toBe(button);
-    expect(items()[1].textContent).toContain("Used by Morning, Evening.");
+    expect(items()[1].cells[2].textContent).toBe("Playlist A.m3u8. Used by Morning, Evening.");
     byId("confirm-cancel").click();
     expect(server.calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
   });
@@ -546,7 +572,7 @@ describe("categories form", () => {
     await open();
     rowButton(0, "edit").click();
     controls.clearProtectedData();
-    expect(byId("categories-list").children).toHaveLength(0);
+    expect(items()).toHaveLength(0);
     expect(byId("categories-form").hidden).toBe(true);
     expect(byId("categories-name").value).toBe("");
     expect(byId("categories-playlist").options).toHaveLength(0);

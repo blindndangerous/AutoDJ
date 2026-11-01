@@ -60,6 +60,24 @@ describe("recording controls", () => {
     document.body.innerHTML = "";
   });
 
+  it("associates recording validation with both invalid fields and preserves their help", () => {
+    const controls = setup();
+    controls.apply(STOPPED);
+    const days = byId("recording-retention-days");
+    const floor = byId("recording-free-space-mb");
+    days.setAttribute("aria-describedby", "retention-help");
+    days.value = "-1";
+    floor.value = "-2";
+    expect(groups[0].validate()).toBe(false);
+    expect(days.getAttribute("aria-describedby").split(" ")).toEqual(["recording-settings-error", "retention-help"]);
+    expect(floor.getAttribute("aria-describedby")).toBe("recording-settings-error recording-free-space-desc");
+    expect(document.activeElement).toBe(days);
+    days.value = "0";
+    floor.value = "100";
+    expect(groups[0].validate()).toBe(true);
+    expect(days.getAttribute("aria-describedby")).toBe("retention-help");
+  });
+
   it("stays hidden until the server reports recording status, and hides on reset", () => {
     const controls = setup();
     expect(byId("recording-controls").hidden).toBe(true);

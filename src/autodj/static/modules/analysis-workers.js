@@ -24,12 +24,13 @@
 // code and the command to run on the worker, each with a Copy button.  A
 // refusal notice newly seen by a refresh is said once; Dismiss hides it.
 
-import { requestJson, withDisabled } from "./api-client.js";
+import { failureText, requestJson, withDisabled } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { lastSeenWords, shownCode, spokenCode } from "./devices.js";
 import { copyByCommand } from "./clipboard.js";
-import { nextRowControl, rowButton } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+import { clearFieldError, showFieldError, nextRowControl, rowButton } from "./dom-helpers.js";
+import { onCardOpen } from "./card-state.js";
+import { makeSay } from "./live-region.js";
 
 const POLL_MS = 10000;
 export const ONCE_WARNING =
@@ -228,9 +229,7 @@ export function installAnalysisWorkers({
   let stationNames = new Map();
   let timer = null;
 
-  const say = (message, tone = "info") => {
-    announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 6000 : 4000, tone });
-  };
+  const say = makeSay(status, { dwellMs: 4000, errorDwellMs: 6000 });
 
   function field(row, kind, type, labelText) {
     const wrap = doc.createElement("div");
@@ -296,32 +295,12 @@ export function installAnalysisWorkers({
       ? "" : String(settings.idle_release_minutes);
   }
 
-  // The ids in a field's aria-describedby, without *drop*, and with *add* last.
-  function describedBy(input, { add = null, drop = null } = {}) {
-    const ids = (input.getAttribute("aria-describedby") || "").split(/\s+/)
-      .filter((id) => id && id !== drop && id !== add);
-    if (add) ids.push(add);
-    if (ids.length) input.setAttribute("aria-describedby", ids.join(" "));
-    else input.removeAttribute("aria-describedby");
-  }
-
   function clearRowError(row) {
-    row.error.hidden = true;
-    row.error.textContent = "";
-    for (const input of [row.batch, row.idle]) {
-      input.removeAttribute("aria-invalid");
-      describedBy(input, { drop: row.error.id });
-    }
+    clearFieldError([row.batch, row.idle], row.error);
   }
 
   function rowError(row, input, message) {
-    row.error.textContent = message;
-    row.error.hidden = false;
-    if (input) {
-      input.setAttribute("aria-invalid", "true");
-      describedBy(input, { add: row.error.id });
-      input.focus();
-    }
+    showFieldError(input, message, row.error, null);
     say(message, "error");
   }
 
@@ -356,7 +335,7 @@ export function installAnalysisWorkers({
       const text = String(errorValue.message || "").toLowerCase();
       const input = text.includes("batch") || text.includes("per claim") ? row.batch
         : text.includes("idle") ? row.idle : null;
-      rowError(row, input, `Could not save settings for ${name}: ${errorValue.message}  `
+      rowError(row, input, `${failureText(`save settings for ${name}`, errorValue)}  `
         + "Your changes are still in the form.");
       return;
     }
@@ -440,7 +419,7 @@ export function installAnalysisWorkers({
         `/api/analysis/workers/${encodeURIComponent(refusal.token_id)}/refusal`,
         { method: "DELETE" }));
     } catch (errorValue) {
-      say(`Could not dismiss the notice for ${refusal.name}: ${errorValue.message}`, "error");
+      say(failureText(`dismiss the notice for ${refusal.name}`, errorValue), "error");
       return;
     }
     // Focus moves first: removing the focused button would drop it to the page.
@@ -476,7 +455,7 @@ export function installAnalysisWorkers({
       }
       return true;
     } catch (errorValue) {
-      if (announce) say(`Could not load the workers: ${errorValue.message}`, "error");
+      if (announce) say(failureText("load the workers", errorValue), "error");
       return false;
     }
   }
@@ -529,7 +508,7 @@ export function installAnalysisWorkers({
       showTokens();
       return true;
     } catch (errorValue) {
-      say(`Could not load the tokens: ${errorValue.message}`, "error");
+      say(failureText("load the tokens", errorValue), "error");
       return false;
     }
   }
@@ -588,12 +567,11 @@ export function installAnalysisWorkers({
   async function createToken() {
     const name = nameInput.value.trim();
     if (!name) {
-      nameInput.setAttribute("aria-invalid", "true");
+      showFieldError(nameInput, "Enter a name for the token, such as the computer's name.", get("token-error"), null);
       say("Enter a name for the token, such as the computer's name.", "error");
-      nameInput.focus();
       return;
     }
-    nameInput.removeAttribute("aria-invalid");
+    clearFieldError(nameInput, get("token-error"));
     const scope = scopeSelect.value;
     const payload = { name, scopes: [scope] };
     if (stationScopes.has(scope)) {
@@ -612,8 +590,9 @@ export function installAnalysisWorkers({
         body: JSON.stringify(payload),
       }));
     } catch (errorValue) {
-      if (errorValue.status === 422) nameInput.setAttribute("aria-invalid", "true");
-      say(`Could not create the token: ${errorValue.message}`, "error");
+      const message = failureText("create the token", errorValue);
+      if (errorValue.status === 422) showFieldError(nameInput, message, get("token-error"), null, { focus: false });
+      say(message, "error");
       return;
     }
     nameInput.value = "";
@@ -663,7 +642,7 @@ export function installAnalysisWorkers({
             method: "DELETE",
           });
         } catch (errorValue) {
-          result = [`Could not revoke ${token.name}: ${errorValue.message}`, "error"];
+          result = [failureText(`revoke ${token.name}`, errorValue), "error"];
           return button;
         }
         await loadTokens();
@@ -698,14 +677,12 @@ export function installAnalysisWorkers({
         body: JSON.stringify({ name }),
       }));
     } catch (errorValue) {
-      if (errorValue.status === 422) {
-        pairName.setAttribute("aria-invalid", "true");
-        pairName.focus();
-      }
-      say(`Could not get a pairing code: ${errorValue.message}`, "error");
+      const message = failureText("get a pairing code", errorValue);
+      if (errorValue.status === 422) showFieldError(pairName, message, get("pair-worker-error"), null);
+      say(message, "error");
       return;
     }
-    pairName.removeAttribute("aria-invalid");
+    clearFieldError(pairName, get("pair-worker-error"));
     pairing.code = String(body.code);
     pairing.until = Date.now() + body.valid_seconds * 1000;
     const shown = doc.createElement("span");
@@ -794,14 +771,7 @@ export function installAnalysisWorkers({
   pairCopyCommand.addEventListener("click",
     () => void copyPairing(pairCommandField.value, "Command"));
   pairDone.addEventListener("click", finishPairing);
-  panel.addEventListener("toggle", () => {
-    if (panel.open) {
-      void load();
-      startPolling();
-    } else {
-      stopPolling();
-    }
-  });
+  onCardOpen(panel, () => { void load(); startPolling(); }, { onClose: stopPolling });
   if (panel.open) {
     void load();
     startPolling();

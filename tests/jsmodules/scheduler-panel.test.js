@@ -134,22 +134,35 @@ beforeEach(() => {
 });
 
 describe("Schedule panel", () => {
-  // ADR-0021-06
-  it("uses shared collection tables with event columns and one primary action", async () => {
+  // ADR-0021-37
+  it("keeps only scanned Schedule columns and one Actions menu per event", async () => {
     const server = fakeServer();
     server.events.push(event("Morning show"));
+    server.runs.push({ time: "2026-10-11T07:00:00+00:00", event: "Morning show", summary: "Switch profile: Morning", result: "ok" });
     await openPanel(server);
+    const headings = (id) => [...byId(id).querySelectorAll("th")].map((cell) => cell.textContent);
     const table = byId("schedule-events").querySelector("table.collection-table");
     expect(table).not.toBeNull();
-    expect([...table.querySelectorAll("th")].map((cell) => cell.textContent)).toEqual([
-      "Name", "When", "Action", "Next run", "Enabled", "Actions", "Options",
-    ]);
+    expect(headings("schedule-events")).toEqual(["Name", "When", "Action", "Enabled", "Actions"]);
+    expect(headings("schedule-upcoming")).toEqual(["Name", "Due", "Action"]);
+    expect(headings("schedule-runs")).toEqual(["Name", "When", "Action", "Result"]);
     expect(table.querySelector('[role="rowheader"]')).toBeNull();
-    expect(table.querySelector('button[aria-label="Edit Morning show"]')).not.toBeNull();
-    expect(table.querySelector('button[aria-label="Options for Morning show"]')).not.toBeNull();
+    const buttons = [...table.querySelectorAll("tbody button")].filter((button) => !button.closest('[role="menu"]'));
+    expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual(["Options for Morning show"]);
+    expect([...table.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent))
+      .toEqual(["Edit", "Run now", "Delete"]);
     expect(table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
-    expect(byId("schedule-upcoming").querySelector("table.collection-table")).not.toBeNull();
-    expect(byId("schedule-runs").querySelector("table.collection-table")).not.toBeNull();
+    // Each table is named by its caption; the heading above already says it.
+    for (const [id, caption] of [["schedule-events", "Schedule events"], ["schedule-upcoming", "Next events"], ["schedule-runs", "Recent runs"]]) {
+      const named = byId(id).querySelector("table");
+      expect(named.caption.textContent, id).toBe(caption);
+      expect(named.caption.classList.contains("visually-hidden"), id).toBe(true);
+      expect(named.hasAttribute("aria-label"), id).toBe(false);
+    }
+    for (const id of ["schedule-upcoming", "schedule-runs"]) {
+      expect(byId(id).querySelector("table.collection-table")).not.toBeNull();
+      expect(byId(id).querySelector("button")).toBeNull();
+    }
   });
 
   it("is a Settings subtab whose panel is labelled by its tab", () => {
@@ -178,27 +191,29 @@ describe("Schedule panel", () => {
     expect([...rows[0].cells].slice(0, 3).map((cell) => cell.textContent)).toEqual([
       "Morning show", "Every day at 07:00:00. Soft timing.", "Switch profile: Morning",
     ]);
-    expect(rows[1].cells[3].textContent).toBe("Disabled");
-    expect(rows[1].cells[4].textContent).toBe("No");
+    expect(rows[0].cells[3].querySelector("input").checked).toBe(true);
+    expect(rows[1].cells[3].querySelector("input").checked).toBe(false);
     const edit = rowButton("Morning show", "edit");
-    expect(edit.getAttribute("aria-label")).toBe("Edit Morning show");
+    expect(edit.getAttribute("aria-label")).toBe("Edit");
     expect(rowFor("Morning show").querySelector('[aria-haspopup="menu"]').getAttribute("aria-label"))
       .toBe("Options for Morning show");
     const menu = rowFor("Morning show").querySelector('[role="menu"]');
     expect(menu.hidden).toBe(true);
     expect([...menu.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent))
-      .toEqual(["Run now", "Disable", "Delete"]);
+      .toEqual(["Edit", "Run now", "Delete"]);
     expect(byId("schedule-events").querySelectorAll('[tabindex="0"]')).toHaveLength(1);
     rows[0].cells[0].focus();
     rows[0].cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(document.activeElement).toBe(rows[0].cells[1]);
     const next = rowsIn("schedule-upcoming")[0];
     expect(next.cells[0].textContent).toBe("Morning show");
-    expect(next.cells[2].textContent).toBe("in 2 hours");
-    expect(next.cells[3].textContent).toBe("Switch profile: Morning");
+    expect(next.cells[1].textContent).toMatch(/, in 2 hours$/);
+    expect(next.cells[2].textContent).toBe("Switch profile: Morning");
     const clock = new Intl.DateTimeFormat(undefined, { hourCycle: "h23", hour: "numeric", minute: "2-digit", timeZone: "UTC" });
     expect(next.cells[1].textContent).toContain(clock.format(new Date("2026-10-11T14:00:00Z")));
-    expect(rowsIn("schedule-runs")[0].cells[3].textContent).toBe("Failed: Profile Morning was not found");
+    const ran = rowsIn("schedule-runs")[0];
+    expect(ran.cells[1].textContent).toContain(clock.format(new Date("2026-10-11T07:00:00Z")));
+    expect(ran.cells[3].textContent).toBe("Failed: Profile Morning was not found");
     expect(byId("schedule-upcoming").getAttribute("aria-live")).toBeNull();
   });
 
@@ -476,8 +491,9 @@ describe("Schedule panel", () => {
       return { ...data, upcoming: [...data.upcoming, later] };
     });
     await openPanel(server);
-    expect(rowFor("Season").cells[3].textContent).toBe("Ended, no runs left");
-    expect(rowFor("Season").cells[4].textContent).toBe("No");
+    // The server refuses to turn on an ended event, so it has no checkbox.
+    expect(rowFor("Season").cells[3].textContent).toBe("No, ended, no runs left");
+    expect(rowFor("Season").cells[3].querySelector("input")).toBeNull();
     const [today, later] = rowsIn("schedule-upcoming").map((item) => item.textContent);
     expect(today).toContain("Sunday");
     expect(today).toContain("11");
@@ -615,7 +631,7 @@ describe("Schedule panel", () => {
     expect(document.activeElement).toBe(edit.closest("td"));
   });
 
-  it("edits an event in place and Cancel returns focus to its Edit cell", async () => {
+  it("edits an event in place and Cancel returns focus to its Actions cell", async () => {
     const server = fakeServer();
     server.events.push(event("Morning show", { params: { name: "Gone" } }));
     await openPanel(server);
@@ -637,23 +653,67 @@ describe("Schedule panel", () => {
     const put = server.calls.find((call) => call.method === "PUT");
     expect(put.url).toBe("/api/schedule/id-Morning%20show");
     expect(document.activeElement).toBe(edit.closest("td"));
-    expect(edit.getAttribute("aria-label")).toBe("Edit Breakfast");
+    expect(optionsCell("Breakfast")).toBe(edit.closest("td"));
+    expect(rowFor("Breakfast").querySelector('[aria-haspopup="menu"]').getAttribute("aria-label")).toBe("Options for Breakfast");
   });
 
-  it("disables and enables an event through Options and returns focus to its cell", async () => {
+  // ADR-0021-44
+  it("turns an event off and on with Space on its Enabled checkbox, keeping focus there", async () => {
     const server = fakeServer();
     server.events.push(event("Morning show"));
     await openPanel(server);
-    const toggle = menuAction("Morning show", "toggle");
-    toggle.focus();
-    toggle.click();
+    const box = rowFor("Morning show").cells[3].querySelector('input[type="checkbox"]');
+    expect(box.getAttribute("aria-label")).toBe("Enable Morning show");
+    expect(box.checked).toBe(true);
+    expect(rowFor("Morning show").querySelector('[role="menuitem"][data-action="toggle"]')).toBeNull();
+    rowFor("Morning show").cells[2].focus();
+    rowFor("Morning show").cells[2].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(box);
+    box.click();
     await vi.waitFor(() => expect(status()).toBe("Event Morning show disabled"));
-    expect(server.calls.at(-2).body).toEqual({ enabled: false });
-    expect(document.activeElement).toBe(optionsCell("Morning show"));
-    expect(toggle.textContent).toBe("Enable");
-    menuAction("Morning show", "toggle").click();
+    expect(server.calls.filter((call) => call.url.endsWith("/enable")).map((call) => call.body)).toEqual([{ enabled: false }]);
+    expect(document.activeElement).toBe(box);
+    expect(box.checked).toBe(false);
+    expect(rowFor("Morning show").cells[3].querySelector("input")).toBe(box);
+    box.click();
     await vi.waitFor(() => expect(status()).toBe("Event Morning show enabled"));
-    expect(document.activeElement).toBe(optionsCell("Morning show"));
+    expect(server.calls.filter((call) => call.url.endsWith("/enable")).map((call) => call.body)).toEqual([{ enabled: false }, { enabled: true }]);
+    expect(document.activeElement).toBe(box);
+    expect(box.checked).toBe(true);
+  });
+
+  // ADR-0021-44
+  it("lets an ended event that is still enabled be turned off, and says it has ended", async () => {
+    const server = fakeServer();
+    // A repeating event past its end date stays enabled on the server.
+    server.events.push(event("Season", { end_date: "2026-01-01", enabled: true, ended: true }));
+    await openPanel(server);
+    const cell = rowFor("Season").cells[3];
+    const box = cell.querySelector('input[type="checkbox"]');
+    expect(box.checked).toBe(true);
+    expect(box.getAttribute("aria-label")).toBe("Enable Season");
+    expect(cell.querySelector(".toggle-note").textContent).toBe("Ended, no runs left");
+    expect(document.getElementById(box.getAttribute("aria-describedby")).textContent).toBe("Ended, no runs left");
+    box.focus();
+    box.click();
+    await vi.waitFor(() => expect(status()).toBe("Event Season disabled"));
+    expect(cell.querySelector("input")).toBeNull();
+    expect(cell.textContent).toBe("No, ended, no runs left");
+    expect(document.activeElement).toBe(cell);
+  });
+
+  it("puts the Enabled checkbox back and says why when the change is refused", async () => {
+    const server = fakeServer();
+    server.events.push(event("Morning show", { enabled: false }));
+    await openPanel(server);
+    const box = rowFor("Morning show").cells[3].querySelector("input");
+    box.focus();
+    server.fail = new FakeError("This one-time event is in the past; edit its date first", { field: "enabled" });
+    box.click();
+    await vi.waitFor(() => expect(status()).toBe("Could not change Morning show: This one-time event is in the past; edit its date first"));
+    expect(box.checked).toBe(false);
+    expect(box.hasAttribute("aria-busy")).toBe(false);
+    expect(document.activeElement).toBe(box);
   });
 
   it("runs an event now and says how it went", async () => {
@@ -736,20 +796,8 @@ describe("Schedule panel", () => {
     server.events.find((item) => item.name === "Second").enabled = false;
     await controls.refresh();
     expect(document.activeElement).toBe(run);
-    expect(rowFor("Second").cells[4].textContent).toBe("No");
+    expect(rowFor("Second").cells[3].querySelector("input").checked).toBe(false);
     expect(rowsIn("schedule-events").map((row) => row.dataset.rowKey)).toEqual(["id-Zero", "id-First", "id-Second"]);
-  });
-
-  it("distinguishes an unlisted next run from a disabled or ended event", async () => {
-    const server = fakeServer();
-    server.events.push(event("Later"));
-    const reply = server.request.getMockImplementation();
-    server.request.mockImplementation(async (url, options) => {
-      const data = await reply(url, options);
-      return url === "/api/schedule" && !options?.method ? { ...data, upcoming: [] } : data;
-    });
-    await openPanel(server);
-    expect(rowFor("Later").cells[3].textContent).toBe("Not in next 5 runs");
   });
 
   it("does not load while hidden, and forgets everything on sign-out", async () => {

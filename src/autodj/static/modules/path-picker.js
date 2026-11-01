@@ -22,11 +22,11 @@
 // Either way focus goes back to the Browse button.  What happens inside is
 // said in the dialog's own status line, where a screen reader reading the
 // dialog finds it.
-import { requestJson } from "./api-client.js";
+import { requestJson, withDisabled } from "./api-client.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
 import { closeDialog, openDialog } from "./dialog-guard.js";
-import { dialogStatusLine } from "./dom-helpers.js";
-import { announceStatus, clearAnnouncedStatus } from "./live-region.js";
+import { clearFieldError, clearFormErrors, dialogStatusLine, showFieldError } from "./dom-helpers.js";
+import { clearAnnouncedStatus, makeSay } from "./live-region.js";
 
 export function serverFolderSource({ request = requestJson } = {}) {
   return {
@@ -78,7 +78,8 @@ function buildPicker(doc) {
   const navigation = installActionListNavigation(list);
 
   let state = null;
-  const say = (message, tone = "info") => announceStatus(status, message, { force: true, tone });
+  let loadController = null;
+  const say = makeSay(status, {});
   const where = (path) => path || (state.relative ? "Library folder" : "Drives");
   const setDisabled = (button, value) => {
     if (value) button.setAttribute("aria-disabled", "true");
@@ -86,8 +87,8 @@ function buildPicker(doc) {
   };
 
   function showError(message) {
-    error.textContent = message;
-    error.hidden = !message;
+    if (message) showFieldError(null, message, error, status);
+    else clearFormErrors(form, error);
   }
 
   function entry(item, kind) {
@@ -132,10 +133,12 @@ function buildPicker(doc) {
 
   async function open(path, focusPath = null, fallback = false) {
     const mine = ++state.loads;
-    list.setAttribute("aria-busy", "true");
+    loadController?.abort();
+    const busy = new AbortController();
+    loadController = busy;
     showError("");
     try {
-      const listing = await state.source.list(path);
+      const listing = await withDisabled(form, () => state.source.list(path), { signal: busy.signal });
       if (!dialog.open || mine !== state.loads) return;
       render(listing, focusPath);
     } catch (problem) {
@@ -144,14 +147,12 @@ function buildPicker(doc) {
       if (fallback && path) { await open("", null, false); return; }
       const message = problem?.message || "That folder could not be listed.";
       showError(message);
-      say(message, "error");
-    } finally {
-      if (mine === state?.loads) list.removeAttribute("aria-busy");
     }
   }
 
   function close(value) {
     const done = state;
+    loadController?.abort();
     state.loads += 1;
     // Focus goes straight back to the Browse button, or to the field when
     // the button is gone.
@@ -161,7 +162,7 @@ function buildPicker(doc) {
     state = null;
     if (value != null) {
       done.input.value = value;
-      done.input.removeAttribute("aria-invalid");
+      clearFieldError(done.input, null);
       done.input.dispatchEvent(new Event("input", { bubbles: true }));
       done.input.dispatchEvent(new Event("change", { bubbles: true }));
     }

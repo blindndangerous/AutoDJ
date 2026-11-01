@@ -15,7 +15,7 @@ If you followed another lesson, choose **Activate** from **Options for Practice*
 in **Clockwheels**, then set
 **Settings**, **Song picking**, **Pick mode** to **Clockwheel**. Its step should
 still have **Follow the repeat rules** unchecked and no day or hour restrictions.
-Use each lesson event's **Options** menu to **Disable** it, and stop any show before continuing.
+In **Settings**, **Station**, **Schedule**, clear each lesson event's **Enabled** checkbox (press Space on it), and stop any show before continuing.
 
 This lesson saves two new categories and a new wheel, `Practice alternating`.
 It keeps the original Practice category and wheel so you can return to them.
@@ -57,8 +57,8 @@ stage's count is the check that this choice worked.
    or dates. Press **Check**.
 6. Confirm that exactly one song matches, then press **Save category**.
 
-Check **Saved categories** for Practice anchor and its count. If zero songs
-match, edit the category form, compare **Value** with the library title, and
+Check the **Name** and **Songs** columns in **Saved categories** for Practice anchor and its count. If zero songs
+match, choose **Edit** from that row's **Options** menu, compare **Value** with the library title, and
 check the folder selection. Press **Check** again before saving. If more than
 one matches, choose a unique title and replace **Value**. Do not continue until
 this pool contains one song.
@@ -99,8 +99,8 @@ again, and save. This is why checking counts comes before hearing the rotation.
 7. In **Settings**, **Song picking**, confirm **Pick mode** is **Clockwheel**.
 
 The saved wheel should show two steps in order: Practice anchor, then Practice
-other. Its **Active** column should say **Yes**. Each step's **Rules and hours**
-column should say it ignores repeat rules. With a one-song pool, repeat rules can interfere with
+other. Its **Active** column should say **Yes**. Each step's sentence should say
+it ignores repeat rules. With a one-song pool, repeat rules can interfere with
 the very repetition we are trying to observe; this small lesson deliberately
 leaves them off.
 

@@ -108,10 +108,11 @@ describe("history export control", () => {
     const button = document.getElementById("hist-export-button");
     button.focus();
     submit();
-    expect(button.disabled).toBe(true);
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(button);
     expect(form.getAttribute("aria-busy")).toBe("true");
     expect(announce.mock.calls).toEqual([["Exporting play log", "info"]]);
-    button.blur(); // what a browser does to a focused button it disables
     finish(csvResponse("start\r\n", { "X-Play-Count": "1" }));
     await settle();
     expect(button.disabled).toBe(false);

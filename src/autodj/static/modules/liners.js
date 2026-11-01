@@ -5,10 +5,12 @@
 // app.js and is injected via deps.playLiner so this module stays free
 // of AudioContext + decks state.
 
-import { confirmAction } from "./confirm-dialog.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
-import { dbg, listRow, nextRowControl, rowButton, stationDay } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+import { createCollectionTable } from "./collection-table.js";
+import { deleteCollectionItem } from "./collection-delete.js";
+import { createEditorDialog } from "./editor-dialog.js";
+import { applyServerFieldError, clearFieldError, dbg, sentences, showFieldError, stationDay } from "./dom-helpers.js";
+import { tableFocusTarget } from "./table-row.js";
+import { makeSay } from "./live-region.js";
 import { parseSettingValue, refusalText } from "./mix-settings.js";
 import { registerSettingsGroup, settingsDraftHolds } from "./settings-drafts.js";
 import {
@@ -17,6 +19,7 @@ import {
   isStaleStationReply,
   requestBinary,
   requestJson,
+  failureText,
   withDisabled,
 } from "./api-client.js";
 
@@ -59,7 +62,7 @@ const DUCK_DB = { label: "Music duck", min: 0, max: 30, integer: false };
 function _setStatus(els, msg, { force = false, tone = "info", region = els.lnStatus } = {}) {
   if (!region) return;
   region.classList.remove("visually-hidden");
-  announceStatus(region, msg, { dwellMs: tone === "error" ? 6000 : 4000, force, tone });
+  makeSay(region, { dwellMs: 4000, errorDwellMs: 6000, force })(msg, tone);
 }
 
 // One liner in words: its name, its play dates, and why it is skipped now.
@@ -70,6 +73,8 @@ function linerText(liner) {
   return parts.join(". ");
 }
 
+const linerCollections = new WeakMap();
+
 export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, kind, opener) => {
   fileList.ownerDocument.dispatchEvent(new CustomEvent("autodj:edit-points", {
     detail: { path, kind, opener },
@@ -78,32 +83,36 @@ export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, k
   fileList.ownerDocument.dispatchEvent(new CustomEvent("autodj:liner-dates", {
     detail: { liner, opener },
   }));
-}) {
+}, { status, announceFocus = true } = {}) {
   if (!fileList) return;
-  if (!files || files.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "no-results";
-    empty.textContent = "No liner files yet.";
-    fileList.replaceChildren(empty);
-    installActionListNavigation(fileList).refresh();
-    return;
+  let entry = linerCollections.get(fileList);
+  if (!entry) {
+    entry = {};
+    entry.table = createCollectionTable({
+      host: fileList, label: "Liners", hideCaption: true, status, fallback: _listHeading(fileList),
+      emptyText: "No liner files yet.", keyOf: (liner) => liner.id, nameOf: (liner) => liner.name,
+      columns: [
+        { key: "name", label: "Name", value: (liner) => liner.name },
+        { key: "details", label: "Details", value: (liner) => sentences(liner.dates_text || "Any day",
+          liner.playable === false && `Skipped now: ${liner.unplayable_text}`) },
+      ],
+      actions: (liner) => [
+        { id: "dates", label: "Play dates",
+          disabledReason: liner.legacy ? "Play dates are unavailable for this liner." : "",
+          run: (button) => entry.onDates(liner, button) },
+        { id: "info", label: "Track info",
+          disabledReason: !liner.path || liner.editable === false ? "Track info is unavailable for this liner." : "",
+          run: (button) => entry.onEdit(liner.path, "liner", button) },
+        { id: "delete", label: "Delete", run: (button) => liner.legacy
+          ? entry.onDelete(liner.id, button) : entry.onDelete(liner.id, button, liner.name) },
+      ],
+    });
+    linerCollections.set(fileList, entry);
   }
-  fileList.replaceChildren(...files.map((item) => {
-    const legacyName = typeof item === "string";
-    const liner = legacyName ? { id: item, name: item, path: null } : item;
-    const buttons = [rowButton(document, "Delete", `Delete ${liner.name}`, (button) =>
-      legacyName ? onDelete(liner.id, button) : onDelete(liner.id, button, liner.name))];
-    if (!legacyName) {
-      const dates = rowButton(document, "Play dates", `Play dates for ${liner.name}`, (button) => onDates(liner, button));
-      dates.dataset.linerDates = liner.id;
-      buttons.push(dates);
-    }
-    if (liner.path && liner.editable !== false) buttons.push(rowButton(document, "Track info", `Track info for ${liner.name}`, (button) => onEdit(liner.path, "liner", button)));
-    const row = listRow(document, legacyName ? liner.name : linerText(liner), "", ...buttons);
-    row.dataset.linerId = liner.id;
-    return row;
-  }));
-  installActionListNavigation(fileList).refresh();
+  Object.assign(entry, { onDelete, onEdit, onDates });
+  const items = (files || []).map((item) => typeof item === "string"
+    ? { id: item, name: item, path: null, legacy: true } : item);
+  return entry.table.update(items, { announceFocus });
 }
 
 // Where focus goes when the list has no liner left: the list's heading,
@@ -135,33 +144,10 @@ async function _followStationDay(els, now = new Date()) {
     return;
   }
   if (!isAuthenticatedRequestCurrent(epoch)) return;
-  const items = body.items || [];
-  const rows = [...els.lnFileList.querySelectorAll(":scope > li[data-liner-id]")];
-  const same = rows.length === items.length && rows.every((row, i) => row.dataset.linerId === items[i].id);
-  if (!same) {
-    // The liners changed meanwhile: draw the list again, then put focus back
-    // on the same button of the same liner (or the next row's), so a
-    // midnight redraw never drops it.
-    const focused = els.lnFileList.contains(document.activeElement) ? document.activeElement : null;
-    const row = focused?.closest("li[data-liner-id]");
-    const label = focused?.getAttribute("aria-label");
-    const index = focused ? [...els.lnFileList.querySelectorAll("button")].indexOf(focused) : -1;
-    await _loadLibrary(els, epoch);
-    if (!focused || focused.isConnected) return;
-    const again = row && [...els.lnFileList.querySelectorAll(":scope > li[data-liner-id]")]
-      .find((item) => item.dataset.linerId === row.dataset.linerId);
-    const target = (again && [...again.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === label))
-      || nextRowControl(els.lnFileList, "button", Math.max(index, 0), null)
-      || _listHeading(els.lnFileList);
-    target?.focus();
-    return;
-  }
   state.lib = body;
-  rows.forEach((row, i) => {
-    const text = linerText(items[i]);
-    const span = row.firstElementChild;
-    if (span && span.textContent !== text) span.textContent = text;
-  });
+  renderLinerFileList(els.lnFileList, body.items?.length ? body.items : body.files,
+    (id, button, label) => void _deleteLiner(els, id, button, label), undefined, undefined,
+    { status: els.lnBrowseStatus || els.lnStatus });
 }
 
 // Loads the liner folder and config into the page.  False when the
@@ -177,7 +163,8 @@ async function _loadLibrary(els, epoch) {
   renderLinerFileList(
     els.lnFileList,
     body.items?.length ? body.items : body.files,
-    (id, button, label) => void _deleteLiner(els, id, button, label),
+    (id, button, label) => void _deleteLiner(els, id, button, label), undefined, undefined,
+    { status: els.lnBrowseStatus || els.lnStatus },
   );
   // Sync config inputs from server payload, leaving fields the user
   // is currently editing untouched.
@@ -206,7 +193,11 @@ function _clearLibrary(els) {
   state.randomTarget = null;
   state.seqCursor = 0;
   state.lastSeenPath = null;
-  els.lnFileList?.replaceChildren();
+  if (els.lnFileList) {
+    linerCollections.get(els.lnFileList)?.table.clear();
+    linerCollections.delete(els.lnFileList);
+    els.lnFileList.replaceChildren();
+  }
   for (const region of [els.lnFolderDisplay, els.lnStatus, els.lnBrowseStatus]) {
     if (region) region.textContent = "";
   }
@@ -220,22 +211,23 @@ async function _refreshLibrary(els) {
     // A reply for the station the page has just left says nothing (#70).
     if (!isAuthenticatedRequestCurrent(epoch) || isStaleStationReply(err)) return;
     dbg("liner refresh failed:", err);
-    _setStatus(els, `Could not load liners: ${err.message}`);
+    _setStatus(els, failureText("load liners", err));
   }
 }
 
 // The delete runs while the confirmation is still open, so the list is
 // already updated when it closes and focus goes straight to the next
-// row's Delete, or the list itself when none is left (see confirmAction).
+// row's Actions cell, or the list itself when none is left (see confirmAction).
 // The result is said after the dialog has closed, in the status region
 // beside the list (Queue & Search), since the Settings one is hidden there.
 async function _deleteLiner(els, name, button, label = name) {
   const list = els.lnFileList;
   const region = els.lnBrowseStatus || els.lnStatus;
-  const index = Array.from(list.querySelectorAll("button")).indexOf(button);
+  const collection = linerCollections.get(list)?.table;
+  const index = [...collection.body.children].indexOf(button.closest("tr"));
   const epoch = captureAuthenticatedRequestEpoch();
   let result = null;
-  const confirmed = await confirmAction(button.ownerDocument, {
+  const confirmed = await deleteCollectionItem(button.ownerDocument, {
     title: `Delete liner ${label}?`,
     message: "The file is removed from the liners folder.",
     confirmLabel: "Delete liner",
@@ -246,7 +238,7 @@ async function _deleteLiner(els, name, button, label = name) {
       } catch (err) {
         if (!isAuthenticatedRequestCurrent(epoch)) return null;
         result = `Delete failed: ${err.message}`;
-        return button;
+        return tableFocusTarget(button);
       }
       if (!isAuthenticatedRequestCurrent(epoch)) return null;
       try {
@@ -254,15 +246,17 @@ async function _deleteLiner(els, name, button, label = name) {
       } catch (err) {
         if (!isAuthenticatedRequestCurrent(epoch)) return null;
         result = `Deleted ${label}, but could not load liners: ${err.message}`;
-        return button;
+        return tableFocusTarget(button);
       }
       // A delete whose play dates could not be forgotten says so.
       result = reply?.message ? `Deleted ${label}. ${reply.message}.` : `Deleted ${label}`;
-      return nextRowControl(list, "button", index, list);
+      const rows = [...collection.body.querySelectorAll("tr[data-row-key]")];
+      const next = rows[Math.min(index, rows.length - 1)];
+      return collection.target(next?.dataset.rowKey, "options") || _listHeading(list);
     },
   });
   if (!confirmed) {
-    button.focus();
+    tableFocusTarget(button).focus();
     return;
   }
   if (result && isAuthenticatedRequestCurrent(epoch)) _setStatus(els, result, { region });
@@ -367,65 +361,40 @@ function _installDatesForm(els, doc = document) {
   const notAfter = doc.getElementById("ln-not-after");
   const fields = { not_before: notBefore, not_after: notAfter };
   let editing = null;
-  let opener = null;
-  const region = () => els.lnBrowseStatus || els.lnStatus;
-  const say = (message, tone = "info") => _setStatus(els, message, { force: true, tone, region: region() });
-
-  // The error text joins or leaves a field's own description.
-  function linkError(control, linked) {
-    const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
-      .filter((id) => id && id !== errorText.id);
-    if (linked) ids.unshift(errorText.id);
-    control.setAttribute("aria-describedby", ids.join(" "));
-  }
-
-  function clearError() {
-    errorText.hidden = true;
-    errorText.textContent = "";
-    for (const control of Object.values(fields)) {
-      control.removeAttribute("aria-invalid");
-      linkError(control, false);
-    }
-  }
-
+  const region = () => editor.region(els.lnBrowseStatus || els.lnStatus);
+  const say = makeSay(region, { dwellMs: 4000, errorDwellMs: 6000 });
+  const clearError = () => clearFieldError(Object.values(fields), errorText);
   function showError(field, message) {
     clearError();
-    const control = fields[field] || notBefore;
-    errorText.textContent = message;
-    errorText.hidden = false;
-    control.setAttribute("aria-invalid", "true");
-    linkError(control, true);
-    control.focus();
-    say(message, "error");
+    showFieldError(fields[field] || notBefore, message, errorText, editor.status);
   }
-
-  function datesButton(id) {
-    return [...els.lnFileList.querySelectorAll("[data-liner-dates]")]
-      .find((button) => button.dataset.linerDates === id) || null;
-  }
-
-  function close(focusId) {
-    form.hidden = true;
+  function close() {
+    editor.close({ restore: true });
     editing = null;
     clearError();
-    const back = (focusId && datesButton(focusId)) || (opener?.isConnected ? opener : els.lnFileList);
-    back?.focus();
   }
+  const editor = createEditorDialog({
+    form, heading: legend, cancel: doc.getElementById("ln-dates-cancel"),
+    fallback: _listHeading(els.lnFileList), save: saveDates, pendingText: null,
+    onCancel: () => {
+      editing = null;
+      clearError();
+      say("Cancelled. The play dates did not change.");
+    },
+  });
 
   doc.addEventListener("autodj:liner-dates", (event) => {
     const { liner, opener: from } = event.detail;
+    if (!form.isConnected || !els.lnFileList.contains(from)) return;
     editing = liner;
-    opener = from;
     clearError();
     legend.textContent = `Play dates for ${liner.name}`;
     notBefore.value = liner.not_before || "";
     notAfter.value = liner.not_after || "";
-    form.hidden = false;
-    notBefore.focus();
+    editor.open(notBefore, from);
   });
 
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  async function saveDates(_event, current) {
     if (!editing) return;
     clearError();
     // A half-typed date reads as empty, and a five-digit year reaches the server.
@@ -449,34 +418,29 @@ function _installDatesForm(els, doc = document) {
         body: JSON.stringify({ not_before: notBefore.value || null, not_after: notAfter.value || null }),
       });
     } catch (err) {
-      if (!isAuthenticatedRequestCurrent(epoch)) return;
-      if (err.field && fields[err.field]) showError(err.field, err.message);
-      else say(`Could not save the play dates of ${liner.name}: ${err.message}`, "error");
+      if (!current()) return;
+      if (!applyServerFieldError(err, fields, errorText, editor.status)) {
+        say(failureText(`save the play dates of ${liner.name}`, err), "error");
+      }
       return;
     }
-    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    if (!current()) return;
     try {
       await _loadLibrary(els, epoch);
     } catch (err) {
       dbg("liner refresh failed:", err);
     }
-    close(liner.id);
+    if (!current()) return;
+    close();
     say(saved.dates_text
       ? `Saved: ${linerText({ ...saved, name: liner.name })}.`
       : `Saved: ${liner.name} plays on any day.`);
-  });
-
-  doc.getElementById("ln-dates-cancel")?.addEventListener("click", () => {
-    const id = editing?.id;
-    close(id);
-    say("Cancelled. The play dates did not change.");
-  });
-  for (const control of Object.values(fields)) {
-    control.addEventListener("input", () => {
-      control.removeAttribute("aria-invalid");
-      linkError(control, false);
-    });
   }
+
+  for (const control of Object.values(fields)) {
+    control.addEventListener("input", () => clearFieldError(control, errorText));
+  }
+  return editor;
 }
 
 export function installLiners(els, deps) {
@@ -499,6 +463,12 @@ export function installLiners(els, deps) {
   });
   registerSettingsGroup({
     panel, group: "playback", controls, read,
+    fields: {
+      liners_enabled: els.lnEnabled, matched_intro_only_without_liner: els.lnMatchedIntroOnlyWithoutLiner,
+      liners_every_n_songs: els.lnEveryN, liners_every_minutes: els.lnEveryMin,
+      liners_random_min_minutes: els.lnRandMin, liners_random_max_minutes: els.lnRandMax,
+      liners_pick_mode: els.lnPickMode, liners_duck_db: els.lnDuckDb, liners_talk_up: els.lnTalkUp,
+    },
     write(value) {
       const c = state.lib.config || (state.lib.config = {});
       const fields = [
@@ -528,6 +498,8 @@ export function installLiners(els, deps) {
       if ("liners_duck_db" in value) c.duck_db = value.liners_duck_db;
     },
     validate() {
+      const error = controls[0]?.ownerDocument.getElementById("ln-settings-error");
+      clearFieldError(controls, error);
       const fields = [
         [els.lnEveryN, { label: "Songs between liners", min: 0, max: 500, integer: true }],
         [els.lnEveryMin, { label: "Minutes between liners", min: 0, max: 240 }],
@@ -538,22 +510,21 @@ export function installLiners(els, deps) {
       for (const [control, spec] of fields) {
         if (!control || control.value === "") continue;
         if (parseSettingValue(control.value, spec) !== null) continue;
-        control.setAttribute("aria-invalid", "true");
-        control.focus();
-        _setStatus(els, refusalText(spec, control.value), { force: true, tone: "error" });
+        showFieldError(control, refusalText(spec, control.value), error, els.lnStatus);
         return false;
       }
       if (_floatOrNull(els.lnRandMin) != null && _floatOrNull(els.lnRandMax) != null
           && _floatOrNull(els.lnRandMin) > _floatOrNull(els.lnRandMax)) {
-        els.lnRandMax?.setAttribute("aria-invalid", "true");
-        els.lnRandMax?.focus();
-        _setStatus(els, "Longest random interval must be at least the shortest interval.", { force: true, tone: "error" });
+        showFieldError(els.lnRandMax, "Longest random interval must be at least the shortest interval.", error, els.lnStatus);
         return false;
       }
       return true;
     },
   });
-  if (els.lnFileList) _installDatesForm(els, els.lnFileList.ownerDocument);
+  for (const control of controls) {
+    control.addEventListener("input", () => clearFieldError(control, control.ownerDocument.getElementById("ln-settings-error")));
+  }
+  const datesEditor = els.lnFileList && _installDatesForm(els, els.lnFileList.ownerDocument);
 
   if (els.lnUploadSubmit) {
     els.lnUploadSubmit.addEventListener("click", async (event) => {
@@ -592,15 +563,17 @@ export function installLiners(els, deps) {
     });
   }
 
+  els.lnDuckDb?.addEventListener("input", () => clearFieldError(els.lnDuckDb, els.lnDuckDb.ownerDocument.getElementById("ln-duck-db-error")));
   for (const el of [
     els.lnEnabled, els.lnEveryN, els.lnEveryMin,
     els.lnRandMin, els.lnRandMax, els.lnPickMode, els.lnDuckDb,
   ]) {
     if (!el) continue;
     el.addEventListener("change", () => {
+      // change fires as Tab leaves the field: the error is linked and said,
+      // but focus stays where the reader moved it.
       if (el === els.lnDuckDb && parseSettingValue(el.value, DUCK_DB) === null) {
-        _setStatus(els, refusalText(DUCK_DB, el.value), { force: true, tone: "error" });
-        el.setAttribute("aria-invalid", "true");
+        showFieldError(el, refusalText(DUCK_DB, el.value), el.ownerDocument.getElementById("ln-duck-db-error"), els.lnStatus, { focus: false });
       }
     });
   }
@@ -657,7 +630,10 @@ export function installLiners(els, deps) {
   // Initial fetch + reapply hidden state on load.
   void _refreshLibrary(els);
   // After a station switch (#70): each station has its own liners.
-  return { refresh: () => _refreshLibrary(els), clear: () => _clearLibrary(els) };
+  return { refresh: () => _refreshLibrary(els), clear() {
+    datesEditor?.close();
+    _clearLibrary(els);
+  } };
 }
 
 // Bumps the every_n_songs counter when the WS state surfaces a new

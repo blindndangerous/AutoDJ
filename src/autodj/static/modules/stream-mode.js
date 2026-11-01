@@ -1,3 +1,4 @@
+import { failureText } from "./api-client.js";
 import { copyByCommand } from "./clipboard.js";
 // Stream mode: the server mixes and streams MP3, so this page is a remote
 // that can also listen through one plain <audio> element.  The browser
@@ -18,7 +19,7 @@ import { copyByCommand } from "./clipboard.js";
 //     stream again until the link is back, and at once when it is; only a
 //     stream that still fails then is reported and turned off.
 
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 
 export const STREAM_DELAY_ESTIMATE_S = 3;
@@ -62,7 +63,7 @@ function startFailureText(err) {
   if (name === "NotAllowedError") return BLOCKED_TEXT;
   // An API refusal carries a status and a server-written reason.
   if (err && typeof err.status === "number" && err.message) {
-    return `Could not get the stream link: ${err.message}`;
+    return failureText("get the stream link", err);
   }
   // fetch() rejects with a TypeError when the network is down.
   if (name === "TypeError" || name === "NetworkError") return DROPPED_TEXT;
@@ -99,9 +100,7 @@ export function createStreamMode({
   // Whether the page's websocket to AutoDJ is up (see setLinkUp).
   let linkUp = true;
 
-  function say(text, tone = "info") {
-    announceStatus(srStatus, text, { dwellMs: 4000, force: true, tone });
-  }
+  const say = makeSay(srStatus, { dwellMs: 4000 });
 
   function setListening(value) {
     listening = value;
@@ -504,8 +503,7 @@ export function createStreamSettings({
       // Retries repeat every ten seconds; the failure is spoken once.
       if (failureSpoken) return;
       failureSpoken = true;
-      announceStatus(settingsStatus, `Could not load the stream address: ${err.message}`,
-        { dwellMs: 6000, tone: "error" });
+      makeSay(settingsStatus, { dwellMs: 6000, force: false })(failureText("load the stream address", err), "error");
     } finally {
       if (lookup === token) lookup = null;
     }
@@ -600,11 +598,11 @@ export function createStreamSettings({
         // Focus moves to the selected address, ready for Ctrl+C.
         url.focus();
         url.select();
-        announceStatus(srStatus, COPY_FAILED_TEXT, { dwellMs: 6000, force: true, tone: "error" });
+        makeSay(srStatus, { dwellMs: 6000 })(COPY_FAILED_TEXT, "error");
         return;
       }
     }
-    announceStatus(srStatus, COPIED_TEXT, { dwellMs: 3000, force: true });
+    makeSay(srStatus, { dwellMs: 3000 })(COPIED_TEXT);
   });
 
   return {

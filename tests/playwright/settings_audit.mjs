@@ -159,7 +159,8 @@ async function audit(name, launcher) {
     await page.locator("#stab-access").click();
     const profileApply = page.waitForResponse((response) => response.url() === `${endpoint}/profiles/${encodeURIComponent(profileName)}/apply`
       && response.request().method() === "POST");
-    await page.getByRole("button", { name: `Activate profile ${profileName}` }).click();
+    await page.getByRole("button", { name: `Options for ${profileName}`, exact: true }).click();
+    await page.getByRole("menuitem", { name: "Activate", exact: true }).click();
     assert.equal((await profileApply).status(), 200);
     assert.equal((await runtimeSettings()).values.playback.music_speed_percent, 6);
     await page.locator("#stab-sound").click();
@@ -182,7 +183,8 @@ async function audit(name, launcher) {
     await page.locator("#stab-access").click();
     const profileReapply = page.waitForResponse((response) => response.url() === `${endpoint}/profiles/${encodeURIComponent(profileName)}/apply`
       && response.request().method() === "POST");
-    await page.getByRole("button", { name: `Activate profile ${profileName}` }).click();
+    await page.getByRole("button", { name: `Options for ${profileName}`, exact: true }).click();
+    await page.getByRole("menuitem", { name: "Activate", exact: true }).click();
     assert.equal((await profileReapply).status(), 200);
     await page.locator("#stab-sound").click();
     await page.locator("#settings-profile").selectOption("");

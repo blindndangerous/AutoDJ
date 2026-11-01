@@ -15,11 +15,14 @@
 // Each button or setting result is said once through #tc-status; the
 // automatic check after the hour says nothing.
 
-import {
+import { failureText,
   isStaleStationReply, requestBinary, requestJson, staleActionText, withDisabled,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
+import { clearFieldError, showFieldError, applyServerFieldError } from "./dom-helpers.js";
+import { onCardOpen } from "./card-state.js";
+import { createSettingsSave } from "./standalone-settings.js";
 import { registerSettingsGroup, settingsDraftHolds } from "./settings-drafts.js";
 
 const MINUTES = 1440;
@@ -59,8 +62,8 @@ export function installTimeChecks({ doc = document, request = requestJson,
   const hasFiles = Object.values(files).every(Boolean);
   // Each file input, the error shown under it and its own help.
   const uploads = {
-    pack: { input: files.packFile, error: files.packError, help: "tc-add-pack-desc" },
-    clip: { input: files.clipFile, error: files.clipError, help: "tc-clip-file-desc" },
+    pack: { input: files.packFile, error: files.packError },
+    clip: { input: files.clipFile, error: files.clipError },
   };
   if (!enabled || !format || !rule || !clips || !status || !test || !order || !packList
       || !packsEmpty || !testVoice) {
@@ -75,9 +78,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
   // clear(), is dropped.
   let generation = 0;
 
-  function say(message, tone = "info") {
-    announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 6000 : 4000, tone });
-  }
+  const say = makeSay(status, { dwellMs: 4000, errorDwellMs: 6000 });
 
   function hourKey(date) {
     const parts = new Intl.DateTimeFormat("en-US", {
@@ -250,26 +251,10 @@ export function installTimeChecks({ doc = document, request = requestJson,
     clearDatesError();
   }
 
-  function clearDatesError() {
-    for (const field of [dates.from, dates.until]) {
-      field.removeAttribute("aria-invalid");
-      field.removeAttribute("aria-describedby");
-    }
-    dates.error.textContent = "";
-    dates.error.hidden = true;
-  }
+  const clearDatesError = () => clearFieldError([dates.from, dates.until], dates.error);
+  const datesError = (field, message) => showFieldError(field, message, dates.error, status);
 
-  // Shown on the page, linked to the field and focused (WCAG 3.3.1), and said.
-  function datesError(field, message) {
-    dates.error.textContent = message;
-    dates.error.hidden = false;
-    field.setAttribute("aria-invalid", "true");
-    field.setAttribute("aria-describedby", dates.error.id);
-    field.focus();
-    say(message, "error");
-  }
-
-  async function saveDates() {
+  async function saveDates(current) {
     clearDatesError();
     const name = dates.pack.value;
     if (!name) return;
@@ -280,25 +265,28 @@ export function installTimeChecks({ doc = document, request = requestJson,
       return;
     }
     try {
-      settings = await request(`/api/time-checks/packs/${encodeURIComponent(name)}/dates`, {
+      const saved = await request(`/api/time-checks/packs/${encodeURIComponent(name)}/dates`, {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...(from ? { not_before: from } : {}), ...(until ? { not_after: until } : {}) }),
       });
+      if (!current()) return;
+      settings = saved;
       if (!draft.dirty()) draft.accept(settings);
       const pack = settings.packs?.find((item) => item.name === name);
       say(pack?.dates_text ? `Saved. Voice pack ${name}: ${pack.dates_text}.` : `Saved. Voice pack ${name} plays on any day.`);
     } catch (error) {
+      if (!current()) return;
       const left = staleActionText(error);
       if (left) {
         say(left, error.actionDone ? "info" : "error");
         return;
       }
-      const field = { not_before: dates.from, not_after: dates.until }[error.field];
-      const message = `Could not save the play dates. ${error.message}`;
-      if (field) datesError(field, message);
-      else say(message, "error");
+      const message = failureText("save the play dates.", error);
+      if (!applyServerFieldError({ field: error.field, message }, { not_before: dates.from, not_after: dates.until }, dates.error, status)) say(message, "error");
     }
   }
+
+  const datesSaver = createSettingsSave({ button: dates.save, save: saveDates, isCurrent: () => Boolean(settings) });
 
   function showSettings({ preserveControls = false } = {}) {
     if (!preserveControls) {
@@ -382,12 +370,13 @@ export function installTimeChecks({ doc = document, request = requestJson,
     } catch (error) {
       // A reply for the station the page has just left says nothing (#70).
       if (mine !== generation || isStaleStationReply(error)) return;
-      clips.textContent = `Could not load time checks: ${error.message}`;
+      clips.textContent = failureText("load time checks", error);
     }
   }
 
   // A station switch: what this panel showed was the old station's.
   function clear() {
+    datesSaver.clear();
     generation += 1;
     settings = null;
     previousTrack = null;
@@ -404,53 +393,25 @@ export function installTimeChecks({ doc = document, request = requestJson,
     }
   }
 
-  // The pressed button keeps focus and stays enabled; withDisabled swallows
-  // a second press, and aria-busy says it is working.
-  async function busyWhile(button, operation) {
-    return withDisabled(button, async () => {
-      button.setAttribute("aria-busy", "true");
-      try {
-        return await operation();
-      } finally {
-        button.removeAttribute("aria-busy");
-      }
-    });
-  }
-
-  // A stale reply (the page moved to another station) or a failure, said once.
-  function sayFailure(error, prefix) {
-    const left = staleActionText(error);
-    if (left) say(left, error.actionDone ? "info" : "error");
-    else say(`${prefix} ${error.message}`, "error");
-  }
-
   // A refused upload is shown under its file input, linked to it and
   // focused (WCAG 3.3.1), like a refused play date, and said.  Choosing
   // another file clears it.
   function uploadError(which, message) {
-    const { input, error, help } = uploads[which];
-    error.textContent = message;
-    error.hidden = false;
-    input.setAttribute("aria-invalid", "true");
-    input.setAttribute("aria-describedby", `${error.id} ${help}`);
-    input.focus();
-    say(message, "error");
+    const { input, error } = uploads[which];
+    showFieldError(input, message, error, status);
   }
 
   function clearUploadError(which) {
-    const { input, error, help } = uploads[which];
-    error.textContent = "";
-    error.hidden = true;
-    input.removeAttribute("aria-invalid");
-    input.setAttribute("aria-describedby", help);
+    const { input, error } = uploads[which];
+    clearFieldError(input, error);
   }
 
   // A failure answered after a station switch is only said; any other is
   // shown at the file input.
-  function uploadFailure(which, error, prefix) {
+  function uploadFailure(which, error, action) {
     const left = staleActionText(error);
     if (left) say(left, error.actionDone ? "info" : "error");
-    else uploadError(which, `${prefix} ${error.message}`);
+    else uploadError(which, failureText(action, error));
   }
 
   const nameKey = (name) => name.normalize("NFC").toLowerCase();
@@ -512,7 +473,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
         else say("The voice pack was not added.");
         return;
       }
-      uploadFailure("pack", error, "Could not add the voice pack.");
+      uploadFailure("pack", error, "add the voice pack.");
       return;
     }
     acceptSettings(reply);
@@ -549,7 +510,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
           settings = await request(`/api/time-checks/packs/${encodeURIComponent(name)}`, { method: "DELETE" });
         } catch (error) {
           const left = staleActionText(error);
-          result = left || `Could not remove voice pack ${name}. ${error.message}`;
+          result = left || failureText(`remove voice pack ${name}.`, error);
           tone = left && error.actionDone ? "info" : "error";
           return left ? null : button;
         }
@@ -593,7 +554,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
         else say("The clip was not uploaded.");
         return;
       }
-      uploadFailure("clip", error, "Could not upload the clip.");
+      uploadFailure("clip", error, "upload the clip.");
       return;
     }
     acceptSettings(reply);
@@ -609,7 +570,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
     try {
       settings = await request("/api/time-checks");
     } catch (error) {
-      sayFailure(error, "Could not look for voice packs.");
+      say(failureText("look for voice packs.", error), error.actionDone ? "info" : "error");
       return;
     }
     acceptSettings(settings);
@@ -662,26 +623,23 @@ export function installTimeChecks({ doc = document, request = requestJson,
 
   test.addEventListener("click", () => withDisabled(test, testNow));
   if (hasFiles) {
-    files.packAdd.addEventListener("click", () => busyWhile(files.packAdd, () => addPack()));
-    files.clipAdd.addEventListener("click", () => busyWhile(files.clipAdd, () => addClip()));
-    files.rescan.addEventListener("click", () => busyWhile(files.rescan, rescan));
+    files.packAdd.addEventListener("click", () => withDisabled(files.packAdd, () => addPack()));
+    files.clipAdd.addEventListener("click", () => withDisabled(files.clipAdd, () => addClip()));
+    files.rescan.addEventListener("click", () => withDisabled(files.rescan, rescan));
     for (const which of ["pack", "clip"]) {
       uploads[which].input.addEventListener("change", () => clearUploadError(which));
     }
   }
   if (hasDates) {
     dates.pack.addEventListener("change", fillDates);
-    dates.save.addEventListener("click", () => withDisabled(dates.save, saveDates));
+    dates.save.addEventListener("click", datesSaver.run);
     for (const field of [dates.from, dates.until]) {
       field.addEventListener("input", () => {
-        field.removeAttribute("aria-invalid");
-        field.removeAttribute("aria-describedby");
+        clearFieldError(field, dates.error);
       });
     }
   }
-  panel?.addEventListener("toggle", () => {
-    if (panel.open) void refresh();
-  });
+  onCardOpen(panel, refresh);
   interval(playPending, 1000);
   void refresh();
 

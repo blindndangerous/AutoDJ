@@ -25,11 +25,11 @@
 // Voice tracks tab shows, without moving focus.  Errors are words on the
 // page, linked to the control they are about, and said once.
 
-import { requestJson, withDisabled } from "./api-client.js";
+import { failureText, requestJson, withDisabled } from "./api-client.js";
 import { fmtTime } from "./dom-helpers.js";
 import { createCollectionTable } from "./collection-table.js";
 import { deleteCollectionItem } from "./collection-delete.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
 import { defaultStorage, readStorage, removeStorage, writeStorage } from "./safe-storage.js";
 
@@ -308,14 +308,12 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const shown = () => !panel.hidden;
   // The tracker's own region while its tab shows; the page-wide one when
   // the tab has been left, since a region inside a hidden panel says nothing.
-  const say = (message, { tone = "info", mirror = true } = {}) => {
+  const announcementRegion = () => {
     clearTimeout(selectionAnnouncement);
-    return announceStatus(
-      shown() ? status : (doc.getElementById("sr-status") || status),
-      message,
-      { force: true, tone, mirror, dwellMs: 5000 },
-    );
+    return shown() ? status : (doc.getElementById("sr-status") || status);
   };
+  const say = makeSay(announcementRegion, { dwellMs: 5000 });
+  const sayTimer = makeSay(announcementRegion, { dwellMs: 5000, mirror: false });
 
   function afterFocus() {
     const view = doc.defaultView;
@@ -452,8 +450,8 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     error.hidden = false;
     link(control, true);
     linked = control;
-    if (gate) void Promise.resolve(gate).then(() => say(message, { tone: "error" }));
-    else say(message, { tone: "error" });
+    if (gate) void Promise.resolve(gate).then(() => say(message, "error"));
+    else say(message, "error");
   }
 
   // ---- What the server says ----
@@ -532,7 +530,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       await refresh();
       if (asked === generation) say("Songs confirmed. Record when ready; airtime remains an estimate.");
     } catch (problem) {
-      if (asked === generation) { await refresh(); fail(confirmButton, `Could not confirm songs. ${problem.message}`); }
+      if (asked === generation) { await refresh(); fail(confirmButton, failureText("confirm songs.", problem)); }
     } finally {
       if (asked === generation) { confirming = false; renderTargets(); }
     }
@@ -717,13 +715,16 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   listHeading.setAttribute("tabindex", "-1");
   const bookingsTable = createCollectionTable({
-    host: list, label: "Voice-track bookings", status, fallback: listHeading,
+    host: list, label: "Voice-track bookings", hideCaption: true, status, fallback: listHeading,
     keyOf: (track) => track.break_id, nameOf: (track) => track.label || "Voice track",
     emptyText: "No voice tracks yet.",
     columns: [
       { key: "booking", label: "Booking", value: (track) => track.label || "Voice track" },
-      { key: "state", label: "State", value: (track) => String(track.state || "Unknown").replaceAll("_", " ") },
-      { key: "details", label: "Details", value: (track) => stateWords(track, data?.slot, wallClock()) },
+      // The state's words already name it, so they are the whole cell.
+      { key: "state", label: "State", value: (track) => {
+        const words = String(stateWords(track, data?.slot, wallClock()) || "Unknown");
+        return words.charAt(0).toUpperCase() + words.slice(1);
+      } },
     ],
     actions: (track) => [{ id: "cancel", label: "Cancel",
       disabledReason: track.cancellable === true ? "" : `This booking cannot be canceled: ${stateWords(track, data?.slot, wallClock())}.`,
@@ -816,7 +817,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       if (epoch === requestEpoch && !data) {
         unavailable.hidden = false;
         slotList.hidden = true;
-        setText(unavailable, `Could not load the voice tracker. ${problem.message}`);
+        setText(unavailable, failureText("load the voice tracker.", problem));
       }
     }
   }
@@ -1126,7 +1127,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
         if (minutes > current.minutes) {
           current.minutes = minutes;
           // The timer on the page shows it already.
-          say(`${minutes} minute${minutes === 1 ? "" : "s"}.`, { mirror: false });
+          sayTimer(`${minutes} minute${minutes === 1 ? "" : "s"}.`);
         }
         if (!current.warned && limit > 2 * WARN_SECONDS && limit - elapsed <= WARN_SECONDS) {
           current.warned = true;
@@ -1234,7 +1235,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
         if (problem.status === 409 && take && latest && latest.slot_id !== slot.slot_id) {
           moved(latest);
         } else {
-          fail(bookButton, `Could not book the voice track. ${problem.message}`);
+          fail(bookButton, failureText("book the voice track.", problem));
         }
         return;
       }
@@ -1367,7 +1368,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     if (mine !== generation) return;
     if (problem) {
       // A refresh can remove this booking before its failure is reported.
-      fail(button.isConnected ? button : listHeading, `Could not cancel ${track.label || "the voice track"}. ${problem.message}`);
+      fail(button.isConnected ? button : listHeading, failureText(`cancel ${track.label || "the voice track"}.`, problem));
     } else if (canceled) say(`Cancelled ${track.label || "the voice track"}.`);
   }
 

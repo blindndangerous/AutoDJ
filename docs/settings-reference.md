@@ -58,7 +58,7 @@ are station-owned settings in Stations.
 
 Relay, scheduled-event and DJ-account forms submit individual records. Profile
 edits use the selected profile in Settings and its shared draft save. Creation,
-activation, reset and deletion have their own buttons on Station > Profiles.
+activation, reset and deletion remain separate actions on Station > Profiles. Each profile's **Options** menu has **Activate**, **Reset** and **Delete**.
 Uploads, credentials, pairing and destructive actions also retain their explicit
 actions; they are not part of a tab's configuration save. Operational recording
 Start/Stop remains separate from recording configuration.
@@ -110,7 +110,7 @@ profile also has its own **Activate** action in the profile list; activation doe
 not change which target the Settings form edits. The picker marks the active
 profile with **(active)** and does not activate a selection. **Reset** requires confirmation; cancel
 leaves the saved profile and current draft intact. Deletion also requires
-confirmation. The Profiles tab shows which profile is active. Browser access is
+confirmation. The Profiles table shows which profile is active in its **Active** column. Browser access is
 managed separately in the Server tab.
 
 Profiles can override station programming and playback controls: preset,

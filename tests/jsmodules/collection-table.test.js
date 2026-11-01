@@ -4,6 +4,8 @@ import * as collections from "../../src/autodj/static/modules/collection-table.j
 
 const { createCollectionTable } = collections;
 
+// A row menu focuses its first item a frame after it is shown (#712).
+const menuFocus = () => vi.waitFor(() => expect(document.activeElement.getAttribute("role")).toBe("menuitem"));
 const press = (key) => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
 let host, status, fallback;
 beforeEach(() => {
@@ -16,12 +18,196 @@ function mount(extra = {}) {
   return createCollectionTable({ host, label: "Examples", status, fallback,
     columns: [{ key: "name", label: "Name", value: (item) => item.name }, { key: "count", label: "Count", value: (item) => item.count }],
     keyOf: (item) => item.id, nameOf: (item) => item.name,
-    primary: (item) => ({ id: "edit", label: "Edit", run: () => extra.edit?.(item) }),
-    actions: (item) => [{ id: "delete", label: "Delete", run: () => extra.remove?.(item) }], ...extra,
+    actions: (item) => [
+      { id: "edit", label: "Edit", run: () => extra.edit?.(item) },
+      { id: "delete", label: "Delete", run: () => extra.remove?.(item) },
+    ], ...extra,
   });
 }
 describe("collection tables", () => {
-  // ADR-0021-23
+  // ADR-0021-02
+  it("starts with a spanning empty row before the first asynchronous load", () => {
+    const grid = mount({ emptyText: "No items loaded." });
+    const empty = grid.body.querySelector(".no-results");
+    expect(empty).not.toBeNull();
+    expect(empty.colSpan).toBe(3);
+    expect(empty.textContent).toBe("No items loaded.");
+    expect(grid.table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    grid.update([{ id: "a", name: "Ready", count: 1 }]);
+    expect(grid.body.querySelector(".no-results")).toBeNull();
+    expect(grid.body.querySelectorAll("tr[data-row-key]")).toHaveLength(1);
+  });
+
+  // ADR-0021-03
+  it("names a labelled fallback field when the last focused row disappears", async () => {
+    const label = document.createElement("label"); label.htmlFor = "profile"; label.textContent = "Profile name";
+    const input = document.createElement("input"); input.id = "profile";
+    host.after(label, input);
+    const grid = mount({ fallback: input });
+    grid.update([{ id: "a", name: "Morning" }]);
+    grid.target("a", "options").focus();
+    grid.update([]);
+    expect(document.activeElement).toBe(input);
+    await vi.waitFor(() => expect(status.textContent).toBe("The Examples list changed. Focus moved to Profile name."));
+  });
+
+  // ADR-0021-34
+  it("puts every row action in one Actions column menu with the former primary action first", () => {
+    const grid = mount();
+    grid.update([{ id: "a", name: "First", count: 1 }]);
+    expect([...grid.table.querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["Name", "Count", "Actions"]);
+    const row = grid.body.firstElementChild;
+    expect(row.cells).toHaveLength(3);
+    const buttons = [...row.querySelectorAll("button")].filter((button) => !button.closest('[role="menu"]'));
+    expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual(["Options for First"]);
+    expect(buttons[0].textContent).toBe("Options");
+    expect(buttons[0].closest("td")).toBe(row.cells[2]);
+    expect(grid.target("a")).toBe(row.cells[2]);
+    expect(grid.target("a", "edit")).toBe(row.cells[2]);
+    expect(grid.target("a", "count")).toBe(row.cells[1]);
+    expect([...row.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)).toEqual(["Edit", "Delete"]);
+    const readOnly = mount({ actions: undefined, host: document.body.appendChild(document.createElement("div")) });
+    readOnly.update([{ id: "a", name: "Earlier", count: 2 }]);
+    expect([...readOnly.table.querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["Name", "Count"]);
+    expect(readOnly.table.querySelector("button")).toBeNull();
+    expect(readOnly.target("a")).toBe(readOnly.body.firstElementChild.cells[0]);
+  });
+  // ADR-0021-35
+  it("opens a row's menu from the context menu key or right-click and returns to the originating cell", async () => {
+    const remove = vi.fn();
+    const grid = mount({ remove });
+    grid.update([{ id: "a", name: "First", count: 1 }, { id: "b", name: "Second", count: 2 }]);
+    const context = (target) => {
+      const event = new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      return event;
+    };
+    const count = grid.target("a", "count");
+    const button = grid.target("a").querySelector('[aria-haspopup="menu"]');
+    count.focus();
+    expect(context(count).defaultPrevented).toBe(true);
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    await menuFocus();
+    expect(document.activeElement.textContent).toBe("Edit");
+    press("Escape");
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(count);
+    press("ArrowLeft");
+    expect(document.activeElement).toBe(grid.target("a", "name"));
+    const name = grid.target("b", "name");
+    expect(context(name).defaultPrevented).toBe(true);
+    const second = grid.target("b").querySelector('[aria-haspopup="menu"]');
+    expect(second.getAttribute("aria-expanded")).toBe("true");
+    press("Tab");
+    expect(second.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(name);
+    context(name);
+    press("End");
+    press("Enter");
+    expect(remove).toHaveBeenCalledWith({ id: "b", name: "Second", count: 2 });
+    expect(document.activeElement).toBe(name);
+    button.click();
+    press("Escape");
+    expect(document.activeElement).toBe(grid.target("a"));
+    expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+  });
+  // ADR-0021-41
+  it("opens a context menu inside its originating cell without focusing the Options button", async () => {
+    const grid = mount();
+    grid.update([{ id: "a", name: "First", count: 1 }]);
+    const count = grid.target("a", "count");
+    const button = grid.target("a").querySelector('[aria-haspopup="menu"]');
+    const menu = document.getElementById(button.getAttribute("aria-controls"));
+    const focused = [];
+    document.addEventListener("focusin", (event) => focused.push(event.target), true);
+    count.focus();
+    focused.length = 0;
+    count.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    expect(count.contains(menu)).toBe(true);
+    await vi.waitFor(() => expect(document.activeElement.textContent).toBe("Edit"));
+    expect(focused).toEqual([document.activeElement]);
+    grid.update([{ id: "a", name: "First", count: 2 }]);
+    expect(count.contains(menu)).toBe(true);
+    expect(count.firstChild.data).toBe("2");
+    press("Escape");
+    expect(document.activeElement).toBe(count);
+    expect(count.textContent).toBe("2");
+    expect(button.parentElement.contains(menu)).toBe(true);
+  });
+  // ADR-0021-41
+  it("keeps an open context menu out of its cell's name and the list-change announcement", async () => {
+    const grid = mount();
+    grid.update([{ id: "a", name: "First", count: 1 }, { id: "b", name: "Second", count: 2 }]);
+    const count = grid.target("a", "count");
+    count.focus();
+    count.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await menuFocus();
+    const name = (element) => {
+      axe.setup(document);
+      try { return axe.commons.text.accessibleText(element); } finally { axe.teardown(); }
+    };
+    expect(count.querySelector('[role="menu"]')).not.toBeNull();
+    expect(name(count)).toBe("1");
+    grid.update([{ id: "a", name: "First", count: 5 }, { id: "b", name: "Second", count: 2 }]);
+    expect(name(count)).toBe("5");
+    press("Escape");
+    expect(document.activeElement).toBe(count);
+    expect(count.hasAttribute("aria-label")).toBe(false);
+    expect(name(count)).toBe("5");
+    // A row removed while its menu is open in a data cell names the new target's button.
+    count.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await menuFocus();
+    grid.update([{ id: "b", name: "Second", count: 2 }]);
+    await vi.waitFor(() => expect(status.textContent).toContain("Focus moved to"));
+    expect(status.textContent).not.toContain("Focus moved to Edit");
+  });
+  // ADR-0021-25
+  it("lets a menu action that moves focus take it straight from the menu", async () => {
+    const field = document.createElement("input");
+    document.body.append(field);
+    const grid = mount({ edit: () => field.focus() });
+    grid.update([{ id: "a", name: "First" }]);
+    grid.target("a", "name").focus();
+    grid.target("a", "name").dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await menuFocus();
+    const seen = [];
+    const record = (event) => seen.push(event.target);
+    document.addEventListener("focusin", record, true);
+    press("Enter");
+    document.removeEventListener("focusin", record, true);
+    expect(seen).toEqual([field]);
+    expect(grid.target("a").querySelector('[aria-haspopup="menu"]').getAttribute("aria-expanded")).toBe("false");
+  });
+  it("opens a row's Track info by its action id from the name cell and honours its disabled reason", async () => {
+    const info = vi.fn();
+    const grid = mount({ actions: (item) => [{ id: "info", label: "Details", disabledReason: item.reason || "", run: info }] });
+    grid.update([{ id: "a", name: "Song" }, { id: "b", name: "Gone", reason: "This song is no longer in the library." }]);
+    grid.target("a", "name").focus();
+    press("Enter");
+    expect(info).toHaveBeenCalledOnce();
+    grid.target("b", "name").focus();
+    press("Enter");
+    expect(info).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(status.textContent).toBe("This song is no longer in the library."));
+  });
+  // ADR-0021-35
+  it("leaves the browser menu on rows and tables without actions", () => {
+    const grid = mount({ actions: (item) => item.locked ? [] : [{ id: "edit", label: "Edit", run() {} }] });
+    grid.update([{ id: "a", name: "Locked", locked: true }]);
+    const event = new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    grid.target("a", "name").dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    grid.update([]);
+    const empty = new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    grid.body.querySelector(".no-results").dispatchEvent(empty);
+    expect(empty.defaultPrevented).toBe(false);
+    const readOnly = mount({ actions: undefined, host: document.body.appendChild(document.createElement("div")) });
+    readOnly.update([{ id: "a", name: "Plain" }]);
+    const plain = new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    readOnly.target("a").dispatchEvent(plain);
+    expect(plain.defaultPrevented).toBe(false);
+  });
+  // ADR-0021-36
   it("refreshes the focused row context after keyed data changes", () => {
     const grid = mount();
     grid.update([{ id: "a", name: "First", count: 1 }, { id: "b", name: "Second", count: 2 }]);
@@ -35,8 +221,8 @@ describe("collection tables", () => {
     press("ArrowLeft");
     expect(count.hasAttribute("aria-label")).toBe(false);
   });
-  // ADR-0021-17
-  it("keeps computed data names free of native headers after navigation and updates", () => {
+  // ADR-0021-36
+  it("adds a changed column heading to computed data names after navigation and updates", () => {
     const grid = mount();
     grid.update([{ id: "a", name: "Evening", count: 2 }]);
     grid.target("a", "name").focus();
@@ -45,14 +231,217 @@ describe("collection tables", () => {
       axe.setup(document);
       try {
         const row = grid.body.firstElementChild;
-        return [row.cells[0], row.cells[1], row.querySelector('button[data-action="edit"]'), row.querySelector('[aria-haspopup="menu"]')]
+        return [row.cells[0], row.cells[1], row.querySelector('[aria-haspopup="menu"]')]
           .map((element) => axe.commons.text.accessibleText(element));
       }
       finally { axe.teardown(); }
     };
-    expect(names()).toEqual(["Evening", "2", "Edit Evening", "Options for Evening"]);
+    expect(names()).toEqual(["Evening", "2, Count", "Options for Evening"]);
     grid.update([{ id: "a", name: "Later", count: 3 }]);
-    expect(names()).toEqual(["Later", "3", "Edit Later", "Options for Later"]);
+    expect(names()).toEqual(["Later", "3, Count", "Options for Later"]);
+    press("ArrowLeft");
+    expect(names()).toEqual(["Later, Name", "3", "Options for Later"]);
+  });
+  // ADR-0021-42
+  it("names each table by a native caption, hidden only when a heading says it", () => {
+    const grid = mount();
+    const caption = grid.table.querySelector(":scope > caption");
+    expect(grid.table.firstElementChild).toBe(caption);
+    expect(caption.textContent).toBe("Examples");
+    expect(caption.classList.contains("visually-hidden")).toBe(false);
+    expect(grid.table.hasAttribute("aria-label")).toBe(false);
+    axe.setup(document);
+    try { expect(axe.commons.text.accessibleText(grid.table)).toBe("Examples"); } finally { axe.teardown(); }
+    const hidden = mount({ host: document.body.appendChild(document.createElement("div")), hideCaption: true });
+    expect(hidden.table.caption.textContent).toBe("Examples");
+    expect(hidden.table.caption.classList.contains("visually-hidden")).toBe(true);
+  });
+  // ADR-0021-43
+  it("names the Actions cell by its Options button alone while its menu is open", async () => {
+    const grid = mount();
+    grid.update([{ id: "a", name: "Evening", count: 1 }]);
+    const cell = grid.target("a");
+    const name = () => {
+      axe.setup(document);
+      try { return axe.commons.text.accessibleText(cell); } finally { axe.teardown(); }
+    };
+    // Closed, the hidden menu is not rendered (jsdom does not hide it for axe,
+    // so the browser audit checks that name), and the cell has no own label.
+    expect(cell.hasAttribute("aria-label")).toBe(false);
+    cell.focus();
+    press("Enter");
+    // From the moment the menu is shown, before its item takes focus.
+    expect(name()).toBe("Options for Evening");
+    await menuFocus();
+    expect(name()).toBe("Options for Evening");
+    grid.update([{ id: "a", name: "Late", count: 1 }]);
+    expect(name()).toBe("Options for Late");
+    press("Escape");
+    expect(document.activeElement).toBe(cell);
+    expect(cell.hasAttribute("aria-label")).toBe(false);
+    // A context menu opened on the Actions cell itself.
+    cell.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await menuFocus();
+    expect(name()).toBe("Options for Late");
+    press("Escape");
+    expect(cell.hasAttribute("aria-label")).toBe(false);
+  });
+  // ADR-0021-44
+  it("turns a row on or off in place from a native checkbox cell with one request", async () => {
+    let finish;
+    const run = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const grid = mount({
+      columns: [
+        { key: "name", label: "Name", value: (item) => item.name },
+        { key: "on", label: "On", value: (item) => item.ended ? "No, ended" : item.on ? "Yes" : "No",
+          toggle: { available: (item) => !item.ended, checked: (item) => item.on, label: (item) => `Enable ${item.name}`, run } },
+      ],
+    });
+    grid.update([{ id: "a", name: "Morning", on: true }, { id: "b", name: "Over", on: false, ended: true }]);
+    const cell = grid.target("a", "on");
+    const box = cell.querySelector("input");
+    expect(box.type).toBe("checkbox");
+    expect(box.checked).toBe(true);
+    expect(box.getAttribute("aria-label")).toBe("Enable Morning");
+    expect(cell.textContent).toBe("");
+    expect(grid.target("b", "on").querySelector("input")).toBeNull();
+    expect(grid.target("b", "on").textContent).toBe("No, ended");
+    // Arrows enter the cell on its checkbox, which keeps the one Tab stop.
+    grid.target("a", "name").focus();
+    press("ArrowRight");
+    expect(document.activeElement).toBe(box);
+    expect(cell.hasAttribute("aria-label")).toBe(false);
+    expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    box.click();
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    expect(run).toHaveBeenCalledWith({ id: "a", name: "Morning", on: true }, false, box);
+    expect(box.checked).toBe(false);
+    expect(box.disabled).toBe(false);
+    expect(box.getAttribute("aria-busy")).toBe("true");
+    expect(box.hasAttribute("aria-disabled")).toBe(false);
+    // A second press while saving does nothing, and stale data does not undo it.
+    box.click();
+    expect(run).toHaveBeenCalledOnce();
+    expect(box.checked).toBe(false);
+    grid.update([{ id: "a", name: "Morning", on: true }]);
+    expect(box.checked).toBe(false);
+    finish(true);
+    await vi.waitFor(() => expect(box.hasAttribute("aria-busy")).toBe(false));
+    expect(document.activeElement).toBe(box);
+    grid.update([{ id: "a", name: "Morning", on: false }]);
+    expect(cell.querySelector("input")).toBe(box);
+    expect(box.checked).toBe(false);
+    // A failed change puts the checkbox back.
+    run.mockImplementationOnce(async () => false);
+    box.click();
+    await vi.waitFor(() => expect(box.hasAttribute("aria-busy")).toBe(false));
+    expect(box.checked).toBe(false);
+    run.mockImplementationOnce(async () => { throw new Error("refused"); });
+    box.click();
+    await vi.waitFor(() => expect(box.hasAttribute("aria-busy")).toBe(false));
+    expect(box.checked).toBe(false);
+    expect(run).toHaveBeenCalledTimes(3);
+    // A row that can no longer be turned on shows its words instead.
+    grid.update([{ id: "a", name: "Morning", on: false, ended: true }]);
+    expect(cell.querySelector("input")).toBeNull();
+    expect(cell.textContent).toBe("No, ended");
+    expect(document.activeElement).toBe(cell);
+  });
+  // ADR-0021-44
+  it("shows the server's state once a toggle settles, after a reload or a failure", async () => {
+    let grid;
+    const run = vi.fn();
+    grid = mount({
+      columns: [
+        { key: "name", label: "Name", value: (item) => item.name },
+        { key: "on", label: "On", value: (item) => item.on ? "Yes" : "No",
+          toggle: { checked: (item) => item.on, label: (item) => `Enable ${item.name}`, run } },
+      ],
+    });
+    grid.update([{ id: "a", name: "Morning", on: true }]);
+    const box = grid.target("a", "on").querySelector("input");
+    // An unfocused checkbox (a click that does not focus, as in Safari)
+    // stays enabled while it saves.
+    let finish;
+    run.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    box.click();
+    expect(box.disabled).toBe(false);
+    expect(box.getAttribute("aria-busy")).toBe("true");
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    // A reload while saving reports another state; it shows once settled.
+    grid.update([{ id: "a", name: "Morning", on: true }]);
+    expect(box.checked).toBe(false);
+    finish(true);
+    await vi.waitFor(() => expect(box.hasAttribute("aria-busy")).toBe(false));
+    expect(box.checked).toBe(true);
+    // A failure shows the server's current state, not the value before the click.
+    run.mockImplementationOnce(async () => {
+      grid.update([{ id: "a", name: "Morning", on: false }]);
+      return false;
+    });
+    box.click();
+    await vi.waitFor(() => expect(box.hasAttribute("aria-busy")).toBe(false));
+    expect(box.checked).toBe(false);
+  });
+  // ADR-0021-44
+  it("keeps a context menu open in a toggle cell when its checkbox comes or goes", async () => {
+    const grid = mount({
+      columns: [
+        { key: "name", label: "Name", value: (item) => item.name },
+        { key: "on", label: "On", value: (item) => item.ended ? "No, ended" : item.on ? "Yes" : "No",
+          toggle: { available: (item) => !item.ended, checked: (item) => item.on, label: (item) => `Enable ${item.name}`,
+            note: (item) => item.late ? "Late" : "", run: vi.fn() } },
+      ],
+    });
+    grid.update([{ id: "a", name: "Morning", on: true, late: true }]);
+    const cell = grid.target("a", "on");
+    const box = cell.querySelector("input");
+    // A visible note beside the checkbox describes it.
+    const note = cell.querySelector(".toggle-note");
+    expect(note.textContent).toBe("Late");
+    expect(note.hidden).toBe(false);
+    expect(box.getAttribute("aria-describedby")).toBe(note.id);
+    box.focus();
+    box.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await menuFocus();
+    const menu = cell.querySelector(":scope > .row-actions-menu");
+    expect(menu).not.toBeNull();
+    grid.update([{ id: "a", name: "Morning", on: false, ended: true }]);
+    expect(cell.querySelector("input")).toBeNull();
+    expect(cell.querySelector(".toggle-note")).toBeNull();
+    expect(cell.querySelector(":scope > .row-actions-menu")).toBe(menu);
+    expect(cell.firstChild.data).toBe("No, ended");
+    expect(document.activeElement.getAttribute("role")).toBe("menuitem");
+    grid.update([{ id: "a", name: "Morning", on: false }]);
+    expect(cell.querySelector(":scope > input")).not.toBeNull();
+    expect(cell.querySelector(":scope > .row-actions-menu")).toBe(menu);
+    expect([...cell.childNodes].filter((node) => node.nodeType === 3)).toHaveLength(0);
+    press("Escape");
+  });
+  // ADR-0021-44
+  it("keeps an unavailable checkbox focusable and says why instead of changing it", async () => {
+    const run = vi.fn();
+    const grid = mount({
+      columns: [
+        { key: "name", label: "Name", value: (item) => item.name },
+        { key: "on", label: "On", value: (item) => item.on ? "Yes" : "No",
+          toggle: { checked: (item) => item.on, label: (item) => `Enable ${item.name}`, run,
+            disabledReason: (item) => item.locked ? "Unlock it first." : "" } },
+      ],
+    });
+    grid.update([{ id: "a", name: "Morning", on: false, locked: true }]);
+    const box = grid.target("a", "on").querySelector("input");
+    expect(box.disabled).toBe(false);
+    expect(box.getAttribute("aria-disabled")).toBe("true");
+    expect(document.getElementById(box.getAttribute("aria-describedby")).textContent).toBe("Unlock it first.");
+    box.focus();
+    box.click();
+    expect(box.checked).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(status.textContent).toBe("Unlock it first."));
+    grid.update([{ id: "a", name: "Morning", on: false, locked: false }]);
+    expect(box.hasAttribute("aria-disabled")).toBe(false);
+    expect(box.hasAttribute("aria-describedby")).toBe(false);
   });
   it("finds a collection's owning host independently of internal wrappers", () => {
     const grid = mount();
@@ -70,7 +459,7 @@ describe("collection tables", () => {
     expect(collections.collectionHost(grid.table)).toBe(host);
   });
   // ADR-0021-01
-  it("preserves keyed rows and focus while updating data", () => {
+  it("preserves keyed rows and focus while updating data", async () => {
     const edit = vi.fn();
     const grid = mount({ edit });
     grid.update([{ id: "a", name: "First", count: 1 }, { id: "b", name: "Second", count: 2 }]);
@@ -82,6 +471,9 @@ describe("collection tables", () => {
     expect(document.activeElement).toBe(target);
     expect(first.cells[0].textContent).toBe("Renamed");
     press("Enter");
+    await menuFocus();
+    expect(document.activeElement.textContent).toBe("Edit");
+    press("Enter");
     expect(edit).toHaveBeenCalledWith({ id: "a", name: "Renamed", count: 4 });
     expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
     expect(host.querySelector('[role="rowheader"]')).toBeNull();
@@ -92,7 +484,7 @@ describe("collection tables", () => {
     grid.update([]);
     expect(grid.body.children).toHaveLength(1);
     expect(grid.body.querySelector(".no-results").textContent).toBe("No examples.");
-    expect(grid.body.children[0].cells[0].colSpan).toBe(4);
+    expect(grid.body.children[0].cells[0].colSpan).toBe(3);
     expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
   });
   // ADR-0021-03
@@ -102,50 +494,27 @@ describe("collection tables", () => {
     grid.target("a").focus();
     grid.update([{ id: "b", name: "Second" }]);
     expect(document.activeElement).toBe(grid.target("b"));
-    await vi.waitFor(() => expect(status.textContent).toContain("The Examples list changed. Focus moved to Edit Second."));
+    await vi.waitFor(() => expect(status.textContent).toContain("The Examples list changed. Focus moved to Options for Second."));
     grid.update([]);
     expect(document.activeElement).toBe(fallback);
   });
-  it("keeps popup focus through refresh and returns Escape to the sole Options tab stop", () => {
+  it("keeps popup focus through refresh and returns Escape to the sole Options tab stop", async () => {
     const remove = vi.fn();
     const grid = mount({ remove });
     grid.update([{ id: "a", name: "First", count: 1 }]);
     grid.target("a", "options").focus();
     press("Enter");
+    await menuFocus();
     const item = document.activeElement;
-    expect(item.getAttribute("role")).toBe("menuitem");
     grid.update([{ id: "a", name: "Renamed", count: 2 }]);
     expect(document.activeElement).toBe(item);
     press("Escape");
     expect(document.activeElement).toBe(grid.target("a", "options"));
     expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
     press("Enter");
+    press("End");
     press("Enter");
     expect(remove).toHaveBeenCalledWith({ id: "a", name: "Renamed", count: 2 });
-  });
-  it("keeps disabled primary actions focusable and explains them", async () => {
-    const run = vi.fn();
-    const grid = mount({ primary: () => ({ id: "edit", label: "Edit", disabledReason: "Save first.", run }) });
-    grid.update([{ id: "a", name: "First" }]);
-    grid.target("a").focus();
-    press("Enter");
-    expect(run).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(status.textContent).toBe("Save first."));
-    expect(grid.target("a").querySelector("button").disabled).toBe(false);
-  });
-  // ADR-0021-15
-  it("associates the current disabled primary reason before activation", () => {
-    const grid = mount({ primary: (item) => ({ id: "edit", label: "Edit", disabledReason: item.reason, run() {} }) });
-    grid.update([{ id: "a", name: "First", reason: "Save first." }]);
-    const button = grid.target("a").querySelector("button");
-    const id = button.getAttribute("aria-describedby");
-    expect(id).toBeTruthy();
-    expect(document.getElementById(id).textContent).toBe("Save first.");
-    grid.update([{ id: "a", name: "First", reason: "Still saving." }]);
-    expect(button.getAttribute("aria-describedby")).toBe(id);
-    expect(document.getElementById(id).textContent).toBe("Still saving.");
-    grid.update([{ id: "a", name: "First" }]);
-    expect(button.hasAttribute("aria-describedby")).toBe(false);
   });
   it("preserves focus on an unchanged empty state", () => {
     const grid = mount();
@@ -160,7 +529,7 @@ describe("collection tables", () => {
     grid.update([{ id: "a", name: "First" }, { id: "b", name: "Second" }]);
     grid.target("a", "options").focus();
     press("Enter");
-    expect(document.activeElement.getAttribute("role")).toBe("menuitem");
+    await menuFocus();
     grid.update([{ id: "b", name: "Second" }]);
     expect(document.activeElement).toBe(grid.target("b", "options"));
     expect(host.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
@@ -175,6 +544,6 @@ describe("collection tables", () => {
     press("Escape");
     expect(document.activeElement).toBe(grid.target("a", "options"));
     press("ArrowLeft");
-    expect(document.activeElement).toBe(grid.target("a"));
+    expect(document.activeElement).toBe(grid.target("a", "count"));
   });
 });

@@ -1,5 +1,4 @@
-import { announceStatus } from "./live-region.js";
-import { focusRevealed } from "./dom-helpers.js";
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 
 const RULES = ["artist", "related_artist", "album", "track", "title", "related_track"];
@@ -145,40 +144,10 @@ function showDefaultFile(element, path) {
   if (element && typeof path === "string" && path) element.textContent = path;
 }
 
-const describedIds = (control) => (control.getAttribute("aria-describedby") || "")
-  .split(/\s+/).filter(Boolean);
-
-// Hide the field error and unlink it from the field it named, if that is
-// *control* (any field when not given).
-function clearFieldError(els, control = els.errorFor) {
-  const error = els.error;
-  if (!error || !control || els.errorFor !== control) return;
-  const ids = describedIds(control).filter((id) => id !== error.id);
-  if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
-  else control.removeAttribute("aria-describedby");
-  error.textContent = "";
-  error.hidden = true;
+function clearError(els, control = els.errorFor) {
+  if (!control || els.errorFor !== control) return;
+  clearFieldError(control, els.error);
   els.errorFor = null;
-}
-
-// The refused value's message in words under its field, linked to it by
-// aria-describedby so it is read with the field after focus moves there.
-function showFieldError(els, control, message) {
-  const error = els.error;
-  if (!error) return;
-  clearFieldError(els);
-  error.textContent = message;
-  error.hidden = false;
-  (control.closest(".settings-row") || control).after(error);
-  // The error first: it is read before the field's longer help.
-  control.setAttribute("aria-describedby", [error.id, ...describedIds(control)].join(" "));
-  els.errorFor = control;
-}
-
-function reportInvalid(control, message, settingsStatus) {
-  control.setAttribute("aria-invalid", "true");
-  focusRevealed(control);
-  announceStatus(settingsStatus, message, { dwellMs: 6000, force: true, tone: "error" });
 }
 
 export function applyRepeatSettings(st, els, { acceptDraft = true } = {}) {
@@ -198,9 +167,9 @@ export function resetRepeatSettings(els) {
   for (const control of controls(els)) {
     if (control.type === "checkbox") control.checked = control.defaultChecked;
     else control.value = control.defaultValue;
-    control.removeAttribute("aria-invalid");
+    clearFieldError(control, els.error);
   }
-  clearFieldError(els);
+  clearError(els);
   els.confirmed = null;
   els.dirty = false;
   els.echo = null;
@@ -219,13 +188,14 @@ export function installRepeatSettings(els, { settingsStatus }) {
     write(value) { if (value.repeat_rules) write(els, value.repeat_rules); },
     validate() {
       const invalid = invalidField(els);
-      if (!invalid) { clearFieldError(els); return true; }
-      showFieldError(els, invalid[0], invalid[1]);
-      reportInvalid(invalid[0], invalid[1], settingsStatus);
+      if (!invalid) { clearError(els); return true; }
+      clearError(els);
+      els.errorFor = invalid[0];
+      showFieldError(invalid[0], invalid[1], els.error, settingsStatus);
       return false;
     },
   });
   for (const control of controls(els)) control.addEventListener("input", () => {
-    if (!invalidField(els, control)) { control.removeAttribute("aria-invalid"); clearFieldError(els, control); }
+    if (!invalidField(els, control)) clearError(els, control);
   });
 }

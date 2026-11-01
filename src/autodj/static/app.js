@@ -16,7 +16,7 @@ import {
   initAuthDialog,
   reconnectWebSocketAfterClose,
 } from "./modules/auth.js";
-import {
+import { failureText,
   captureAuthenticatedRequestEpoch,
   invalidateAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
@@ -216,9 +216,9 @@ const relaySettings = installRelaySettings({
   post: (url, body, control, options) => postSettings(url, body, control, options),
   remove: async (url) => {
     try { await requestJson(url, { method: "DELETE" }); return true; }
-    catch (err) { announceStatus(settingsStatus, `Could not remove relay: ${err.message}`, { tone: "error", force: true }); return false; }
+    catch (err) { announceStatus(settingsStatus, failureText("remove relay", err), { tone: "error", force: true }); return false; }
   },
-  announce: (message, error = false) => announceStatus(settingsStatus, message, { tone: error ? "error" : "success", force: true }),
+  announce: makeSay(settingsStatus, { tone: "success" }),
 });
 // Whether the listener has started playback with Play or Pause (or its
 // hotkey), or pressed Listen here, on this page since signing in.  A page
@@ -305,8 +305,7 @@ const liveDesk = installLiveDesk({ doc: document, srStatus: document.getElementB
 const liveSettings = installLiveSettings({
   doc: document,
   request: requestJson,
-  announce: (message, error = false) => announceStatus(settingsStatus, message,
-    { tone: error ? "error" : "success", force: true, dwellMs: 6000 }),
+  announce: makeSay(settingsStatus, { tone: "success", dwellMs: 6000 }),
   onInfo: (info) => {
     liveDesk?.setInfo(info);
   },
@@ -419,8 +418,9 @@ function clearStationViews({ keepSettings = false } = {}) {
     publicSettings.clear();
     linerControls?.clear();
   }
-  _profileEls.list.replaceChildren();
-  _profileEls.status.textContent = "";
+  // Undefined when the page has no Profiles markup.
+  profileControls?.clear();
+  if (_profileEls.status) _profileEls.status.textContent = "";
   queueAnnounce.textContent = "";
   settingsStatus.textContent = "";
   clockwheelPanelControls?.clearProtectedData();
@@ -461,8 +461,9 @@ function clearProtectedSessionData() {
   _pageLevelSet = false;
   applyPageLevel();
   volAnnounce.textContent = "";
-  _accessEls.list.replaceChildren();
-  _accessEls.status.textContent = "";
+  // Undefined when the page has no Browser access markup.
+  accessControls?.clear();
+  if (_accessEls.status) _accessEls.status.textContent = "";
   searchInput.value = "";
   searchInput.dispatchEvent(new Event("input"));
   registeredLibraryFolders = [];
@@ -1095,8 +1096,7 @@ async function _applySink(sinkId, { reportError = true } = {}) {
   }
   if (lastErr) {
     if (reportError && settingsStatus) {
-      announceStatus(settingsStatus, "Could not switch audio device: "
-        + (lastErr.message || lastErr.name || "unknown"),
+      announceStatus(settingsStatus, failureText("switch audio device", { message: lastErr.message || lastErr.name || "unknown" }),
         { dwellMs: 5000, tone: "error" });
     }
     return false;
@@ -1108,9 +1108,9 @@ async function _grantDeviceLabels() {
   // Briefly request the microphone, immediately stop it.  This is what
   // populates the .label field on subsequent enumerateDevices() calls
   // in every privacy-conscious browser (Chromium, Firefox).
+  return withDisabled(audioDeviceRefresh, async () => {
   if (audioDeviceRefresh) {
     audioDeviceRefresh.textContent = "Requesting permission…";
-    audioDeviceRefresh.disabled = true;
   }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1118,7 +1118,6 @@ async function _grantDeviceLabels() {
     await _refreshAudioDevices();
     if (audioDeviceRefresh) {
       audioDeviceRefresh.textContent = "Show device names";
-      audioDeviceRefresh.disabled = false;
     }
   } catch (err) {
     console.warn("microphone permission denied:", err);
@@ -1128,7 +1127,6 @@ async function _grantDeviceLabels() {
     // the prompt would lock the user out forever.
     if (audioDeviceRefresh) {
       audioDeviceRefresh.textContent = "Permission denied — click to retry";
-      audioDeviceRefresh.disabled = false;
     }
     if (settingsStatus) {
       // Clicking again after a denial must say so again, and the region
@@ -1143,6 +1141,7 @@ async function _grantDeviceLabels() {
       // on the button overwrites it anyway.
     }
   }
+  });
 }
 
 // React to permission changes pushed by the browser (e.g. user resets
@@ -1278,8 +1277,7 @@ const localProgrammeControls = installLocalProgrammeControls({
   take: document.getElementById("take-local-control"),
   returnButton: document.getElementById("return-to-automation"),
   status: document.getElementById("local-programme-status"),
-  announce: message => announceStatus(document.getElementById("sr-status"), message,
-    { dwellMs: 5000, mirror: false }),
+  announce: makeSay(document.getElementById("sr-status"), { dwellMs: 5000, mirror: false, force: false }),
   owner: localOwner,
 });
 window.addEventListener("pagehide", () => localOwner.stop());
@@ -1445,7 +1443,7 @@ const _accessEls = {
   pairCopy:      document.getElementById("pair-copy"),
   pairRefresh:   document.getElementById("pair-refresh"),
 };
-installAccess(_accessEls, {
+const accessControls = installAccess(_accessEls, {
   // Stop protected activity before pairing again or leaving for SSO sign-out.
   onSignedOut: (reason, logoutUrl) => {
     expireAuthenticatedSession();
@@ -2113,7 +2111,7 @@ btnStationStart?.addEventListener("click", () => void withDisabled(btnStationSta
     if (!stationOffAir) document.getElementById("btn-pause")?.focus();
   } catch (errorValue) {
     announceStatus(document.getElementById("sr-status"),
-      `Could not start ${name}. ${errorValue.message}`, { dwellMs: 6000, force: true, tone: "error" });
+      failureText(`start ${name}.`, errorValue), { dwellMs: 6000, force: true, tone: "error" });
   }
 }));
 
@@ -2577,7 +2575,7 @@ let volTimer = null;
 let volAnnounceTimer = null;
 
 // Live-region helpers live in ./modules/live-region.js.
-import {
+import { makeSay,
   announceStatus,
   clearLiveRegionLater,
   installVisibleStatusBehaviour,
@@ -3005,6 +3003,7 @@ function historyRowHtml(it, withType = false) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "history-info";
+    button.dataset.action = "info";
     button.dataset.path = it.path || "";
     button.dataset.kind = kind === "liner" ? "liner" : "music";
     button.dataset.historyId = historyId;
@@ -3149,7 +3148,7 @@ async function fetchHistory(page, { announce = false, anchor = null } = {}) {
     const empty = document.getElementById("history-empty");
     if (!announce && tbody?.contains(document.activeElement)) {
       announceStatus(document.getElementById("sr-status"),
-        `Could not refresh history: ${err.message}`,
+        failureText("refresh history", err),
         { dwellMs: 6000, force: true, tone: "error" });
       return;
     }
@@ -3163,13 +3162,13 @@ async function fetchHistory(page, { announce = false, anchor = null } = {}) {
     if (pag) pag.setAttribute("hidden", "");
     if (focusHidden) document.getElementById("hist-refresh")?.focus();
     if (empty) {
-      empty.textContent = `Could not load history: ${err.message}`;
+      empty.textContent = failureText("load history", err);
       empty.removeAttribute("hidden");
     }
     // A button press that fails must say so; the note above is not live.
     if (announce) {
       announceStatus(document.getElementById("sr-status"),
-        `Could not load history: ${err.message}`, { dwellMs: 6000, force: true, tone: "error" });
+        failureText("load history", err), { dwellMs: 6000, force: true, tone: "error" });
     }
   }
 }
@@ -3283,8 +3282,7 @@ function noteTrackForHistory(s) {
     }
   });
   installHistoryExport({
-    announce: (message, tone) => announceStatus(document.getElementById("sr-status"), message,
-      { dwellMs: tone === "error" ? 6000 : 3000, force: true, tone }),
+    announce: makeSay(document.getElementById("sr-status"), { dwellMs: 3000, errorDwellMs: 6000 }),
   });
 }
 

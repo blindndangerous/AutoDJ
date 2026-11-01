@@ -65,6 +65,28 @@ describe("speech studio", () => {
     controls.pause();
   });
 
+  it("keeps focused preflight busy without dropping focus or sending duplicate requests", async () => {
+    installIndexMarkup();
+    let finish;
+    const request = vi.fn((url) => url.endsWith("/preflight")
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve(url.endsWith("providers") ? { connections: [] } : { batches: {}, saved: {}, presets: {}, sets: {} }));
+    const controls = installSpeechStudio(document.getElementById("speech-studio"), { request });
+    await controls.refresh();
+    const button = document.getElementById("speech-preflight");
+    button.focus();
+    button.click();
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(button);
+    button.click();
+    expect(request.mock.calls.filter(([url]) => url.endsWith("/preflight"))).toHaveLength(1);
+    finish({ candidates: [] });
+    await vi.waitFor(() => expect(button.hasAttribute("aria-busy")).toBe(false));
+    expect(document.activeElement).toBe(button);
+    controls.pause();
+  });
+
   it("opening and refreshing never starts synthesis", async () => {
     installIndexMarkup();
     const request = vi.fn(async (url) => url.endsWith("providers")

@@ -11,10 +11,10 @@
 import { createCollectionTable } from "./collection-table.js";
 import { deleteCollectionItem } from "./collection-delete.js";
 import { createEditorDialog } from "./editor-dialog.js";
-import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
+import { failureText, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, withDisabled } from "./api-client.js";
 import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
-import { announceStatus, sayIfStillPending } from "./live-region.js";
-import { clearFieldError, fmtTime, selectOnFocus, showFieldError } from "./dom-helpers.js";
+import { makeSay } from "./live-region.js";
+import { applyServerFieldError, clearFieldError, fmtTime, selectOnFocus, sentences, showFieldError } from "./dom-helpers.js";
 import { installPreparedEditions } from "./prepared-editions.js";
 import { checkStationName } from "./station-name-field.js";
 
@@ -30,13 +30,13 @@ const number = (n) => Number(n || 0).toLocaleString("en-US");
 const plural = (n, one, many) => `${number(n)} ${n === 1 ? one : many}`;
 
 export function describeShow(show) {
-  const sentences = [`${show.name}: ${plural(show.count, "song", "songs")}, ${show.count ? show.total_text : "no list yet"}.`];
-  sentences.push(`From ${show.source_text}, target ${plural(show.target_minutes, "minute", "minutes")}.`);
-  if (show.missing) sentences.push(`${plural(show.missing, "song is", "songs are")} no longer in the library.`);
-  if (show.station_name) sentences.push(`Station name while on the air: ${show.station_name}.`);
+  const parts = [`${show.name}: ${plural(show.count, "song", "songs")}, ${show.count ? show.total_text : "no list yet"}.`];
+  parts.push(`From ${show.source_text}, target ${plural(show.target_minutes, "minute", "minutes")}.`);
+  if (show.missing) parts.push(`${plural(show.missing, "song is", "songs are")} no longer in the library.`);
+  if (show.station_name) parts.push(`Station name while on the air: ${show.station_name}.`);
   const events = show.events || [];
-  sentences.push(events.length ? `Played by ${events.join(", ")}.` : "No schedule event plays it.");
-  return sentences.join(" ");
+  parts.push(events.length ? `Played by ${events.join(", ")}.` : "No schedule event plays it.");
+  return parts.join(" ");
 }
 
 // The show on the air, in words.
@@ -121,9 +121,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   let listSignature = "";
   let songsSignature = "";
   let saving = Promise.resolve();
-  let savingForm = false;
   let formGeneration = 0;
-  let formSaveId = 0;
   let generating = false;
   let loadFailed = false;
   let timer = null;
@@ -131,7 +129,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   let suspended = false;
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
-  const say = (message, error = false) => announceStatus(metadataEditor.region(status), message, { force: true, tone: error ? "error" : "info" });
+  const say = makeSay(() => metadataEditor.region(status), {});
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const source = () => (el("shows-source-clockwheel")?.checked ? "clockwheel" : "category");
   const byId = (id) => data.shows.find((show) => show.id === id);
@@ -139,25 +137,25 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   const editions = installPreparedEditions({ doc, request, onChange: updateEditionSearch });
 
   const metadataEditor = createEditorDialog({
-    form, heading: legend, cancel: el("shows-cancel"), fallback: addButton, save,
+    form, heading: legend, cancel: el("shows-cancel"), fallback: addButton, save, pendingText: "Saving show?",
     onCancel: () => { editing = null; clearErrors(); say("Cancelled. Nothing was saved."); },
   });
   const showTable = createCollectionTable({
-    host: list, label: "Shows", status, fallback: addButton,
+    host: list, label: "Shows", hideCaption: true, status, fallback: addButton,
     keyOf: (show) => show.id, nameOf: (show) => show.name,
     emptyText: "No shows yet. Press Add show to plan one.",
     columns: [
       { key: "name", label: "Name", value: (show) => show.name },
-      { key: "source", label: "Source", value: (show) => show.source_text },
       { key: "count", label: "Songs", value: (show) => number(show.count) },
       { key: "length", label: "Length", value: (show) => show.count ? show.total_text : "No list yet" },
-      { key: "target", label: "Target", value: (show) => plural(show.target_minutes, "minute", "minutes") },
-      { key: "missing", label: "Missing", value: (show) => number(show.missing) },
-      { key: "station", label: "Station name while active", value: (show) => show.station_name || "Unchanged" },
-      { key: "events", label: "Schedule events", value: (show) => show.events?.join(", ") || "None" },
+      { key: "details", label: "Details", value: (show) => sentences(
+        `From ${show.source_text}, target ${plural(show.target_minutes, "minute", "minutes")}`,
+        show.missing && `${plural(show.missing, "song is", "songs are")} no longer in the library`,
+        show.station_name && `Station name while active: ${show.station_name}`,
+        show.events?.length ? `Played by ${show.events.join(", ")}` : "No schedule event plays it") },
     ],
-    primary: (show) => ({ id: "open", label: "Open list", run: () => void openEditor(show.id) }),
     actions: (show) => [
+      { id: "open", label: "Open list", run: () => void openEditor(show.id) },
       { id: "edit", label: "Edit", run: (button) => openForm(show, button) },
       { id: "delete", label: "Delete", run: () => void remove(show.id) },
     ],
@@ -173,22 +171,19 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   const songTable = createCollectionTable({
     host: songsList, label: "Show songs", status, fallback: searchInput,
     keyOf: songKey, nameOf: (song) => song.title,
-    emptyText: "No songs yet. Press Generate list, or add songs below.", nameIndex: 1,
+    emptyText: "No songs yet. Press Generate list, or add songs below.",
     columns: [
-      { key: "number", label: "Number", value: (_song, index) => number(index + 1) },
-      { key: "title", label: "Song", value: (song) => song.title },
-      { key: "length", label: "Length", value: (song) => song.missing ? "Unknown" : song.length_text },
-      { key: "availability", label: "Availability", value: (song) => song.missing ? "Not in the library; skipped on the air" : "Available" },
-      { key: "repeated", label: "Repeated", value: (song, index) => {
+      // The song's number and its warnings, as the list read before #707.
+      { key: "title", label: "Song", value: (song, index) => {
         const others = (repeated.get(song.path) || []).filter((place) => place !== index + 1);
-        return others.length ? `Warning: also number ${others.join(" and ")} in the list` : "No";
+        return `${number(index + 1)}. ${song.title}${song.missing ? ", not in the library; skipped on the air" : ""}`
+          + (others.length ? `; warning: also number ${others.join(" and ")} in the list` : "");
       } },
+      { key: "length", label: "Length", value: (song) => song.missing ? "Unknown" : song.length_text },
     ],
-    primary: (song) => ({ id: "info", label: "Track info",
-      disabledReason: song.missing ? "This song is no longer in the library." : "",
-      run: (button) => doc.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: song.path, kind: "music", opener: button } })),
-    }),
     actions: (song, index) => [
+      { id: "info", label: "Track info", disabledReason: song.missing ? "This song is no longer in the library." : "",
+        run: (button) => doc.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: song.path, kind: "music", opener: button } })) },
       { id: "up", label: "Move up", disabledReason: generationReason() || (index === 0 ? "Already the first song." : ""), run: () => move(index, -1) },
       { id: "down", label: "Move down", disabledReason: generationReason() || (index === songs.length - 1 ? "Already the last song." : ""), run: () => move(index, 1) },
       { id: "remove", label: "Remove", disabledReason: generationReason(), run: () => void removeSong(song) },
@@ -203,11 +198,11 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       { key: "title", label: "Song", value: (song) => song.title },
       { key: "length", label: "Length", value: (song) => song.length_text },
     ],
-    primary: (song) => ({ id: "add", label: "Add", disabledReason: generationReason(), run: () => addSong(song) }),
-    actions: (song) => [{ id: "edition-add", label: "Add to edition",
-      disabledReason: editions.active() ? "" : "Open a prepared edition first.",
-      run: () => void editions.addSong({ path: song.path, title: song.title }),
-    }],
+    actions: (song) => [
+      { id: "add", label: "Add", disabledReason: generationReason(), run: () => addSong(song) },
+      { id: "edition-add", label: "Add to edition", disabledReason: editions.active() ? "" : "Open a prepared edition first.",
+        run: () => void editions.addSong({ path: song.path, title: song.title }) },
+    ],
   });
 
   function updateEditionSearch() { searchTable.update(searchSongs); }
@@ -332,29 +327,20 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     clearErrors();
   }
 
-  async function save(event) {
+  async function save(event, editorCurrent) {
     event?.preventDefault();
-    if (savingForm) return;
     clearErrors();
     const value = body();
     if (!valid(value)) return;
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     const formMine = formGeneration;
-    const saveId = ++formSaveId;
     const editingId = editing;
     const added = editingId === null;
-    savingForm = true;
-    form.setAttribute("aria-busy", "true");
-    const submitButtons = [...form.querySelectorAll('button[type="submit"]')];
-    submitButtons.forEach((button) => button.setAttribute("aria-busy", "true"));
-    const stopPending = sayIfStillPending((message) => {
-      if (current(epoch, mine)) say(message);
-    }, "Saving show…");
     try {
       const show = editingId
         ? await send(url(editingId), "PUT", value)
         : await send("/api/shows", "POST", value);
-      if (!current(epoch, mine)) return;
+      if (!current(epoch, mine) || !editorCurrent()) return;
       if (formMine !== formGeneration) {
         try { await load(); } catch (_) { /* the next refresh draws the list */ }
         if (current(epoch, mine)) say(added
@@ -371,17 +357,15 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       (rowFor(show.id) || addButton).focus();
       say(added ? `Saved ${show.name}. Press Open list, then Generate list, to pick its songs.` : `Saved ${show.name}.`);
     } catch (error) {
-      if (!current(epoch, mine)) return;
-      if (formMine !== formGeneration) say(error.message, true);
-      else if (FIELD_IDS[error.field]) showError(error.field, error.message);
-      else say(error.message, true);
-    } finally {
-      stopPending();
-      if (saveId === formSaveId) {
-        savingForm = false;
-        form.removeAttribute("aria-busy");
-        submitButtons.forEach((button) => button.removeAttribute("aria-busy"));
+      if (!current(epoch, mine) || !editorCurrent()) return;
+      if (formMine !== formGeneration) say(error.message, "error");
+      else if (FIELD_IDS[error.field]) {
+        if (error.field === "category") el("shows-source-category").checked = true;
+        if (error.field === "clockwheel") el("shows-source-clockwheel").checked = true;
+        showSource();
+        applyServerFieldError(error, FIELD_IDS, errorText, metadataEditor.region(status));
       }
+      else say(error.message, "error");
     }
   }
 
@@ -413,7 +397,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
           destination = next ? `Open list ${next.name}` : "Add show";
           return (next && rowFor(next.id)) || addButton;
         } catch (error) {
-          if (current(epoch, mine)) say(`Could not delete ${show.name}: ${error.message}`, true);
+          if (current(epoch, mine)) say(failureText(`delete ${show.name}`, error), "error");
           return null;
         }
       },
@@ -489,7 +473,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       el("shows-editor-heading")?.focus();
       say(`Opened ${show.name}. ${summaryText(show)}`);
     } catch (error) {
-      if (current(epoch, mine)) say(`Could not open the show: ${error.message}`, true);
+      if (current(epoch, mine)) say(failureText("open the show", error), "error");
     }
   }
 
@@ -521,7 +505,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
         void refresh();
       } catch (error) {
         if (!current(epoch, mine)) return;
-        say(`Could not save the list: ${error.message} The saved list is shown again.`, true);
+        say(`${failureText("save the list", error)} The saved list is shown again.`, "error");
         try {
           const show = await request(url(id));
           if (current(epoch, mine) && open?.id === id) {
@@ -586,25 +570,23 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     const button = el("shows-generate");
     const startInput = el("shows-start");
     if (startInput?.validity?.badInput) {
-      startInput.setAttribute("aria-invalid", "true");
-      startInput.focus();
-      say("Pick as if at is not a whole date and time. Complete it or clear it.", true);
+      showFieldError(startInput, "Pick as if at is not a whole date and time. Complete it or clear it.", el("shows-start-error"), status);
       return;
     }
-    startInput?.removeAttribute("aria-invalid");
+    clearFieldError(startInput, el("shows-start-error"));
     const id = open.id;
     const value = startInput?.value ? { start: startInput.value } : {};
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     // generating holds off another press; no aria-disabled, or NVDA says
     // "unavailable" on the pressed button (#331).  aria-busy says it is busy.
     generating = true;
-    button?.classList.add("is-pending");
-    button?.setAttribute("aria-busy", "true");
     redrawSongs();
     say(`Generating the list for ${open.name}.`);
     try {
-      await saving;
-      const show = await send(url(id, "/generate"), "POST", value);
+      const show = await withDisabled(button, async () => {
+        await saving;
+        return send(url(id, "/generate"), "POST", value);
+      });
       if (!current(epoch, mine) || open?.id !== id) return;
       generating = false;
       applyOpen(show);
@@ -612,15 +594,10 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       say(`Generated ${summaryText(show)}${show.note ? ` ${show.note}` : ""}`);
     } catch (error) {
       if (!current(epoch, mine)) return;
-      if (error.field === "start" && startInput) {
-        startInput.setAttribute("aria-invalid", "true");
-        startInput.focus();
-      }
-      say(`Could not generate the list: ${error.message}`, true);
+      const message = failureText("generate the list", error);
+      if (!applyServerFieldError({ field: error.field, message }, { start: startInput }, el("shows-start-error"), status)) say(message, "error");
     } finally {
       generating = false;
-      button?.classList.remove("is-pending");
-      button?.removeAttribute("aria-busy");
       if (open?.id === id) redrawSongs();
     }
   }
@@ -629,7 +606,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     const query = searchInput.value.trim();
     if (query.length < 2) {
       searchInput.focus();
-      say("Type at least two letters to search.", true);
+      say("Type at least two letters to search.", "error");
       return;
     }
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
@@ -645,14 +622,14 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       updateEditionSearch();
       say(found.length ? `${plural(found.length, "song", "songs")} found${found.length === SEARCH_LIMIT ? `; the first ${SEARCH_LIMIT} are listed` : ""}.` : `No songs match ${query}.`);
     } catch (error) {
-      if (current(epoch, mine)) say(`Could not search: ${error.message}`, true);
+      if (current(epoch, mine)) say(failureText("search", error), "error");
     }
   }
 
   function addSong(song) {
     if (!open || refusedWhileGenerating()) return;
     const max = data.limits?.max_songs || 500;
-    if (songs.length >= max) { say(`A show holds at most ${max} songs.`, true); return; }
+    if (songs.length >= max) { say(`A show holds at most ${max} songs.`, "error"); return; }
     songs = [...songs, { ...song }];
     renderSongs();
     renderSummary();
@@ -673,7 +650,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       await load();
       say(answer.message || "The show started.");
     } catch (error) {
-      if (current(epoch, mine)) say(`The show did not start: ${error.message}`, true);
+      if (current(epoch, mine)) say(`The show did not start: ${error.message}`, "error");
     }
   }
 
@@ -693,7 +670,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
         say(`Stopping ${answer.stopped}: some of its songs could not be taken out of the queue yet. AutoDJ tries again at the next song.`);
       } else say(`Stopped ${answer.stopped}. Its waiting songs left the queue; normal programming resumes.`);
     } catch (error) {
-      if (current(epoch, mine)) say(`Could not stop the show: ${error.message}`, true);
+      if (current(epoch, mine)) say(failureText("stop the show", error), "error");
     }
   }
 
@@ -708,14 +685,14 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     event.stopPropagation();
     move(index, event.key === "ArrowUp" ? -1 : 1);
   });
-  addButton.addEventListener("click", () => { if (!savingForm) openForm(null, addButton); });
+  addButton.addEventListener("click", () => openForm(null, addButton));
   for (const id of ["shows-source-category", "shows-source-clockwheel"]) el(id)?.addEventListener("change", showSource);
   for (const field of [nameInput, categorySelect, clockSelect, targetInput, stationNameInput].filter(Boolean)) {
     field.addEventListener("input", () => {
       if (field.getAttribute("aria-invalid") === "true") clearFieldError(field, errorText);
     });
   }
-  el("shows-start")?.addEventListener("input", (event) => event.target.removeAttribute("aria-invalid"));
+  el("shows-start")?.addEventListener("input", (event) => clearFieldError(event.target, el("shows-start-error")));
   el("shows-generate")?.addEventListener("click", () => void generate());
   el("shows-search-run")?.addEventListener("click", () => void search());
   searchInput.addEventListener("keydown", (event) => {
@@ -750,7 +727,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       loadFailed = false;
     } catch (error) {
       // Said once on failing, not on every 15-second retry.
-      if (current(epoch, mine) && !loadFailed) say(`Could not load shows: ${error.message}`, true);
+      if (current(epoch, mine) && !loadFailed) say(failureText("load shows", error), "error");
       if (current(epoch, mine)) loadFailed = true;
     }
   }
@@ -773,10 +750,6 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     suspended = true;
     generation += 1;
     formGeneration += 1;
-    formSaveId += 1;
-    savingForm = false;
-    form.removeAttribute("aria-busy");
-    form.querySelectorAll('[aria-busy="true"]').forEach((button) => button.removeAttribute("aria-busy"));
     if (timer !== null) clearInterval(timer);
     timer = null;
     data = empty();
@@ -802,6 +775,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     destroy() {
       clearProtectedData();
       editions.destroy();
+      metadataEditor.destroy();
       window.removeEventListener("hashchange", updatePolling);
       doc.removeEventListener("visibilitychange", updatePolling);
     },

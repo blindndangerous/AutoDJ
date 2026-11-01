@@ -24,9 +24,11 @@
 // error linked to the field and shown under it, and focus; the result of a
 // save is said once through #requests-status.
 
-import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, staleActionText } from "./api-client.js";
-import { announceStatus, sayIfStillPending } from "./live-region.js";
+import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, staleActionText, failureText, withDisabled } from "./api-client.js";
+import { makeSay } from "./live-region.js";
 import { clearFieldError, showFieldError } from "./dom-helpers.js";
+import { createSettingsSave } from "./standalone-settings.js";
+import { onCardOpen } from "./card-state.js";
 import { createCollectionTable } from "./collection-table.js";
 import { deleteCollectionItem } from "./collection-delete.js";
 import { stationEpoch } from "./stations.js";
@@ -140,24 +142,21 @@ export function installListenerRequests({
       ? fitText(item) || "This request cannot be approved in the current queue." : "";
   }
 
-  function say(message, tone = "info") {
-    if (!isEnabled()) return;
-    announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 6000 : 4000, tone });
-  }
+  const say = makeSay(() => isEnabled() ? status : null, { dwellMs: 4000, errorDwellMs: 6000 });
+  let pending = new AbortController();
 
+  // Under the Requested heading: who, if they gave a name, and when.
+  const requestedCell = (item) => `${item.name ? `by ${item.name} ` : ""}at ${formatTime(item.requested_at)}`;
   const pendingTable = createCollectionTable({
     host: list, label: "Waiting requests", status, fallback: heading,
     keyOf: (item) => item.id, nameOf: songText, emptyText: "No requests waiting.",
     columns: [
       { key: "song", label: "Song", value: songText },
-      { key: "requester", label: "Requester", value: (item) => item.name || "Anonymous" },
-      { key: "time", label: "Time", value: (item) => formatTime(item.requested_at) },
+      { key: "requested", label: "Requested", value: requestedCell },
       { key: "fit", label: "Fit", value: fitText },
     ],
-    primary: (item) => ({ id: "approve", label: "Approve",
-      disabledReason: actionReason(item, "approve"),
-      run: (button) => decide(item, "approve", button) }),
     actions: (item) => [
+      { id: "approve", label: "Approve", disabledReason: actionReason(item, "approve"), run: (button) => decide(item, "approve", button) },
       { id: "play-next", label: "Play next", disabledReason: actionReason(item, "play-next"), run: (button) => decide(item, "play-next", button) },
       { id: "reject", label: "Turn down", run: (button) => {
         const mine = settingsGeneration;
@@ -168,14 +167,15 @@ export function installListenerRequests({
     ],
   });
   const recentTable = createCollectionTable({
-    host: recent, label: "Recent decisions", status, fallback: heading,
+    host: recent, label: "Recent decisions", hideCaption: true, status, fallback: heading,
     keyOf: (item) => item.id, nameOf: songText, emptyText: "No recent decisions.",
     columns: [
       { key: "song", label: "Song", value: songText },
-      { key: "requester", label: "Requester", value: (item) => item.name || "Anonymous" },
-      { key: "time", label: "Time", value: (item) => formatTime(item.requested_at) },
-      { key: "decision", label: "Decision", value: (item) => STATUS_WORDS[item.status] || item.status },
-      { key: "reason", label: "Reason", value: (item) => fitText({ ...item, reason: item.note || "" }) },
+      { key: "requested", label: "Requested", value: requestedCell },
+      { key: "decision", label: "Decision", value: (item) => {
+        const reason = fitText({ ...item, reason: item.note || "" });
+        return `${STATUS_WORDS[item.status] || item.status}${reason ? `: ${reason}` : ""}`;
+      } },
     ],
   });
 
@@ -187,9 +187,7 @@ export function installListenerRequests({
   const threshold = doc.getElementById("requests-threshold");
   const thresholdError = doc.getElementById("requests-threshold-error");
   let settingsDirty = false;
-  let saving = false;
   let settingsGeneration = 0;
-  let settingsSaveId = 0;
   let refreshGeneration = 0;
 
   function clearThresholdError() {
@@ -209,8 +207,8 @@ export function installListenerRequests({
   }
 
   // The saved settings, unless the operator is changing them now.
-  function fillSettings(state) {
-    if (!settingsForm || settingsDirty || saving) return;
+  function fillSettings(state, settingsSaved = false) {
+    if (!settingsForm || settingsDirty || (settingsSave.pending && !settingsSaved)) return;
     if (settingsForm.contains(doc.activeElement)) return;
     if (enabledBox) enabledBox.checked = state.enabled === true;
     const approval = settingsForm.querySelector(
@@ -228,12 +226,11 @@ export function installListenerRequests({
     if (choice) choice.checked = true;
   }
 
-  if (settingsForm) {
-    settingsForm.addEventListener("input", () => { settingsDirty = true; });
-    settingsForm.addEventListener("change", () => { settingsDirty = true; });
-    settingsForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (saving || !isEnabled()) return;
+  let settingsSpeechCurrent = () => false;
+  const settingsSave = createSettingsSave({
+    button: saveButton, isCurrent: isEnabled, pendingText: "Saving request settings\u2026",
+    say: (message) => { if (settingsSpeechCurrent()) say(message); },
+    save: async (current) => {
       clearThresholdError();
       const limit = parseThreshold(threshold?.value);
       if (limit === null) {
@@ -250,54 +247,42 @@ export function installListenerRequests({
       };
       const before = lastState;
       const mine = settingsGeneration;
-      const saveId = ++settingsSaveId;
-      const epoch = captureAuthenticatedRequestEpoch();
       const station = stationEpoch();
-      const currentSave = () => mine === settingsGeneration && epoch === captureAuthenticatedRequestEpoch()
-        && station === stationEpoch();
-      // saving holds off another press; aria-busy, not aria-disabled (#331).
-      saving = true;
-      saveButton?.classList.add("is-pending");
-      saveButton?.setAttribute("aria-busy", "true");
+      const currentSave = () => current() && mine === settingsGeneration && station === stationEpoch();
+      settingsSpeechCurrent = currentSave;
       try {
-        const stopPending = sayIfStillPending((message) => {
-          if (currentSave() && isAuthenticatedRequestCurrent(epoch)) say(message);
-        }, "Saving request settings…");
-        let reply;
-        try { reply = await request("/api/requests/settings", {
+        const reply = await request("/api/requests/settings", {
           method: "POST",
           headers: { Accept: "application/json", "Content-Type": "application/json" },
           body: JSON.stringify(body),
-        }); } finally { stopPending(); }
-        if (!isEnabled() || !currentSave() || !isAuthenticatedRequestCurrent(epoch)) return;
+        });
+        if (!currentSave()) return;
         settingsDirty = false;
-        saving = false;
         lastJson = null;
         const state = { ...reply, pending: reply.pending || [], recent: reply.recent || [] };
-        render(state);
+        render(state, { settingsSaved: true });
         say(savedText(before, state));
       } catch (error) {
-        if (!isEnabled() || !currentSave() || !isAuthenticatedRequestCurrent(epoch)) return;
+        if (!currentSave()) return;
         // Answered after a station switch: the form is the new station's (#70).
         const left = staleActionText(error);
         if (left) say(left, error?.actionDone ? "info" : "error");
-        else say(`Could not save the request settings: ${error?.message || "no answer"}`, "error");
-      } finally {
-        if (saveId === settingsSaveId) {
-          saving = false;
-          saveButton?.classList.remove("is-pending");
-          saveButton?.removeAttribute("aria-busy");
-        }
+        else say(failureText("save the request settings", error?.message ? error : { message: "no answer" }), "error");
       }
-    });
+    },
+  });
+  if (settingsForm) {
+    settingsForm.addEventListener("input", () => { settingsDirty = true; });
+    settingsForm.addEventListener("change", () => { settingsDirty = true; });
+    settingsForm.addEventListener("submit", settingsSave.run);
   }
 
-  function render(state, { announceFocus = true } = {}) {
+  function render(state, { announceFocus = true, settingsSaved = false } = {}) {
     lastState = state;
     const json = JSON.stringify(state);
     if (json === lastJson) return;
     lastJson = json;
-    fillSettings(state);
+    fillSettings(state, settingsSaved);
     setText(summary, summaryText(state));
     // Off: nothing is waiting or decided for the operator to act on.
     const off = state.enabled === false;
@@ -340,79 +325,72 @@ export function installListenerRequests({
     // "unavailable" (#331).  .is-pending gives the busy look, and
     // aria-busy a state a screen reader can report.
     busy = true;
-    button.classList.add("is-pending");
-    button.setAttribute("aria-busy", "true");
-    // A short line when the reply is slow, so the press is heard (#384).
-    const stopPending = sayIfStillPending((message) => {
-      if (mine === settingsGeneration) say(message);
-    }, {
-      approve: `Queueing ${song}…`,
-      "play-next": `Queueing ${song} to play next…`,
-      reject: `Turning down ${song}…`,
-    }[action] || "Sending…");
-    try {
-      const url = `/api/requests/${encodeURIComponent(id)}/${action}`;
-      let reply;
-      if (action === "approve" || action === "play-next") {
-        const sent = await sendWithVoiceTrackConflict(doc, (voice) => {
-          const reason = actionReason(item, action);
-          if (reason) throw new Error(reason);
-          return request(url, {
-            method: "POST",
-            headers: Object.keys(voice).length
-              ? { Accept: "application/json", "Content-Type": "application/json" }
-              : { Accept: "application/json" },
-            ...(Object.keys(voice).length ? { body: JSON.stringify(voice) } : {}),
+    return withDisabled(button, async () => {
+      try {
+        const url = `/api/requests/${encodeURIComponent(id)}/${action}`;
+        let reply;
+        if (action === "approve" || action === "play-next") {
+          const sent = await sendWithVoiceTrackConflict(doc, (voice) => {
+            const reason = actionReason(item, action);
+            if (reason) throw new Error(reason);
+            return request(url, {
+              method: "POST",
+              headers: Object.keys(voice).length
+                ? { Accept: "application/json", "Content-Type": "application/json" }
+                : { Accept: "application/json" },
+              ...(Object.keys(voice).length ? { body: JSON.stringify(voice) } : {}),
+            });
           });
-        });
-        if (!sent) {
-          const canceled = action === "approve" ? "Approval" : "Play next";
-          if (isEnabled() && mine === settingsGeneration) say(`${canceled} canceled for ${song}.`);
-          return;
+          if (!sent) {
+            const canceled = action === "approve" ? "Approval" : "Play next";
+            if (isEnabled() && mine === settingsGeneration) say(`${canceled} canceled for ${song}.`);
+            return;
+          }
+          reply = sent.value;
+        } else {
+          reply = await request(url, {
+            method: "POST",
+            headers: { Accept: "application/json" },
+          });
         }
-        reply = sent.value;
-      } else {
-        reply = await request(url, {
-          method: "POST",
-          headers: { Accept: "application/json" },
-        });
+        if (!isEnabled() || mine !== settingsGeneration) return;
+        const state = { ...reply, pending: reply.pending || [], recent: reply.recent || [] };
+        refreshGeneration++;
+        lastJson = null;
+        render(state, { announceFocus: false });
+        const next = state.pending[Math.min(index, state.pending.length - 1)];
+        const target = next ? pendingTable.target(next.id) : heading;
+        target?.focus();
+        const done = action === "reject" ? `Turned down ${song}.` : `Queued ${song}.`;
+        later(() => { if (mine === settingsGeneration) say(done); }, ANNOUNCE_DELAY_MS);
+        return target;
+      } catch (error) {
+        if (!isEnabled()) return;
+        // Answered after a station switch: done, or not, on the old station.
+        const left = staleActionText(error);
+        say(left || error?.message || "That did not work.", error?.actionDone ? "info" : "error");
+      } finally {
+        busy = false;
       }
-      if (!isEnabled() || mine !== settingsGeneration) return;
-      const state = { ...reply, pending: reply.pending || [], recent: reply.recent || [] };
-      refreshGeneration++;
-      lastJson = null;
-      render(state, { announceFocus: false });
-      const next = state.pending[Math.min(index, state.pending.length - 1)];
-      const target = next ? pendingTable.target(next.id, next.can_approve === false ? "options" : "approve") : heading;
-      target?.focus();
-      const done = action === "reject" ? `Turned down ${song}.` : `Queued ${song}.`;
-      later(() => { if (mine === settingsGeneration) say(done); }, ANNOUNCE_DELAY_MS);
-      return target;
-    } catch (error) {
-      if (!isEnabled()) return;
-      // Answered after a station switch: done, or not, on the old station.
-      const left = staleActionText(error);
-      say(left || error?.message || "That did not work.", error?.actionDone ? "info" : "error");
-    } finally {
-      stopPending();
-      busy = false;
-      button.classList.remove("is-pending");
-      button.removeAttribute("aria-busy");
-    }
+    }, { signal: pending.signal, pendingText: {
+      approve: `Queueing ${song}\u2026`,
+      "play-next": `Queueing ${song} to play next\u2026`,
+      reject: `Turning down ${song}\u2026`,
+    }[action] || "Sending\u2026", say: (message) => { if (mine === settingsGeneration) say(message); } });
   }
 
   const showing = () => isEnabled() && card.open && !card.hidden && !doc.hidden && !panel?.hidden;
-  card.addEventListener("toggle", () => { if (card.open) void refresh(); });
+  onCardOpen(card, refresh);
   setTimer(() => { if (showing()) void refresh(); }, POLL_MS);
   void refresh();
   // Switching stations (#70) or signing out: drop the other station's
   // requests at once; refresh the station only while authenticated.
   function clear() {
     settingsGeneration++;
-    settingsSaveId++;
-    saving = false;
-    saveButton?.classList.remove("is-pending");
-    saveButton?.removeAttribute("aria-busy");
+    settingsSave.clear();
+    settingsSpeechCurrent = () => false;
+    pending.abort();
+    pending = new AbortController();
     refreshGeneration++;
     lastJson = null;
     lastState = null;

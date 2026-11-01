@@ -1,10 +1,69 @@
 // Pure-function tests for ./modules/dom-helpers.js.
 
 import { vi } from "vitest";
-import { reconcileRows } from "../../src/autodj/static/modules/dom-helpers.js";
+import { reconcileRows, sentences } from "../../src/autodj/static/modules/dom-helpers.js";
 import { describe, it, expect } from "vitest";
+import * as domHelpers from "../../src/autodj/static/modules/dom-helpers.js";
 import { clearFormErrors, fmtTime, fmtTrack, escHtml, focusAfterDialog, focusRevealed, isTypingTarget, placeRows } from
   "../../src/autodj/static/modules/dom-helpers.js";
+
+// ADR-0022-06
+it("maps server fields to controls while preserving help and unknown-field fallback", async () => {
+  expect(typeof domHelpers.applyServerFieldError).toBe("function");
+  document.body.innerHTML = '<details><summary>Editor</summary><input id="name" aria-describedby="hint"><input id="other"><p id="hint">Hint</p><p id="error" hidden></p><p id="status" role="status"></p></details>';
+  const field = document.getElementById("name"), error = document.getElementById("error"), status = document.getElementById("status");
+  expect(domHelpers.applyServerFieldError({ field: "name", message: "Name is required." }, { name: "name" }, error, status)).toBe(true);
+  expect(field.getAttribute("aria-describedby")).toBe("error hint");
+  expect(field.getAttribute("aria-invalid")).toBe("true");
+  expect(document.activeElement).toBe(field);
+  expect(document.querySelector("details").open).toBe(true);
+  expect(error.textContent).toBe("Name is required.");
+  expect(domHelpers.applyServerFieldError({ field: "missing", message: "Unknown." }, { name: field }, error, status)).toBe(false);
+  expect(domHelpers.applyServerFieldError({ field: "toString", message: "Unknown." }, {}, error, status)).toBe(false);
+  domHelpers.clearFieldError(field, error);
+  expect(field.getAttribute("aria-describedby")).toBe("hint");
+  expect(error.hidden).toBe(true);
+});
+
+it("links a grouped field error to every control and focuses only the first", () => {
+  document.body.innerHTML = '<input id="one"><input id="two" aria-describedby="hint"><p id="hint">Hint</p><p id="problem" hidden></p><p id="status"></p>';
+  const controls = [...document.querySelectorAll("input")], error = document.getElementById("problem");
+  const focused = [];
+  controls.forEach((field) => field.addEventListener("focus", () => focused.push(field.id)));
+  domHelpers.showFieldError(controls, "Choose a day.", error, document.getElementById("status"));
+  expect(focused).toEqual(["one"]);
+  expect(controls.map((field) => field.getAttribute("aria-invalid"))).toEqual(["true", "true"]);
+  expect(controls[1].getAttribute("aria-describedby")).toBe("problem hint");
+  domHelpers.clearFieldError(controls, error);
+  expect(controls.map((field) => field.hasAttribute("aria-invalid"))).toEqual([false, false]);
+  expect(controls[1].getAttribute("aria-describedby")).toBe("hint");
+});
+
+it("can associate a background field error without stealing focus", () => {
+  document.body.innerHTML = '<input id="field"><button id="elsewhere">Other task</button><p id="error" hidden></p>';
+  const field = document.getElementById("field"), elsewhere = document.getElementById("elsewhere"), error = document.getElementById("error");
+  elsewhere.focus();
+  domHelpers.applyServerFieldError({ field: "title", message: "Review failed." }, { title: field }, error, null, { focus: false });
+  expect(document.activeElement).toBe(elsewhere);
+  expect(field.getAttribute("aria-describedby")).toBe("error");
+  expect(field.getAttribute("aria-invalid")).toBe("true");
+  expect(error.hidden).toBe(false);
+});
+
+it("calls a feature's announcer only when focus does not move to the field", () => {
+  document.body.innerHTML = '<input id="field"><button id="elsewhere">Other task</button><p id="error" hidden></p>';
+  const field = document.getElementById("field"), error = document.getElementById("error");
+  const say = vi.fn();
+  domHelpers.showFieldError(field, "Enter a number.", error, say);
+  expect(document.activeElement).toBe(field);
+  expect(say).not.toHaveBeenCalled();
+  domHelpers.showFieldError(field, "Enter a number.", error, say);
+  expect(say).toHaveBeenCalledWith("Enter a number.", "error");
+  document.getElementById("elsewhere").focus();
+  domHelpers.showFieldError(field, "Enter a smaller number.", error, say, { focus: false });
+  expect(say).toHaveBeenLastCalledWith("Enter a smaller number.", "error");
+  expect(say).toHaveBeenCalledTimes(2);
+});
 
 describe("fmtTime", () => {
   it("formats seconds into m:ss or h:mm:ss without wrapping hours", () => {
@@ -35,6 +94,13 @@ it("clears stale error descriptions even after the invalid marker was removed", 
   expect(input.getAttribute("aria-describedby")).toBe("help");
   expect(form.querySelector("#problem").hidden).toBe(true);
   expect(form.querySelector("#problem").textContent).toBe("");
+});
+
+describe("sentences", () => {
+  it("joins only the set facts, one sentence each", () => {
+    expect(sentences("From Music, target 60 minutes", "", false, null, "Played by Morning.", 0)).toBe("From Music, target 60 minutes. Played by Morning.");
+    expect(sentences()).toBe("");
+  });
 });
 
 describe("fmtTrack", () => {

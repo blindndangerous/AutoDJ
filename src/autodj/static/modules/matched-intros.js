@@ -1,18 +1,17 @@
 // Track info, Matched intros (#127): voice clips that play as a song starts,
 // for this song or for any song by its artist.  Upload, Listen and Remove.
 //
-// The lists are drawn again after each change, keeping focus on a Listen or
-// Remove button that is still there.  A refused field is marked
+// Shared collection tables preserve row and menu identity on updates.  A refused field is marked
 // aria-invalid, its error is linked to it with aria-describedby and it takes
 // focus, which reads the error, so nothing else speaks.  Any other result is
-// said once in #intros-status.  Listen is a toggle: aria-pressed says it is
-// playing, and the clip plays on the Preview output device.
-import { reconcileRows } from "./dom-helpers.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
-import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
-import { confirmAction } from "./confirm-dialog.js";
-import { clearFieldError, nextRowControl, rowButton, showFieldError } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+// said once in #intros-status.  Listen is a toggle: while an intro plays, its
+// menu item says Stop listening, and the clip plays on the Preview output device.
+import { createEditorDialog } from "./editor-dialog.js";
+import { createCollectionTable } from "./collection-table.js";
+import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, failureText } from "./api-client.js";
+import { deleteCollectionItem } from "./collection-delete.js";
+import { clearFieldError, sentences, showFieldError, applyServerFieldError, focusAfterDialog } from "./dom-helpers.js";
+import { makeSay } from "./live-region.js";
 import { stationApi } from "./stations.js";
 
 const FIELDS = ["file", "applies", "label", "chance", "cooldown", "not-before", "not-after"];
@@ -49,16 +48,6 @@ export function introFormError({ file, chance, cooldown, notBefore, notAfter }, 
   return null;
 }
 
-// One intro in words: its label, how often it plays, its dates, its length.
-export function introText(item) {
-  const parts = [`${item.label || "Untitled intro"}.`, item.rules_text];
-  if (item.dates_text) parts.push(`${item.dates_text}.`);
-  if (item.playable === false && item.unplayable_text) parts.push(`Skipped now: ${item.unplayable_text}.`);
-  const seconds = Math.round(Number(item.speech_s) || 0);
-  parts.push(`${seconds} second${seconds === 1 ? "" : "s"} of speech.`);
-  return parts.filter(Boolean).join(" ");
-}
-
 const NO_EDITOR = { load() {}, clear() {}, destroy() {} };
 
 export function installMatchedIntros({ document: doc = document, request = requestJson, isCurrent = () => true } = {}) {
@@ -70,13 +59,11 @@ export function installMatchedIntros({ document: doc = document, request = reque
   const inactive = el("intros-inactive");
   const problem = el("intros-problem");
   const lists = { song: el("intros-song-list"), artist: el("intros-artist-list") };
-  const navigation = Object.fromEntries(Object.entries(lists).map(([kind, list]) => [kind, installActionListNavigation(list)]));
-  const empties = { song: el("intros-song-empty"), artist: el("intros-artist-empty") };
   const artistHeading = el("intros-artist-heading");
   const artistChoice = el("intro-applies-artist");
   const artistLabel = el("intro-applies-artist-label");
   const playback = el("intro-playback");
-  const upload = el("intro-upload");
+  const addButton = el("intro-add");
   const inputs = {
     file: el("intro-file"), applies: el("intro-applies-song"), label: el("intro-label"),
     chance: el("intro-chance"), cooldown: el("intro-cooldown"),
@@ -86,22 +73,55 @@ export function installMatchedIntros({ document: doc = document, request = reque
   let track = null;  // { id, title, artist }
   let limits = {};
   let generation = 0;
-  let busy = false;
-  let playing = null;  // the Listen button pressed now
+  let playing = null;  // { kind, id } of the intro playing now
   let saved = { song: [], artist: [] };
+  const listSignatures = { song: null, artist: null };
   let listFocusAnnouncementSuppressed = false;
 
-  function say(message, tone = "info") { announceStatus(status, message, { force: true, tone }); }
+  const editor = createEditorDialog({ form, heading: el("intros-form-legend"), cancel: el("intro-cancel"), fallback: addButton,
+    save: submit, pendingText: null, onCancel: () => { resetForm(); say("Cancelled. Nothing was saved."); } });
+  const say = makeSay(() => editor.region(status));
+  const collections = Object.fromEntries(Object.entries(lists).map(([kind, host]) => {
+    const heading = el(host.getAttribute("aria-labelledby"));
+    heading.tabIndex = -1;
+    return [kind, createCollectionTable({
+      host, label: kind === "song" ? "song intros" : "artist intros", hideCaption: true, keyOf: (item) => item.id,
+      nameOf: (item) => item.label || "Untitled intro",
+      columns: [
+        { key: "name", label: "Name", value: (item) => item.label || "Untitled intro" },
+        { key: "details", label: "Details", value: (item) => {
+          const seconds = Math.round(Number(item.speech_s) || 0);
+          return sentences(item.rules_text, item.dates_text,
+            item.playable === false && `Skipped now: ${item.unplayable_text || "Unavailable"}`,
+            `${seconds} second${seconds === 1 ? "" : "s"} of speech`);
+        } },
+      ],
+      actions: (item) => [
+        { id: "listen", label: isPlaying(kind, item) ? "Stop listening" : "Listen", run: () => void listen(kind, item) },
+        { id: "remove", label: "Remove", run: (button) => void remove(kind, item, button) },
+      ],
+      fallback: heading, status, emptyText: kind === "song" ? "No intros for this song." : "No intros for the artist.",
+    })];
+  }));
   function clearError(field) {
     clearFieldError(inputs[field], errors[field]);
   }
   function clearErrors() { for (const field of FIELDS) clearError(field); }
   function showError(field, message) {
-    showFieldError(inputs[field], message, errors[field], status);
+    showFieldError(inputs[field], message, errors[field], editor.region(status));
+  }
+
+  // Listen's label follows *playing*; refresh the menus of these lists.
+  function relabel(...kinds) {
+    for (const kind of new Set(kinds)) if (kind) collections[kind].update(saved[kind], { announceFocus: false });
+  }
+
+  // One id can be in both lists; the list it plays from tells them apart.
+  function isPlaying(kind, item) {
+    return playing?.kind === kind && playing.id === item.id;
   }
 
   function stopListening() {
-    if (playing) playing.setAttribute("aria-pressed", "false");
     playing = null;
     if (playback && playback.getAttribute("src")) {
       playback.pause();
@@ -110,30 +130,30 @@ export function installMatchedIntros({ document: doc = document, request = reque
     }
   }
 
-  async function listen(item, button) {
-    if (playing === button) { stopListening(); return; }
+  async function listen(kind, item) {
+    const was = playing;
     stopListening();
-    if (!playback) return;
-    playing = button;
-    button.setAttribute("aria-pressed", "true");
+    if ((was?.kind === kind && was.id === item.id) || !playback) { relabel(was?.kind); return; }
+    playing = { kind, id: item.id };
+    relabel(was?.kind, kind);
     // An element's own request, so it is sent to the page's station here.
     playback.src = stationApi(`/api/intros/${encodeURIComponent(item.id)}/audio`);
     try {
       await playback.play();
     } catch (_) {
-      if (playing === button) stopListening();
+      if (isPlaying(kind, item)) { stopListening(); relabel(kind); }
       say("This browser could not play the intro.", "error");
     }
   }
 
-  async function remove(item, button) {
-    const list = button.closest("ul");
-    const index = Array.from(list.querySelectorAll("button")).indexOf(button);
+  async function remove(kind, item, button) {
+    const list = lists[kind];
+    const index = saved[kind].findIndex((entry) => entry.id === item.id);
     const name = item.label || "the untitled intro";
     const epoch = captureAuthenticatedRequestEpoch();
     let result = null;
     let tone = "info";
-    const confirmed = await confirmAction(doc, {
+    const confirmed = await deleteCollectionItem(doc, {
       title: `Remove intro ${name}?`,
       message: "Its audio is deleted from the station.",
       confirmLabel: "Remove intro",
@@ -142,18 +162,18 @@ export function installMatchedIntros({ document: doc = document, request = reque
           await request(`/api/intros/${encodeURIComponent(item.id)}`, { method: "DELETE" });
         } catch (error) {
           if (!isAuthenticatedRequestCurrent(epoch)) return null;
-          result = `Could not remove the intro: ${error.message}`;
+          result = failureText(`remove the intro`, error);
           tone = "error";
-          return button;
+          return button.closest("td");
         }
         if (!isAuthenticatedRequestCurrent(epoch)) return null;
-        if (playing && list.contains(playing)) stopListening();
+        if (playing?.kind === kind) stopListening();
         result = `Removed ${name}.`;
         listFocusAnnouncementSuppressed = true;
         try { await refresh(); } finally { listFocusAnnouncementSuppressed = false; }
         // Focus goes to the next row's button in that list, or the list's heading.
         const heading = doc.getElementById(list.getAttribute("aria-labelledby"));
-        const target = nextRowControl(list, "button", Math.max(0, index), heading);
+        const target = collections[kind].target(saved[kind][Math.min(index, saved[kind].length - 1)]?.id, "options") || heading;
         if (target === heading) heading.setAttribute("tabindex", "-1");
         return target;
       },
@@ -164,41 +184,13 @@ export function installMatchedIntros({ document: doc = document, request = reque
 
   function renderList(kind, items) {
     const list = lists[kind];
-    if (playing && list.contains(playing) && !items.some((item) => item.id === playing.dataset.intro)) stopListening();
+    if (playing?.kind === kind && !items.some((item) => item.id === playing.id)) stopListening();
     const heading = doc.getElementById(list.getAttribute("aria-labelledby"));
     if (heading && heading.tabIndex !== -1) heading.tabIndex = -1;
-    reconcileRows(list, items, (item) => item.id, () => {
-      const row = doc.createElement("li");
-      const text = doc.createElement("span");
-      text.className = "intro-text";
-      const play = rowButton(doc, "Listen", "", (button) => {
-        const current = saved[kind].find((entry) => entry.id === button.dataset.intro);
-        if (current) void listen(current, button);
-      });
-      const drop = rowButton(doc, "Remove", "", (button) => {
-        const current = saved[kind].find((entry) => entry.id === button.dataset.intro);
-        if (current) void remove(current, button);
-      });
-      play.dataset.action = "listen";
-      drop.dataset.action = "remove";
-      row.append(text, play, drop);
-      return row;
-    }, (row, item) => {
-      const name = item.label || "untitled intro";
-      const description = introText(item);
-      if (row.firstElementChild.textContent !== description) row.firstElementChild.textContent = description;
-      const [play, drop] = row.querySelectorAll("button");
-      for (const button of [play, drop]) if (button.dataset.intro !== item.id) button.dataset.intro = item.id;
-      if (play.getAttribute("aria-label") !== `Listen to ${name}`) play.setAttribute("aria-label", `Listen to ${name}`);
-      if (drop.getAttribute("aria-label") !== `Remove ${name}`) drop.setAttribute("aria-label", `Remove ${name}`);
-      const pressed = playing === play ? "true" : "false";
-      if (play.getAttribute("aria-pressed") !== pressed) play.setAttribute("aria-pressed", pressed);
-    }, { fallback: heading, onFocusLost: ({ target }) => {
-      if (!listFocusAnnouncementSuppressed) say(`The matched intro list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "its heading"}.`);
-    } });
-    navigation[kind].refresh();
-    const emptyHidden = items.length > 0;
-    if (empties[kind].hidden !== emptyHidden) empties[kind].hidden = emptyHidden;
+    const signature = JSON.stringify(items);
+    if (signature === listSignatures[kind]) return;
+    listSignatures[kind] = signature;
+    collections[kind].update(items, { announceFocus: !listFocusAnnouncementSuppressed });
   }
 
   function apply(data) {
@@ -241,9 +233,7 @@ export function installMatchedIntros({ document: doc = document, request = reque
 
   function load(record) {
     generation += 1;
-    busy = false;
-    upload?.classList.remove("is-pending");
-    upload?.removeAttribute("aria-busy");
+    editor.close();
     stopListening();
     const music = !!record?.id && (record.kind || "music") === "music";
     if (!music) { clear(); return; }
@@ -254,15 +244,13 @@ export function installMatchedIntros({ document: doc = document, request = reque
     apply({ track, song: [], artist: [], active: true });
     section.hidden = false;
     void refresh().catch((error) => {
-      if (isCurrent()) say(`Could not load the matched intros: ${error.message}`, "error");
+      if (isCurrent()) say(failureText(`load the matched intros`, error), "error");
     });
   }
 
   function clear() {
     generation += 1;
-    busy = false;
-    upload?.classList.remove("is-pending");
-    upload?.removeAttribute("aria-busy");
+    editor.close();
     stopListening();
     track = null;
     resetForm();
@@ -274,9 +262,9 @@ export function installMatchedIntros({ document: doc = document, request = reque
     section.hidden = true;
   }
 
-  async function submit(event) {
+  async function submit(event, active) {
     event.preventDefault();
-    if (busy || !track) return;
+    if (!track) return;
     clearErrors();
     const file = inputs.file.files?.[0] || null;
     const values = {
@@ -300,39 +288,45 @@ export function installMatchedIntros({ document: doc = document, request = reque
     body.append("file", file, file.name);
     const mine = generation;
     const epoch = captureAuthenticatedRequestEpoch();
-    // busy holds off another press; no aria-disabled, or NVDA says
-    // "unavailable" on the pressed button (#331).  aria-busy says it is busy.
-    busy = true;
-    upload.classList.add("is-pending");
-    upload.setAttribute("aria-busy", "true");
     say("Uploading the intro.");
+    const stale = () => mine !== generation || !isAuthenticatedRequestCurrent(epoch) || !isCurrent() || !active();
+    let made;
     try {
-      const made = await request("/api/intros", { method: "POST", body });
-      if (mine !== generation || !isAuthenticatedRequestCurrent(epoch) || !isCurrent()) return;
-      resetForm();
-      await refresh();
-      const target = appliesTo === "artist" ? `any song by ${track.artist}` : "this song";
-      say(`Added the intro ${made.label || "untitled intro"} for ${target}.`);
+      made = await request("/api/intros", { method: "POST", body });
     } catch (error) {
       if (mine !== generation || !isAuthenticatedRequestCurrent(epoch)) return;
       const field = SERVER_FIELDS[error.field];
-      if (field && inputs[field]) showError(field, error.message);
-      else say(`Could not add the intro: ${error.message}`, "error");
-    } finally {
-      if (mine === generation) {
-        busy = false;
-        upload.classList.remove("is-pending");
-        upload.removeAttribute("aria-busy");
+      if (!field || !applyServerFieldError(error, { [error.field]: inputs[field] }, errors[field], editor.region(status))) {
+        say(failureText(`add the intro`, error), "error");
       }
+      return;
     }
+    if (stale()) return;
+    // The intro is on the server now.  A list that cannot be reloaded must
+    // not keep the form open, or a second Upload would add it twice.
+    resetForm();
+    let reloadFailure = null;
+    try { await refresh(); } catch (error) { reloadFailure = error; }
+    if (stale()) return;
+    editor.close();
+    focusAfterDialog(collections[appliesTo].target(made.id) || addButton);
+    const target = appliesTo === "artist" ? `any song by ${track.artist}` : "this song";
+    const added = `Added the intro ${made.label || "untitled intro"} for ${target}.`;
+    if (reloadFailure) say(`${added} ${failureText(`load the matched intros`, reloadFailure)}`, "error");
+    else say(added);
   }
 
   const onInput = (event) => {
     const field = FIELDS.find((name) => inputs[name] === event.target || (name === "applies" && event.target?.name === "intro-applies"));
     if (field && (field === "applies" ? errors.applies.hidden === false : inputs[field].getAttribute("aria-invalid") === "true")) clearError(field);
   };
-  const onEnded = () => stopListening();
-  form.addEventListener("submit", submit);
+  const onEnded = () => {
+    const was = playing;
+    stopListening();
+    relabel(was?.kind);
+  };
+  const openForm = () => { resetForm(); editor.open(inputs.file, addButton); };
+  addButton.addEventListener("click", openForm);
   form.addEventListener("input", onInput);
   form.addEventListener("change", onInput);
   playback?.addEventListener("ended", onEnded);
@@ -343,11 +337,12 @@ export function installMatchedIntros({ document: doc = document, request = reque
     // Another station's intros for the track shown (#70).
     refresh: () => refresh(),
     destroy() {
-      form.removeEventListener("submit", submit);
+      addButton.removeEventListener("click", openForm);
       form.removeEventListener("input", onInput);
       form.removeEventListener("change", onInput);
       playback?.removeEventListener("ended", onEnded);
       clear();
+      editor.destroy();
     },
   };
 }

@@ -1,6 +1,7 @@
 // Speech production only: previews use native browser audio and never the mix bus.
-import { isStaleStationReply, requestJson } from "./api-client.js";
-import { announceStatus } from "./live-region.js";
+import { isStaleStationReply, requestJson, withDisabled } from "./api-client.js";
+import { makeSay } from "./live-region.js";
+import { onCardOpen } from "./card-state.js";
 import { stationApi } from "./stations.js";
 
 // getRandomValues also works on explicitly permitted HTTP LAN pages.
@@ -19,7 +20,8 @@ export function installSpeechStudio(root = document.getElementById("speech-studi
   let timer = null;
   let inventory = null;
   let pendingComparison = null;
-  const say = (text, error = false) => announceStatus(get("status"), text, { force: true, tone: error ? "error" : "info" });
+  let pending = new AbortController();
+  const say = makeSay(get("status"));
   const node = (tag, text) => {
     const element = doc.createElement(tag);
     if (text) element.textContent = text;
@@ -29,10 +31,8 @@ export function installSpeechStudio(root = document.getElementById("speech-studi
     method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
   async function act(button, work) {
-    button.disabled = true;
-    try { await work(); }
-    catch (error) { if (!isStaleStationReply(error)) say(error.message, true); }
-    finally { button.disabled = false; }
+    try { await withDisabled(button, work, { signal: pending.signal }); }
+    catch (error) { if (!isStaleStationReply(error)) say(error.message, "error"); }
   }
   function bind(id, event, work) {
     get(id).addEventListener(event, (e) => {
@@ -225,7 +225,7 @@ export function installSpeechStudio(root = document.getElementById("speech-studi
       render();
       if (wasBusy && !state.busy) say("Speech generation finished. Review each sample's result.");
       if (state.busy && root.open) timer = setTimeout(() => { void refresh(); }, 2000);
-    } catch (error) { if (!isStaleStationReply(error) && current === generation) say(error.message, true); }
+    } catch (error) { if (!isStaleStationReply(error) && current === generation) say(error.message, "error"); }
   }
   const comparison = () => ({ text: get("text").value, candidates: rows.filter((r) => r.include.checked).map(candidate) });
   bind("provider-form", "submit", async () => {
@@ -271,7 +271,7 @@ export function installSpeechStudio(root = document.getElementById("speech-studi
     inventory = null; say("Time-check generation started. The current on-air set is unchanged."); await refresh();
   });
   bind("time-legacy", "click", async () => { await send("/active-set", { name: null }, "PUT"); say("Using existing recorded time-check sources and their configured fallback."); await refresh(); });
-  root.addEventListener("toggle", () => { if (root.open) void refresh(); else clearTimeout(timer); });
+  onCardOpen(root, refresh, { onClose: () => clearTimeout(timer) });
   root.addEventListener("focusin", ({ target }) => {
     // WebKit can reveal only the caret, leaving the bottom of a textarea off screen.
     if (target.matches("textarea")) target.scrollIntoView?.({ block: "nearest", inline: "nearest" });
@@ -281,6 +281,7 @@ export function installSpeechStudio(root = document.getElementById("speech-studi
   return {
     refresh,
     pause() {
+      pending.abort(); pending = new AbortController();
       generation += 1; clearTimeout(timer);
       for (const player of root.querySelectorAll("audio")) { player.pause(); player.removeAttribute("src"); }
       state = {}; rows.splice(0); get("candidates").replaceChildren(); get("results").replaceChildren();

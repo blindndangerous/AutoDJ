@@ -30,8 +30,8 @@ describe("native table grid navigation", () => {
     expect(document.activeElement).toBe(select);
   });
 
-  // ADR-0021-23
-  it("adds only the row name on vertical data-cell moves and clears it on focusout", () => {
+  // ADR-0021-36
+  it("names a moved-to cell with its text, a changed column heading and a changed row's name", () => {
     document.body.innerHTML = `<table><thead><tr><th>Name</th><th>Artist</th><th>Actions</th></tr></thead><tbody>
       <tr><td role="gridcell" data-name>First song</td><td role="gridcell">First artist</td><td role="gridcell"><button>Open First song</button></td></tr>
       <tr><td role="gridcell" data-name>Second song</td><td role="gridcell">Second artist</td><td role="gridcell"><button>Open Second song</button></td></tr>
@@ -44,8 +44,12 @@ describe("native table grid navigation", () => {
     first.cells[1].focus();
     press("ArrowDown");
     expect(accessibleName(second.cells[1])).toBe("Second artist, Second song");
-    press("ArrowUp");
+    press("ArrowLeft");
     expect(second.cells[1].hasAttribute("aria-label")).toBe(false);
+    expect(accessibleName(second.cells[0])).toBe("Second song, Name");
+    press("ArrowRight");
+    expect(accessibleName(second.cells[1])).toBe("Second artist, Artist");
+    press("ArrowUp");
     expect(accessibleName(first.cells[1])).toBe("First artist, First song");
     press("End", { ctrlKey: true });
     expect(accessibleName(third.cells[1])).toBe("Third artist, Third song");
@@ -55,8 +59,9 @@ describe("native table grid navigation", () => {
     press("ArrowDown");
     expect(accessibleName(second.cells[0])).toBe("Second song");
     expect(second.cells[0].hasAttribute("aria-label")).toBe(false);
-    first.cells[2].focus();
-    press("ArrowDown");
+    press("ArrowRight");
+    press("ArrowRight");
+    expect(document.activeElement).toBe(second.cells[2]);
     expect(second.cells[2].hasAttribute("aria-label")).toBe(false);
     press("ArrowDown");
     expect(document.activeElement).toBe(third.querySelector("input"));
@@ -164,25 +169,36 @@ describe("native table grid navigation", () => {
     expect([one, two, three, four].filter((item) => item.tabIndex === 0)).toEqual([three]);
   });
 
-  it("leaves native column headings out of computed cell names during navigation", () => {
-    document.body.innerHTML = `<table><thead><tr><th>Title</th><th>Artist</th></tr></thead><tbody id="rows">
+  it("leaves an open menu's items out of cell labels and row names", () => {
+    document.body.innerHTML = `<table><thead><tr><th>Name</th><th>Artist</th></tr></thead><tbody id="rows">
       <tr><td role="gridcell" data-name>Song 1</td><td role="gridcell">Band 1</td></tr>
-      <tr><td role="gridcell" data-name>Song 2</td><td role="gridcell">Band 2</td></tr>
+      <tr><td role="gridcell" data-name>Song 2<div role="menu"><button role="menuitem">Edit</button></div></td><td role="gridcell">Band 2<div role="menu"><button role="menuitem">Delete</button></div></td></tr>
     </tbody></table>`;
     const body = document.getElementById("rows");
     installTableNavigation(body);
-    const [song1, band1, song2, band2] = body.querySelectorAll("td");
+    const [, band1, , band2] = body.querySelectorAll("td");
+    band1.focus();
+    band1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(band2.getAttribute("aria-label")).toBe("Band 2, Song 2");
+  });
+
+  it("counts spanned columns when it names a cell's heading", () => {
+    document.body.innerHTML = `<table><thead><tr><th>Title</th><th>Artist</th><th>Length</th></tr></thead><tbody id="rows">
+      <tr><td role="gridcell" data-name colspan="2">Song 1 by Band 1</td><td role="gridcell">3:00</td></tr>
+      <tr><td role="gridcell" data-name>Song 2</td><td role="gridcell">Band 2</td><td role="gridcell">4:00</td></tr>
+    </tbody></table>`;
+    const body = document.getElementById("rows");
+    installTableNavigation(body);
+    const [song1, length1, song2, band2] = body.querySelectorAll("td");
     song1.focus();
     song1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    expect(document.activeElement).toBe(band1);
-    expect(accessibleName(band1)).toBe("Band 1");
-    band1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(document.activeElement).toBe(band2);
-    expect(band1.hasAttribute("aria-label")).toBe(false);
-    expect(accessibleName(band2)).toBe("Band 2, Song 2");
-    band2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
-    expect(accessibleName(song2)).toBe("Song 2");
+    expect(document.activeElement).toBe(length1);
+    expect(accessibleName(length1)).toBe("3:00, Length");
+    song2.focus();
+    song2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(accessibleName(band2)).toBe("Band 2, Artist");
     band2.innerHTML = '<button aria-label="Track info for Song 2">Track info</button>';
+    band2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
     song2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(document.activeElement).toBe(band2);
     expect(band2.hasAttribute("aria-label")).toBe(false);
@@ -201,7 +217,7 @@ describe("native table grid navigation", () => {
     row.cells[0].focus();
     row.cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(accessibleName(row.cells[0])).toBe("Evening");
-    expect(accessibleName(row.cells[1])).toBe("No");
+    expect(accessibleName(row.cells[1])).toBe("No, Active");
     expect(accessibleName(button)).toBe("Options for Evening");
     const scroll = vi.spyOn(row.cells[2], "scrollIntoView");
     button.focus();
@@ -343,16 +359,19 @@ describe("native table grid navigation", () => {
   it("opens Track info when Enter is pressed on a track's name", () => {
     document.body.innerHTML = `<table><tbody id="rows">
       <tr><td role="gridcell">12:00</td><td role="gridcell" data-name>Song</td>
-        <td role="gridcell"><button type="button">Track info</button></td></tr>
+        <td role="gridcell"><button type="button" data-action="info">Song details</button><button type="button">Track info</button></td></tr>
     </tbody></table>`;
     const body = document.getElementById("rows");
     installTableNavigation(body);
     const [, name, action] = body.querySelectorAll("td");
     const open = vi.fn();
+    const decoy = vi.fn();
     action.querySelector("button").addEventListener("click", open);
+    action.querySelectorAll("button")[1].addEventListener("click", decoy);
     const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
     name.dispatchEvent(enter);
     expect(open).toHaveBeenCalledOnce();
+    expect(decoy).not.toHaveBeenCalled();
     expect(enter.defaultPrevented).toBe(true);
     name.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
     expect(open).toHaveBeenCalledOnce();

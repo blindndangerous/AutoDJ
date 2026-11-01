@@ -13,9 +13,9 @@
 // to the settings status region; a refused save shows its error in words
 // under the form, linked to the field it is about, and focus moves there.
 
-import { staleActionText } from "./api-client.js";
+import { failureText, staleActionText, withDisabled } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { sayIfStillPending } from "./live-region.js";
+import { clearFieldError, clearFormErrors, showFieldError } from "./dom-helpers.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
@@ -83,10 +83,11 @@ export function installLiveSettings({
   const draft = registerSettingsGroup({
     panel: doc.getElementById("spanel-live"), group: "live",
     controls: [returnSeconds, duckDb],
+    fields: { mic_return_seconds: returnSeconds, mic_duck_db: duckDb },
     read: () => ({ mic_return_seconds: Number(returnSeconds.value), mic_duck_db: Number(duckDb.value) }),
     write: renderSettings,
     validate() {
-      clearErrors(id("talkover"), talkError);
+      clearFormErrors(id("talkover"), talkError);
       const seconds = Number(returnSeconds.value);
       const duck = Number(duckDb.value);
       if (returnSeconds.value === "" || !(seconds >= 0.1 && seconds <= 10)) {
@@ -101,30 +102,9 @@ export function installLiveSettings({
     },
   });
 
-  function link(control, errorNode, on) {
-    const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
-      .filter((ref) => ref && ref !== errorNode.id);
-    if (on) ids.unshift(errorNode.id);
-    if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
-    else control.removeAttribute("aria-describedby");
-  }
-
-  function clearErrors(scope, errorNode) {
-    for (const field of scope.querySelectorAll("[aria-invalid='true']")) {
-      field.removeAttribute("aria-invalid");
-      link(field, errorNode, false);
-    }
-    errorNode.textContent = "";
-    errorNode.hidden = true;
-  }
-
   function fail(field, errorNode, message) {
-    field.setAttribute("aria-invalid", "true");
-    errorNode.textContent = message;
-    errorNode.hidden = false;
-    link(field, errorNode, true);
-    field.focus();
-    announce(message, true);
+    showFieldError(field, message, errorNode, null);
+    announce(message, "error");
   }
 
   // ---- The connection facts ----
@@ -194,7 +174,7 @@ export function installLiveSettings({
 
   function showForm(dj = null) {
     editing = dj?.username ?? null;
-    clearErrors(form, formError);
+    clearFormErrors(form, formError);
     id("dj-form-title").textContent = dj ? `Edit DJ ${dj.username}` : "Add DJ";
     id("dj-username").value = dj?.username || "";
     id("dj-username").readOnly = Boolean(dj);
@@ -211,7 +191,7 @@ export function installLiveSettings({
   function hideForm() {
     form.hidden = true;
     id("dj-password").value = "";
-    clearErrors(form, formError);
+    clearFormErrors(form, formError);
   }
 
   // Checked here first, so each mistake is named against its own field.
@@ -233,7 +213,7 @@ export function installLiveSettings({
   }
 
   async function saveDj(control) {
-    clearErrors(form, formError);
+    clearFormErrors(form, formError);
     const password = id("dj-password").value;
     const payload = {
       username: editing ?? id("dj-username").value.trim(),
@@ -245,27 +225,21 @@ export function installLiveSettings({
       fail(id(problem[0]), formError, problem[1]);
       return false;
     }
-    const stopPending = sayIfStillPending(announce, `Saving DJ ${payload.username}…`);
     try {
       saving.add(control);
-      control?.classList.add("is-pending");
-      control?.setAttribute("aria-busy", "true");
-      await request("/api/live/djs", {
+      await withDisabled(control, () => request("/api/live/djs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      });
+      }), { pendingText: `Saving DJ ${payload.username}\u2026`, say: announce });
     } catch (err) {
       // Answered after a station switch: the form is the new station's (#70).
       const left = staleActionText(err);
-      if (left) announce(left, !err.actionDone);
-      else fail(id(`dj-${fieldFor(err.message)}`), formError, `Could not save the DJ. ${err.message}`);
+      if (left) announce(left, err.actionDone ? "success" : "error");
+      else fail(id(`dj-${fieldFor(err.message)}`), formError, failureText("save the DJ.", err));
       return false;
     } finally {
-      stopPending();
       saving.delete(control);
-      control?.classList.remove("is-pending");
-      control?.removeAttribute("aria-busy");
     }
     hideForm();
     await refresh();
@@ -285,7 +259,7 @@ export function installLiveSettings({
           await request(`/api/live/djs/${encodeURIComponent(dj.username)}`, { method: "DELETE" });
         } catch (err) {
           const left = staleActionText(err);
-          announce(left || `Could not remove DJ ${dj.username}: ${err.message}`, !err.actionDone);
+          announce(left || failureText(`remove DJ ${dj.username}`, err), err.actionDone ? "success" : "error");
           return null;
         }
         await refresh();
@@ -329,8 +303,7 @@ export function installLiveSettings({
   });
   form.addEventListener("input", (event) => {
     if (event.target.getAttribute?.("aria-invalid") === "true") {
-      event.target.removeAttribute("aria-invalid");
-      link(event.target, formError, false);
+      clearFieldError(event.target, formError);
     }
   });
   form.addEventListener("submit", (event) => {
@@ -347,7 +320,7 @@ export function installLiveSettings({
       announce("Source address copied.");
     } catch (_) {
       id("source-url").select();
-      announce("Could not copy. The address is selected: press Control+C or Command+C to copy it.", true);
+      announce("Could not copy. The address is selected: press Control+C or Command+C to copy it.", "error");
     }
   });
 
@@ -358,7 +331,7 @@ export function installLiveSettings({
       djs = [];
       render();
       hideForm();
-      clearErrors(id("talkover"), talkError);
+      clearFormErrors(id("talkover"), talkError);
     },
   };
 }

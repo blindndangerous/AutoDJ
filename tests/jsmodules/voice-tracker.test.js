@@ -776,7 +776,7 @@ describe("voice tracker", () => {
     const rows = byId("vt-list").querySelectorAll("tbody tr[data-row-key]");
     expect(rows).toHaveLength(1);
     expect(rows[0].cells[0].textContent).toBe("Third Song into Fourth Song");
-    expect(rows[0].cells[2].textContent).toBe("booked, waiting for its song change, airs in about 6:00");
+    expect(rows[0].cells[1].textContent).toBe("Booked, waiting for its song change, airs in about 6:00");
     expect(rows[0].querySelector("button").getAttribute("aria-label")).toBe("Options for Third Song into Fourth Song");
     expect(byId("vt-list").querySelector(".no-results")).toBeNull();
   });
@@ -934,7 +934,7 @@ describe("voice tracker", () => {
     await vi.waitFor(() => expect(status()).toBe("There is no recording to discard."));
   });
 
-  // ADR-0021-14
+  // ADR-0021-14 ADR-0021-39
   it("uses a bounded shared bookings table with confirmed cancellation", async () => {
     const { controls, server } = tracker();
     server.tracks = Array.from({ length: 55 }, (_, index) => ({
@@ -946,6 +946,7 @@ describe("voice tracker", () => {
     const table = byId("vt-list").querySelector("table.collection-table");
     expect(table).not.toBeNull();
     expect(table.querySelectorAll('tbody tr[data-row-key]')).toHaveLength(50);
+    expect([...table.querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["Booking", "State", "Actions"]);
     expect(table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
     const options = table.querySelector('[aria-haspopup="menu"]');
     options.click();
@@ -978,7 +979,7 @@ describe("voice tracker", () => {
     await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
     expect(server.calls.at(-2)).toMatchObject({ method: "DELETE", url: `/api/voice-tracks/${"b".repeat(32)}` });
     expect(cancel.getAttribute("aria-disabled")).toBe("true");
-    expect(byId("vt-list").querySelector("tbody tr").cells[2].textContent).toBe("dropped: cancelled in the voice tracker");
+    expect(byId("vt-list").querySelector("tbody tr").cells[1].textContent).toBe("Dropped: cancelled in the voice tracker");
     expect(document.activeElement).toBe(options.closest("td"));
     await vi.waitFor(() => expect(status()).toBe("Cancelled Third Song into Fourth Song."));
   });
@@ -1086,7 +1087,7 @@ describe("voice tracker", () => {
     server.tracks = [track("1", "rendered"), track("2", "queued")];
     await controls.refresh();
     expect(document.activeElement).toBe(second.closest("td"));
-    expect(byId("vt-list").querySelector("tbody tr").cells[2].textContent).toBe("mixed in as a talk-up, airs in about 5:00");
+    expect(byId("vt-list").querySelector("tbody tr").cells[1].textContent).toBe("Mixed in as a talk-up, airs in about 5:00");
   });
 
   it("starts and stops with Alt+R only while the tab shows, without moving focus", async () => {

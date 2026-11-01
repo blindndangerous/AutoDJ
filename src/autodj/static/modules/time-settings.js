@@ -1,3 +1,4 @@
+import { onCardOpen } from "./card-state.js";
 // Station settings: station time zone and output in Stations; shared time
 // format in Server (#282, #286).
 // Loads each setting when its owning Settings tab is shown.
@@ -81,6 +82,7 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
   });
   const stationDraft = output && monitor && cap ? registerSettingsGroup({
     panel: stationsPanel, group: "station", controls: [output, monitor, cap, logLabel].filter(Boolean),
+    fields: { output, server_audio_too: monitor, liner_upload_max_mib: cap, log_label: logLabel },
     read: () => ({ output: output.value, server_audio_too: monitor.checked,
       liner_upload_max_mib: Number(cap.value),
       ...(logLabel ? { log_label: logLabel.value.trim() } : {}) }),
@@ -105,9 +107,7 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
     }
   }
   const panels = [...new Set([zonePanel, formatPanel, stationsPanel])];
-  for (const panel of panels) panel.addEventListener("toggle", () => {
-    if (panel.open) void loadPanel(panel);
-  });
+  for (const panel of panels) onCardOpen(panel, () => loadPanel(panel));
   const load = () => Promise.all(panels.map(loadPanel));
   return { load };
 }

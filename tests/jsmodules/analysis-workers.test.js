@@ -431,7 +431,7 @@ describe("managing workers from Settings (#554)", () => {
     batch.closest("fieldset").querySelector("button").click();
     expect(await said()).toMatch(/enter songs per claim from 1 to 16/);
     expect(batch.getAttribute("aria-invalid")).toBe("true");
-    const [help, errorId] = batch.getAttribute("aria-describedby").split(" ");
+    const [errorId, help] = batch.getAttribute("aria-describedby").split(" ");
     expect(help).toBe(`worker-${id}-help`);
     const error = byId(errorId);
     expect(error.hidden).toBe(false);

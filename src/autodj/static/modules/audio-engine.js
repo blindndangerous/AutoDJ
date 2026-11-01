@@ -12,7 +12,7 @@
 // play on, and the first state after the reconnect refreshes the caches.
 
 import { dbg } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay, announceStatus } from "./live-region.js";
 import { scheduleIntroGain } from "./intro-gain.js";
 import {
   captureAuthenticatedRequestEpoch,
@@ -110,10 +110,10 @@ let eqDebounceTimer = null;
 // an error there replaced the song name on screen and bypassed the
 // visible status line.  `force` is for failures of something the user
 // just did, which must be reported again if it fails again.
-function announceEngineError(message, { force = false } = {}) {
-  announceStatus(document.getElementById("sr-status"), message,
-    { dwellMs: 8000, force, tone: "error" });
-}
+const announceEngineError = makeSay(() => document.getElementById("sr-status"),
+  { force: false, dwellMs: 8000, tone: "error" });
+const announceEngineActionError = makeSay(() => document.getElementById("sr-status"),
+  { dwellMs: 8000, tone: "error" });
 
 function announceRequestError(errorValue) {
   if (isStaleStationReply(errorValue)) return;
@@ -2802,13 +2802,13 @@ export async function unlockAndPlay(beforePlay = null) {
     }
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
-    announceEngineError("Cannot reach server: " + (err.message || err), { force: true });
+    announceEngineActionError("Cannot reach server: " + (err.message || err));
     throw err;
   }
   if (!isAuthenticatedRequestCurrent(epoch)) return false;
   const path = state.current_track ? state.current_track.path : null;
   if (!path) {
-    announceEngineError("No current track on server.", { force: true });
+    announceEngineActionError("No current track on server.");
     throw new Error("no current track");
   }
   _setMusicSpeedFromState(state, { applyNow: false });
@@ -2828,7 +2828,7 @@ export async function unlockAndPlay(beforePlay = null) {
   }
   if (!started || (_ctx && _ctx.state !== "running")) {
     try { deck.audio.pause(); } catch (_) {}
-    announceEngineError(BLOCKED_PLAY_TEXT, { force: true });
+    announceEngineActionError(BLOCKED_PLAY_TEXT);
     return false;
   }
   playbackEnabled = true;

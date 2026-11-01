@@ -101,7 +101,7 @@ confirmation, rather than another press of its old button.
 
 ## Approve and hear the result
 
-Find your waiting entry and press **Approve**. Read the result and
+Find your waiting entry and choose **Approve** from its **Options** menu. Read the result and
 **Recent decisions**, then inspect the queue for that exact title. Approval
 checks placement again at that moment; a request that no longer fits can stay
 waiting. If **Approve** is unavailable, read the reason, resolve the actual

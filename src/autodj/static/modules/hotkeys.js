@@ -1,3 +1,4 @@
+import { failureText } from "./api-client.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 // Hotkeys module — global keydown listener wiring.
 //
@@ -449,7 +450,7 @@ export function installHotkeys({
         void Promise.resolve()
           .then(getUpcomingLandmark)
           .then((text) => { if (text) srSpeak(text); })
-          .catch((error) => srSpeak(`Could not load the landmarks: ${error.message}`));
+          .catch((error) => srSpeak(failureText("load the landmarks", error)));
         break;
       case "?":
         if (!toggleShortcutsModal()) return;

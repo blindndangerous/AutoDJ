@@ -24,7 +24,7 @@
 // The song on air is asked about afresh on every key; Track info keeps the
 // answer for the song it shows until it opens another or is refreshed.
 
-import { isStaleStationReply, requestJson } from "./api-client.js";
+import { failureText, isStaleStationReply, requestJson } from "./api-client.js";
 import { fmtTime, srSpeak } from "./dom-helpers.js";
 import { stationEpoch } from "./stations.js";
 
@@ -191,7 +191,7 @@ export function installLandmarks({
     } catch (error) {
       if (mine !== generation || !isCurrent() || isStaleStationReply(error)) return;
       shown = { path, data: null, pending: null };
-      showState(`Could not load the song structure: ${error.message}`);
+      showState(failureText("load the song structure", error));
     }
   }
 
@@ -261,7 +261,7 @@ export function installLandmarks({
       });
     } catch (error) {
       if (isStaleStationReply(error) || station !== stationEpoch()) return;
-      speak(error.status === 409 ? error.message : `Could not move the song on air: ${error.message}`);
+      speak(error.status === 409 ? error.message : failureText("move the song on air", error));
       return;
     }
     if (station !== stationEpoch()) return;
@@ -296,7 +296,7 @@ export function installLandmarks({
       if (trackInfoShowing()) await jumpPreview(direction);
       else await jumpPlaying(direction);
     } catch (error) {
-      if (!isStaleStationReply(error)) speak(`Could not load the landmarks: ${error.message}`);
+      if (!isStaleStationReply(error)) speak(failureText("load the landmarks", error));
     }
   }
 

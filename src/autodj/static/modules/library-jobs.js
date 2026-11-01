@@ -17,7 +17,7 @@ import { confirmAction } from "./confirm-dialog.js";
 //   keeps their reading cursor.  It takes no focus: a focused log was read
 //   whole.  Its name carries the line count ("Output, 42 lines").
 
-import {
+import { failureText,
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
   requestJson,
@@ -278,7 +278,7 @@ export function installLibraryJobs(els) {
         if (!isAuthenticatedRequestCurrent(epoch)) return;
         reportJobError(
           els.jobStatus,
-          `Could not stop library job: ${errorValue.message}`,
+          failureText("stop library job", errorValue),
         );
       });
     });
@@ -329,7 +329,7 @@ async function _removeMissing(els, control) {
     await refreshLibStats(els);
   } catch (errorValue) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
-    reportJobError(els.jobStatus, `Could not remove missing tracks: ${errorValue.message || errorValue}`);
+    reportJobError(els.jobStatus, failureText("remove missing tracks", errorValue));
   }
 }
 
@@ -392,7 +392,7 @@ async function refreshLibStats(els, control = null, { quiet = false } = {}) {
     if (!isAuthenticatedRequestCurrent(epoch) || quiet) return;
     reportJobError(
       els.jobStatus,
-      `Could not load library stats: ${errorValue.message}`,
+      failureText("load library stats", errorValue),
     );
   }
 }

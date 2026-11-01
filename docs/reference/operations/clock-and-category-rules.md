@@ -104,7 +104,7 @@ and a window that crosses midnight belongs to the day it starts. Outside them th
 as an empty step is, and the clockwheel moves on to its next step; a voice liner step outside
 its hours leaves the following song without its liner, and a Switch preset step outside its hours
 switches nothing. The hours are checked for when the song is expected to start, as the
-categories' are. The step table's **Rules and hours** column shows restrictions,
+categories' are. Each step's sentence in the step table ends with its restrictions,
 such as "only on Friday and Saturday from 22:00 until 02:00". The clockwheel status and the server log say why a
 step was skipped ("Step 3: outside its hours: plays only ...", or "outside its days" on a day it
 does not keep), and the rotation tester counts those skips. A clockwheel whose every song step is

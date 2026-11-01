@@ -1,3 +1,4 @@
+import { onCardOpen } from "./card-state.js";
 // Now Playing > Hour preview (#126): what plays next, when it is expected
 // to start, and how the hour lands.
 //
@@ -100,6 +101,7 @@ export function renderRows(doc, tbody, items) {
         button = doc.createElement("button");
         button.type = "button";
         button.textContent = "Track info";
+        button.dataset.action = "info";
         actionCell.append(button);
       }
       button.dataset.path = path;
@@ -374,16 +376,16 @@ export function installHourPreview({
 
   // A toggle event can arrive twice for one change; act on real changes only.
   let wasOpen = card.open;
-  card.addEventListener("toggle", () => {
-    if (card.open === wasOpen) return;
-    wasOpen = card.open;
-    if (card.open) {
-      void quietRefresh();
-      schedule();
-    } else {
-      stop();
-    }
-  });
+  onCardOpen(card, () => {
+    if (wasOpen) return;
+    wasOpen = true;
+    void quietRefresh();
+    schedule();
+  }, { onClose: () => {
+    if (!wasOpen) return;
+    wasOpen = false;
+    stop();
+  } });
   span.addEventListener("change", () => {
     if (card.open) void spanChanged();
   });

@@ -25,13 +25,17 @@ import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
   requestJson,
+  failureText,
 } from "./api-client.js";
 import { authenticationState } from "./auth.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { closeDialog, openDialog } from "./dialog-guard.js";
-import { fmtTime, nextRowControl, reconcileRows, rowButton } from "./dom-helpers.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
-import { announceStatus } from "./live-region.js";
+import { createEditorDialog } from "./editor-dialog.js";
+import { clearFieldError, fmtTime, showFieldError } from "./dom-helpers.js";
+import { createCollectionTable } from "./collection-table.js";
+import { deleteCollectionItem } from "./collection-delete.js";
+import { tableFocusTarget } from "./table-row.js";
+import { makeSay } from "./live-region.js";
+import { onCardOpen } from "./card-state.js";
 
 export const SIGNED_OUT_REASON =
   "This browser was signed out.  Enter a new pairing code to use it again.";
@@ -78,7 +82,7 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
   if (!card || !note || !controls || !signOut || !refresh || !list || !status) return;
   const doc = card.ownerDocument;
   let devices = [];
-  const listNavigation = installActionListNavigation(list);
+  let renderedDevices = null;
   let sso = false;
   const nativeNote = note.textContent;
   const nativeSignOutLabel = signOut.textContent;
@@ -87,51 +91,42 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
   const pairingSection = doc.getElementById("access-pairing");
   const heading = doc.getElementById("device-list-heading");
 
-  const say = (message, tone = "info") => {
-    announceStatus(status, message, { dwellMs: tone === "error" ? 6000 : 3000, force: true, tone });
-  };
+  const say = makeSay(status, { dwellMs: 3000, errorDwellMs: 6000 });
+  const collection = createCollectionTable({
+    host: list, label: "Paired devices", hideCaption: true, status, fallback: refresh,
+    emptyText: "No paired devices.", keyOf: (device) => device.device_id, nameOf: who,
+    columns: [
+      { key: "name", label: "Name", value: who },
+      { key: "paired", label: "Paired", value: (device) => pairedDate(device.paired_at) },
+      { key: "seen", label: "Last seen", value: (device) => lastSeenWords(device.last_seen_at) },
+    ],
+    actions: (device) => [
+      { id: "rename", label: "Rename", run: (button) => renameDevice(device, button) },
+      { id: "revoke", label: sso ? "Forget" : "Revoke access", run: (button) => void revokeDevice(device, button) },
+    ],
+  });
 
   function who(device) {
     return device.current ? `${device.name}, this browser` : device.name;
   }
 
-  function newRow(device) {
-    const row = { device };
-    row.li = doc.createElement("li");
-    row.text = doc.createElement("span");
-    row.text.className = "device-text";
-    row.rename = rowButton(doc, "Rename", "", () => void renameDevice(row));
-    row.revoke = rowButton(doc, "Revoke access", "", (button) => void revokeDevice(row.device, button));
-    for (const [button, action] of [[row.rename, "rename"], [row.revoke, "revoke"]]) {
-      button.dataset.deviceId = device.device_id;
-      button.dataset.action = action;
+  function render({ announceFocus = true } = {}) {
+    const signature = JSON.stringify([sso, devices.map((device) => [device, lastSeenWords(device.last_seen_at)])]);
+    if (signature === renderedDevices) return { focusLost: false, target: null };
+    renderedDevices = signature;
+    collection.table.caption.textContent = sso ? "Your browsers" : "Paired devices";
+    collection.table.querySelectorAll("thead th")[1].textContent = sso ? "Registered" : "Paired";
+    const result = collection.update(devices, { announceFocus: false });
+    if (!devices.length) collection.body.querySelector(".no-results").textContent = sso ? "No saved browsers." : "No paired devices.";
+    if (announceFocus && result.focusLost) {
+      say(`${sso ? "Your browsers" : "The paired devices list"} changed. Focus moved to ${focusName(result.target)}.`);
     }
-    row.li.append(row.text, " ", row.rename, " ", row.revoke);
-    return row;
+    return result;
   }
 
-  function render({ announceFocus = true } = {}) {
-    const now = Date.now();
-    const result = reconcileRows(list, devices, (device) => device.device_id, (device) => {
-      const row = newRow(device);
-      row.li._row = row;
-      return row.li;
-    }, (li, device) => {
-      const row = li._row;
-      row.device = device;
-      const name = who(device);
-      const words = `${name}.  ${sso ? "Registered" : "Paired"} ${pairedDate(device.paired_at)}, `
-        + `last seen ${lastSeenWords(device.last_seen_at, now)}.`;
-      if (row.text.textContent !== words) row.text.textContent = words;
-      if (row.rename.getAttribute("aria-label") !== `Rename ${name}`) row.rename.setAttribute("aria-label", `Rename ${name}`);
-      const action = sso ? "Forget" : "Revoke access";
-      if (row.revoke.textContent !== action) row.revoke.textContent = action;
-      if (row.revoke.getAttribute("aria-label") !== `${action} ${name}`) row.revoke.setAttribute("aria-label", `${action} ${name}`);
-    }, { fallback: refresh, onFocusLost: ({ target }) => {
-      if (announceFocus) say(`${sso ? "Your browsers" : "The paired devices list"} changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Refresh device list"}.`);
-    } });
-    listNavigation.refresh();
-    return result;
+  function focusName(target) {
+    return target?.querySelector("button")?.getAttribute("aria-label")
+      || target?.getAttribute("aria-label") || target?.textContent.trim() || "Refresh device list";
   }
 
   // announce: say the count (the Refresh button).  reportNew: say any
@@ -170,7 +165,7 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
       if (announce) {
         const count = devices.length;
         const moved = reconciliation.focusLost
-          ? ` Focus moved to ${reconciliation.target?.getAttribute("aria-label") || reconciliation.target?.textContent.trim() || "Refresh device list"}.`
+          ? ` Focus moved to ${focusName(reconciliation.target)}.`
           : "";
         say(sso ? `Browser list refreshed.  ${count} ${count === 1 ? "browser" : "browsers"}.${moved}`
           : `Device list refreshed.  ${count} paired ${count === 1 ? "device" : "devices"}.${moved}`);
@@ -192,7 +187,7 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return false;
       if (errorValue.status === 401) hideCode();
-      if (!quiet) say(`Could not load ${sso ? "browsers" : "paired devices"}: ${errorValue.message}`, "error");
+      if (!quiet) say(failureText(`load ${sso ? "browsers" : "paired devices"}`, errorValue), "error");
       return false;
     }
   }
@@ -214,7 +209,7 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
       reply = await requestJson("/api/logout", { method: "POST" });
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      say(`Could not sign out: ${errorValue.message}`, "error");
+      say(failureText(`sign out`, errorValue), "error");
       return;
     }
     if (!isAuthenticatedRequestCurrent(epoch)) return;
@@ -225,15 +220,15 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
 
   // The revoke runs while the confirmation is still open, so the list is
   // already updated when it closes and focus goes straight to the next
-  // row's Revoke, or Refresh when none is left (see confirmAction).  The
+  // row's Actions cell, or Refresh when none is left (see confirmAction).  The
   // result is said after the dialog has closed.
   async function revokeDevice(device, button) {
-    const index = devices.indexOf(device);
+    const index = devices.findIndex((item) => item.device_id === device.device_id);
     const epoch = captureAuthenticatedRequestEpoch();
     let result = null;
     let signedOut = false;
     const action = sso ? "Forget" : "Revoke";
-    const confirmed = await confirmAction(doc, {
+    const confirmed = await deleteCollectionItem(doc, {
       title: device.current ? `${action} ${device.name}, this browser?` : `${action} ${device.name}?`,
       message: sso
         ? "Forgetting this browser removes its saved name. It does not revoke SSO access or sign it out."
@@ -249,8 +244,8 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
           });
         } catch (errorValue) {
           if (!isAuthenticatedRequestCurrent(epoch)) return null;
-          result = [`Could not ${action.toLowerCase()} ${device.name}: ${errorValue.message}`, "error"];
-          return button;
+          result = [failureText(`${action.toLowerCase()} ${device.name}`, errorValue), "error"];
+          return tableFocusTarget(button);
         }
         if (!isAuthenticatedRequestCurrent(epoch)) return null;
         if (reply && reply.signed_out) {
@@ -260,11 +255,11 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
         await load();
         if (!isAuthenticatedRequestCurrent(epoch)) return null;
         result = [sso ? `Forgot ${device.name}. SSO access is unchanged.` : `Revoked ${device.name}.`];
-        return nextRowControl(list, 'button[data-action="revoke"]', index, refresh);
+        return collection.target(devices[Math.min(index, devices.length - 1)]?.device_id, "options") || refresh;
       },
     });
     if (!confirmed) {
-      button.focus();
+      tableFocusTarget(button).focus();
       return;
     }
     if (!isAuthenticatedRequestCurrent(epoch)) return;
@@ -276,95 +271,50 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
     if (result) say(...result);
   }
 
-  // A dialog with one labelled field, opened with show() and aria-modal
-  // (#631, see dialog-guard.js); Cancel is its last button.  Save keeps the
-  // dialog open until the server answers: a refusal is said inside the
-  // dialog and focus stays in the field.  After a save the row's words
-  // change in place, the dialog closes onto the same Rename button that
-  // opened it, focus going straight there, and the new name is said once.
-  function renameDevice(row) {
-    const dialog = doc.getElementById("device-rename-dialog");
-    const form = doc.getElementById("device-rename-form");
-    const title = doc.getElementById("device-rename-title");
-    const input = doc.getElementById("device-rename-name");
-    const error = doc.getElementById("device-rename-error");
-    const cancel = doc.getElementById("device-rename-cancel");
-    if (!dialog || !form || !title || !input || !error || !cancel || dialog.open) return;
-    const device = row.device;
-    title.textContent = `Rename ${who(device)}`;
-    input.value = device.name;
-    input.removeAttribute("aria-invalid");
-    error.textContent = "";
-    let pending = false;
-    let saved = null;
-    // Back on the Rename button, or on Refresh when its row is gone.
-    const closeTo = (value) => closeDialog(dialog, {
-      opener: row.rename, target: row.rename.isConnected ? null : refresh, value,
-    });
-
-    const showError = (message) => {
-      input.setAttribute("aria-invalid", "true");
-      announceStatus(error, message, { force: true, mirror: false });
-      input.focus();
-    };
-
-    async function submit(event) {
-      event.preventDefault();
-      if (pending) return;
-      const name = input.value.trim();
+  const renameForm = doc.getElementById("device-rename-form");
+  const renameInput = doc.getElementById("device-rename-name");
+  const renameError = doc.getElementById("device-rename-error");
+  const renameTitle = doc.getElementById("device-rename-title");
+  let renaming = null;
+  const renameEditor = renameForm && createEditorDialog({
+    dialog: doc.getElementById("device-rename-dialog"), form: renameForm, heading: renameTitle,
+    cancel: doc.getElementById("device-rename-cancel"), fallback: refresh, pendingText: null,
+    save: async (_event, current) => {
+      const device = renaming;
+      const name = renameInput.value.trim();
+      clearFieldError(renameInput, renameError);
       if (!name) {
-        showError("Enter a name.");
+        showFieldError(renameInput, "Enter a name.", renameError, renameEditor.status);
         return;
       }
-      pending = true;
-      const epoch = captureAuthenticatedRequestEpoch();
       try {
         const reply = await requestJson(`/api/devices/${encodeURIComponent(device.device_id)}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name }),
+          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
         });
-        if (isAuthenticatedRequestCurrent(epoch)) {
-          await load();
-          saved = reply.name;
-        }
+        if (!current()) return;
+        await load();
+        if (!current()) return;
+        renameEditor.close({ restore: true });
+        const target = collection.target(device.device_id) || refresh;
+        if (doc.activeElement !== target) target.focus();
+        say(`Renamed to ${reply.name}.`);
       } catch (errorValue) {
-        pending = false;
-        if (!isAuthenticatedRequestCurrent(epoch)) {
-          closeTo("cancel");
-          return;
-        }
-        showError(errorValue.status === 422
-          ? NAME_RULE_TEXT : `Could not rename ${device.name}: ${errorValue.message}`);
-        return;
+        if (!current()) return;
+        showFieldError(renameInput, errorValue.status === 422
+          ? NAME_RULE_TEXT : failureText(`rename ${device.name}`, errorValue), renameError, renameEditor.status);
       }
-      pending = false;
-      closeTo("save");
-    }
-    function cancelClick() {
-      if (pending) return;
-      closeTo("cancel");
-    }
-    // Escape: held while Save runs.
-    function holdWhilePending(event) {
-      event.preventDefault();
-      cancelClick();
-    }
-    function closed() {
-      form.removeEventListener("submit", submit);
-      cancel.removeEventListener("click", cancelClick);
-      dialog.removeEventListener("cancel", holdWhilePending);
-      dialog.removeEventListener("close", closed);
-      error.textContent = "";
-      if (saved !== null) say(`Renamed to ${saved}.`);
-    }
-    form.addEventListener("submit", submit);
-    cancel.addEventListener("click", cancelClick);
-    dialog.addEventListener("cancel", holdWhilePending);
-    dialog.addEventListener("close", closed);
-    openDialog(dialog, { home: input });
-    input.focus();
-    input.select();
+    },
+  });
+  renameInput?.addEventListener("input", () => clearFieldError(renameInput, renameError));
+
+  function renameDevice(device, button) {
+    if (!renameEditor || renameEditor.dialog.open) return;
+    renaming = device;
+    renameTitle.textContent = `Rename ${who(device)}`;
+    renameInput.value = device.name;
+    clearFieldError(renameInput, renameError);
+    renameEditor.open(renameInput, button);
+    renameInput.select();
   }
 
   // ---- Pairing code ------------------------------------------------
@@ -401,7 +351,7 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return false;
       if (errorValue.status === 401) hideCode();
-      if (speak) say(`Could not get a pairing code: ${errorValue.message}`, "error");
+      if (speak) say(failureText(`get a pairing code`, errorValue), "error");
       return false;
     }
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
@@ -476,9 +426,14 @@ export function installAccess(els, { onSignedOut, getAuthState = authenticationS
     pairRefresh.addEventListener("click", () => void fetchCode({ speak: true }));
     pairCopy.addEventListener("click", () => void copyCode());
   }
-  card.addEventListener("toggle", () => {
-    if (card.open) void load();
-    else hideCode();
-  });
+  onCardOpen(card, load, { onClose: hideCode });
   if (card.open) void load();
+  return { clear() {
+    devices = [];
+    renderedDevices = null;
+    renaming = null;
+    hideCode();
+    renameEditor?.close();
+    collection.clear();
+  } };
 }

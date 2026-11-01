@@ -32,8 +32,8 @@ navigation between tabs, headings and native controls.
 
 ## Give this production its own identity
 
-1. Open **Library tools**, expand **Shows**, and use **Open list** on
-   `Practice review`.
+1. Open **Library tools**, expand **Shows**, and choose **Open list** from
+   the **Options** menu of `Practice review`.
 2. Expand **Prepared editions**. Enter `Tomorrow practice` in **New edition name**
    and press **Create edition from show**.
 3. Read the edition summary and its occurrence table. Confirm that items 1 and

@@ -1,11 +1,13 @@
-import { reconcileRows, rowButton } from "./dom-helpers.js";
+import { withDisabled } from "./api-client.js";
+import { reconcileRows } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
-import { tableRow } from "./table-row.js";
+import { tableFocusTarget, tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { createRowActionsMenu, rowActionsCell } from "./row-actions-menu.js";
 
-let nextReason = 0;
 const hosts = new WeakMap();
+const pendingToggles = new WeakSet();
+let nextReason = 0;
 
 // Consumers identify the owning collection without depending on its wrappers.
 export function collectionHost(element) {
@@ -15,8 +17,19 @@ export function collectionHost(element) {
 
 // Collections share row identity, cell navigation, popup actions, empty
 // state and focus recovery. Panels supply data and action descriptors only.
+// A row's actions, most used first, share one last Actions column: its
+// Options menu (#712). Shift+F10, the Applications key and right-click open
+// the same menu; tables without actions keep the browser's own menu.
+// A native caption names the table (WCAG H39); *hideCaption* hides it from
+// view only where a heading just above already says the same.
+// A column with *toggle* holds a native checkbox that turns its row on or
+// off in place: { checked(item), label(item), run(item, checked, control),
+// available(item), note(item), disabledReason(item) }. Where available(item)
+// is false the cell shows its value instead; note(item) is visible text
+// beside the checkbox that describes it. Once *run* settles the checkbox
+// shows checked(item) for the row's current data.
 export function createCollectionTable({ host, label, columns, keyOf, nameOf,
-  primary, actions, fallback, status, emptyText = "No items.", nameIndex = 0 }) {
+  actions, fallback, status, emptyText = "No items.", nameIndex = 0, hideCaption = false }) {
   const doc = host.ownerDocument;
   const scroll = doc.createElement("div");
   scroll.className = "data-table-scroll";
@@ -24,9 +37,11 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
   table.className = "collection-table";
   hosts.set(table, host);
   table.setAttribute("role", "grid");
-  table.setAttribute("aria-label", label);
+  const caption = table.createCaption();
+  caption.textContent = label;
+  if (hideCaption) caption.className = "visually-hidden";
   const head = table.createTHead().insertRow();
-  for (const title of [...columns.map((column) => column.label), ...(primary ? ["Actions"] : []), ...(actions ? ["Options"] : [])]) {
+  for (const title of [...columns.map((column) => column.label), ...(actions ? ["Actions"] : [])]) {
     const cell = doc.createElement("th");
     cell.scope = "col";
     cell.textContent = title;
@@ -37,26 +52,18 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
   host.replaceChildren(scroll);
   const navigation = installTableNavigation(body);
   const records = new WeakMap();
+  // Browsers fire contextmenu for Shift+F10, the Applications key and
+  // right-click alike, on the focused or the clicked element.
+  body.addEventListener("contextmenu", (event) => {
+    if (event.target.closest?.('[role="menu"]')) return;
+    const menu = records.get(event.target.closest?.("tr"))?.menu;
+    if (menu?.open(tableFocusTarget(event.target))) event.preventDefault();
+  });
 
   function createRow() {
     const row = tableRow(doc, columns.map(() => ""), { nameIndex });
     const record = {};
     columns.forEach((column, index) => { row.cells[index].dataset.action = column.key; });
-    if (primary) {
-      const button = rowButton(doc, "", "", () => {
-        if (record.primary.disabledReason) {
-          announceStatus(status, record.primary.disabledReason, { force: true });
-        } else record.primary.run(button);
-      });
-      record.button = button;
-      const cell = tableRow(doc, [button], { nameIndex: -1 }).firstElementChild;
-      const reason = doc.createElement("span");
-      reason.id = `collection-action-reason-${++nextReason}`;
-      reason.hidden = true;
-      cell.append(reason);
-      record.reason = reason;
-      row.append(cell);
-    }
     if (actions) {
       record.menu = createRowActionsMenu({ doc, name: "", actions: [], status });
       row.append(rowActionsCell(doc, record.menu));
@@ -68,25 +75,95 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
     const record = records.get(row);
     const name = nameOf(item, index);
     row.dataset.rowName = name;
+    record.item = item;
     columns.forEach((column, at) => {
       const value = String(column.value(item, index) ?? "");
       const cell = row.cells[at];
-      if (cell.textContent !== value) cell.textContent = value;
+      if (column.toggle && updateToggle(cell, column.toggle, record, item)) return;
+      // A context menu opened from this cell sits after its text; keep it.
+      const menu = cell.querySelector(":scope > .row-actions-menu");
+      if (!menu) {
+        if (cell.textContent !== value) cell.textContent = value;
+      } else if (cell.firstChild?.nodeType === 3) {
+        if (cell.firstChild.data !== value) cell.firstChild.data = value;
+      } else cell.prepend(value);
+      if (menu && "menuLabel" in cell.dataset && cell.getAttribute("aria-label") !== value) cell.setAttribute("aria-label", value);
     });
-    if (primary) {
-      record.primary = primary(item, index);
-      const action = record.primary;
-      const button = record.button;
-      if (button.textContent !== action.label) button.textContent = action.label;
-      button.dataset.action = action.id;
-      button.setAttribute("aria-label", `${action.label} ${name}`);
-      button.setAttribute("aria-disabled", String(Boolean(action.disabledReason)));
-      record.reason.textContent = action.disabledReason || "";
-      if (action.disabledReason) button.setAttribute("aria-describedby", record.reason.id);
-      else button.removeAttribute("aria-describedby");
-      button.parentElement.dataset.action = action.id;
-    }
     record.menu?.update(name, actions(item, index));
+  }
+  // The checkbox is kept while its row can be changed, so focus stays on it.
+  // A row menu opened in this cell stays put as the checkbox comes and goes.
+  function updateToggle(cell, toggle, record, item) {
+    record.toggles ||= new Map();
+    let control = record.toggles.get(cell);
+    const own = () => [...cell.childNodes].filter((node) => !node.matches?.(".row-actions-menu"));
+    if (toggle.available && !toggle.available(item)) {
+      if (control) {
+        const focused = doc.activeElement === control;
+        record.toggles.delete(cell);
+        for (const node of own()) node.remove();
+        if (focused) cell.focus();
+      }
+      return false;
+    }
+    if (!control) {
+      control = doc.createElement("input");
+      control.type = "checkbox";
+      control.tabIndex = -1;
+      control.addEventListener("click", (event) => toggled(event, control, toggle, record));
+      for (const node of own()) node.remove();
+      cell.prepend(control);
+      record.toggles.set(cell, control);
+    }
+    if (!pendingToggles.has(control)) control.checked = Boolean(toggle.checked(item));
+    control.setAttribute("aria-label", toggle.label(item));
+    // A visible note beside the checkbox, such as an ended event's, and, like
+    // a menu item, an unavailable one's hidden reason describe it.
+    const described = [
+      describe(cell, control, "toggle-note", toggle.note?.(item) || "", false),
+      describe(cell, control, "toggle-reason", toggle.disabledReason?.(item) || "", true),
+    ].filter(Boolean);
+    if (described.length) control.setAttribute("aria-describedby", described.join(" "));
+    else control.removeAttribute("aria-describedby");
+    if (cell.querySelector(":scope > .toggle-reason")) control.setAttribute("aria-disabled", "true");
+    else control.removeAttribute("aria-disabled");
+    return true;
+  }
+  // The id of *cell*'s *kind* text after *control*, made or removed as *text* needs.
+  function describe(cell, control, kind, text, hidden) {
+    let node = cell.querySelector(`:scope > .${kind}`);
+    if (!text) { node?.remove(); return ""; }
+    if (!node) {
+      node = doc.createElement("span");
+      node.className = kind;
+      node.id = `collection-${kind}-${++nextReason}`;
+      node.hidden = hidden;
+      (kind === "toggle-note" ? control : cell.querySelector(":scope > .toggle-note") || control).after(node);
+    }
+    if (node.textContent !== text) node.textContent = text;
+    return node.id;
+  }
+  // One change at a time per checkbox: a press while it saves does nothing.
+  // The checkbox stays enabled and says it is busy (withDisabled keepEnabled),
+  // so NVDA never calls it unavailable, focused or not. Once settled it shows
+  // the row's current state: a reload's, or the old one after a failure.
+  async function toggled(event, control, toggle, record) {
+    if (pendingToggles.has(control)) { event.preventDefault(); return; }
+    if (control.getAttribute("aria-disabled") === "true") {
+      event.preventDefault();
+      announceStatus(status, control.parentElement.querySelector(":scope > .toggle-reason").textContent, { force: true });
+      return;
+    }
+    const checked = control.checked;
+    pendingToggles.add(control);
+    try {
+      await withDisabled(control, () => toggle.run(record.item, checked, control), { keepEnabled: true });
+    } catch {
+      // The panel says what failed; the state below is the server's.
+    } finally {
+      pendingToggles.delete(control);
+    }
+    if (control.isConnected) control.checked = Boolean(toggle.checked(record.item));
   }
   function removedMenus(items) {
     const keys = new Set(items.map((item) => String(keyOf(item))));
@@ -104,8 +181,10 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
       focusControl: (active) => active?.closest?.("td"),
       onFocusLost: ({ target }) => {
         if (!announceFocus) return;
-        const control = target?.querySelector?.("button");
-        const name = control?.getAttribute("aria-label") || target?.getAttribute("aria-label") || target?.textContent.trim() || label;
+        // Not a menu item of a menu open in that cell.
+        const control = [...(target?.querySelectorAll?.("button") || [])].find((item) => !item.closest('[role="menu"]'));
+        const fieldLabel = [...(target?.labels || [])].map((item) => item.textContent.trim()).join(" ");
+        const name = control?.getAttribute("aria-label") || target?.getAttribute("aria-label") || fieldLabel || target?.textContent.trim() || label;
         announceStatus(status, `The ${label} list changed. Focus moved to ${name}.`, { force: true });
       },
     });
@@ -118,11 +197,12 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
     navigation.refresh();
     return result;
   }
-  function target(key, action = "primary") {
+  // A data column's cell by its key; any action belongs to the Actions cell.
+  function target(key, column) {
     const row = [...body.children].find((item) => item.dataset.rowKey === String(key));
     if (!row) return null;
-    if (action === "primary") return row.cells[primary ? columns.length : nameIndex];
-    return [...row.cells].find((cell) => cell.dataset.action === action) || null;
+    return [...row.cells].find((cell) => cell.dataset.action === column)
+      || row.cells[actions ? columns.length : nameIndex];
   }
   function clear() {
     const removed = removedMenus([]);
@@ -130,5 +210,6 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
     for (const menu of removed) menu.close();
     navigation.refresh();
   }
+  update([], { announceFocus: false });
   return { table, body, update, target, clear };
 }

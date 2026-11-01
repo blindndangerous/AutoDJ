@@ -1,4 +1,151 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as apiClient from "../../src/autodj/static/modules/api-client.js";
+
+it.each(["form", "fieldset", "div"])("marks a %s busy without delaying its save or blocking its fields", async (tag) => {
+  document.body.innerHTML = `<${tag}><input><button type="button">Check</button></${tag}>`;
+  const form = document.querySelector(tag), input = form.querySelector("input"), button = form.querySelector("button");
+  input.focus();
+  let finish, started = false, clicked = false;
+  button.addEventListener("click", () => { clicked = true; });
+  const pending = withDisabled(form, () => { started = true; return new Promise((resolve) => { finish = resolve; }); });
+  expect(started).toBe(true);
+  expect(form.getAttribute("aria-busy")).toBe("true");
+  expect(input.disabled).toBe(false);
+  button.click();
+  expect(clicked).toBe(true);
+  finish();
+  await pending;
+  expect(form.hasAttribute("aria-busy")).toBe(false);
+});
+
+it("releases a cancelled busy owner without disturbing a later operation", async () => {
+  const button = document.createElement("button");
+  document.body.append(button);
+  button.focus();
+  const controller = new globalThis.AbortController();
+  let finishOld, finishNew;
+  const old = withDisabled(button, () => new Promise((resolve) => { finishOld = resolve; }), { signal: controller.signal });
+  controller.abort();
+  expect(button.hasAttribute("aria-busy")).toBe(false);
+  expect(button.classList.contains("is-pending")).toBe(false);
+  const fresh = withDisabled(button, () => new Promise((resolve) => { finishNew = resolve; }));
+  finishOld();
+  await old;
+  expect(button.getAttribute("aria-busy")).toBe("true");
+  finishNew();
+  await fresh;
+  expect(button.hasAttribute("aria-busy")).toBe(false);
+  button.remove();
+});
+
+it("does not run or mark busy an operation whose signal is already aborted", async () => {
+  const button = document.createElement("button");
+  document.body.append(button);
+  const changes = [];
+  const observer = new window.MutationObserver((records) => changes.push(...records.map((record) => record.attributeName)));
+  observer.observe(button, { attributes: true });
+  const controller = new globalThis.AbortController();
+  controller.abort();
+  const operation = vi.fn(async () => "ran");
+  await expect(withDisabled(button, operation, { signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+  await Promise.resolve();
+  observer.disconnect();
+  expect(operation).not.toHaveBeenCalled();
+  expect(changes).toEqual([]);
+  expect(button.disabled).toBe(false);
+  button.remove();
+});
+
+it("keeps an unfocused checkbox enabled when asked, so it is never reported unavailable", async () => {
+  document.body.innerHTML = '<input id="field"><input type="checkbox" id="on" aria-label="Enable Morning">';
+  const field = document.getElementById("field"), box = document.getElementById("on");
+  field.focus();
+  let finish;
+  const pending = withDisabled(box, () => new Promise((resolve) => { finish = resolve; }), { keepEnabled: true });
+  expect(box.disabled).toBe(false);
+  expect(box.hasAttribute("aria-disabled")).toBe(false);
+  expect(box.getAttribute("aria-busy")).toBe("true");
+  await Promise.resolve();
+  finish();
+  await pending;
+  expect(box.hasAttribute("aria-busy")).toBe(false);
+  expect(box.disabled).toBe(false);
+});
+
+it("keeps an unfocused button enabled when asked, guarding it with busy state instead", async () => {
+  document.body.innerHTML = '<input id="field"><button type="button" id="save">Save</button>';
+  const field = document.getElementById("field"), button = document.getElementById("save");
+  field.focus();
+  const clicks = vi.fn();
+  button.addEventListener("click", clicks);
+  let finish;
+  const pending = withDisabled(button, () => new Promise((resolve) => { finish = resolve; }), { keepEnabled: true });
+  expect(button.disabled).toBe(false);
+  expect(button.hasAttribute("aria-disabled")).toBe(false);
+  expect(button.getAttribute("aria-busy")).toBe("true");
+  expect(button.classList.contains("is-pending")).toBe(true);
+  button.click();
+  expect(clicks).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(field);
+  finish();
+  await pending;
+  expect(button.hasAttribute("aria-busy")).toBe(false);
+  expect(button.classList.contains("is-pending")).toBe(false);
+  button.click();
+  expect(clicks).toHaveBeenCalledOnce();
+});
+
+// ADR-0011-12
+it("keeps busy state until the last owner ends and cancels delayed pending speech", async () => {
+  vi.useFakeTimers();
+  try {
+    const button = document.createElement("button");
+    document.body.append(button);
+    button.focus();
+    button.setAttribute("aria-busy", "false");
+    let finishFirst, finishSecond;
+    const spoken = [];
+    const first = withDisabled(button, () => new Promise((resolve) => { finishFirst = resolve; }), { pendingText: "Saving…", say: (text) => spoken.push(text) });
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(button);
+    const second = withDisabled(button, () => new Promise((resolve) => { finishSecond = resolve; }));
+    vi.advanceTimersByTime(300);
+    expect(spoken).toEqual(["Saving…"]);
+    finishFirst();
+    await first;
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    finishSecond();
+    await second;
+    expect(button.getAttribute("aria-busy")).toBe("false");
+    expect(button.classList.contains("is-pending")).toBe(false);
+    await withDisabled(button, async () => {}, { pendingText: "Saving again…", say: (text) => spoken.push(text) });
+    vi.advanceTimersByTime(300);
+    expect(spoken).toEqual(["Saving…"]);
+    button.remove();
+  } finally { vi.useRealTimers(); }
+});
+
+// ADR-0022-07
+it("formats failures without losing stale-station action outcomes", async () => {
+  expect(typeof apiClient.failureText).toBe("function");
+  expect(apiClient.failureText("save settings", new Error("Refused."))).toBe("Could not save settings: Refused.");
+  expect(apiClient.failureText("remove missing tracks", "Unavailable")).toBe("Could not remove missing tracks: Unavailable");
+  expect(apiClient.failureText("load public settings", {}, "no answer")).toBe("Could not load public settings: no answer");
+  expect(apiClient.failureText("start Night Owl.", {}, "")).toBe("Could not start Night Owl.");
+  expect(apiClient.failureText("start Night Owl.", new Error("Refused."), "")).toBe("Could not start Night Owl. Refused.");
+  expect(apiClient.failureText("save cart 2.", new Error("Refused."))).toBe("Could not save cart 2. Refused.");
+  // Use an actual API error, since stale replies have an authenticated type.
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ detail: "Refused." }, { status: 400 })));
+  try {
+    const error = await requestJson("/api/test").catch((value) => value);
+    error.staleStation = true;
+    error.stationLeft = "Other station";
+    error.actionOutcome = "done";
+    expect(apiClient.failureText("save", error)).toBe("Done on Other station, the station this page has just left.");
+    delete error.stationLeft;
+    expect(apiClient.failureText("load", error)).toBe("");
+  } finally { vi.unstubAllGlobals(); }
+});
 
 import {
   AuthenticationRequiredError,

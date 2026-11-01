@@ -125,6 +125,19 @@ describe("the Test rotation control", () => {
     vi.useRealTimers();
   });
 
+  it("preserves extra seed help while associating and clearing validation errors", async () => {
+    harness({ POST: [], GET: [] });
+    const seed = byId("rotation-seed");
+    seed.setAttribute("aria-describedby", "rotation-seed-desc seed-extra-help");
+    seed.value = "wrong";
+    await press("rotation-run");
+    expect(seed.getAttribute("aria-describedby").split(" ")).toContain("seed-extra-help");
+    seed.value = "7";
+    seed.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(seed.getAttribute("aria-describedby")).toBe("rotation-seed-desc seed-extra-help");
+    expect(byId("rotation-error").hidden).toBe(true);
+  });
+
   it("starts a run, shows progress, then the results without moving focus", async () => {
     const { calls, tick } = harness({
       POST: [running(0, 0)],
@@ -166,7 +179,7 @@ describe("the Test rotation control", () => {
     expect(card.open).toBe(true);
     expect(calls).toEqual([]);
     expect(seed.getAttribute("aria-invalid")).toBe("true");
-    expect(seed.getAttribute("aria-describedby")).toBe("rotation-seed-desc rotation-error");
+    expect(seed.getAttribute("aria-describedby")).toBe("rotation-error rotation-seed-desc");
     expect(byId("rotation-error").hidden).toBe(false);
     expect(byId("rotation-error").textContent).toBe("Seed must be a whole number, 0 or more, or empty.");
     expect(document.activeElement).toBe(seed);

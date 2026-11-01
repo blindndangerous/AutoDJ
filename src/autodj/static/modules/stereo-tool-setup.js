@@ -22,10 +22,11 @@
 // the settings status region; a refused key is also shown under the
 // field, linked to it, and focus goes to the field.
 
-import { isStaleStationReply, requestJson } from "./api-client.js";
+import { failureText, isStaleStationReply, requestJson, withDisabled } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { focusRevealed } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+import { clearFieldError, showFieldError, focusRevealed } from "./dom-helpers.js";
+import { onCardOpen } from "./card-state.js";
+import { makeSay } from "./live-region.js";
 import { onStationChange } from "./stations.js";
 
 export function installText(data) {
@@ -92,33 +93,19 @@ export function installStereoToolSetup({ document: doc = document, request = req
   const panel = download?.closest('[role="tabpanel"]') || soundPanel;
   if (!panel || !installStatus || !accept || !download || !licenseStatus || !keyField
     || !stationOnly || !keyError || !save || !clear) return null;
-  const speak = (message, error = false) => announceStatus(status, message,
-    { force: true, dwellMs: 8000, tone: error ? "error" : "info" });
+  const speak = makeSay(status, { dwellMs: 8000 });
   let current = null;
   let downloading = false;
   let saving = false;
   let recheck = null;
 
-  function busy(button, on) {
-    button.classList.toggle("is-pending", on);
-    if (on) button.setAttribute("aria-busy", "true");
-    else button.removeAttribute("aria-busy");
-  }
-
   function clearKeyError() {
-    keyField.removeAttribute("aria-invalid");
-    keyField.removeAttribute("aria-errormessage");
-    keyError.textContent = "";
-    keyError.hidden = true;
+    clearFieldError(keyField, keyError);
   }
 
   function keyFailed(message) {
-    keyField.setAttribute("aria-invalid", "true");
-    keyError.textContent = message;
-    keyError.hidden = false;
-    keyField.setAttribute("aria-errormessage", keyError.id);
-    focusRevealed(keyField);
-    speak(message, true);
+    showFieldError(keyField, message, keyError, null);
+    speak(message, "error");
   }
 
   function render(data) {
@@ -138,7 +125,7 @@ export function installStereoToolSetup({ document: doc = document, request = req
       render(await request("/api/stereo-tool"));
     } catch (error) {
       if (isStaleStationReply(error)) return;
-      speak(`Could not check Stereo Tool: ${error.message}`, true);
+      speak(failureText("check Stereo Tool", error), "error");
     }
   }
 
@@ -159,9 +146,7 @@ export function installStereoToolSetup({ document: doc = document, request = req
     }, recheckMs);
   }
 
-  panel.addEventListener("toggle", () => {
-    if (panel.open) void refresh();
-  });
+  onCardOpen(panel, refresh);
   if (panel.open) void refresh();
   // Another station's licence and library setting differ.
   stationChanges(() => {
@@ -174,35 +159,35 @@ export function installStereoToolSetup({ document: doc = document, request = req
   download.addEventListener("click", async () => {
     if (downloading) return;
     if (!accept.checked) {
-      speak("Tick I accept Thimeo's terms for Stereo Tool first.", true);
+      speak("Tick I accept Thimeo's terms for Stereo Tool first.", "error");
       focusRevealed(accept);
       return;
     }
     if (current?.download && !current.download.available) {
-      speak(current.download.note || installText(current), true);
+      speak(current.download.note || installText(current), "error");
       return;
     }
     downloading = true;
-    busy(download, true);
-    const working = "Downloading Stereo Tool from thimeo.com. This can take a few minutes.";
-    installStatus.textContent = working;
-    speak(working);
-    try {
-      const result = await request("/api/stereo-tool/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accept_terms: true }),
-      });
-      await refresh();
-      speak(result.version ? `Stereo Tool ${result.version} installed.`
-        : "Stereo Tool installed (version unknown).");
-    } catch (error) {
-      await refresh();
-      speak(`Could not download Stereo Tool: ${error.message}`, true);
-    } finally {
-      downloading = false;
-      busy(download, false);
-    }
+    await withDisabled(download, async () => {
+      const working = "Downloading Stereo Tool from thimeo.com. This can take a few minutes.";
+      installStatus.textContent = working;
+      speak(working);
+      try {
+        const result = await request("/api/stereo-tool/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ accept_terms: true }),
+        });
+        await refresh();
+        speak(result.version ? `Stereo Tool ${result.version} installed.`
+          : "Stereo Tool installed (version unknown).");
+      } catch (error) {
+        await refresh();
+        speak(failureText("download Stereo Tool", error), "error");
+      } finally {
+        downloading = false;
+      }
+    });
   });
 
   keyField.addEventListener("input", () => {
@@ -218,35 +203,35 @@ export function installStereoToolSetup({ document: doc = document, request = req
     }
     const scope = current?.several_stations && stationOnly.checked ? "station" : "all";
     saving = true;
-    busy(save, true);
-    try {
-      const data = await request("/api/stereo-tool/license", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, scope }),
-      });
-      keyField.value = "";
-      clearKeyError();
-      render(data);
-      const where = scope === "station" ? " for this station"
-        : data.several_stations ? " for every station" : "";
-      if (data.changed === false) {
-        speak(`That licence key is already saved${where}.`);
-      } else {
-        speak(`Licence key saved${where}. Stereo Tool checks the key in a moment.`);
-        recheckSoon();
+    await withDisabled(save, async () => {
+      try {
+        const data = await request("/api/stereo-tool/license", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key, scope }),
+        });
+        keyField.value = "";
+        clearKeyError();
+        render(data);
+        const where = scope === "station" ? " for this station"
+          : data.several_stations ? " for every station" : "";
+        if (data.changed === false) {
+          speak(`That licence key is already saved${where}.`);
+        } else {
+          speak(`Licence key saved${where}. Stereo Tool checks the key in a moment.`);
+          recheckSoon();
+        }
+      } catch (error) {
+        if (isStaleStationReply(error)) return;
+        const message = failureText("save the licence key", error);
+        // Only a refused key is the field's fault; a conflict or a server
+        // error is said without marking the field invalid.
+        if (error.status === 400 || error.status === 422) keyFailed(message);
+        else speak(message, "error");
+      } finally {
+        saving = false;
       }
-    } catch (error) {
-      if (isStaleStationReply(error)) return;
-      const message = `Could not save the licence key: ${error.message}`;
-      // Only a refused key is the field's fault; a conflict or a server
-      // error is said without marking the field invalid.
-      if (error.status === 400 || error.status === 422) keyFailed(message);
-      else speak(message, true);
-    } finally {
-      saving = false;
-      busy(save, false);
-    }
+    });
   });
 
   clear.addEventListener("click", async () => {
@@ -260,7 +245,7 @@ export function installStereoToolSetup({ document: doc = document, request = req
     else if (license.install === "saved") scope = "all";
     if (!scope) {
       if (inUse === "environment") {
-        speak("This licence is set in the server's environment, so it cannot be cleared here.", true);
+        speak("This licence is set in the server's environment, so it cannot be cleared here.", "error");
       } else {
         speak("There is no saved licence to clear.");
       }
@@ -275,18 +260,18 @@ export function installStereoToolSetup({ document: doc = document, request = req
       station: scope === "station",
       onConfirm: async () => {
         saving = true;
-        busy(clear, true);
-        try {
-          const data = await request(`/api/stereo-tool/license?scope=${scope}`, { method: "DELETE" });
-          render(data);
-          result = [`Licence cleared. ${licenseText(data)}`, false];
-          if (data.cleared !== false) recheckSoon();
-        } catch (error) {
-          result = [`Could not clear the licence: ${error.message}`, true];
-        } finally {
-          saving = false;
-          busy(clear, false);
-        }
+        await withDisabled(clear, async () => {
+          try {
+            const data = await request(`/api/stereo-tool/license?scope=${scope}`, { method: "DELETE" });
+            render(data);
+            result = [`Licence cleared. ${licenseText(data)}`, "info"];
+            if (data.cleared !== false) recheckSoon();
+          } catch (error) {
+            result = [failureText("clear the licence", error), "error"];
+          } finally {
+            saving = false;
+          }
+        });
         return clear;
       },
     });

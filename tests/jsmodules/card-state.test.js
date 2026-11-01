@@ -1,6 +1,28 @@
 import { readFileSync } from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
 import { installCardState } from "../../src/autodj/static/modules/card-state.js";
+import * as cardState from "../../src/autodj/static/modules/card-state.js";
+
+// ADR-0011-13
+it("refreshes only its own open toggle and disposes the close listener", () => {
+  expect(typeof cardState.onCardOpen).toBe("function");
+  document.body.innerHTML = '<section id="outer"><details id="inner"></details></section>';
+  const outer = document.getElementById("outer"), inner = document.getElementById("inner");
+  let refreshes = 0, closes = 0;
+  const dispose = cardState.onCardOpen(outer, () => { refreshes += 1; }, { onClose: () => { closes += 1; } });
+  expect(refreshes).toBe(0);
+  outer.open = true;
+  outer.dispatchEvent(new Event("toggle"));
+  inner.dispatchEvent(new Event("toggle", { bubbles: true }));
+  expect(refreshes).toBe(1);
+  outer.open = false;
+  outer.dispatchEvent(new Event("toggle"));
+  expect(closes).toBe(1);
+  dispose();
+  outer.open = true;
+  outer.dispatchEvent(new Event("toggle"));
+  expect(refreshes).toBe(1);
+});
 
 afterEach(() => {
   vi.restoreAllMocks();

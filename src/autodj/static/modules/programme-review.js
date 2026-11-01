@@ -1,8 +1,10 @@
 import {
   captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, isStaleStationReply,
-  requestJson, withDisabled,
+  failureText, markPending, requestJson, withDisabled,
 } from "./api-client.js";
-import { announceStatus } from "./live-region.js";
+import { onCardOpen } from "./card-state.js";
+import { makeSay } from "./live-region.js";
+import { clearFormErrors, showFieldError } from "./dom-helpers.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { stationApi, stationEpoch } from "./stations.js";
 
@@ -29,6 +31,7 @@ export function installProgrammeReview({
   let generation = 0, timer = null, job = null, result = null, selected = 0, submitting = false;
   // Cancel was accepted for the running job; its renderer stops at its next check.
   let cancelling = false;
+  let pending = new AbortController();
   let refreshNumber = 0, loadNumber = 0;
   let reviewsLoaded = false;
   let editionRequest = null, editionOpener = null;
@@ -42,9 +45,10 @@ export function installProgrammeReview({
   const context = () => [generation, stationEpoch(), captureAuthenticatedRequestEpoch()];
   const current = ([mine, station, auth]) => mine === generation && station === stationEpoch()
     && isAuthenticatedRequestCurrent(auth);
+  const localSay = makeSay(get("status"), { force: false });
   const say = (message) => {
     if (announce) { get("status").textContent = message; announce(message); }
-    else announceStatus(get("status"), message);
+    else localSay(message);
   };
   const send = (path, method, body) => request(path, {
     method, headers: { "Content-Type": "application/json" },
@@ -56,20 +60,24 @@ export function installProgrammeReview({
       tone_seconds: "tone", show_id: "show", start: "start", selection_start: "selection-start",
       selection_end: "selection-end", minutes: "minutes" };
     const field = get(fields[error.field]);
-    if (field) { field.setAttribute("aria-invalid", "true"); if (moveFocus) field.focus(); }
-    say(error.message || "Could not complete the review request.");
+    const message = error.message || "Could not complete the review request.";
+    // A field that takes focus reads its own error; otherwise say it.
+    if (field) showFieldError(field, message, get("error"), say, { focus: moveFocus });
+    else say(message);
   }
   function stopAudio() {
     audio.pause(); audio.removeAttribute("src"); audio.load();
   }
   // Cancel keeps focus while a cancellation is pending, so it is marked
   // aria-disabled rather than disabled, which would drop focus to the page.
+  // The job outlives any one request, so busy state is set here, in the
+  // shared presentation, rather than by withDisabled.
   function markCancelling(value) {
     const cancel = get("cancel");
     cancelling = value;
     if (value) cancel.setAttribute("aria-disabled", "true");
     else cancel.removeAttribute("aria-disabled");
-    cancel.classList.toggle("is-pending", value);
+    markPending(cancel, value);
   }
   function busy(value) {
     const generate = get("generate"), cancel = get("cancel");
@@ -77,7 +85,7 @@ export function installProgrammeReview({
       cancel.hidden = false;
       if (doc.activeElement === generate) cancel.focus();
     }
-    generate.classList.toggle("is-pending", value);
+    markPending(generate, value);
     generate.disabled = value;
     if (!value) markCancelling(false);
     if (!value && doc.activeElement === cancel) generate.focus();
@@ -195,12 +203,11 @@ export function installProgrammeReview({
     } catch (error) { if (number === refreshNumber) fail(error, ticket); }
   }
   function invalid(field, message) {
-    field.setAttribute("aria-invalid", "true");
-    field.closest("details")?.setAttribute("open", ""); field.focus(); say(message);
+    showFieldError(field, message, get("error"), say);
     return null;
   }
   function body() {
-    form.querySelectorAll("[aria-invalid]").forEach((field) => field.removeAttribute("aria-invalid"));
+    clearFormErrors(form, get("error"));
     for (const input of form.querySelectorAll("input")) {
       if (!input.checkValidity()) return invalid(input, `${doc.querySelector(`label[for="${input.id}"]`).textContent} is outside its supported range.`);
     }
@@ -230,7 +237,7 @@ export function installProgrammeReview({
         if (current(ticket)) { say("Generating review."); await follow(answer, ticket); }
       } catch (error) { fail(error, ticket); }
       finally { if (current(ticket)) submitting = false; }
-    });
+    }, { signal: pending.signal });
     if (current(ticket)) busy(Boolean(job));
   }
   form.addEventListener("submit", (event) => { event.preventDefault(); void generate(); });
@@ -276,7 +283,7 @@ export function installProgrammeReview({
       }
       // Polling continues; Cancel can be pressed again.
       markCancelling(false);
-      say(`Could not cancel the review: ${error.message || "try again"}`);
+      say(failureText("cancel the review", error.message ? error : { message: "try again" }));
     }
   });
   get("delete").addEventListener("click", async () => {
@@ -321,10 +328,11 @@ export function installProgrammeReview({
     get("show-row").hidden = get("source").value !== "show";
     if (get("source").value !== "edition") editionRequest = null;
   });
-  get("card").addEventListener("toggle", () => { if (get("card").open) void refresh(); });
+  onCardOpen(card, refresh);
   return {
     refresh,
     clear() {
+      pending.abort(); pending = new AbortController();
       generation += 1; refreshNumber += 1; loadNumber += 1;
       reviewsLoaded = false;
       editionRequest = null; editionOpener = null; returnButton.hidden = true;

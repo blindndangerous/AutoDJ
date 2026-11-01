@@ -185,7 +185,6 @@
       border-radius: var(--radius);
       font: inherit;
     }
-    #auth-error { color: var(--error-text); }
 
     header {
       background: var(--bg-card);
@@ -828,24 +827,6 @@
     #queue-clear { margin-top: 0.75rem; }
 
     /* ---- Settings: profiles and paired devices ---- */
-    #profile-list,
-    #device-list {
-      list-style: none;
-      margin-top: 0.5rem;
-    }
-    #profile-list li,
-    #device-list li {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.4rem 0.25rem;
-      border-bottom: 1px solid var(--border);
-    }
-    #profile-list li:last-child,
-    #device-list li:last-child { border-bottom: none; }
-    .profile-name,
-    .device-text { flex: 1; min-width: 0; }
     #access-refresh { margin-top: 0.5rem; }
     #pair-panel { margin-top: 0.5rem; }
     #pair-panel p { margin: 0.4rem 0; }
@@ -884,16 +865,6 @@
     @media (max-width: 700px) {
       .cue-point-row { grid-template-columns: minmax(0, 1fr) auto; }
       .cue-point-row label { grid-column: 1 / -1; }
-    }
-
-    /* Voice-liner file list. */
-    #ln-file-list { list-style: none; }
-    #ln-file-list li {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.3rem 0;
     }
 
     /* ---- Now playing row (cover art + text) ---- */
@@ -1037,9 +1008,8 @@
     #vt-timer { margin: 0.5rem 0; font-variant-numeric: tabular-nums; }
     .vt-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0; }
     /* ---- Ads (ads-panel.js, #51) ----
-       Spots and breaks: each one's words, then its buttons, which wrap
-       under the words when narrow.  The report's tables scroll sideways
-       inside their own region on a narrow window, never the page. */
+       Spots, breaks and the report are shared collection tables; these
+       rules cover the notices and the plain lists around them. */
     .ads-notice {
       margin: 0.5rem 0 0.75rem;
       padding: 0.35rem 0.6rem;
@@ -1047,17 +1017,6 @@
       background: var(--notice-bg);
       color: var(--text);
     }
-    .ads-list { list-style: none; padding: 0; margin: 0.5rem 0; }
-    .ads-list li {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.4rem 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .ads-list li:last-child { border-bottom: none; }
-    .ads-list li > span { flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
     .ads-plain { margin: 0.25rem 0 0.75rem 1.25rem; }
     .ads-plain li { overflow-wrap: anywhere; }
     .ads-plain li + li { margin-top: 0.3rem; }
@@ -1065,6 +1024,8 @@
     #ads-spot-add, #ads-break-add { margin-top: 0.5rem; }
     #ads-spot-form, #ads-break-form { margin-top: 0.75rem; }
     #ads-report-summary { margin: 0.75rem 0; }
+    /* Report tables are plain native tables, read with browse-mode table
+       keys; their first cell is the row header (#712). */
     .ads-table-wrap {
       max-width: 100%;
       overflow-x: auto;
@@ -1104,20 +1065,6 @@
     .ads-table tbody tr:nth-child(even) { background: var(--tint); }
     .ads-table tbody tr:last-child > * { border-bottom: none; }
     .ads-table td.ads-number { font-variant-numeric: tabular-nums; }
-
-    /* Track info, Matched intros (#127): each intro's words, then its
-       Listen and Remove buttons, which wrap under the words when narrow. */
-    .intro-list { list-style: none; padding: 0; margin: 0.5rem 0; }
-    .intro-list li {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.35rem 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .intro-list li:last-child { border-bottom: none; }
-    .intro-list .intro-text { flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
     /* Track info, Song structure (#60): plain text items in time order.
        Not flex: each item is a sentence whose time spans must run on. */
     .landmark-list { list-style: none; padding: 0; margin: 0.5rem 0; }
@@ -1483,7 +1430,8 @@
       min-width: 0;
     }
     .tag-field .setting-desc,
-    .tag-field .field-error {
+    .tag-field .field-error,
+    .settings-row > .field-error {
       flex-basis: 100%;
       margin-left: 0;
     }
@@ -1529,9 +1477,7 @@
     }
 
     /* ---- Empty-list placeholder utility ---- */
-    /* Used by #why-list, #ln-file-list,
-       #profile-list and #device-list.  list-style: none matters for #why-list, which is
-       the one of those lists that still shows markers. */
+    /* Shared table empty rows and text lists such as #why-list. */
     .no-results {
       color: var(--text-dim);
       font-style: italic;
@@ -1562,16 +1508,14 @@
     :where(main) :where(ul, ol) {
       padding-inline-start: 1.5rem;
     }
-    :where(#profile-list, #device-list,
-      #ln-file-list, #lyrics-list, #why-list),
+    :where(#lyrics-list, #why-list),
     :where(main) :where(ul, ol):where(:has(> li.no-results:only-child)) {
       padding-inline-start: 0;
     }
 
     /* Rows that end in a button (Revoke, Remove folder, Unban) touched the
        next row's button: 44 px targets with no space between them. */
-    :where(#token-list, #workers-list, #listener-ban-list, #listener-control-list,
-      #categories-list) > li + li {
+    :where(#token-list, #workers-list, #listener-ban-list, #listener-control-list) > li + li {
       margin-top: 0.4rem;
     }
     /* Links: the card colour scheme's own link blue, underlined, so a link
@@ -1649,6 +1593,14 @@
       min-width: 4ch;
     }
     .collection-table th { font-weight: 600; }
+    /* The native caption names the table (H39). Visible ones read as a
+       short label over the columns and wrap at narrow widths. */
+    .collection-table caption:not(.visually-hidden) {
+      text-align: start;
+      font-weight: 600;
+      padding-bottom: 0.4rem;
+      overflow-wrap: anywhere;
+    }
     .collection-table tbody tr:nth-child(even) { background: var(--tint); }
     .collection-table td:focus-visible,
     .row-actions-menu button:focus-visible {
@@ -2250,7 +2202,6 @@ dialog h1 { font-size: 1.5em; }
   min-height: 44px;
   margin: 0.25rem 0;
 }
-#device-rename-error { margin: 0.5rem 0 1rem; color: var(--error-text); }
 .dialog-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2295,7 +2246,6 @@ dialog h1 { font-size: 1.5em; }
 }
 .path-picker #path-picker-location { overflow-wrap: anywhere; }
 .browse-button { margin-inline-start: var(--control-gap); }
-#track-info-error { margin: 0.5rem 0 1rem; color: var(--error-text); }
 
 /* Keep a tab's save action reachable without covering keyboard focus. */
 .settings-save-bar {

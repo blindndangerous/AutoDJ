@@ -30,7 +30,7 @@ started by the recovery commands.
 
 Pause with **Play or Pause** in **Now Playing**; check that elapsed time stops.
 If another lesson left a show active, use **Stop show** and wait for it to stop.
-Use each scheduled event's **Options** menu to **Disable** it. In **Clockwheels**,
+In **Settings**, **Station**, **Schedule**, clear each event's **Enabled** checkbox (press Space on it). In **Clockwheels**,
 choose **Activate** from **Options for Practice**, then check
 **Settings**, **Song picking**, **Pick mode** is **Clockwheel**. The
 [keyboard guide](../guides/keyboard-and-screen-reader.md) covers UI navigation.

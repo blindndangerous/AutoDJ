@@ -65,3 +65,20 @@ behavior, screen-reader speech or filesystem power-loss durability.
 | `ADR-0017-02` | A save reply cannot erase edits made while the request is pending. | automated | `tests/jsmodules/settings-drafts.test.js::blocks duplicate submits and preserves edits made during a request` |
 | `ADR-0017-03` | Stopped stations validate batches and reject stale revisions. | automated | `tests/integration/test_stopped_station_editing.py::test_stopped_station_settings_batch_validates_and_detects_conflicts` |
 | `ADR-0017-04` | Real keyboard, screen-reader and device behavior requires platform evidence. | manual | Exercise Save, Discard, invalid fields, conflicts and station switching per docs/accessibility-testing.md; report engine/device and speech limitations. |
+| `ADR-0017-05` | Standalone settings saves release stale busy state without allowing an old reply to unlock or overwrite a newer save. | automated | `tests/jsmodules/standalone-settings.test.js::clears an old save immediately without letting its reply unlock or overwrite a newer save` |
+
+## Amendment 2026-10-31: shared browser-page helpers
+
+Explicit standalone controls with custom endpoints use `createSettingsSave` for
+single-flight saves, pending presentation and session/view invalidation. Domain
+validation and routes remain in each caller. This does not move those controls
+into the Settings draft bar or change this ADR's Proposed status. Liner dates
+already use the shared record editor; time-check dates retain their existing
+standalone flow through the shared save controller.
+
+The draft bar's Save and Discard, and standalone Save buttons, stay enabled
+while a save runs even when they do not hold focus; they are busy and ignore
+presses instead (#331). A refused setting is placed on its control by the
+setting's name: a part's `fields` map, a control named for the setting, or the
+only control of a one-setting part. A refusal no control matches is said in
+the panel status with "Unsaved changes remain."

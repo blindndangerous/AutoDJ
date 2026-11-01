@@ -24,6 +24,7 @@
 //     it only when the song changes); the recent songs list is plain text.
 //   - Focus never moves.
 
+import { makeSay } from "./live-region.js";
 import { startStatusPage, trackText } from "./status-page.js";
 import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
 
@@ -114,9 +115,7 @@ export function startPlayer({
     startTimer = null;
   }
 
-  function say(text) {
-    if (state && state.textContent !== text) state.textContent = text;
-  }
+  const say = makeSay(state, { force: false, mirror: false });
 
   function setToggle(label) {
     if (toggle.textContent !== label) toggle.textContent = label;

@@ -9,9 +9,9 @@
 // breaks cannot be taken now, if they cannot. A refused value gets
 // aria-invalid, its error linked to the field and shown under it, and focus.
 
-import { isStaleStationReply, requestJson } from "./api-client.js";
-import { focusRevealed } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+import { failureText, isStaleStationReply, requestJson } from "./api-client.js";
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
+import { onCardOpen } from "./card-state.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 
 export const MIN_INTRO_ERROR = "Enter the shortest intro in seconds, from 0 to 60, such as 2 or 1.5.";
@@ -48,37 +48,12 @@ export function installBreakSettings({ doc = document, request = requestJson } =
   const errors = new Map([[minIntro, get("min-intro-error")], [duck, get("duck-error")]]);
   let generation = 0;
 
-  function say(message, tone = "info") {
-    announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 6000 : 4000, tone });
-  }
-
-  function link(field, node, on) {
-    const ids = (field.getAttribute("aria-describedby") || "").split(/\s+/)
-      .filter((id) => id && id !== node.id);
-    if (on) ids.push(node.id);
-    field.setAttribute("aria-describedby", ids.join(" "));
-  }
-
   function clearErrors() {
-    for (const [field, node] of errors) {
-      field.removeAttribute("aria-invalid");
-      if (!node) continue;
-      link(field, node, false);
-      node.textContent = "";
-      node.hidden = true;
-    }
+    for (const [field, node] of errors) clearFieldError(field, node);
   }
 
   function fail(field, message) {
-    const node = errors.get(field);
-    field.setAttribute("aria-invalid", "true");
-    if (node) {
-      link(field, node, true);
-      node.textContent = message;
-      node.hidden = false;
-    }
-    focusRevealed(field);
-    say(message, "error");
+    showFieldError(field, message, errors.get(field), status);
   }
 
   function placement() {
@@ -113,6 +88,7 @@ export function installBreakSettings({ doc = document, request = requestJson } =
     duck_db: duck.value.trim() === "" ? null : parseNumber(duck.value, -30, 0) });
   const draft = registerSettingsGroup({
     panel, group: "breaks", controls, read, write: fill,
+    fields: { enabled, dj_placement: controls.filter((control) => control.name === "brk-placement"), min_intro_seconds: minIntro, duck_db: duck },
     validate() {
       clearErrors();
       if (read().min_intro_seconds === null) {
@@ -138,7 +114,7 @@ export function installBreakSettings({ doc = document, request = requestJson } =
       // A reply for the station the page has just left says nothing (#70).
       if (mine !== generation || isStaleStationReply(error)) return;
       if (reason) {
-        reason.textContent = `Could not load the break settings: ${error?.message || "no answer"}`;
+        reason.textContent = failureText("load the break settings", error, "no answer");
         reason.hidden = false;
       }
     }
@@ -157,18 +133,10 @@ export function installBreakSettings({ doc = document, request = requestJson } =
 
   form.addEventListener("input", (event) => {
     if (event.target.getAttribute?.("aria-invalid") === "true") {
-      event.target.removeAttribute("aria-invalid");
-      const node = errors.get(event.target);
-      if (node) {
-        link(event.target, node, false);
-        node.textContent = "";
-        node.hidden = true;
-      }
+      clearFieldError(event.target, errors.get(event.target));
     }
   });
-  panel?.addEventListener("toggle", () => {
-    if (panel.open) void refresh();
-  });
+  onCardOpen(panel, refresh);
   if (panel?.open) void refresh();
 
   return { refresh, clear };

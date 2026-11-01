@@ -14,16 +14,40 @@
 // recent announcement always controls the dwell.
 
 // Added to a repeated message so the region text changes.
-export const NBSP = String.fromCharCode(160);
+const NBSP = String.fromCharCode(160);
+
+// A feature may resolve its active dialog region at announcement time. Keep
+// repeat handling, mirroring and tone in this one path, including pending speech.
+export function makeSay(region, { force = true, dwellMs = 0, errorDwellMs = dwellMs, tone: defaultTone = "info", ...opts } = {}) {
+  return (message, tone = defaultTone) => {
+    if (typeof tone !== "string") throw new TypeError("Announcement tone must be a string");
+    return announceStatus(typeof region === "function" ? region() : region, message, {
+      ...opts, force, dwellMs: tone === "error" ? errorDwellMs : dwellMs, tone,
+    });
+  };
+}
 const _timers = new WeakMap();
 const _announcementEpoch = new WeakMap();
 let _lastMirroredRegion = null;
 let _lastMirroredText = "";
 
+function cancelDwell(region) {
+  const timer = _timers.get(region);
+  if (timer) clearTimeout(timer);
+  _timers.delete(region);
+}
+
+// New words take the region over: an earlier forced announcement still
+// waiting for its next task must not overwrite them, and an earlier dwell
+// must not blank them.
+function claimRegion(region) {
+  _announcementEpoch.set(region, (_announcementEpoch.get(region) || 0) + 1);
+  cancelDwell(region);
+}
+
 export function clearLiveRegionLater(el, dwellMs = 3000) {
   if (!el) return;
-  const prev = _timers.get(el);
-  if (prev) clearTimeout(prev);
+  cancelDwell(el);
   const t = setTimeout(() => {
     if (el && el.textContent) el.textContent = "";
     _timers.delete(el);
@@ -36,9 +60,7 @@ export function clearAnnouncedStatus(region) {
   if (!region) return;
   _announcementEpoch.set(region, (_announcementEpoch.get(region) || 0) + 1);
   cancelPending(region);
-  const timer = _timers.get(region);
-  if (timer) clearTimeout(timer);
-  _timers.delete(region);
+  cancelDwell(region);
   region.textContent = "";
   if (_lastMirroredRegion !== region) return;
   const toast = region.ownerDocument?.getElementById("status-toast");
@@ -73,6 +95,7 @@ export function shownText(region) {
 
 export function writeQuietly(region, text, { restoreMs = 1000 } = {}) {
   if (!region) return;
+  claimRegion(region);
   cancelPending(region);
   if (region.textContent === text) return;
   const before = _quiet.get(region);
@@ -101,6 +124,7 @@ export function liveAgain(region) {
 // one still waiting.
 export function writeLive(region, text) {
   if (!region) return;
+  claimRegion(region);
   cancelPending(region);
   if (!_quiet.has(region)) {
     if (region.textContent !== text) region.textContent = text;
@@ -280,6 +304,9 @@ export function announceStatus(
     cancelPending(region);
   }
   if (force && text) {
+    // Not claimRegion: forced announcements made in one task each still
+    // write in turn, as before; only other writes cancel them.
+    cancelDwell(region);
     // Chrome can merge the clear and the new text into one change, so the
     // same message again is not spoken.  A trailing no-break space on every
     // other repeat makes the text itself change.
@@ -288,6 +315,7 @@ export function announceStatus(
     const epoch = _announcementEpoch.get(region) || 0;
     setTimeout(() => {
       if ((_announcementEpoch.get(region) || 0) !== epoch) return;
+      cancelDwell(region);
       region.textContent = repeat;
       if (dwellMs > 0) clearLiveRegionLater(region, dwellMs);
     }, 0);
@@ -299,6 +327,7 @@ export function announceStatus(
     return true;
   }
   if (region.textContent === text) return false;
+  claimRegion(region);
   region.textContent = text;
   if (mirror) {
     _lastMirroredRegion = region;

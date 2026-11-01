@@ -74,8 +74,8 @@ the show's waiting songs and the listener is told only that it plays "after the 
 so, and its form holds the switch to turn them on. While they are on, it says how many requests
 are waiting and how many the station took today. Each waiting request shows who
 sent it (if they gave a name), when, and either where it would fit and why ("Fits after Song by
-Artist: same key, 2 BPM apart.") or what stops it. The table has a primary **Approve**
-action and an **Options** menu for the other decisions.
+Artist: same key, 2 BPM apart.") or what stops it. Each request's **Options** menu
+holds its decisions: **Approve**, **Play next** and **Turn down**.
 
 When the station is stopped, **Approve** and **Play next** stay reachable but
 explain: "Start the station to change the queue." **Turn down** remains available.

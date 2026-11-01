@@ -20,6 +20,44 @@ const staticPath = (...parts) => join(
 const cssSource = readFileSync(staticPath("app.css"), "utf8");
 const htmlSource = readFileSync(staticPath("index.html"), "utf8");
 const appSource = readFileSync(staticPath("app.js"), "utf8");
+
+it("uses the shared polite atomic status-region markup throughout the page", () => {
+  const page = document.createElement("template");
+  page.innerHTML = htmlSource;
+  const regions = [...page.content.querySelectorAll('[role="status"], [aria-live="polite"]')];
+  expect(regions.length).toBeGreaterThan(10);
+  for (const region of regions) {
+    expect(region.getAttribute("role"), region.id).toBe("status");
+    expect(region.getAttribute("aria-live"), region.id).toBe("polite");
+    expect(region.getAttribute("aria-atomic"), region.id).toBe("true");
+  }
+});
+
+it("names every table on the page by a native caption, hidden where a heading says it", () => {
+  const page = document.createElement("template");
+  page.innerHTML = htmlSource;
+  const tables = [...page.content.querySelectorAll("table")];
+  expect(tables.length).toBeGreaterThan(8);
+  for (const table of tables) {
+    const caption = table.querySelector(":scope > caption");
+    expect(caption?.textContent.trim(), table.id).toBeTruthy();
+    expect(table.firstElementChild, table.id).toBe(caption);
+    expect(table.hasAttribute("aria-label"), table.id).toBe(false);
+    expect(table.hasAttribute("aria-labelledby"), table.id).toBe(false);
+  }
+  const hidden = Object.fromEntries(tables.filter((table) => table.caption.classList.contains("visually-hidden"))
+    .map((table) => [table.id, table.caption.textContent.trim()]));
+  expect(hidden).toEqual({
+    "history-table": "History", "stations-table": "Stations on this server", "stream-relay-table": "Stream relays",
+    "live-dj-table": "DJ accounts", "library-results-table": "Library tracks",
+  });
+  expect(page.content.getElementById("live-dj-table").getAttribute("aria-describedby")).toBe("live-djs-desc");
+  // The certificate table is drawn by its module, under its own heading.
+  const certificates = readFileSync(staticPath("modules", "secure-connections.js"), "utf8");
+  expect(certificates).toContain('<table role="grid"><caption class="visually-hidden">Server certificate</caption>');
+  expect(certificates).not.toContain('aria-labelledby="sc-table-heading"');
+});
+
 const tokensByTheme = new Map(THEMES.map((theme) => [theme, themeTokens(cssSource, theme)]));
 const token = (theme, name) => tokensByTheme.get(theme).get(name);
 
@@ -1008,15 +1046,17 @@ function focusOutlinesMeetContract({ extraCss = "", only = null, theme = "dark" 
 function libraryLogOwnershipIsScoped(html = htmlSource) {
   installDocument({ html });
   const status = document.querySelector("#lib-job-status");
-  // Folder browsing has its own announcement; scope this check to the job card.
+  // Folder browsing owns its section's announcements, separate from jobs.
   const panel = status.closest("details");
+  const folders = document.getElementById("source-folders-status")?.closest("section");
   const log = document.querySelector("#library-log");
-  const liveOwners = new Set(panel.querySelectorAll([
+  const liveOwners = new Set([...panel.querySelectorAll([
     '[aria-live]:not([aria-live="off"])',
     '[role="status"]',
     '[role="log"]',
-  ].join(", ")));
-  return status?.getAttribute("aria-live") === "polite"
+  ].join(", "))].filter((node) => !folders?.contains(node)));
+  return status?.getAttribute("role") === "status"
+    && status.getAttribute("aria-live") === "polite"
     && status.getAttribute("aria-atomic") === "true"
     && status.textContent.trim() !== ""
     && liveOwners.size === 1
@@ -1844,12 +1884,16 @@ describe("static accessibility contracts", () => {
   it("keeps durable playback evidence separate from scoped announcements", () => {
     expect(libraryLogOwnershipIsScoped()).toBe(true);
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
-      ' id="lib-job-status" aria-live="polite"',
-      ' id="lib-job-status"',
+      /(<p id="lib-job-status"[^>]*?) role="status"/,
+      '$1',
     ))).toBe(false);
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
-      ' aria-atomic="true">Idle.</p>',
-      '>Idle.</p>',
+      /(<p id="lib-job-status"[^>]*?) aria-live="polite"/,
+      '$1',
+    ))).toBe(false);
+    expect(libraryLogOwnershipIsScoped(htmlSource.replace(
+      /(<p id="lib-job-status"[^>]*?) aria-atomic="true"/,
+      '$1',
     ))).toBe(false);
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
       '>Idle.</p>',
@@ -2903,7 +2947,8 @@ describe("static accessibility contracts", () => {
       .toEqual([["Starts", "col"], ["What", "col"], ["Length", "col"], ["Status", "col"], ["Track info", "col"]]);
     const history = document.getElementById("history-table");
     expect(history.getAttribute("role")).toBe("grid");
-    expect(history.getAttribute("aria-label")).toBe("History");
+    expect(history.caption.textContent).toBe("History");
+    expect(history.hasAttribute("aria-label")).toBe(false);
     expect(history.parentElement.classList.contains("data-table-scroll")).toBe(true);
     expect([...history.querySelectorAll("thead th")].map((th) => [th.textContent.trim(), th.getAttribute("scope")]))
       .toEqual([["Played", "col"], ["Title", "col"], ["Artist", "col"], ["Duration", "col"], ["Track info", "col"]]);
@@ -2972,17 +3017,17 @@ describe("static accessibility contracts", () => {
     expect(height).toBeTruthy();
   });
 
-  it("gives Track info's matched intros labelled native fields, named lists and one status", () => {
+  it("gives Track info's matched intros labelled native fields, named collection hosts and one status", () => {
     installDocument({ html: htmlSource });
     const section = document.querySelector("#panel-track-info #intros-editor");
     expect(section.hidden).toBe(true);
     // A collapsible card, its heading in the summary as on Now Playing (#297).
     expect(section.querySelector(":scope > summary > h3").id).toBe("intros-heading");
     expect(document.getElementById("intros-heading").tagName).toBe("H3");
-    // Two lists, each named by its own heading, and still lists in Safari.
+    // Two collection hosts, each named by its own heading.
     for (const kind of ["song", "artist"]) {
       const list = document.getElementById(`intros-${kind}-list`);
-      expect(list.getAttribute("role")).toBe("list");
+      expect(list.tagName).toBe("DIV");
       const heading = document.getElementById(list.getAttribute("aria-labelledby"));
       expect(heading.tagName).toBe("H4");
       expect(list.closest("[aria-live], [role=status]")).toBeNull();
@@ -3111,7 +3156,7 @@ describe("static accessibility contracts", () => {
     const section = document.querySelector("#panel-library #intro-rules");
     expect(section.querySelector(":scope > summary > h2").id).toBe("intro-rules-heading");
     const list = document.getElementById("intro-rules-list");
-    expect(list.getAttribute("role")).toBe("list");
+    expect(list.tagName).toBe("DIV");
     expect(document.getElementById(list.getAttribute("aria-labelledby")).tagName).toBe("H3");
     expect(list.closest("[aria-live], [role=status]")).toBeNull();
     const form = section.querySelector("form#intro-rules-form");
@@ -3432,7 +3477,8 @@ describe("static accessibility contracts", () => {
     expect(document.querySelector("#live-talkover > legend").textContent).toBe("Talk over the music");
     const table = document.getElementById("live-dj-table");
     expect(table.getAttribute("role")).toBe("grid");
-    expect(document.getElementById(table.getAttribute("aria-labelledby")).textContent).toBe("DJ accounts");
+    expect(table.caption.textContent).toBe("DJ accounts");
+    expect(document.getElementById("live-djs-heading").textContent).toBe("DJ accounts");
     expect([...table.querySelectorAll("th")].map((th) => th.textContent))
       .toEqual(["DJ", "Password", "Edit", "Remove"]);
     expect(document.getElementById("live-djs-desc").textContent).toMatch(/backups leave them out/);
@@ -3466,7 +3512,7 @@ describe("static accessibility contracts", () => {
     }
   });
 
-  it("gives the Ads tab labelled forms, one polite status and report tables with headers", () => {
+  it("gives the Ads tab labelled forms, one polite status and report tables with headers", async () => {
     installDocument({ html: htmlSource });
     const panel = document.getElementById("panel-ads");
     expect(panel.getAttribute("role")).toBe("tabpanel");
@@ -3496,20 +3542,29 @@ describe("static accessibility contracts", () => {
       expect(error.classList.contains("field-error"), id).toBe(true);
       expect(error.hidden, id).toBe(true);
     }
-    for (const id of ["ads-spots", "ads-breaks"]) {
-      expect(document.getElementById(id).getAttribute("role"), id).toBe("list");
+    // The shared runtime creates labelled collection grids inside these hosts.
+    const { installAdsPanel } = await import("../../src/autodj/static/modules/ads-panel.js");
+    installAdsPanel({ doc: document, request: async () => ({}) });
+    for (const [id, label] of [["ads-spots", "Spots"], ["ads-breaks", "Ad breaks"]]) {
+      const host = document.getElementById(id);
+      expect(host.tagName, id).toBe("DIV");
+      expect(host.querySelector("table").getAttribute("role"), id).toBe("grid");
+      expect(host.querySelector("table").caption.textContent, id).toBe(label);
+      expect(host.querySelector("table").hasAttribute("aria-label"), id).toBe(false);
     }
-    // The report: tables with captions and column headers, each in a named
-    // region that takes focus, so a narrow window scrolls it by keyboard.
+    // The report (#712): plain tables with captions and column headers, each in
+    // a named region that takes focus, so a narrow window scrolls it by keyboard.
     for (const [wrapId, tableId, columns] of [
       ["ads-totals-wrap", "ads-totals-table", ["Advertiser", "Campaign", "Aired", "Aired late", "Missed", "May have aired", "Waiting", "Seconds aired"]],
       ["ads-rows-wrap", "ads-rows-table", ["Break time", "Aired", "Result", "Spot", "Break", "Reason"]],
     ]) {
       const wrap = document.getElementById(wrapId);
       const table = document.getElementById(tableId);
+      expect(wrap.hidden).toBe(true);
       expect(wrap.getAttribute("role")).toBe("region");
       expect(wrap.getAttribute("tabindex")).toBe("0");
       expect(wrap.getAttribute("aria-labelledby")).toBe(table.querySelector("caption").id);
+      expect(table.hasAttribute("role")).toBe(false);
       const headers = [...table.querySelectorAll("thead th")];
       expect(headers.map((th) => th.textContent)).toEqual(columns);
       expect(headers.every((th) => th.getAttribute("scope") === "col")).toBe(true);
@@ -3622,14 +3677,15 @@ describe("listener request contracts", () => {
 });
 
 describe("Batch 2 rendered collection accessibility", () => {
-  function collection(id, label, columns, primary = null, actions = null) {
+  function collection(id, label, columns, actions = null) {
     const host = document.getElementById(id);
     const table = host.querySelector("table.collection-table");
     expect(table, id).not.toBeNull();
     expect(table.getAttribute("role")).toBe("grid");
-    expect(table.getAttribute("aria-label")).toBe(label);
+    expect(table.caption.textContent).toBe(label);
+    expect(table.hasAttribute("aria-label")).toBe(false);
     expect([...table.querySelectorAll("th")].map((cell) => cell.textContent))
-      .toEqual([...columns, ...(primary ? ["Actions"] : []), ...(actions ? ["Options"] : [])]);
+      .toEqual([...columns, ...(actions ? ["Actions"] : [])]);
     expect(table.querySelector('[role="rowheader"]')).toBeNull();
     expect(table.closest('[aria-live], [role="status"], [role="alert"]')).toBeNull();
     expect(table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
@@ -3637,8 +3693,7 @@ describe("Batch 2 rendered collection accessibility", () => {
     expect(row).not.toBeNull();
     expect([...row.cells].every((cell) => cell.getAttribute("role") === "gridcell")).toBe(true);
     const buttons = [...row.querySelectorAll('button:not([role="menuitem"])')];
-    expect(buttons.map((button) => button.textContent)).toEqual([...(primary ? [primary] : []), ...(actions ? ["Options"] : [])]);
-    if (primary) expect(buttons[0].getAttribute("aria-label")).toMatch(new RegExp(`^${primary} .+`));
+    expect(buttons.map((button) => button.textContent)).toEqual(actions ? ["Options"] : []);
     if (actions) {
       const options = row.querySelector('[aria-haspopup="menu"]');
       expect(options.getAttribute("aria-label")).toMatch(/^Options for .+/);
@@ -3659,7 +3714,7 @@ describe("Batch 2 rendered collection accessibility", () => {
     return row;
   }
 
-  it("renders Shows, songs and search with named grids and one primary action", async () => {
+  it("renders Shows, songs and search with named grids and one Actions menu", async () => {
     installDocument({ css: cssSource });
     document.getElementById("panel-library").hidden = false;
     const { installShowsPanel } = await import("../../src/autodj/static/modules/shows-panel.js");
@@ -3674,14 +3729,14 @@ describe("Batch 2 rendered collection accessibility", () => {
     } });
     try {
       await controls.refresh();
-      const row = collection("shows-list", "Shows", ["Name", "Source", "Songs", "Length", "Target", "Missing", "Station name while active", "Schedule events"], "Open list", ["Edit", "Delete"]);
+      const row = collection("shows-list", "Shows", ["Name", "Songs", "Length", "Details"], ["Open list", "Edit", "Delete"]);
       row.querySelector('button[data-action="open"]').click();
       await vi.waitFor(() => expect(document.querySelector("#shows-songs tbody tr[data-row-key]")).not.toBeNull());
-      collection("shows-songs", "Show songs", ["Number", "Song", "Length", "Availability", "Repeated"], "Track info", ["Move up", "Move down", "Remove"]);
+      collection("shows-songs", "Show songs", ["Song", "Length"], ["Track info", "Move up", "Move down", "Remove"]);
       document.getElementById("shows-search").value = "found";
       document.getElementById("shows-search-run").click();
       await vi.waitFor(() => expect(document.querySelector("#shows-results tbody tr[data-row-key]")).not.toBeNull());
-      collection("shows-results", "Show search results", ["Song", "Length"], "Add", ["Add to edition"]);
+      collection("shows-results", "Show search results", ["Song", "Length"], ["Add", "Add to edition"]);
     } finally { controls.destroy(); }
   });
 
@@ -3697,8 +3752,8 @@ describe("Batch 2 rendered collection accessibility", () => {
       await controls.openShow({ id: "show", name: "Morning", songs: [] });
       document.getElementById("edition-load").click();
       await vi.waitFor(() => expect(document.querySelector("#edition-occurrences tbody tr[data-row-key]")).not.toBeNull());
-      collection("edition-occurrences", "Edition occurrences", ["Position", "Item", "Kind"], null, ["Move up", "Move down", "Remove"]);
-      const row = collection("edition-takes", "Edition takes", ["Name", "Placement", "Status"], "Listen", ["Re-record", "Review", "Approve", "Reattach", "Remove"]);
+      collection("edition-occurrences", "Edition occurrences", ["Item"], ["Move up", "Move down", "Remove"]);
+      const row = collection("edition-takes", "Edition takes", ["Name", "Placement", "Status"], ["Listen", "Re-record", "Review", "Approve", "Reattach", "Remove"]);
       const listen = row.querySelector('button[data-action="listen"]');
       expect(listen.disabled).toBe(false);
       expect(listen.getAttribute("aria-disabled")).toBe("true");
@@ -3712,10 +3767,10 @@ describe("Batch 2 rendered collection accessibility", () => {
     applyQueueState([{ path: "/bridge.flac", display_name: "Bridge song", bridge_to: "Requested song" }], {
       queueList: document.getElementById("queue-list"), queueAnnounce: document.getElementById("queue-announce"),
     });
-    const row = collection("queue-list", "Queued tracks", ["Position", "Track", "Bridge"], "Track info", ["Move to top", "Move up", "Move down", "Remove"]);
-    expect(row.querySelector('td[data-action="bridge"]').textContent).toBe("Bridge to Requested song");
+    const row = collection("queue-list", "Queued tracks", ["Track"], ["Track info", "Move to top", "Move up", "Move down", "Remove"]);
+    expect(row.querySelector('td[data-action="track"]').textContent).toBe("1. Bridge song, bridge to Requested song");
     expect(row.querySelector('[aria-haspopup="menu"]').getAttribute("aria-label")).toBe("Options for Bridge song, bridge to Requested song");
-    expect(row.querySelector('button[data-action="info"]').getAttribute("aria-label")).toBe("Track info Bridge song, bridge to Requested song");
+    expect(row.querySelector('button[data-action="info"]').getAttribute("aria-label")).toBe("Track info");
   });
 
   it("renders Listener waiting and recent tables with names and silent data", async () => {
@@ -3726,10 +3781,10 @@ describe("Batch 2 rendered collection accessibility", () => {
       recent: [{ id: "recent", title: "Other", requested_at: 90, status: "queued" }] };
     const controls = installListenerRequests({ doc: document, request: async () => state, setTimer: () => null, formatTime: () => "10:00" });
     await controls.refresh();
-    const row = collection("requests-list", "Waiting requests", ["Song", "Requester", "Time", "Fit"], "Approve", ["Play next", "Turn down"]);
-    collection("requests-recent", "Recent decisions", ["Song", "Requester", "Time", "Decision", "Reason"]);
+    const row = collection("requests-list", "Waiting requests", ["Song", "Requested", "Fit"], ["Approve", "Play next", "Turn down"]);
+    collection("requests-recent", "Recent decisions", ["Song", "Requested", "Decision"]);
     const approve = row.querySelector('button[data-action="approve"]');
-    expect(approve.getAttribute("aria-label")).toBe("Approve Song by Artist");
+    expect(approve.getAttribute("aria-label")).toBe("Approve");
     expect(approve.disabled).toBe(false);
     expect(approve.getAttribute("aria-disabled")).toBe("true");
     expect(document.getElementById(approve.getAttribute("aria-describedby")).textContent).toBe("No smooth place is available.");
@@ -3747,7 +3802,7 @@ describe("Batch 2 rendered collection accessibility", () => {
     const controls = installVoiceTracker(undefined, { interval: () => null, media: () => null, Recorder: () => null });
     try {
       await controls.refresh();
-      const row = collection("vt-list", "Voice-track bookings", ["Booking", "State", "Details"], null, ["Cancel"]);
+      const row = collection("vt-list", "Voice-track bookings", ["Booking", "State"], ["Cancel"]);
       const cancel = row.querySelector('button[data-action="cancel"]');
       expect(cancel.disabled).toBe(false);
       expect(cancel.getAttribute("aria-disabled")).toBe("true");
@@ -3872,7 +3927,8 @@ describe("station switcher and station context contracts (#70)", () => {
     const table = document.getElementById("stations-table");
     expect(document.getElementById("stations-list").parentElement).toBe(table);
     expect(table.getAttribute("role")).toBe("grid");
-    expect(document.getElementById(table.getAttribute("aria-labelledby")).tagName).toBe("H4");
+    expect(table.caption.textContent).toBe(document.getElementById("stations-list-heading").textContent);
+    expect(document.getElementById("stations-list-heading").tagName).toBe("H4");
     expect([...table.querySelectorAll("th[scope=col]")].map((th) => th.textContent))
       .toEqual(["Station", "Now playing", "Listeners", "Start with the server", "Start or stop"]);
     const form = document.getElementById("station-create-form");

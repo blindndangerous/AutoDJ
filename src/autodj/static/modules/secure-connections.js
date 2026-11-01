@@ -1,8 +1,10 @@
-import { requestJson, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent } from "./api-client.js";
+import { withDisabled, requestJson, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { openDialog, closeDialog } from "./dialog-guard.js";
-import { announceStatus, clearAnnouncedStatus, writeQuietly } from "./live-region.js";
+import { makeSay, clearAnnouncedStatus } from "./live-region.js";
+import { clearFieldError, clearFormErrors, showFieldError } from "./dom-helpers.js";
+import { onCardOpen } from "./card-state.js";
 import { approximateDurationText } from "./time-format.js";
 
 const BASE = "/api/server/certificates";
@@ -36,10 +38,15 @@ export function installSecureConnections({ panel = document.getElementById("secu
   const cleanupNotes = new Set();
   let resumePending = new URL(win.location.href).searchParams.get("https-setup") === "trust";
   const ready = () => win.isSecureContext && win.location.protocol === "https:";
-  const say = (message) => announceStatus(status, message, { force: true });
-  const api = (path, method = "GET", body) => request(path, {
-    method, ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
-  });
+  const say = makeSay(status);
+  const api = (path, method = "GET", body) => {
+    const operation = () => request(path, {
+      method, ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+    });
+    const activeControl = panel.contains(doc.activeElement)
+      ? doc.activeElement.closest("button") || doc.activeElement.closest("td")?.querySelector("button") : null;
+    return method === "GET" ? operation() : withDisabled(dialog.open ? next : activeControl, operation);
+  };
   const dialog = doc.createElement("dialog");
   dialog.className = "editor-dialog secure-connection-dialog";
   dialog.setAttribute("aria-labelledby", "sc-dialog-title");
@@ -50,6 +57,12 @@ export function installSecureConnections({ panel = document.getElementById("secu
   const back = dialog.querySelector("#sc-back");
   const cancel = dialog.querySelector("#sc-cancel");
   const errorRegion = dialog.querySelector("#sc-error");
+  const fieldErrorNode = doc.createElement("p");
+  fieldErrorNode.id = "sc-field-error";
+  fieldErrorNode.className = "field-error";
+  fieldErrorNode.hidden = true;
+  errorRegion.before(fieldErrorNode);
+  const sayDialog = makeSay(errorRegion);
   const active = () => inventory?.certificates.find((cert) => cert.active);
   const selected = () => inventory?.certificates.find((cert) => cert.id === wizard?.id) || active();
   const trustedBrowser = () => ready() && (selected()?.type !== "Let's Encrypt" || selected().hosts.includes(win.location.hostname));
@@ -71,7 +84,7 @@ export function installSecureConnections({ panel = document.getElementById("secu
     busy = value;
     for (const button of dialog.querySelectorAll("button")) button.setAttribute("aria-disabled", String(value));
   }
-  const dialogError = (error) => announceStatus(errorRegion, error.message || String(error), { force: true, tone: "error" });
+  const dialogError = (error) => sayDialog(error.message || String(error), "error");
   function openWizard(kind, trigger, step = 1) {
     if (busy || dialog.open) return;
     opener = trigger || doc.activeElement;
@@ -158,14 +171,10 @@ export function installSecureConnections({ panel = document.getElementById("secu
       + (!running(operation) ? '<button type="button" id="sc-remove-operation">Remove saved setup</button>' : "");
   }
   function fieldError(field, message) {
-    const description = (field.getAttribute("aria-describedby") || "").split(" ").filter((id) => id !== "sc-error").join(" ");
-    field.setAttribute("aria-invalid", "true");
-    field.setAttribute("aria-describedby", [description, "sc-error"].filter(Boolean).join(" "));
-    writeQuietly(errorRegion, message);
-    field.focus();
+    clearFormErrors(dialog, fieldErrorNode);
+    showFieldError(field, message, fieldErrorNode, null);
     field.addEventListener("input", () => {
-      field.removeAttribute("aria-invalid");
-      if (description) field.setAttribute("aria-describedby", description); else field.removeAttribute("aria-describedby");
+      clearFieldError(field, fieldErrorNode);
       clearAnnouncedStatus(errorRegion);
     }, { once: true });
   }
@@ -204,7 +213,7 @@ export function installSecureConnections({ panel = document.getElementById("secu
       if (focus) content.querySelector("#sc-step-heading")?.focus();
       else if (focused) (dialog.querySelector(`#${focused}`) || content.querySelector("#sc-step-heading"))?.focus();
     }
-    if (announce || focus) announceStatus(errorRegion, operationText(operation), { force: true, tone: operation.error || operation.cleanup_pending ? "error" : "info" });
+    if (announce || focus) sayDialog(operationText(operation), operation.error || operation.cleanup_pending ? "error" : "info");
     schedulePoll();
   }
   async function checkOperation(manual = true) {
@@ -325,6 +334,7 @@ export function installSecureConnections({ panel = document.getElementById("secu
       + restartControl() + `<ul>${httpsLinks()}</ul>`;
   }
   function renderWizard() {
+    clearFormErrors(dialog, fieldErrorNode);
     if (!wizard) return;
     const complete = wizard.step === 3;
     const stepTitle = wizard.step === 1 ? (wizard.kind === "remote" ? "Get the server certificate" : "Create the certificate") : "Trust the certificate";
@@ -444,7 +454,7 @@ export function installSecureConnections({ panel = document.getElementById("secu
       const manageable = data.can_manage && cert.managed !== false && !cert.active;
       return `<tr data-row="${esc(cert.id)}"><td role="rowheader"><strong>${esc(cert.name)}</strong><small>${cert.hosts.map(esc).join(" · ")}</small><small>Issued ${exactDate(cert.issued)} · ${esc(cert.type)}</small>${cert.warning ? `<small>${esc(cert.warning)}</small>` : ""}</td><td role="gridcell">${cert.active ? "Active" : expired ? "Expired" : cert.status === "invalid" ? "Unavailable" : "Saved"}</td><td role="gridcell">${expiry(cert.expires)}</td><td role="gridcell">${manageable && !expired && cert.status !== "invalid" ? `<button type="button" data-activate="${esc(cert.id)}">Activate</button>` : "—"}</td><td role="gridcell">${manageable ? `<button type="button" data-delete="${esc(cert.id)}">Delete</button>` : "—"}</td></tr>`;
     }).join("");
-    panel.innerHTML = `<h4 id="secure-connections-heading" tabindex="-1">Secure connections (HTTPS)</h4><h5 id="sc-table-heading">Server certificate</h5>${rows ? `<div class="data-table-scroll"><table role="grid" aria-labelledby="sc-table-heading"><thead><tr><th scope="col">Certificate</th><th scope="col">Status</th><th scope="col">Expiry</th><th scope="col">Activate</th><th scope="col">Delete</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p>Create a certificate on the AutoDJ host, then trust it on your recording device.</p>'}${data.can_manage ? '<button type="button" id="sc-add">Add certificate</button>' : '<p>Manage certificates at localhost on the AutoDJ host.</p>'} <button type="button" id="sc-remote">Set up a remote device</button>${(!data.https && data.can_manage) || data.restart_required ? '<p>Restart AutoDJ to start serving HTTPS.</p>' : ''}${ready() ? '<p>This browser is ready to record.</p>' : ''}<details><summary>How to remove trust on this device</summary><p>If you installed the certificate on this device, open its certificate settings, select the AutoDJ certificate, and remove trust.</p></details>`;
+    panel.innerHTML = `<h4 id="secure-connections-heading" tabindex="-1">Secure connections (HTTPS)</h4><h5 id="sc-table-heading">Server certificate</h5>${rows ? `<div class="data-table-scroll"><table role="grid"><caption class="visually-hidden">Server certificate</caption><thead><tr><th scope="col">Certificate</th><th scope="col">Status</th><th scope="col">Expiry</th><th scope="col">Activate</th><th scope="col">Delete</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p>Create a certificate on the AutoDJ host, then trust it on your recording device.</p>'}${data.can_manage ? '<button type="button" id="sc-add">Add certificate</button>' : '<p>Manage certificates at localhost on the AutoDJ host.</p>'} <button type="button" id="sc-remote">Set up a remote device</button>${(!data.https && data.can_manage) || data.restart_required ? '<p>Restart AutoDJ to start serving HTTPS.</p>' : ''}${ready() ? '<p>This browser is ready to record.</p>' : ''}<details><summary>How to remove trust on this device</summary><p>If you installed the certificate on this device, open its certificate settings, select the AutoDJ certificate, and remove trust.</p></details>`;
     panel.querySelector("#sc-add")?.addEventListener("click", (event) => openWizard("add", event.currentTarget));
     for (const cert of data.certificates) {
       if (!cert.renewal) continue;
@@ -527,7 +537,7 @@ export function installSecureConnections({ panel = document.getElementById("secu
   next.addEventListener("click", () => void advance());
   back.addEventListener("click", () => { if (!busy && wizard) { wizard.step = 1; renderWizard(); content.querySelector("#sc-step-heading").focus(); } });
   const serverPanel = doc.getElementById("spanel-server");
-  serverPanel?.addEventListener("toggle", () => { if (serverPanel.open) void refresh(); });
+  onCardOpen(serverPanel, refresh);
   const voiceHelp = doc.getElementById("voice-https-help");
   if (voiceHelp) voiceHelp.hidden = Boolean(win.isSecureContext);
   doc.getElementById("voice-https-setup")?.addEventListener("click", () => {

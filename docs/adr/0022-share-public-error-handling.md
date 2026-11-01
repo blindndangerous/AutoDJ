@@ -82,6 +82,8 @@ and compatibility plan.
 | `ADR-0022-03` | CLI usage errors exit 2 and other application failures exit 1; errors go to stderr. | automated | `tests/unit/test_cli_errors.py::test_missing_inputs_are_click_errors_on_stderr`; `tests/unit/test_cli_errors.py::test_application_option_conflicts_exit_two` |
 | `ADR-0022-04` | Setup reports failures on stderr and preserves the child process's exit status. | automated | `tests/unit/test_cli_errors.py::test_setup_failure_preserves_child_status_on_stderr` |
 | `ADR-0022-05` | Station settings validation retains its location-based field prefix. | automated | `tests/integration/test_profile_editing.py::test_station_validation_keeps_the_location_field_prefix` |
+| `ADR-0022-06` | Browser server-field maps preserve help, focus the refused field and leave unknown fields for the ordinary failure path. When that field already has focus, announce the same error once without a focus jump. | automated | `tests/jsmodules/dom-helpers.test.js::maps server fields to controls while preserving help and unknown-field fallback`, `tests/jsmodules/station-create.test.js::announces a server refusal once when its field already has focus` |
+| `ADR-0022-07` | Shared request failure text preserves action wording and stale-station outcomes. | automated | `tests/jsmodules/api-client.test.js::formats failures without losing stale-station action outcomes` |
 
 ## Review clarification 2026-10-31
 
@@ -99,3 +101,10 @@ Record actual local and CI results separately. API-client tests exercise error
 delivery; they do not establish browser focus, speech output, hardware behavior
 or WCAG conformance. The accessibility evidence obligations in
 [ADR 11](0011-verify-accessibility-with-browser-and-speech-evidence.md) remain.
+
+## Amendment 2026-10-31: shared browser-page helpers
+
+Browser editors use `showFieldError`/`clearFieldError` for invalid state and
+preserved help, and `applyServerFieldError` for public field maps. Unknown fields
+use the ordinary error path. `failureText` owns request failure prefixes and
+stale-station wording; feature-specific corrective instructions remain local.

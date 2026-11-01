@@ -19,11 +19,11 @@
 // open past midnight relabels the carts in place, without a sound or a
 // move of focus, when the day changes.
 
-import { requestBinary, requestJson, withDisabled } from "./api-client.js";
+import { failureText, requestBinary, requestJson, withDisabled } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { focusRevealed, srSpeak, stationDay } from "./dom-helpers.js";
+import { applyServerFieldError, clearFieldError, showFieldError, focusRevealed, srSpeak, stationDay } from "./dom-helpers.js";
 import { shortcutsEnabled } from "./hotkeys.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "="];
 const SLOTS = KEYS.length;
@@ -91,9 +91,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   let playEpoch = 0;
   const held = new Set();
 
-  const say = (message, error = false) => announceStatus(status, message, {
-    force: true, tone: error ? "error" : "info", dwellMs: 5000,
-  });
+  const say = makeSay(status, { dwellMs: 5000 });
   const page = () => data?.wall.pages[data.wall.active_page - 1];
   const editing = () => Number(slotSelect.value) || 1;
 
@@ -142,24 +140,11 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     clearEditError();
   }
 
-  // The error text joins or leaves a field's own description.
-  function linkError(field, linked) {
-    if (!editError) return;
-    const ids = (field.getAttribute("aria-describedby") || "").split(/\s+/)
-      .filter((id) => id && id !== editError.id);
-    if (linked) ids.push(editError.id);
-    if (ids.length) field.setAttribute("aria-describedby", ids.join(" "));
-    else field.removeAttribute("aria-describedby");
-  }
-
   function unmark(field) {
-    field.removeAttribute("aria-invalid");
-    linkError(field, false);
+    if (field.getAttribute("aria-invalid") === "true") clearFieldError(field, editError);
   }
-
   function clearEditError() {
-    for (const field of [name, clip, notBefore, notAfter].filter(Boolean)) unmark(field);
-    if (editError) { editError.textContent = ""; editError.hidden = true; }
+    clearFieldError([name, clip, pageName, file, notBefore, notAfter].filter(Boolean), editError);
   }
 
   function openEditor(number) {
@@ -215,7 +200,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
       data = response;
       render(resetEditor || moved);
     } catch (error) {
-      if (epoch === requestEpoch) say(`Could not load the carts. ${error.message}`, true);
+      if (epoch === requestEpoch) say(failureText("load the carts.", error), "error");
     }
   }
 
@@ -227,7 +212,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     }
     const refusal = prepare();
     if (refusal) {
-      say(refusal, true);
+      say(refusal, "error");
       return;
     }
     const epoch = ++playEpoch;
@@ -239,9 +224,9 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
       stopAudio();
       const bytes = await requestBinary(response.url);
       if (epoch !== playEpoch) return;
-      if (!await playAudio(bytes, response.mode, response.duck_db)) say("This browser could not play the cart.", true);
+      if (!await playAudio(bytes, response.mode, response.duck_db)) say("This browser could not play the cart.", "error");
     } catch (error) {
-      say(`Cart ${number} did not play. ${error.message}`, true);
+      say(`Cart ${number} did not play. ${error.message}`, "error");
     }
   }
 
@@ -254,21 +239,13 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     try {
       await requestJson(`/api/carts/active-page/${number}`, { method: "PUT" });
     } catch (error) {
-      say(`Could not change the cart page. ${error.message}`, true);
+      say(failureText("change the cart page.", error), "error");
       void refresh(true);
     }
   }
 
   function invalid(field, message) {
-    field.setAttribute("aria-invalid", "true");
-    // A cart editor field is named in the editor too, and linked to it.
-    if (editError && field.closest(".card") === editError.closest(".card")) {
-      editError.textContent = message;
-      editError.hidden = false;
-      linkError(field, true);
-    }
-    say(message, true);
-    focusRevealed(field);
+    showFieldError(field, message, editError, status);
   }
 
   async function save(button) {
@@ -298,9 +275,9 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
       } catch (error) {
         // A refusal that names its field is shown and linked there, as the
         // page's own checks are.
-        const field = { name, clip, not_before: notBefore, not_after: notAfter }[error.field];
-        if (field) invalid(field, `Could not save cart ${number}. ${error.message}`);
-        else say(`Could not save cart ${number}. ${error.message}`, true);
+        const message = failureText(`save cart ${number}.`, error);
+        if (!applyServerFieldError({ field: error.field, message },
+          { name, clip, not_before: notBefore, not_after: notAfter }, editError, status)) say(message, "error");
       }
     });
   }
@@ -313,7 +290,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
         await refresh(true);
         say(`Cart ${number} cleared.`);
       } catch (error) {
-        say(`Could not clear cart ${number}. ${error.message}`, true);
+        say(failureText(`clear cart ${number}.`, error), "error");
       }
     });
   }
@@ -330,7 +307,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
         await refresh(false);
         say(`Page renamed to ${body.name}.`);
       } catch (error) {
-        say(`Could not rename the page. ${error.message}`, true);
+        say(failureText("rename the page.", error), "error");
       }
     });
   }
@@ -344,13 +321,13 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
       try {
         const body = await requestJson("/api/carts/upload", { method: "POST", body: form });
         file.value = "";
-        file.removeAttribute("aria-invalid");
+        clearFieldError(file, editError);
         await refresh(false);
         source.value = "upload";
         fillClips(body.name);
         say(`Uploaded ${body.name}. It is chosen as the clip; Save cart assigns it to cart ${editing()}.`);
       } catch (error) {
-        say(`Could not upload the clip. ${error.message}`, true);
+        say(failureText("upload the clip.", error), "error");
       }
     });
   }
@@ -367,10 +344,10 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
         try {
           await requestJson(`/api/carts/uploads/${encodeURIComponent(chosen)}`, { method: "DELETE" });
           await refresh(false);
-          result = [`Deleted ${chosen}.`, false];
+          result = [`Deleted ${chosen}.`, "info"];
           return clip;
         } catch (error) {
-          result = [`Could not delete ${chosen}. ${error.message}`, true];
+          result = [failureText(`delete ${chosen}.`, error), "error"];
           return deleteUpload;
         }
       },
@@ -386,7 +363,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
       const body = await requestJson("/api/carts/stop", { method: "POST" });
       if (!body.stopped) say("No cart is playing.");
     } catch (error) {
-      say(`Could not stop the carts. ${error.message}`, true);
+      say(failureText("stop the carts.", error), "error");
     }
   }
 

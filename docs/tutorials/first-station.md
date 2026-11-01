@@ -87,7 +87,7 @@ registered folder, so this example does not depend on genre tags or advanced ana
 6. Check **Include subfolders** and leave **Operator** set to **is**.
 7. Leave the days, times, and dates under **When the songs may play** unset.
 8. Press **Check**. Confirm that the matching count includes your songs.
-9. Press **Save category**. Confirm that `Practice` appears in **Saved categories**.
+9. Press **Save category**. Confirm that `Practice` appears in the **Name** column of **Saved categories**.
 
 If the count is zero, check the selected library folder and wait for basic
 analysis to finish. Press **Check** again. Do not build the next stage around
@@ -112,14 +112,14 @@ step: choose a song from Practice, then repeat that choice for the next song.
 
 **New clockwheel name** keeps the text you entered; opening or saving a wheel does not replace it.
 
-The step's **Selection** is **Least recently played**. **Length or target** says
-**Not specified** because the song is selected during playback.
+The step reads "1. music from category Practice, least recently played, ignoring
+repeat rules". It names no length because the song is selected during playback.
 Confirm that the clockwheel has one saved step, is active, and **Pick mode**
 remains **Clockwheel** when you return to Settings. Creating a wheel alone does
 not make it play: saving, activating, and selecting the pick mode have separate jobs.
 
 If activation asks you to save changes, return to **Clockwheels** and press
-**Save clockwheel**, then choose **Activate** from **Options for Practice**. If no songs match the step, press its **Edit** action and
+**Save clockwheel**, then choose **Activate** from **Options for Practice**. If no songs match the step, choose **Edit** from its **Options** menu and
 confirm its **Music category** is **Practice** with no time restrictions.
 
 Skipping repeat rules keeps this tiny example usable. A real station needs a

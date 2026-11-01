@@ -147,7 +147,12 @@ async function cellReturn(page, selector) {
   await expect(cell).toBeFocused();
   await expect(cell).toHaveAttribute("role", "gridcell");
   await page.keyboard.press("ArrowLeft");
-  assert.equal(await cell.evaluate((element) => document.activeElement === element.previousElementSibling), true, `${selector}: Left continues grid navigation`);
+  // A checkbox-only cell, such as Enabled, takes focus on its checkbox.
+  assert.equal(await cell.evaluate((element) => {
+    const previous = element.previousElementSibling;
+    const active = document.activeElement;
+    return active === previous || (active.matches('input[type="checkbox"]') && active.parentElement === previous);
+  }), true, `${selector}: Left continues grid navigation`);
   await page.keyboard.press("ArrowRight");
   await expect(cell).toBeFocused();
 }
@@ -161,16 +166,19 @@ async function editorDescription(page) {
     : "Use Tab to move between fields and actions.");
 }
 
+// #712: until focus leaves, a moved-to data cell is named by its text, the
+// column heading when the column changed and the row's name when the row did.
 async function dataCellNames(page, host) {
   const cells = page.locator(`${host} tbody tr[data-row-key]:first-child > td`);
   if (!await cells.count()) return;
+  const headings = (await page.locator(`${host} thead th`).allTextContents()).map((text) => text.trim());
   await cells.first().focus();
   for (let index = 0; index < await cells.count(); index += 1) {
     const cell = cells.nth(index);
     if (index) await page.keyboard.press("ArrowRight");
     if (await cell.locator("button, input, select").count()) continue;
     const content = (await cell.textContent()).replace(/\s+/g, " ").trim();
-    await expect(cell).toHaveAccessibleName(content);
+    await expect(cell).toHaveAccessibleName(index ? [content, headings[index]].filter(Boolean).join(", ") : content);
   }
   const rows = page.locator(`${host} tbody tr[data-row-key]`);
   if (await rows.count() < 2) return;
@@ -186,13 +194,17 @@ async function dataCellNames(page, host) {
     await page.keyboard.press("ArrowDown");
     await expect(cell).toBeFocused();
     const content = (await cell.textContent()).replace(/\s+/g, " ").trim();
-    await expect(cell).toHaveAccessibleName(`${content}, ${rowName}`);
+    await expect(cell).toHaveAccessibleName([content, rowName].filter(Boolean).join(", "));
     await named.focus();
     await expect(cell).toHaveAccessibleName(content);
   }
 }
 
-async function traceEditorOpen(page, trigger, first, evidence) {
+async function traceEditorOpen(page, trigger, first, evidence, row = null) {
+  if (row) {
+    await page.locator(`${row} td[data-action="options"]`).focus();
+    await page.keyboard.press("Enter");
+  }
   await page.locator(trigger).focus();
   await page.evaluate(() => {
     window.editorFocusTrace = [];
@@ -209,7 +221,14 @@ async function traceEditorOpen(page, trigger, first, evidence) {
   evidence.checks.push(`Editor opening ${first}: exactly one focus and one focusin event, no intermediate focus`);
 }
 
-async function checkTable(page, host) {
+async function checkTable(page, host, evidence) {
+  // A native caption names the table, not aria-label (H39), in every engine.
+  const table = page.locator(`${host} table`);
+  assert.equal(await table.getAttribute("aria-label"), null, `${host} has no aria-label`);
+  const caption = (await table.locator(":scope > caption").textContent()).trim();
+  assert.ok(caption, `${host} has a caption`);
+  await expect(table).toHaveAccessibleName(caption);
+  evidence.checks.push(`${host}: accessible name "${caption}" from its caption`);
   await dataCellNames(page, host);
   assert.equal(await page.locator(`${host} [tabindex="0"]`).count(), 1, `${host} single Tab stop`);
   await page.locator(host).evaluate((element) => {
@@ -239,7 +258,28 @@ async function axe(page, evidence, state) {
     }).map((button) => button.getAttribute("aria-label"));
     const checked = await window.axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] } });
     const details = ({ id, impact, nodes }) => ({ id, impact, nodes: nodes.map(({ target, failureSummary }) => ({ target, failureSummary })) });
-    return { violations: checked.violations.map(details), incomplete: checked.incomplete.map(details), invalidPopupReferences };
+    // A shown row menu sits inside the cell it belongs to, so axe counts its
+    // items' words as that cell's visible label. The cell is named by its own
+    // words only (#712): its Options button's name, or its text. Only that
+    // exact case is set aside, and it is kept in the report as reviewed.
+    const ownName = (cell) => {
+      const button = [...cell.querySelectorAll("button")].find((item) => !item.closest('[role="menu"]'));
+      if (button) return button.getAttribute("aria-label");
+      return [...cell.childNodes].filter((node) => !node.matches?.('[role="menu"]')).map((node) => node.textContent).join("").replace(/\s+/g, " ").trim();
+    };
+    const menuCell = ({ target }) => {
+      const cell = document.querySelector(target[0]);
+      const menu = cell?.matches?.("td") && cell.querySelector(':scope [role="menu"]');
+      return Boolean(menu?.matches(":popover-open")) && cell.getAttribute("aria-label") === ownName(cell);
+    };
+    const violations = [], reviewed = [];
+    for (const violation of checked.violations.map(details)) {
+      const setAside = violation.id === "label-content-name-mismatch" ? violation.nodes.filter(menuCell) : [];
+      if (setAside.length) reviewed.push({ ...violation, nodes: setAside, reason: "Open row menu inside its cell; the cell is named by its own words, not the menu's items" });
+      const rest = violation.nodes.filter((node) => !setAside.includes(node));
+      if (rest.length) violations.push({ ...violation, nodes: rest });
+    }
+    return { violations, reviewed, incomplete: checked.incomplete.map(details), invalidPopupReferences };
   });
   evidence.axe.push({ state, ...result });
   assert.deepEqual(result.violations, [], `axe ${state}`);
@@ -302,6 +342,9 @@ async function menuJourney(page, row, evidence, state, typeahead = "d") {
   const menu = `#${menuId}`;
   await focused(page, `${menu} [role="menuitem"]:first-child`);
   assert.equal(await button.getAttribute("aria-expanded"), "true");
+  // The open menu's name is not added to its Actions cell's (#712).
+  const buttonName = await button.getAttribute("aria-label");
+  await expect(cell).toHaveAccessibleName(buttonName);
   await page.keyboard.press("ArrowDown");
   const second = await page.locator(`${menu} [role="menuitem"]`).count() > 1 ? 2 : 1;
   await focused(page, `${menu} [role="menuitem"]:nth-child(${second})`);
@@ -316,6 +359,7 @@ async function menuJourney(page, row, evidence, state, typeahead = "d") {
   await visuals(page, evidence, `${state} menu`);
   await page.keyboard.press("Escape");
   await cellReturn(page, `${row} td[data-action="options"]`);
+  await expect(cell).toHaveAccessibleName(buttonName);
   await visuals(page, evidence, `${state} Options cell`);
   assert.equal(await button.getAttribute("aria-expanded"), "false");
   await page.keyboard.press("Space");
@@ -342,7 +386,62 @@ async function menuJourney(page, row, evidence, state, typeahead = "d") {
   await page.keyboard.press("Shift+Tab");
   await cellReturn(page, `${row} td[data-action="options"]`);
   await page.locator("#audit-menu-after").evaluate((element) => element.remove());
-  evidence.checks.push(`${state}: Enter/Space, wrapping menu arrows, Home/End, type-ahead, Escape to exact cell and arrow continuation; Tab exit and Shift+Tab cell re-entry`);
+  evidence.checks.push(`${state}: Enter/Space, wrapping menu arrows, Home/End, type-ahead, Escape to exact cell and arrow continuation; Tab exit and Shift+Tab cell re-entry; the Actions cell is named by its button alone with the menu open and closed`);
+}
+
+// Each entry point opens the row's own menu; Escape returns to the cell it
+// was opened from. A table without actions keeps the browser's menu.
+async function contextMenuJourney(page, row, evidence, state) {
+  const button = page.locator(`${row} [aria-haspopup="menu"]`);
+  const menu = `#${await button.getAttribute("aria-controls")}`;
+  const data = page.locator(`${row} > td:not([data-action="options"]):not(:has(> input, > select, > button))`);
+  const first = data.first(), last = data.last();
+  await page.evaluate(() => {
+    window.contextMenuEvents = [];
+    window.recordContextMenu = (event) => window.contextMenuEvents.push(event.defaultPrevented);
+    window.addEventListener("contextmenu", window.recordContextMenu);
+    window.menuFocusTrace = [];
+    window.traceMenuFocus = (event) => window.menuFocusTrace.push(event.target.getAttribute("role") || event.target.tagName);
+    document.addEventListener("focusin", window.traceMenuFocus, true);
+  });
+  const synthetic = [];
+  for (const [how, cell] of [["Shift+F10", first], ["ContextMenu", last], ["right-click", first]]) {
+    const words = (await cell.textContent()).replace(/\s+/g, " ").trim();
+    if (how === "right-click") await cell.click({ button: "right" });
+    else {
+      await cell.focus();
+      const before = await page.evaluate(() => window.contextMenuEvents.length);
+      await page.keyboard.press(how);
+      // Playwright's Firefox key input bypasses the widget layer that turns
+      // these keys into contextmenu, so send the event the browser would.
+      if (await page.evaluate((count) => window.contextMenuEvents.length === count, before)) {
+        synthetic.push(how);
+        await page.evaluate(() => document.activeElement.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+      }
+    }
+    await focused(page, `${menu} [role="menuitem"]:first-child`);
+    // #712: the menu opens inside the originating cell and only its item takes focus.
+    assert.equal(await cell.evaluate((element, id) => element.contains(document.querySelector(id)), menu), true, `${state} ${how} menu sits in its cell`);
+    // The menu inside the cell is not part of the cell's name, and sits beside it.
+    await expect(cell).toHaveAccessibleName(words);
+    const [cellBox, menuBox] = [await cell.boundingBox(), await page.locator(menu).boundingBox()];
+    assert.ok(Math.abs(menuBox.x - Math.max(4, Math.min(cellBox.x, page.viewportSize().width - menuBox.width - 4))) < 2, `${state} ${how} menu is anchored to its cell`);
+    assert.deepEqual(await page.evaluate(() => window.menuFocusTrace.splice(0).filter((role) => role !== "gridcell")), ["menuitem"], `${state} ${how} focuses only the item`);
+    assert.equal(await button.getAttribute("aria-expanded"), "true", `${state} ${how} opens the row menu`);
+    assert.equal(await page.locator('[role="menu"]:visible').count(), 1, `${state} ${how} opens one menu`);
+    await page.keyboard.press("Escape");
+    await expect(cell).toBeFocused();
+    await expect(cell).toHaveAccessibleName(words);
+    assert.equal(await button.getAttribute("aria-expanded"), "false");
+  }
+  const prevented = await page.evaluate(() => {
+    document.removeEventListener("focusin", window.traceMenuFocus, true);
+    window.removeEventListener("contextmenu", window.recordContextMenu);
+    return window.contextMenuEvents;
+  });
+  assert.deepEqual(prevented, [true, true, true], `${state}: each entry point fires one contextmenu event and suppresses the browser menu`);
+  evidence.checks.push(`${state}: Shift+F10, Applications key and right-click open the row's menu; Escape returns to the originating cell${
+    synthetic.length ? ` (${synthetic.join(" and ")}: this engine's automated key input fired no contextmenu, so the audit dispatched it on the focused cell)` : ""}`);
 }
 
 async function stoppedStation(page, row, evidence) {
@@ -359,6 +458,8 @@ async function stoppedStation(page, row, evidence) {
   await expect(item).toHaveAccessibleDescription(reason);
   await axe(page, evidence, "Station stopped menu");
   const before = await page.evaluate(() => window.collectionFixture.calls.length);
+  // A background clockwheel read must not count as an attempted Run now.
+  await page.evaluate(() => window.collectionFixture.clockwheel.refresh());
   for (const method of ["mouse", "Enter", "Space", "type-ahead then Enter"]) {
     await page.evaluate(() => { document.getElementById("schedule-status").textContent = ""; });
     if (method === "mouse") {
@@ -376,37 +477,75 @@ async function stoppedStation(page, row, evidence) {
       await page.keyboard.press(method === "Space" ? "Space" : "Enter");
     }
     await page.waitForFunction((text) => document.getElementById("schedule-status").textContent === text, reason);
-    assert.equal(await page.evaluate(() => window.collectionFixture.calls.length), before, `off-air ${method} sends no request`);
+    const delta = await page.evaluate((index) => window.collectionFixture.calls.slice(index), before);
+    const actions = delta.filter(({ method, url }) => method !== "GET" || /\/run(?:\?|$)/.test(url));
+    assert.deepEqual(actions, [], `off-air ${method} sends no action request: ${JSON.stringify(delta.map(({ method, url }) => ({ method, url })))}`);
     assert.equal(await button.getAttribute("aria-expanded"), "true");
   }
   await page.keyboard.press("Escape");
   await page.evaluate(() => window.collectionFixture.scheduler.setOffAir(false));
   assert.equal(await item.getAttribute("aria-disabled"), "false");
   assert.equal(await item.getAttribute("aria-describedby"), null);
-  evidence.checks.push("Station stopped: mouse, Enter, Space and type-ahead/Enter send no request; each announces the linked disabled reason");
+  evidence.checks.push("Station stopped: mouse, Enter, Space and type-ahead/Enter send no Run now or mutation request during passive clockwheel refresh; each announces the linked disabled reason");
+}
+
+// The Enabled cell is a native checkbox: Space turns the event off and on
+// in place with one request each, and focus stays on the checkbox.
+async function enabledCheckbox(page, row, evidence) {
+  const box = page.locator(`${row} td[data-action="enabled"] input[type="checkbox"]`);
+  await expect(box).toHaveAccessibleName("Enable Morning");
+  await expect(box).toBeChecked();
+  assert.equal(await page.locator(`${row} [role="menuitem"][data-action="toggle"]`).count(), 0, "Enable/Disable is not in the menu");
+  await page.locator(`${row} td[data-action="action"]`).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(box).toBeFocused();
+  const requests = () => page.evaluate(() => window.collectionFixture.calls.filter(({ url }) => url.endsWith("/event-0/enable")).map(({ body }) => body));
+  const before = (await requests()).length;
+  for (const [enabled, word] of [[false, "disabled"], [true, "enabled"]]) {
+    await page.keyboard.press("Space");
+    await page.waitForFunction((text) => document.getElementById("schedule-status").textContent === text, `Event Morning ${word}`);
+    assert.deepEqual((await requests()).slice(before), enabled ? [{ enabled: false }, { enabled: true }] : [{ enabled: false }], `Space sends one enable request (${word})`);
+    await expect(box).toBeFocused();
+    if (enabled) await expect(box).toBeChecked(); else await expect(box).not.toBeChecked();
+    assert.equal(await box.getAttribute("aria-busy"), null, `${word}: not busy after the reply`);
+  }
+  await axe(page, evidence, "Schedule Enabled checkbox");
+  await visuals(page, evidence, "Schedule Enabled checkbox");
+  evidence.checks.push("Schedule Enabled: arrow entry on the checkbox named \"Enable Morning\"; Space sends exactly one enable request each way, keeps focus on the checkbox and announces the result; no Enable/Disable menu item");
 }
 
 async function journey(page, evidence) {
-  for (const host of ["#schedule-events", "#schedule-upcoming", "#schedule-runs", "#clock-list", "#clock-slots"]) await checkTable(page, host);
+  for (const host of ["#schedule-events", "#schedule-upcoming", "#schedule-runs", "#clock-list", "#clock-slots"]) await checkTable(page, host, evidence);
   await expect(page.locator("#clock-name")).toHaveAccessibleName("New clockwheel name");
   await expect(page.locator("#clock-name")).toHaveValue("");
   await page.locator("#clock-name").fill("Future wheel");
-  await page.locator('#clock-list tr[data-row-key="Evening"] td[data-action="open"]').focus();
-  await page.keyboard.press("Enter");
+  await choose(page, '#clock-list tr[data-row-key="Evening"]', "open");
   await expect(page.locator("#clock-name")).toHaveValue("Future wheel");
-  await page.locator('#clock-list tr[data-row-key="Morning"] td[data-action="open"]').focus();
-  await page.keyboard.press("Enter");
+  await choose(page, '#clock-list tr[data-row-key="Morning"]', "open");
   await expect(page.locator("#clock-name")).toHaveValue("Future wheel");
   await page.locator("#clock-name").fill("");
-  await expect(page.locator('#clock-slots th').filter({ hasText: /^Selection$/ })).toHaveCount(1);
-  await expect(page.locator('#clock-slots tr[data-index="0"] td[data-action="selection"]')).toHaveAccessibleName("Least recently played");
-  await expect(page.locator('#clock-slots tr[data-index="0"] td[data-action="target"]')).toHaveAccessibleName("Not specified");
-  evidence.checks.push("All five tables: computed data names omit redundant headers, one Tab stop, actual Tab/Shift+Tab entry/exit; Selection separated from Length or target and New clockwheel name computed label");
+  assert.deepEqual(await page.locator("#schedule-events thead th").allTextContents(), ["Name", "When", "Action", "Enabled", "Actions"]);
+  assert.deepEqual(await page.locator("#schedule-upcoming thead th").allTextContents(), ["Name", "Due", "Action"]);
+  assert.deepEqual(await page.locator("#schedule-runs thead th").allTextContents(), ["Name", "When", "Action", "Result"]);
+  assert.deepEqual(await page.locator("#clock-list thead th").allTextContents(), ["Name", "Active", "Actions"]);
+  assert.deepEqual(await page.locator("#clock-slots thead th").allTextContents(), ["Step", "Actions"]);
+  await expect(page.locator('#clock-slots tr[data-index="0"] td[data-action="step"]')).toHaveAccessibleName("1. music from Music, least recently played");
+  evidence.checks.push("All five tables: horizontal moves add the column heading and vertical moves the row name to computed cell names, one Tab stop, actual Tab/Shift+Tab entry/exit; #712 column sets and numbered step sentences");
   const eventRow = '#schedule-events tr[data-row-key="event-0"]';
+  await contextMenuJourney(page, eventRow, evidence, "Schedule event");
+  await contextMenuJourney(page, '#clock-slots tr[data-index="0"]', evidence, "Clockwheel step");
+  const nativeMenu = await page.locator("#schedule-upcoming tbody td").first().evaluate((cell) => {
+    const event = new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    cell.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  assert.equal(nativeMenu, false, "a read-only table leaves the browser's own menu");
+  evidence.checks.push("Upcoming: a table without actions does not suppress the browser's context menu");
   await menuJourney(page, eventRow, evidence, "Schedule");
   await stoppedStation(page, eventRow, evidence);
   await page.locator(`${eventRow} td[data-action="options"]`).focus();
   await page.keyboard.press("Enter");
+  await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => window.collectionFixture.calls.some(({ url }) => url.endsWith("/event-0/run")));
   assert.equal(await page.evaluate(() => window.collectionFixture.calls.filter(({ url }) => url.endsWith("/event-0/run")).length), 1);
@@ -414,35 +553,41 @@ async function journey(page, evidence) {
   evidence.checks.push("Schedule: Enter invokes Run now once and returns to exact Options cell with arrow continuation");
   await page.locator(`${eventRow} [aria-haspopup="menu"]`).focus();
   await page.keyboard.press("Space");
+  await focused(page, `${eventRow} [role="menuitem"][data-action="edit"]`);
+  await page.keyboard.press("ArrowDown");
   await focused(page, `${eventRow} [role="menuitem"][data-action="run"]`);
   await page.keyboard.press("Space");
   await cellReturn(page, `${eventRow} td[data-action="options"]`);
   assert.equal(await page.locator(`${eventRow} [aria-haspopup="menu"]`).getAttribute("aria-expanded"), "false");
   assert.equal(await page.evaluate(() => window.collectionFixture.calls.filter(({ url }) => url.endsWith("/event-0/run")).length), 2);
   evidence.checks.push("Schedule: Space opens and activates once without reopening on focus return");
+  await enabledCheckbox(page, eventRow, evidence);
   await choose(page, eventRow, "delete");
   await confirmationScan(page, evidence, "Delete schedule event");
   await expect(page.locator("#confirm-dialog")).toHaveAccessibleDescription(await page.locator("#confirm-message").textContent());
   await page.locator("#confirm-cancel").click();
   await cellReturn(page, `${eventRow} td[data-action="options"]`);
 
-  await traceEditorOpen(page, `${eventRow} td[data-action="edit"]`, "#schedule-name", evidence);
+  await traceEditorOpen(page, `${eventRow} [role="menuitem"][data-action="edit"]`, "#schedule-name", evidence, eventRow);
   await editorDescription(page);
   await axe(page, evidence, "Schedule editor");
   await page.keyboard.press("Escape");
-  await cellReturn(page, `${eventRow} td[data-action="edit"]`);
+  await cellReturn(page, `${eventRow} td[data-action="options"]`);
+  await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
   await page.locator("#schedule-name").fill("Morning revised");
   await page.locator("#schedule-save").focus();
   await page.keyboard.press("Enter");
-  await cellReturn(page, `${eventRow} td[data-action="edit"]`);
+  await cellReturn(page, `${eventRow} td[data-action="options"]`);
   assert.equal(await page.locator(`${eventRow} td`).first().textContent(), "Morning revised");
-  evidence.checks.push("Schedule editor: keyboard open, Escape cancel, save and return to Edit cell");
+  evidence.checks.push("Schedule editor: keyboard open from the menu's first item, Escape cancel, save and return to the Actions cell");
 
   const stepRow = '#clock-slots tr[data-index="0"]';
   await menuJourney(page, stepRow, evidence, "Clockwheel step");
   await page.locator(`${stepRow} td[data-action="options"]`).focus();
   await page.keyboard.press("Enter");
+  await focused(page, `${stepRow} [data-action="edit"]`);
+  await page.keyboard.press("ArrowDown");
   await focused(page, `${stepRow} [data-action="move-up"]`);
   assert.equal(await page.locator(`${stepRow} button[data-action="move-up"]`).getAttribute("aria-disabled"), "true");
   await page.keyboard.press("Enter");
@@ -450,13 +595,13 @@ async function journey(page, evidence) {
   assert.equal(await page.locator('#clock-slots tr[data-index]').count(), 2);
   await page.keyboard.press("Escape");
   evidence.checks.push("Clockwheel step: disabled Move up stays reachable and announces its reason without mutation");
-  await traceEditorOpen(page, `${stepRow} td[data-action="edit"]`, "#clock-step-type", evidence);
+  await traceEditorOpen(page, `${stepRow} [role="menuitem"][data-action="edit"]`, "#clock-step-type", evidence, stepRow);
   await editorDescription(page);
   await axe(page, evidence, "Clockwheel step editor");
   await page.locator("#clock-step-selection").selectOption("random");
   await page.locator("#clock-add-step").focus();
   await page.keyboard.press("Enter");
-  await focused(page, `${stepRow} td[data-action="edit"]`);
+  await focused(page, `${stepRow} td[data-action="options"]`);
   await page.keyboard.press("Alt+ArrowDown");
   await page.waitForFunction(() => document.activeElement.closest("tr")?.dataset.index === "1");
   await page.keyboard.press("Control+z");
@@ -482,7 +627,7 @@ async function journey(page, evidence) {
   await page.locator("#clock-editor-name").fill("Evening revised");
   await page.locator('#clock-name-form button[type="submit"]').focus();
   await page.keyboard.press("Enter");
-  await focused(page, '#clock-list tr[data-row-key="Evening revised"] td[data-action="open"]');
+  await focused(page, '#clock-list tr[data-row-key="Evening revised"] td[data-action="options"]');
   assert.equal(await page.locator("#clock-open-name").textContent(), "Morning");
   evidence.checks.push("Saved Rename targets Evening while Morning stays open; editor returns to renamed row");
 
@@ -502,7 +647,7 @@ async function journey(page, evidence) {
   assert.equal(await page.locator("#clock-slots .no-results").count(), 1);
   evidence.checks.push("Create: modal cancel/save round trip, explicit unsaved wheel and empty steps state");
 
-  await page.locator(`${eventRow} td[data-action="edit"]`).focus();
+  await page.locator(`${eventRow} td[data-action="options"]`).focus();
   await axe(page, evidence, "Panels and empty steps");
   await visuals(page, evidence, "Panels");
   await page.setViewportSize({ width: 320, height: 800 });
@@ -523,6 +668,7 @@ async function journey(page, evidence) {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator(`${eventRow} td[data-action="options"]`).focus();
   await page.keyboard.press("Enter");
+  await focused(page, `${eventRow} [role="menuitem"]:first-child`);
   await page.evaluate(async () => {
     const fixture = window.collectionFixture;
     fixture.events[0].name = "Morning refreshed";
@@ -536,7 +682,7 @@ async function journey(page, evidence) {
   });
   await cellReturn(page, '#schedule-events tr[data-row-key="event-1"] td[data-action="options"]');
   assert.equal(await page.locator('[role="menu"]:visible').count(), 0, "removed native popover closes");
-  await page.waitForFunction(() => document.getElementById("schedule-status").textContent.includes("Focus moved to Options for Evening"));
+  await expect(page.locator("#schedule-status")).toContainText("Focus moved to Options for Evening", { timeout: 10000 });
   await page.keyboard.press("Enter");
   await page.evaluate(async () => {
     window.collectionFixture.events.splice(0);
@@ -545,7 +691,7 @@ async function journey(page, evidence) {
   await focused(page, "#schedule-add");
   assert.equal(await page.locator("#schedule-events .no-results").count(), 1);
   assert.equal(await page.locator('[role="menu"]:visible').count(), 0);
-  await page.waitForFunction(() => document.getElementById("schedule-status").textContent.includes("Focus moved to Add event"));
+  await expect(page.locator("#schedule-status")).toContainText("Focus moved to Add event", { timeout: 10000 });
   evidence.checks.push("Native open popup survives passive refresh; row removal closes it and announces adjacent-row/final Add fallback");
 }
 
@@ -707,7 +853,7 @@ async function emptyTable(page, host, evidence) {
   await page.locator(`${host} td.no-results`).waitFor();
   assert.equal(await page.locator(`${host} td.no-results`).count(), 1);
   assert.equal(Number(await page.locator(`${host} td.no-results`).getAttribute("colspan")), await page.locator(`${host} thead th`).count());
-  await checkTable(page, host);
+  await checkTable(page, host, evidence);
   evidence.checks.push(`${host}: one spanning empty row and one actual Tab stop`);
 }
 
@@ -732,7 +878,7 @@ async function trackInfoRoundtrip(page, row, evidence, state) {
   await axe(page, evidence, `${state} real Track info`);
   await page.locator("#track-info-return").focus();
   await page.keyboard.press("Enter");
-  await focused(page, `${row} td[data-action="info"]`);
+  await focused(page, `${row} td[data-action="options"]`);
   evidence.checks.push(`${state}: actual library Track info controller and tab router return directly to the originating cell`);
 }
 
@@ -745,15 +891,16 @@ async function showsJourney(page, evidence) {
   await page.locator(show).evaluate((row) => { row.style.height = "900px"; });
   assert.ok((await page.locator(show).boundingBox()).height > 640, "pointer regression uses a tall row");
   const beforeOpen = await page.evaluate(() => window.batchFixture.calls.filter((call) => call.url === "/api/shows/sample-show" && call.method === "GET").length);
-  await page.locator(`${show} button[data-action="open"]`).click();
+  await page.locator(`${show} [aria-haspopup="menu"]`).click();
+  await page.locator(`${show} [role="menuitem"][data-action="open"]`).click();
   await page.waitForFunction(() => !document.getElementById("shows-editor").hidden && document.querySelectorAll('#shows-songs tr[data-row-key]').length === 2);
   assert.equal(await page.evaluate(() => window.batchFixture.calls.filter((call) => call.url === "/api/shows/sample-show" && call.method === "GET").length), beforeOpen + 1, "real pointer opens the show once");
   await focused(page, "#shows-editor-heading");
   await page.locator("#shows-close").click();
   await page.locator(show).evaluate((row) => row.style.removeProperty("height"));
   await page.setViewportSize(viewport);
-  evidence.checks.push("Show primary: real pointer opens a tall row at320x640, sends one detail GET and focuses its editor");
-  await checkTable(page, "#shows-list"); await tableArrows(page, "#shows-list");
+  evidence.checks.push("Show Options: real pointer opens the menu of a tall row at 320x640; Open list sends one detail GET and focuses its editor");
+  await checkTable(page, "#shows-list", evidence); await tableArrows(page, "#shows-list");
   await menuJourney(page, show, evidence, "Show", "d");
   await choose(page, show, "edit");
   await focused(page, "#shows-name");
@@ -767,14 +914,15 @@ async function showsJourney(page, evidence) {
     await page.keyboard.press("Tab"); await focused(page, `#${id}`);
   }
   await page.keyboard.press("Enter");
-  await focused(page, `${show} td[data-action="open"]`);
+  await focused(page, `${show} td[data-action="options"]`);
   assert.equal(await page.locator(`${show} td[data-action="name"]`).textContent(), "Evening revised");
   await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
   await page.locator('#shows-songs tr[data-row-key]').first().waitFor();
-  await checkTable(page, "#shows-songs"); await tableArrows(page, "#shows-songs");
+  await checkTable(page, "#shows-songs", evidence); await tableArrows(page, "#shows-songs");
   const song = '#shows-songs tr[data-row-key]:first-child';
   await menuJourney(page, song, evidence, "Show song", "r");
-  await page.locator(`${song} td[data-action="info"]`).focus(); await page.keyboard.press("Enter");
+  await choose(page, song, "info");
   assert.deepEqual(await page.evaluate(() => ({ path: window.batchFixture.trackInfo.path, kind: window.batchFixture.trackInfo.kind,
     liveOpener: window.batchFixture.trackInfo.opener.isConnected })), { path: "/music/1.flac", kind: "music", liveOpener: true });
   await trackInfoRoundtrip(page, song, evidence, "Show song");
@@ -786,9 +934,9 @@ async function showsJourney(page, evidence) {
   await focused(page, '#shows-songs td[data-action="options"]');
   await page.locator("#shows-search").fill("song"); await page.locator("#shows-search-run").click();
   await page.locator('#shows-results tr[data-row-key]').waitFor();
-  await checkTable(page, "#shows-results"); await tableArrows(page, "#shows-results");
+  await checkTable(page, "#shows-results", evidence); await tableArrows(page, "#shows-results");
   await menuJourney(page, '#shows-results tr[data-row-key]', evidence, "Show search result", "a");
-  await page.locator('#shows-results td[data-action="add"]').focus(); await page.keyboard.press("Enter");
+  await choose(page, '#shows-results tr[data-row-key]', "add");
   await page.waitForFunction(() => document.querySelectorAll('#shows-songs tr[data-row-key]').length === 2);
   for (let count = 2; count > 0; count -= 1) {
     await choose(page, song, "remove"); await page.locator("#confirm-accept").click();
@@ -809,7 +957,7 @@ async function showsJourney(page, evidence) {
 async function editionsJourney(page, evidence) {
   const occurrence = '#edition-occurrences tr[data-row-key="first"]', take = '#edition-takes tr[data-row-key="speech"]';
   await page.locator(occurrence).waitFor();
-  for (const host of ["#edition-occurrences", "#edition-takes"]) { await checkTable(page, host); await tableArrows(page, host); }
+  for (const host of ["#edition-occurrences", "#edition-takes"]) { await checkTable(page, host, evidence); await tableArrows(page, host); }
   await menuJourney(page, occurrence, evidence, "Prepared occurrence", "r");
   await menuJourney(page, take, evidence, "Prepared take", "r");
   await choose(page, take, "review");
@@ -843,23 +991,31 @@ async function editionsJourney(page, evidence) {
 }
 
 async function queueJourney(page, evidence, calls) {
-  await checkTable(page, "#queue-list"); await tableArrows(page, "#queue-list");
+  await checkTable(page, "#queue-list", evidence); await tableArrows(page, "#queue-list");
   const row = '#queue-list tr[data-row-key]:first-child';
   await menuJourney(page, row, evidence, "Queued track", "r");
-  await page.locator(`${row} td[data-action="info"]`).focus(); await page.keyboard.press("Enter");
+  await choose(page, row, "info");
   assert.equal(await page.evaluate(() => window.batchFixture.trackInfo.path), "/music/1.flac");
   await trackInfoRoundtrip(page, row, evidence, "Queued track");
   const last = '#queue-list tr[data-row-key]:last-child';
+  const beforeMove = calls.length;
   await choose(page, last, "top");
-  await page.waitForFunction(() => document.getElementById("queue-list").getAttribute("aria-busy") === "false");
+  await expect.poll(() => calls.length).toBe(beforeMove + 1);
+  await expect(page.locator("#queue-announce")).toContainText("Moved Charlie to position 1 of 3.");
+  await expect(page.locator("#queue-list")).not.toHaveAttribute("aria-busy", "true");
+  await cellReturn(page, `${row} td[data-action="options"]`);
   assert.deepEqual(calls.at(-1).body.order, [2, 0, 1]);
   await choose(page, row, "remove"); await confirmationScan(page, evidence, "Remove queued track");
   const count = calls.length;
   await page.locator("#confirm-cancel").click(); assert.equal(calls.length, count);
   await cellReturn(page, `${row} td[data-action="options"]`);
   await choose(page, row, "remove"); await page.locator("#confirm-accept").click();
-  await page.waitForFunction(() => document.querySelectorAll('#queue-list tr[data-row-key]').length === 2);
-  await page.waitForFunction(() => document.getElementById("queue-list").getAttribute("aria-busy") === "false");
+  await expect.poll(() => calls.length).toBe(count + 1);
+  await expect(page.locator("#confirm-dialog")).not.toBeVisible();
+  await expect(page.locator('#queue-list tr[data-row-key]')).toHaveCount(2);
+  await expect(page.locator("#queue-announce")).toContainText("Removed Charlie from queue.");
+  await expect(page.locator("#queue-list")).not.toHaveAttribute("aria-busy", "true");
+  await cellReturn(page, `${row} td[data-action="options"]`);
   await page.evaluate(() => window.batchFixture.restrict("Start the station to change its queue."));
   const restrictedCount = calls.length;
   const restrictedOrder = await page.locator('#queue-list tr[data-row-key]').evaluateAll((rows) => rows.map((item) => item.dataset.rowKey));
@@ -881,7 +1037,7 @@ async function queueJourney(page, evidence, calls) {
 }
 
 async function requestsJourney(page, evidence) {
-  for (const host of ["#requests-list", "#requests-recent"]) { await checkTable(page, host); await tableArrows(page, host); }
+  for (const host of ["#requests-list", "#requests-recent"]) { await checkTable(page, host, evidence); await tableArrows(page, host); }
   const row = '#requests-list tr[data-row-key]:first-child';
   await menuJourney(page, row, evidence, "Listener request", "t");
   const offAirReason = "Start the station to change the queue.";
@@ -900,7 +1056,7 @@ async function requestsJourney(page, evidence) {
     await page.waitForFunction((reason) => document.getElementById("requests-status").textContent === reason, offAirReason);
     assert.equal(await page.evaluate(() => window.batchFixture.calls.length), stoppedCalls, "stopped pointer action sends no request");
   }
-  await page.locator(`${row} td[data-action="approve"]`).focus(); await page.keyboard.press("Enter");
+  await choose(page, row, "approve");
   await refused(page.locator(`${row} button[data-action="approve"]`));
   await choose(page, row, "play-next");
   await refused(page.locator(`${row} button[data-action="play-next"]`));
@@ -925,14 +1081,15 @@ async function requestsJourney(page, evidence) {
   assert.equal(await page.locator(`#${reason}`).textContent(), "No smooth position is available.");
   const beforeRefusal = await page.evaluate(() => ({ count: window.batchFixture.calls.length,
     order: window.batchFixture.state.pending.map((item) => item.id) }));
-  await page.locator(`${unavailable} td[data-action="approve"]`).focus();
-  await page.keyboard.press("Enter");
+  await choose(page, unavailable, "approve");
   await page.waitForFunction(() => document.getElementById("requests-status").textContent === "No smooth position is available.");
   assert.deepEqual(await page.evaluate(() => ({ count: window.batchFixture.calls.length,
     order: window.batchFixture.state.pending.map((item) => item.id) })), beforeRefusal, "unavailable Approve sends no request and preserves waiting requests");
-  await focused(page, `${unavailable} td[data-action="approve"]`);
+  await focused(page, `${unavailable} [role="menuitem"][data-action="approve"]`);
   await axe(page, evidence, "Unavailable listener approval");
-  await page.locator(`${row} td[data-action="approve"]`).focus(); await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  await cellReturn(page, `${unavailable} td[data-action="options"]`);
+  await choose(page, row, "approve");
   await page.waitForFunction(() => document.querySelectorAll('#requests-list tr[data-row-key]').length === 2);
   assert.deepEqual(await page.evaluate(() => window.batchFixture.calls.filter((call) => call.method === "POST")),
     [offAirPost, { url: "/api/requests/request-0/approve", method: "POST", body: null }], "Approve keeps its route and empty payload");
@@ -959,7 +1116,7 @@ async function requestsJourney(page, evidence) {
 async function voiceJourney(page, evidence, state) {
   const host = "#vt-list", row = `${host} tr[data-row-key="${"a".repeat(32)}"]`, unavailable = `${host} tr[data-row-key="${"b".repeat(32)}"]`;
   await page.locator(row).waitFor();
-  await checkTable(page, host); await tableArrows(page, host);
+  await checkTable(page, host, evidence); await tableArrows(page, host);
   await menuJourney(page, row, evidence, "Voice booking", "c");
   await choose(page, unavailable, "cancel");
   assert.equal(await page.locator(`${unavailable} button[data-action="cancel"]`).getAttribute("aria-disabled"), "true");
@@ -1018,6 +1175,267 @@ async function batchSurface(page, theme, surface, evidence) {
   else await voiceJourney(page, evidence, voice);
 }
 
+// Batch 3 uses the same production markup and browser interactions. The small
+// in-memory transport also serves requestJson callers (liners/profiles/devices).
+async function mountBatchThree(page, theme, surface) {
+  await page.goto(BASE);
+  await page.evaluate(async ({ theme, surface }) => {
+    document.documentElement.dataset.theme = theme;
+    const source = new globalThis.DOMParser().parseFromString(await (await fetch("/source-index")).text(), "text/html");
+    const fixture = document.getElementById("fixture");
+    const ids = { categories: "categories-card", rules: "intro-rules", intros: "intros-editor",
+      ads: "ads-panel", liners: "spanel-liners", profiles: "spanel-access" };
+    let card;
+    if (surface === "devices") {
+      card = document.createElement("section");
+      card.id = "audit-access";
+      card.setAttribute("aria-label", "Browser access");
+      for (const id of ["access-status", "access-note", "access-controls"]) card.append(source.getElementById(id));
+      document.body.append(source.getElementById("device-rename-dialog"));
+    } else card = source.getElementById(ids[surface]);
+    card.hidden = false;
+    card.open = true;
+    // A standalone settings card has no surrounding Settings tablist.
+    if (card.getAttribute("role") === "tabpanel") {
+      card.removeAttribute("role"); card.removeAttribute("aria-labelledby");
+    }
+    for (const details of card.querySelectorAll("details")) details.open = true;
+    if (["categories", "rules"].includes(surface)) {
+      const library = document.createElement("section");
+      library.id = "panel-library";
+      library.setAttribute("aria-label", "Library tools");
+      library.append(card); fixture.append(library);
+    } else fixture.append(card);
+    document.body.append(source.getElementById("confirm-dialog"));
+    const clone = (value) => JSON.parse(JSON.stringify(value));
+    const state = window.batchThree = { calls: [], controls: null };
+    const categories = { categories: [{ id: "c1", name: "Rock songs", source: "query", query: "genre:Rock", tracks: 1, used_by: [] }],
+      playlists: [], folders: [], genres: ["Rock"], beets_fields: [], beets: true };
+    const rules = { rules: [{ id: "r1", label: "Rock introduction", match: "all", conditions: [{ field: "genre", operator: "is", value: "Rock" }],
+      clip_ids: ["l1"], chance: 100, cooldown_minutes: 0 }], liners: [{ id: "l1", label: "sample.wav" }],
+      liner_folders: [], sources: [], genres: ["Rock"], beets_fields: [], categories: [] };
+    const intros = { track: { id: "track1", title: "Song", artist: "Artist" }, active: true, limits: { max_bytes: 41943040 },
+      song: [{ id: "i1", label: "Song intro", rules_text: "Plays every time", speech_s: 3, playable: true }],
+      artist: [{ id: "i2", label: "Artist intro", rules_text: "Plays every time", speech_s: 2, playable: true }] };
+    const ads = { station: "default", enabled: true, reason: null, problem: null, timezone: "UTC",
+      limits: { max_bytes: 1024, max_seconds: 120, max_spots: 200, max_breaks: 50, max_spots_per_break: 10 },
+      settings: { separation_minutes: 15, late_minutes: 10, miss_after_minutes: 30 }, pending: [], recent: [],
+      spots: [{ id: "spot1", title: "Autumn sale", advertiser: "Example Motors", campaign: "Autumn", category: "Cars",
+        start_date: null, end_date: null, dates_text: "Any date", in_flight: true, max_per_day: 4, max_per_hour: 1,
+        enabled: true, seconds: 30, plays_today: 1, booked: false, missing: false },
+      { id: "spot2", title: "Booked sale", advertiser: "Second advertiser", campaign: "", category: "",
+        start_date: null, end_date: null, dates_text: "Any date", in_flight: true, max_per_day: 0, max_per_hour: 0,
+        enabled: true, seconds: 20, plays_today: 1, booked: true, missing: false }],
+      breaks: [{ id: "break1", name: "Quarter past", minutes: [15, 45], days: [], from_hour: 0, until_hour: 24,
+        start_date: null, end_date: null, max_spots: 3, max_seconds: 0, enabled: true,
+        when_text: "At :15, :45 past the hour", next_text: "Tomorrow at 12:15" }] };
+    const adReport = { from: "2026-10-01", to: "2026-10-31", count: 1, truncated: false, damaged: 0,
+      totals: { aired: 1, late: 0, missed: 0, waiting: 0, missed_breaks: 0 },
+      summary: [{ advertiser: "Example Motors", campaign: "Autumn", aired: 1, late: 0, missed: 0, interrupted: 0, waiting: 0, seconds: 30 }],
+      rows: [{ id: "air1", scheduled_text: "31 October 2026 at 12:15:00", aired_text: "31 October 2026 at 12:15:00",
+        delay_minutes: 0, status: "aired", status_text: "Aired", break_name: "Quarter past", source_text: "Minutes past the hour",
+        spot_id: "spot1", title: "Autumn sale", advertiser: "Example Motors", campaign: "Autumn", seconds: 30, reason: "" }] };
+    const liners = { config: {}, items: [{ id: "l1", name: "ID.wav", path: "/liners/ID.wav", editable: true,
+      dates_text: "", playable: true, not_before: null, not_after: null }], files: ["ID.wav"] };
+    const profiles = { profiles: ["Morning", "Evening"], active: "Morning" };
+    const devices = { pairing: true, devices: [{ device_id: "d1", name: "Desk", paired_at: 1, last_seen_at: 2, current: false }] };
+    Object.assign(state, { categories, rules, intros, ads, adReport, liners, profiles, devices });
+    const request = async (url, options = {}) => {
+      const method = options.method || "GET", body = options.body ? JSON.parse(options.body) : {};
+      state.calls.push({ url, method, body });
+      if (url === "/api/categories/check") return { tracks: 1 };
+      if (url === "/api/categories") return clone(categories);
+      if (url === "/api/categories/c1" && method === "PUT") {
+        Object.assign(categories.categories[0], body);
+        return clone({ ...categories, category: categories.categories[0] });
+      }
+      if (url === "/api/intros/rules") return clone(rules);
+      if (url === "/api/intros/rules/r1" && method === "PUT") return clone(Object.assign(rules.rules[0], body));
+      if (url.startsWith("/api/intros?")) return clone(intros);
+      if (url === "/api/ads") return clone(ads);
+      if (url.startsWith("/api/ads/report?")) return clone(adReport);
+      if (url === "/api/ads/spots/spot1" && method === "PUT") return clone(Object.assign(ads.spots[0], body));
+      if (url === "/api/ads/breaks/break1" && method === "PUT") return clone(Object.assign(ads.breaks[0], body));
+      if (url === "/api/ads/breaks/break1/run") return { name: ads.breaks[0].name, spots: 1, seconds: 30 };
+      if (url === "/api/liners") return clone(liners);
+      if (url === "/api/liners/dates/l1" && method === "PUT") return clone(Object.assign(liners.items[0], body));
+      if (url === "/api/profiles") return clone(profiles);
+      if (url === "/api/profiles/Evening/apply") { profiles.active = "Evening"; return clone(profiles); }
+      if (url === "/api/devices") return clone(devices);
+      if (url === "/api/devices/d1" && method === "PATCH") return clone(Object.assign(devices.devices[0], body));
+      throw new Error(`Unexpected Batch 3 fixture ${method} ${url}`);
+    };
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (url, options) => String(url).startsWith("/api/")
+      ? new globalThis.Response(JSON.stringify(await request(String(url), options)), { headers: { "Content-Type": "application/json" } })
+      : nativeFetch(url, options);
+    const get = (id) => document.getElementById(id);
+    if (surface === "categories") {
+      const { installCategoriesPanel } = await import(new URL("/modules/categories-panel.js", window.location.href).href);
+      state.controls = installCategoriesPanel({ request });
+    } else if (surface === "rules") {
+      const { installIntroRulesPanel } = await import(new URL("/modules/intro-rules-panel.js", window.location.href).href);
+      state.controls = installIntroRulesPanel({ request });
+    } else if (surface === "intros") {
+      const { installMatchedIntros } = await import(new URL("/modules/matched-intros.js", window.location.href).href);
+      // Playback is a separate hardware concern; exercise the actual toggle.
+      get("intro-playback").play = async () => {};
+      get("intro-playback").pause = () => {};
+      state.controls = installMatchedIntros({ request });
+      await state.controls.load({ id: "track1", kind: "music", title: "Song", artist: "Artist" });
+      return;
+    } else if (surface === "ads") {
+      const { installAdsPanel } = await import(new URL("/modules/ads-panel.js", window.location.href).href);
+      state.controls = installAdsPanel({ request });
+    } else if (surface === "liners") {
+      const { installLiners } = await import(new URL("/modules/liners.js", window.location.href).href);
+      state.controls = installLiners({ lnFileList: get("ln-file-list"), lnStatus: get("ln-status"), lnBrowseStatus: get("ln-browse-status") }, { canPlay: () => false });
+    } else if (surface === "profiles") {
+      const { installProfiles } = await import(new URL("/modules/profiles.js", window.location.href).href);
+      state.controls = installProfiles({ card, nameInput: get("profile-name"), saveButton: get("profile-save"), list: get("profile-list"), status: get("profiles-status") });
+    } else {
+      const { installAccess } = await import(new URL("/modules/devices.js", window.location.href).href);
+      state.controls = installAccess({ card, note: get("access-note"), controls: get("access-controls"), signOut: get("access-sign-out"),
+        refresh: get("access-refresh"), list: get("device-list"), status: get("access-status") }, { onSignedOut: () => {} });
+      return;
+    }
+    await state.controls.refresh();
+  }, { theme, surface });
+  await page.addScriptTag({ url: `${BASE}/axe.js` });
+}
+
+async function batchThreeEditor(page, evidence, { row, action = "edit", field, save, value, label }) {
+  const cell = `${row} td[data-action="options"]`;
+  await traceEditorOpen(page, `${row} [role="menuitem"][data-action="${action}"]`, field, evidence, row);
+  await editorDescription(page);
+  await axe(page, evidence, `${label} editor`);
+  await visuals(page, evidence, `${label} editor`);
+  await page.keyboard.press("Escape");
+  await cellReturn(page, cell);
+  // The former primary action is the first menu item.
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+  await page.locator(field).fill(value);
+  await page.locator(save).focus();
+  await page.keyboard.press("Enter");
+  await cellReturn(page, cell);
+  evidence.checks.push(`${label}: keyboard editor open from its menu, one focus event, Escape to the Actions cell, edit/save and grid navigation after return`);
+}
+
+async function batchThreeSurface(page, theme, surface, evidence) {
+  await mountBatchThree(page, theme, surface);
+  const hosts = { categories: ["#categories-list"], rules: ["#intro-rules-list"], intros: ["#intros-song-list", "#intros-artist-list"],
+    ads: ["#ads-spots", "#ads-breaks"], liners: ["#ln-file-list"], profiles: ["#profile-list"], devices: ["#device-list"] }[surface];
+  for (const host of hosts) {
+    await page.locator(`${host} tr[data-row-key]`).first().waitFor();
+    await checkTable(page, host, evidence); await tableArrows(page, host);
+  }
+  const first = page.locator(`${hosts[0]} tr[data-row-key] td`).first();
+  await first.focus();
+  await axe(page, evidence, `${surface} loaded`); await visuals(page, evidence, `${surface} loaded`);
+  await first.evaluate((element) => element.blur());
+  await page.setViewportSize({ width: 320, height: 800 });
+  await first.focus();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${surface} 320px page reflow`);
+  await visuals(page, evidence, `${surface} 320px`);
+  await page.emulateMedia({ forcedColors: "active" });
+  await visuals(page, evidence, `${surface} forced colors`);
+  await page.emulateMedia({ forcedColors: "none" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const specs = {
+    categories: { row: '#categories-list tr[data-row-key="c1"]', field: "#categories-name", save: "#categories-save", value: "Rock revised", label: "Category" },
+    rules: { row: '#intro-rules-list tr[data-row-key="r1"]', field: "#intro-rules-label", save: "#intro-rules-save", value: "Intro revised", label: "Intro rule" },
+    liners: { row: '#ln-file-list tr[data-row-key="l1"]', action: "dates", field: "#ln-not-before", save: "#ln-dates-save", value: "2026-10-01", label: "Liner dates" },
+    devices: { row: '#device-list tr[data-row-key="d1"]', action: "rename", field: "#device-rename-name", save: "#device-rename-save", value: "Desk revised", label: "Device rename" },
+  };
+  if (specs[surface]) {
+    const spec = specs[surface];
+    await menuJourney(page, spec.row, evidence, spec.label, surface === "devices" ? "r" : "d");
+    await batchThreeEditor(page, evidence, spec);
+    await choose(page, spec.row, surface === "devices" ? "revoke" : "delete");
+    await confirmationScan(page, evidence, `${spec.label} delete`);
+    await page.keyboard.press("Escape");
+    await cellReturn(page, `${spec.row} td[data-action="options"]`);
+  } else if (surface === "intros") {
+    for (const host of hosts) {
+      const row = `${host} tr[data-row-key]`;
+      await menuJourney(page, row, evidence, host, "r");
+      await choose(page, row, "listen");
+      await expect(page.locator(`${row} button[data-action="listen"]`)).toHaveText("Stop listening");
+      await focused(page, `${row} td[data-action="options"]`);
+      await choose(page, row, "listen");
+      await expect(page.locator(`${row} button[data-action="listen"]`)).toHaveText("Listen");
+      await choose(page, row, "remove"); await confirmationScan(page, evidence, `${host} remove`);
+      await page.keyboard.press("Escape"); await cellReturn(page, `${row} td[data-action="options"]`);
+    }
+    await traceEditorOpen(page, "#intro-add", "#intro-file", evidence);
+    await editorDescription(page); await axe(page, evidence, "Matched intro upload editor");
+    await page.keyboard.press("Escape"); await focused(page, "#intro-add");
+    evidence.checks.push("Song and artist intros: Listen/Stop toggle, Remove cancellation and upload editor focus return; audio playback stubbed");
+  } else if (surface === "profiles") {
+    const row = '#profile-list tr[data-row-key="Evening"]';
+    await menuJourney(page, row, evidence, "Profile");
+    await choose(page, row, "activate");
+    await expect(page.locator(`${row} td[data-action="active"]`)).toHaveText("Yes");
+    await choose(page, row, "reset"); await confirmationScan(page, evidence, "Profile reset");
+    await page.keyboard.press("Escape"); await cellReturn(page, `${row} td[data-action="options"]`);
+    await choose(page, row, "delete"); await confirmationScan(page, evidence, "Profile delete");
+    await page.keyboard.press("Escape"); await cellReturn(page, `${row} td[data-action="options"]`);
+    evidence.checks.push("Profiles: keyboard Activate from the menu updates Active column; Reset/Delete confirmations cancel to exact Actions cell");
+  } else {
+    for (const spec of [
+      { row: '#ads-spots tr[data-row-key="spot1"]', field: "#ads-spot-title", save: "#ads-spot-save", value: "Sale revised", label: "Ad spot" },
+      { row: '#ads-breaks tr[data-row-key="break1"]', field: "#ads-break-name", save: "#ads-break-save", value: "Break revised", label: "Ad break" },
+    ]) { await menuJourney(page, spec.row, evidence, spec.label); await batchThreeEditor(page, evidence, spec); }
+    const booked = '#ads-spots tr[data-row-key="spot2"]';
+    const deletesBefore = await page.evaluate(() => window.batchThree.calls.filter(({ method }) => method === "DELETE").length);
+    await choose(page, booked, "delete");
+    const disabled = page.locator(`${booked} button[data-action="delete"]`);
+    await expect(disabled).toHaveAttribute("aria-disabled", "true");
+    assert.ok(await disabled.getAttribute("aria-describedby"), "Booked spot deletion explains its restriction");
+    assert.equal(await page.locator('#confirm-dialog[open]').count(), 0);
+    assert.equal(await page.evaluate(() => window.batchThree.calls.filter(({ method }) => method === "DELETE").length), deletesBefore);
+    await axe(page, evidence, "Booked spot menu"); await page.keyboard.press("Escape");
+    await page.locator("#ads-report-from").fill("2026-10-01");
+    await page.locator("#ads-report-to").fill("2026-10-31");
+    await page.locator("#ads-report-show").focus(); await page.keyboard.press("Enter");
+    // #712: plain native tables with row headers inside focusable scrolling
+    // regions, read with browse-mode table keys rather than grid arrows.
+    for (const host of ["#ads-totals", "#ads-rows"]) {
+      await page.locator(`${host} tr`).first().waitFor();
+      const rows = await page.locator(`${host} tr`).count();
+      assert.equal(await page.locator(`${host} tr > th:first-child[scope="row"]`).count(), rows, `${host} rows start with a row header`);
+      assert.equal(await page.locator(`${host} [tabindex], ${host} button, ${host} [role]`).count(), 0, `${host} is a plain read-only table`);
+      const wrap = page.locator(`${host}-wrap`);
+      await expect(wrap).toHaveAttribute("role", "region");
+      await expect(wrap).toHaveAccessibleName(await page.locator(`${host}-wrap caption`).textContent());
+    }
+    await page.locator("#ads-report-export").focus();
+    await page.keyboard.press("Tab");
+    await focused(page, "#ads-totals-wrap");
+    await page.keyboard.press("Tab");
+    await focused(page, "#ads-rows-wrap");
+    await axe(page, evidence, "Ad report"); await visuals(page, evidence, "Ad report");
+    await page.locator("#ads-rows-wrap").evaluate((element) => element.blur());
+    await page.setViewportSize({ width: 320, height: 800 });
+    await page.locator("#ads-rows-wrap").focus();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "Ad report 320px page reflow");
+    await visuals(page, evidence, "Ad report 320px");
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.locator("#ads-report-show").focus();
+    await page.evaluate(() => {
+      Object.assign(window.batchThree.adReport, { rows: [], summary: [], count: 0 });
+      document.getElementById("ads-report-form").requestSubmit();
+    });
+    await expect(page.locator("#ads-report-summary")).toContainText("No ad breaks ran");
+    await expect(page.locator("#ads-totals-wrap")).toBeHidden();
+    await expect(page.locator("#ads-rows-wrap")).toBeHidden();
+    await axe(page, evidence, "Empty ad report");
+    evidence.checks.push("Ads: both editors and menus, booked Delete linked reason/no request; report totals and outcomes are plain native tables with row headers in Tab-reachable scrolling regions, hidden when empty");
+  }
+  evidence.checks.push(`${surface}: collection Tab/Shift+Tab and cell arrows, axe, 320px reflow, target sizes and forced-colors focus`);
+}
+
 async function audit(name, launcher) {
   const browser = await launcher.launch({ headless: true });
   const results = { browser: name, version: browser.version(), fixture: "Production index/CSS/modules; in-memory API replies; loopback static server", themes: [], limitations: ["No live AutoDJ backend, station routing or persistence", "No screen-reader speech capture or human listening", "Chromium forced-colors emulation is not Windows high-contrast hardware evidence", "320 CSS pixels models reflow width; browser zoom and custom text spacing are not exercised", "Computed focus-ring and button-text contrast are measured against composited CSS backgrounds; pixel-level appearance still needs platform review"] };
@@ -1029,16 +1447,27 @@ async function audit(name, launcher) {
       const evidence = { theme, checks: [], axe: [], visual: [], errors: [] };
       results.themes.push(evidence);
       page.on("pageerror", (error) => evidence.errors.push(error.message));
+      console.log(`[${name}/${theme}] Schedule and clockwheels`);
       try { await mount(page, theme); await journey(page, evidence); }
-      catch (error) { evidence.errors.push(error.stack || String(error)); }
+      catch (error) { evidence.errors.push(error.stack || String(error)); console.error(`[${name}/${theme}] ${error.stack || error}`); }
       finally { await page.close(); }
       try {
         for (const surface of ["shows", "editions", "queue", "requests", "voice"]) {
           const batchPage = await context.newPage();
+          console.log(`[${name}/${theme}] ${surface}`);
           batchPage.setDefaultTimeout(10000);
           batchPage.on("pageerror", (error) => evidence.errors.push(`${surface}: ${error.message}`));
           try { await batchSurface(batchPage, theme, surface, evidence); }
-          catch (error) { evidence.errors.push(`${surface}: ${error.stack || String(error)}`); }
+          catch (error) { evidence.errors.push(`${surface}: ${error.stack || String(error)}`); console.error(`[${name}/${theme}/${surface}] ${error.stack || error}`); }
+          finally { await batchPage.close(); }
+        }
+        for (const surface of ["categories", "rules", "intros", "ads", "liners", "profiles", "devices"]) {
+          const batchPage = await context.newPage();
+          console.log(`[${name}/${theme}] ${surface}`);
+          batchPage.setDefaultTimeout(10000);
+          batchPage.on("pageerror", (error) => evidence.errors.push(`${surface}: ${error.message}`));
+          try { await batchThreeSurface(batchPage, theme, surface, evidence); }
+          catch (error) { evidence.errors.push(`${surface}: ${error.stack || String(error)}`); console.error(`[${name}/${theme}/${surface}] ${error.stack || error}`); }
           finally { await batchPage.close(); }
         }
       }

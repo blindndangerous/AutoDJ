@@ -7,7 +7,7 @@
 // it rather than following a link, so a failure can be said out loud,
 // then hands the browser the file to save.
 
-import { requestFile } from "./api-client.js";
+import { failureText, requestFile, withDisabled } from "./api-client.js";
 import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
 
 const FALLBACK_NAME = "autodj-plays.csv";
@@ -131,31 +131,23 @@ export function installHistoryExport({
       query.set("liners", "true");
     }
     busy = true;
-    form.setAttribute("aria-busy", "true");
-    // Disabling the focused button drops focus to the page; give it back after.
-    const buttonHadFocus = button !== null && doc.activeElement === button;
-    if (button) button.disabled = true;
     announce("Exporting play log", "info");
     try {
-      const response = await request(`/api/history/export?${query}`, ["text/csv", "text/plain"]);
-      const blob = await response.blob();
-      save(doc, blob, exportFilename(response.headers.get("Content-Disposition")));
-      announce(exportMessage(
-        response.headers.get("X-Play-Count"),
-        response.headers.get("X-Songs-Missing-Fields"),
-        what,
-        response.headers.get("X-Songs-Unmatchable"),
-      ), "info");
+      await withDisabled(button, () => withDisabled(form, async () => {
+        const response = await request(`/api/history/export?${query}`, ["text/csv", "text/plain"]);
+        const blob = await response.blob();
+        save(doc, blob, exportFilename(response.headers.get("Content-Disposition")));
+        announce(exportMessage(
+          response.headers.get("X-Play-Count"),
+          response.headers.get("X-Songs-Missing-Fields"),
+          what,
+          response.headers.get("X-Songs-Unmatchable"),
+        ), "info");
+      }));
     } catch (err) {
-      announce(`Could not export the play log: ${err.message}`, "error");
+      announce(failureText("export the play log", err), "error");
     } finally {
       busy = false;
-      form.removeAttribute("aria-busy");
-      if (button) {
-        button.disabled = false;
-        const active = doc.activeElement;
-        if (buttonHadFocus && (!active || active === doc.body)) button.focus();
-      }
     }
   });
 }

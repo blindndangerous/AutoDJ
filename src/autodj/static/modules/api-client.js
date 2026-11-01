@@ -1,4 +1,5 @@
 import { isStationUrl, stationApi, stationEpoch, stationName } from "./stations.js";
+import { sayIfStillPending } from "./live-region.js";
 
 let authRequiredHandler = () => {};
 let authenticatedRequestEpoch = 0;
@@ -75,6 +76,18 @@ export function staleActionText(errorValue) {
   if (errorValue.actionOutcome === "done") return `Done on ${name}, the station this page has just left.`;
   if (errorValue.actionOutcome === "refused") return `${name} did not do that; it is the station this page has just left.`;
   return `${name} may not have done that; it is the station this page has just left.`;
+}
+
+export function failureText(action, error, fallback = "error") {
+  const stale = staleActionText(error);
+  if (stale) return stale;
+  if (isStaleStationReply(error)) return "";
+  // An empty fallback leaves the sentence at the action when the error has
+  // no words of its own: "Could not start Night Owl."
+  const detail = error?.message || (typeof error === "string" && error) || fallback;
+  if (!detail) return `Could not ${action}`;
+  const separator = /[.!?]$/.test(action) ? " " : ": ";
+  return `Could not ${action}${separator}${detail}`;
 }
 
 // What an action's reply says it did, judged as checkedResponse judges
@@ -330,9 +343,15 @@ function isButtonLike(control) {
 //     from the .is-pending class, which assistive tech never sees;
 //   - any other focused field keeps working, and its requests run one
 //     after another so the server sees the changes in the order made.
-// An unfocused control is disabled as before.
-function startHold(control) {
-  if (!holdsFocus(control)) {
+// An unfocused control is disabled as before, unless *keepEnabled* asks for
+// the focused control's treatment: a button whose disabled state NVDA would
+// report later, such as Save changes pressed from a dialog (#331), or a
+// table's on/off checkbox that a click left unfocused (Safari).
+function startHold(control, keepEnabled) {
+  // Containers expose pending state without disabling descendants or deferring
+  // the operation. Their controllers own submission/cancellation guards.
+  if (!control.matches("button, input, select, textarea, option, optgroup")) return { count: 0, mode: "container", restore: () => {} };
+  if (!holdsFocus(control) && !keepEnabled) {
     const wasDisabled = control.disabled;
     control.disabled = true;
     return { count: 0, mode: "disabled", restore: () => { control.disabled = wasDisabled; } };
@@ -346,36 +365,68 @@ function startHold(control) {
     event.preventDefault();
     event.stopImmediatePropagation();
   };
-  control.classList.add("is-pending");
   doc.addEventListener("click", guard, true);
   return {
     count: 0,
     mode: "guard",
     restore: () => {
       doc.removeEventListener("click", guard, true);
-      control.classList.remove("is-pending");
     },
   };
 }
 
-export async function withDisabled(control, operation) {
+// The one busy presentation: aria-busy for assistive technology and
+// .is-pending for the look.  withDisabled uses it for a request; a caller
+// whose work spans several requests (a polled server job) sets and clears it.
+export function markPending(control, pending) {
+  if (!control) return;
+  if (pending) control.setAttribute("aria-busy", "true");
+  else control.removeAttribute("aria-busy");
+  control.classList.toggle("is-pending", pending);
+}
+
+export async function withDisabled(control, operation, { pendingText, say, signal, keepEnabled = false } = {}) {
+  // A view already cleared: nothing runs and nothing flashes busy.
+  if (signal?.aborted) throw signal.reason ?? new globalThis.DOMException("The operation was aborted.", "AbortError");
   if (!control) return operation();
   let hold = disabledOwners.get(control);
   if (!hold) {
-    hold = startHold(control);
+    hold = startHold(control, keepEnabled);
+    const busy = control.getAttribute("aria-busy");
+    const pending = control.classList.contains("is-pending");
+    const restore = hold.restore;
+    markPending(control, true);
+    hold.restore = () => {
+      restore();
+      if (busy === null) control.removeAttribute("aria-busy");
+      else control.setAttribute("aria-busy", busy);
+      control.classList.toggle("is-pending", pending);
+    };
     disabledOwners.set(control, hold);
   }
   hold.count += 1;
+  const stopPending = pendingText && say ? sayIfStillPending(say, pendingText) : () => {};
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    signal?.removeEventListener("abort", release);
+    stopPending();
+    hold.count -= 1;
+    if (hold.count === 0) {
+      hold.restore();
+      disabledOwners.delete(control);
+    }
+  };
+  // Clearing a view releases its controls even if an old request is still
+  // outstanding. Its eventual finally must not release a newer owner.
+  signal?.addEventListener("abort", release, { once: true });
   try {
     if (hold.mode !== "serial") return await operation();
     const run = hold.tail.then(() => operation());
     hold.tail = run.catch(() => {});
     return await run;
   } finally {
-    hold.count -= 1;
-    if (hold.count === 0) {
-      hold.restore();
-      disabledOwners.delete(control);
-    }
+    release();
   }
 }

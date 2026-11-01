@@ -115,12 +115,23 @@ describe("mix settings", () => {
 
   it("keeps an invalid mix value and makes no request until corrected", async () => {
     const { panel, els, requests, settingsStatus } = setup({ playback: { crossfade_seconds: 4, pick_temperature: 1 } });
+    els.pbCrossfade.setAttribute("aria-describedby", "crossfade-help");
     els.pbCrossfade.value = "99";
     els.pbCrossfade.dispatchEvent(new Event("input", { bubbles: true }));
     expect(await saveSettingsPanel(panel)).toBe(false);
     expect(els.pbCrossfade.value).toBe("99");
     expect(els.pbCrossfade.getAttribute("aria-invalid")).toBe("true");
-    await vi.waitFor(() => expect(settingsStatus.textContent).toContain("0 to 20"));
+    const error = els.pbCrossfade.nextElementSibling;
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.textContent).toContain("0 to 20");
+    expect(els.pbCrossfade.getAttribute("aria-describedby")).toBe(`${error.id} crossfade-help`);
+    expect(document.activeElement).toBe(els.pbCrossfade);
+    expect(settingsStatus.textContent).toBe("");
+    els.pbCrossfade.value = "5";
+    els.pbCrossfade.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(els.pbCrossfade.hasAttribute("aria-invalid")).toBe(false);
+    expect(els.pbCrossfade.getAttribute("aria-describedby")).toBe("crossfade-help");
+    expect(error.hidden).toBe(true);
     expect(requests).toHaveLength(0);
   });
 
@@ -226,14 +237,27 @@ describe("mix settings", () => {
   });
 });
 
+// A row's menu item, found without opening its menu.
+function rowItem(host, name, action) {
+  return host.querySelector(`[role="menu"][aria-label="Options for ${name}"] [role="menuitem"][data-action="${action}"]`);
+}
+
+function menuAction(host, name, action) {
+  const button = [...host.querySelectorAll('[aria-haspopup="menu"]')]
+    .find((item) => item.getAttribute("aria-label") === `Options for ${name}`);
+  button.click();
+  return [...button.parentElement.querySelectorAll('[role="menuitem"]')]
+    .find((item) => item.dataset.action === action);
+}
+
 describe("profiles", () => {
   function setup(fetchImpl) {
     document.body.innerHTML = `
       <details id="card"><summary>Profiles</summary>
-        <input id="name"><button id="save">Create profile</button>
+        <input id="name"><p id="profile-name-error" hidden></p><button id="save">Create profile</button>
         <select id="profile"><option value="">Station defaults</option></select>
         <button id="apply-defaults">Activate station defaults</button>
-        <ul id="list"></ul><p id="status"></p></details>
+        <div id="list"></div><p id="status"></p></details>
       <div id="spanel-picking" role="tabpanel"><select id="clock"></select></div>
       <div id="spanel-announcements" role="tabpanel"><select id="cart"></select></div>${CONFIRM}`;
     vi.stubGlobal("fetch", fetchImpl);
@@ -348,13 +372,14 @@ describe("profiles", () => {
   it("keeps Apply available for the active profile so it can be reapplied", async () => {
     const fetchImpl = vi.fn(() => json({ profiles: ["Late"], active: "Late" }));
     const { els } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(1));
 
-    const row = els.list.querySelector("li");
-    const apply = row.querySelector("button");
-    expect(row.querySelector(".profile-name").textContent).toBe("Late (active)");
+    const row = els.list.querySelector("tbody tr[data-row-key]");
+    const apply = rowItem(els.list, "Late", "activate");
+    expect(row.cells[0].textContent).toBe("Late");
+    expect(row.cells[1].textContent).toBe("Yes");
     expect(apply.textContent).toBe("Activate");
-    expect(apply.getAttribute("aria-label")).toBe("Activate profile Late");
+    expect(apply.getAttribute("aria-disabled")).toBe("false");
     expect(apply.disabled).toBe(false);
 
     apply.click();
@@ -371,29 +396,29 @@ describe("profiles", () => {
       return json({ profiles: names });
     });
     const { els, answer } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
-    expect(els.list.querySelectorAll("button[tabindex='0']")).toHaveLength(1);
-    const firstApply = els.list.querySelector('[aria-label="Activate profile Early"]');
-    firstApply.focus();
-    firstApply.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Activate profile Late");
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
+    expect(els.list.querySelectorAll("[tabindex='0']")).toHaveLength(1);
+    const firstApply = rowItem(els.list, "Early", "activate");
+    firstApply.closest("td").focus();
+    firstApply.closest("td").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement.querySelector("button").getAttribute("aria-label")).toBe("Options for Late");
 
-    els.list.querySelector('[aria-label="Delete profile Early"]').click();
+    menuAction(els.list, "Early", "delete").click();
     await answer("confirm");
 
     await vi.waitFor(() => expect(els.status.textContent).toBe("Deleted profile Early."));
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Delete profile Late");
+    expect(document.activeElement.querySelector("button").getAttribute("aria-label")).toBe("Options for Late");
   });
 
   it("confirms reset before removing a profile's overrides", async () => {
     const fetchImpl = vi.fn(() => json({ profiles: ["Late"], active: null }));
     const { els, answer } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
-    els.list.querySelector('[aria-label="Reset profile Late to defaults"]').click();
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(1));
+    menuAction(els.list, "Late", "reset").click();
     await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
     await answer("cancel");
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
-    els.list.querySelector('[aria-label="Reset profile Late to defaults"]').click();
+    menuAction(els.list, "Late", "reset").click();
     await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
     await answer("confirm");
     await vi.waitFor(() => expect(fetchImpl.mock.calls.some(([url, init]) => url.endsWith("/Late/reset") && init?.method === "POST")).toBe(true));
@@ -411,7 +436,7 @@ describe("profiles", () => {
     const { els, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.profileSelect.querySelector('option[value="Late"]')).not.toBeNull());
     els.profileSelect.value = "Late";
-    els.list.querySelector('[aria-label="Reset profile Late to defaults"]').click();
+    menuAction(els.list, "Late", "reset").click();
     await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
     await answer("confirm");
     await vi.waitFor(() => expect(els.status.textContent).toBe("Reset profile Late to station defaults."));
@@ -422,8 +447,8 @@ describe("profiles", () => {
   it("keeps profile controls on an unchanged refresh", async () => {
     const fetchImpl = vi.fn(() => json({ profiles: ["Early", "Late"] }));
     const { els } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
-    const apply = els.list.querySelector('[aria-label="Activate profile Early"]');
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
+    const apply = rowItem(els.list, "Early", "activate");
     const rows = [...els.list.children];
     const mutations = [];
     const observer = new window.MutationObserver((records) => mutations.push(...records));
@@ -433,7 +458,7 @@ describe("profiles", () => {
     await vi.waitFor(() => expect(fetchImpl.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect([...els.list.children]).toEqual(rows);
-    expect(els.list.querySelector('[aria-label="Activate profile Early"]')).toBe(apply);
+    expect(rowItem(els.list, "Early", "activate")).toBe(apply);
     expect([...mutations, ...observer.takeRecords()]).toEqual([]);
     observer.disconnect();
   });
@@ -469,8 +494,8 @@ describe("profiles", () => {
       return json({ profiles: names });
     });
     const { els, answer } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
-    const remove = els.list.querySelector('[aria-label="Delete profile Only"]');
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(1));
+    const remove = menuAction(els.list, "Only", "delete");
     remove.focus();
     remove.click();
     await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
@@ -483,14 +508,14 @@ describe("profiles", () => {
     stop();
 
     expect(focused).toEqual([els.nameInput]);
-    expect(els.list.textContent).toBe("No saved profiles yet.");
+    expect(els.list.querySelector(".no-results").textContent).toBe("No saved profiles yet.");
   });
 
   it("puts focus back on Delete when the confirmation is cancelled", async () => {
     const fetchImpl = vi.fn(() => json({ profiles: ["Only"] }));
     const { els, answer } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
-    const remove = els.list.querySelector('[aria-label="Delete profile Only"]');
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(1));
+    const remove = menuAction(els.list, "Only", "delete");
     remove.focus();
     remove.click();
     await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
@@ -498,7 +523,7 @@ describe("profiles", () => {
     await answer("cancel");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(document.activeElement).toBe(remove);
+    expect(document.activeElement).toBe(remove.closest("td"));
     expect(fetchImpl.mock.calls.some(([, init = {}]) => init.method === "DELETE")).toBe(false);
   });
 
@@ -507,16 +532,18 @@ describe("profiles", () => {
       ? json({ detail: "Profile Late uses a preset that does not exist" }, 400)
       : json({ profiles: ["Late"] })));
     const { els } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("button")).toHaveLength(3));
-    const apply = els.list.querySelector('[aria-label="Activate profile Late"]');
-    els.nameInput.focus();
+    await vi.waitFor(() => expect(els.list.querySelectorAll('button:not([role="menuitem"])')).toHaveLength(1));
+    const apply = menuAction(els.list, "Late", "activate");
+    // The menu focuses its first item a frame after it is shown (#712).
+    await vi.waitFor(() => expect(document.activeElement).toBe(apply));
 
     apply.click();
 
     await vi.waitFor(() => expect(els.status.textContent).toBe(
       "Could not activate profile Late: Profile Late uses a preset that does not exist",
     ));
-    expect(document.activeElement).toBe(els.nameInput);
+    // The closed menu's cell keeps focus; the failure moves it nowhere else.
+    expect(document.activeElement).toBe(apply.closest("td"));
   });
 });
 
@@ -526,7 +553,7 @@ describe("browser access", () => {
       <details id="card"><summary>Browser access</summary>
         <p id="note" hidden></p>
         <div id="controls" hidden><button id="out">Sign out this browser</button>
-          <button id="refresh">Refresh device list</button><ul id="list"></ul>
+          <button id="refresh">Refresh device list</button><div id="list"></div>
           <button id="pair-toggle" aria-expanded="false">Show pairing code</button>
           <div id="pair-panel" hidden><p>Pairing code <strong id="pair-code"></strong></p>
             <p id="pair-countdown" aria-live="off"></p>
@@ -590,7 +617,7 @@ describe("browser access", () => {
     expect(spokenCode("12345678")).toBe("1 2 3 4, 5 6 7 8");
   });
 
-  it("renames a device, says so once and puts focus back on its Rename", async () => {
+  it("renames a device, says so once and puts focus back on its Actions cell", async () => {
     let listed = devices;
     const fetchImpl = vi.fn((url, init = {}) => {
       if (init.method === "PATCH") {
@@ -601,9 +628,9 @@ describe("browser access", () => {
       return json({ pairing: true, devices: listed });
     });
     const { els } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
     const said = spoken(els.status);
-    const button = els.list.querySelector('[aria-label="Rename Phone"]');
+    const button = rowItem(els.list, "Phone", "rename");
     button.focus();
     button.click();
     const input = document.getElementById("device-rename-name");
@@ -616,21 +643,21 @@ describe("browser access", () => {
 
     await vi.waitFor(() => expect(said).toEqual(["Renamed to Hall speaker."]));
     expect(document.getElementById("device-rename-dialog").hasAttribute("open")).toBe(false);
-    expect(document.activeElement).toBe(button);
-    expect(button.getAttribute("aria-label")).toBe("Rename Hall speaker");
-    expect(els.list.querySelector("li").textContent).toMatch(/^Hall speaker\. {2}Paired /);
+    expect(document.activeElement).toBe(button.closest("td"));
+    expect(button.closest('[role="menu"]').getAttribute("aria-label")).toBe("Options for Hall speaker");
+    expect(els.list.querySelector("tbody tr[data-row-key]").cells[0].textContent).toBe("Hall speaker");
     const patch = fetchImpl.mock.calls.find(([, init = {}]) => init.method === "PATCH");
     expect(JSON.parse(patch[1].body)).toEqual({ name: "Hall speaker" });
   });
 
   // #631: show() and aria-modal, not showModal(), so NVDA keeps its place on
-  // the page; Cancel last; Escape puts focus straight back on Rename.
-  it("opens Rename with show() and aria-modal, Cancel last, and Escape returns focus straight to Rename", async () => {
+  // the page; Cancel last; Escape puts focus straight back on the row's Actions cell.
+  it("opens Rename with show() and aria-modal, Cancel last, and Escape returns focus straight to the row", async () => {
     const fetchImpl = vi.fn(() => json({ pairing: true, devices }));
     const { els } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
     const dialog = document.getElementById("device-rename-dialog");
-    const button = els.list.querySelector('[aria-label="Rename Phone"]');
+    const button = rowItem(els.list, "Phone", "rename");
     button.focus();
     button.click();
     expect(dialog.show).toHaveBeenCalledOnce();
@@ -650,22 +677,22 @@ describe("browser access", () => {
     document.activeElement.addEventListener("blur", (event) => left.push(event.relatedTarget?.getAttribute("aria-label") || "body"));
     expect(key(document.activeElement, "Escape").defaultPrevented).toBe(true);
     expect(dialog.hasAttribute("open")).toBe(false);
-    expect(document.activeElement).toBe(button);
-    expect(left).toEqual(["Rename Phone"]);
+    expect(document.activeElement).toBe(button.closest("td"));
+    expect(left).toEqual(["body"]); // The grid cell itself has no repeated button label.
     expect(fetchImpl.mock.calls.some(([, init = {}]) => init.method === "PATCH")).toBe(false);
   });
 
   it("keeps paired-device controls on an unchanged refresh and provides list navigation", async () => {
     const fetchImpl = vi.fn(() => json({ pairing: true, devices }));
     const { els } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
     const rows = [...els.list.children];
-    const rename = els.list.querySelector('[aria-label="Rename Phone"]');
-    rename.focus();
-    rename.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke access Phone");
+    const rename = rowItem(els.list, "Phone", "rename");
+    rename.closest("tr").cells[0].focus();
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }));
+    expect(document.activeElement.querySelector("button").getAttribute("aria-label")).toBe("Options for Phone");
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke access Tablet, this browser");
+    expect(document.activeElement.querySelector("button").getAttribute("aria-label")).toBe("Options for Tablet, this browser");
 
     const mutations = [];
     const observer = new window.MutationObserver((records) => mutations.push(...records));
@@ -675,7 +702,7 @@ describe("browser access", () => {
     await vi.waitFor(() => expect(fetchImpl.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect([...els.list.children]).toEqual(rows);
-    expect(els.list.querySelector('[aria-label="Rename Phone"]')).toBe(rename);
+    expect(rowItem(els.list, "Phone", "rename")).toBe(rename);
     expect([...mutations, ...observer.takeRecords()]).toEqual([]);
     observer.disconnect();
   });
@@ -684,13 +711,13 @@ describe("browser access", () => {
     let listed = devices;
     const fetchImpl = vi.fn(() => json({ pairing: true, devices: listed }));
     const { els } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
-    els.list.querySelector('[aria-label="Revoke access Phone"]').focus();
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
+    menuAction(els.list, "Phone", "revoke").focus();
     listed = [devices[1]];
     els.card.dispatchEvent(new Event("toggle"));
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
-    await vi.waitFor(() => expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke access Tablet, this browser"));
-    await vi.waitFor(() => expect(els.status.textContent).toContain("The paired devices list changed. Focus moved to Revoke access Tablet, this browser."));
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(1));
+    await vi.waitFor(() => expect(document.activeElement.querySelector("button").getAttribute("aria-label")).toBe("Options for Tablet, this browser"));
+    await vi.waitFor(() => expect(els.status.textContent).toContain("The paired devices list changed. Focus moved to Options for Tablet, this browser."));
   });
 
   it("keeps the rename dialog open and says why when the name is refused", async () => {
@@ -698,8 +725,8 @@ describe("browser access", () => {
       ? json({ detail: "device name must contain 1 to 64 printable characters" }, 422)
       : json({ pairing: true, devices })));
     const { els } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
-    els.list.querySelector('[aria-label="Rename Phone"]').click();
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
+    rowItem(els.list, "Phone", "rename").click();
     const input = document.getElementById("device-rename-name");
     const error = document.getElementById("device-rename-error");
 
@@ -714,6 +741,50 @@ describe("browser access", () => {
     expect(els.status.textContent).toBe("");
   });
 
+  it("confirms a dirty device rename and preserves it when discard is cancelled", async () => {
+    const fetchImpl = vi.fn(() => json({ pairing: true, devices }));
+    const { els, answer } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
+    const rename = rowItem(els.list, "Phone", "rename");
+    rename.click();
+    const input = document.getElementById("device-rename-name");
+    input.value = "New name";
+    document.getElementById("device-rename-cancel").click();
+    expect(document.getElementById("confirm-title").textContent).toBe("Discard changes?");
+    await answer("cancel");
+    await vi.waitFor(() => expect(document.getElementById("confirm-dialog").open).toBe(false));
+    expect(input.value).toBe("New name");
+    expect(document.getElementById("device-rename-dialog").open).toBe(true);
+    document.getElementById("device-rename-cancel").click();
+    await answer("confirm");
+    await vi.waitFor(() => expect(document.getElementById("device-rename-dialog").open).toBe(false));
+    expect(document.activeElement).toBe(rename.closest("td"));
+    expect(fetchImpl.mock.calls.some(([, init = {}]) => init.method === "PATCH")).toBe(false);
+  });
+
+  it("holds device rename cancellation and duplicate saves until the request settles", async () => {
+    let finish;
+    const fetchImpl = vi.fn((_url, init = {}) => init.method === "PATCH"
+      ? new Promise((resolve) => { finish = resolve; }) : json({ pairing: true, devices }));
+    const { els } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
+    rowItem(els.list, "Phone", "rename").click();
+    const form = document.getElementById("device-rename-form");
+    const dialog = document.getElementById("device-rename-dialog");
+    document.getElementById("device-rename-name").value = "New name";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    document.getElementById("device-rename-cancel").click();
+    expect(dialog.open).toBe(true);
+    expect(form.getAttribute("aria-busy")).toBe("true");
+    expect(fetchImpl.mock.calls.filter(([, init = {}]) => init.method === "PATCH")).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(document.getElementById("device-rename-form-status").textContent).toBe("");
+    finish(await json({ name: "New name" }));
+    await vi.waitFor(() => expect(dialog.open).toBe(false));
+    expect(form.hasAttribute("aria-busy")).toBe(false);
+  });
+
   it("shows the pairing code, says it once and keeps the countdown quiet", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearInterval", "Date"] });
     try {
@@ -724,7 +795,7 @@ describe("browser access", () => {
         : json({ pairing: true, devices: listed })));
       const { els } = setup(fetchImpl);
       await vi.advanceTimersByTimeAsync(0);
-      expect(els.list.querySelectorAll("li")).toHaveLength(2);
+      expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2);
       const said = spoken(els.status);
 
       els.pairToggle.click();
@@ -757,7 +828,7 @@ describe("browser access", () => {
       els.pairCopy.focus();
       listed = [...devices, { ...devices[0], device_id: "c".repeat(32), name: "Laptop" }];
       await vi.advanceTimersByTimeAsync(10_000);
-      expect(els.list.querySelectorAll("li")).toHaveLength(3);
+      expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(3);
       expect(said.at(-1)).toBe("New device paired: Laptop.  That code is used up.  "
         + "Choose Show pairing code to pair another device.");
       expect(said).toHaveLength(3);
@@ -807,9 +878,9 @@ describe("browser access", () => {
     const fetchImpl = vi.fn((_url, init = {}) => json(init.method === "DELETE"
       ? { revoked: "b".repeat(32), signed_out: true } : { pairing: true, devices }));
     const { els, onSignedOut, answer } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
 
-    els.list.querySelector('[aria-label="Revoke access Tablet, this browser"]').click();
+    menuAction(els.list, "Tablet, this browser", "revoke").click();
     await answer("confirm");
 
     await vi.waitFor(() => expect(onSignedOut).toHaveBeenCalledWith(REVOKED_REASON));
@@ -825,8 +896,8 @@ describe("browser access", () => {
       return json({ pairing: true, devices: listed });
     });
     const { els, answer } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
-    const revoke = els.list.querySelector('[aria-label="Revoke access Phone"]');
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
+    const revoke = menuAction(els.list, "Phone", "revoke");
     revoke.focus();
     revoke.click();
     await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
@@ -836,10 +907,10 @@ describe("browser access", () => {
     await vi.waitFor(() => expect(els.status.textContent).toBe("Revoked Phone."));
     stop();
 
-    expect(focused.map((element) => element.getAttribute("aria-label")))
-      .toEqual(["Revoke access Tablet, this browser"]);
+    expect(focused.map((element) => element.querySelector("button")?.getAttribute("aria-label")))
+      .toEqual(["Options for Tablet, this browser"]);
     expect(revoke.isConnected).toBe(false);
-    expect(els.list.querySelectorAll("li")).toHaveLength(1);
+    expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(1);
   });
 
   it("puts focus back on Revoke and says why when the revoke fails", async () => {
@@ -847,14 +918,14 @@ describe("browser access", () => {
       ? json({ detail: "Server busy" }, 503)
       : json({ pairing: true, devices })));
     const { els, answer } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
-    const revoke = els.list.querySelector('[aria-label="Revoke access Phone"]');
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
+    const revoke = menuAction(els.list, "Phone", "revoke");
     revoke.focus();
     revoke.click();
 
     await answer("confirm");
     await vi.waitFor(() => expect(els.status.textContent).toBe("Could not revoke Phone: Server busy"));
-    expect(document.activeElement).toBe(revoke);
+    expect(document.activeElement).toBe(revoke.closest("td"));
   });
 
   it("shows SSO identity and browser names without offering pairing or unmanaged logout", async () => {
@@ -862,14 +933,16 @@ describe("browser access", () => {
       pairing: false, mode: "trusted_proxy", devices, user: { id: "owner", name: "Alice" },
     }));
     const { els } = setup(fetchImpl, { mode: "trusted_proxy", logout_url: null });
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
     expect(els.controls.hidden).toBe(false);
     expect(els.note.textContent).toContain("Signed in as Alice");
     expect(els.note.textContent).toContain("managed externally");
     expect(els.signOut.hidden).toBe(true);
     expect(els.pairToggle.hidden).toBe(true);
-    expect(els.list.querySelector('[aria-label="Forget Phone"]')).not.toBeNull();
+    expect(menuAction(els.list, "Phone", "revoke")).not.toBeNull();
     expect(els.list.textContent).not.toContain("Paired");
+    expect(els.list.querySelector("table").caption.textContent).toBe("Your browsers");
+    expect(els.list.querySelector("table").hasAttribute("aria-label")).toBe(false);
     expect(fetchImpl.mock.calls.some(([url]) => url === "/api/pairing-code")).toBe(false);
   });
 
@@ -883,13 +956,13 @@ describe("browser access", () => {
       return json({ pairing: false, mode: "trusted_proxy", devices: listed, user: { name: "Alice" } });
     });
     const { els, onSignedOut, answer } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
-    els.list.querySelector('[aria-label="Forget Phone"]').click();
+    await vi.waitFor(() => expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(2));
+    menuAction(els.list, "Phone", "revoke").click();
     expect(document.getElementById("confirm-message").textContent).toContain("does not revoke");
     await answer("confirm");
     await vi.waitFor(() => expect(els.status.textContent).toContain("Forgot Phone"));
     expect(onSignedOut).not.toHaveBeenCalled();
-    expect(els.list.querySelectorAll("li")).toHaveLength(1);
+    expect(els.list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(1);
   });
 
   it("hands SSO logout to session cleanup with the server's configured URL", async () => {

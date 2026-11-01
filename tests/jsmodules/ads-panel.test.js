@@ -4,13 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installIndexMarkup } from "./helpers.js";
 
 import {
-  breakText,
   hourLabel,
   installAdsPanel,
   outcomeText,
   parseMinutes,
   reportSummary,
-  spotText,
 } from "../../src/autodj/static/modules/ads-panel.js";
 
 const { Blob, File, Headers } = globalThis;
@@ -37,6 +35,12 @@ function installIndex() {
     dialog.open = false;
     dialog.dispatchEvent(new Event("close"));
   };
+}
+
+function openOptions(id) {
+  const options = byId(id).querySelector('button[aria-haspopup="menu"]');
+  options.click();
+  return options;
 }
 
 class FakeError extends Error {
@@ -119,6 +123,15 @@ function fakeServer() {
       server.view.breaks.push(item);
       return item;
     }
+    if (method === "PUT" && url.startsWith("/api/ads/breaks/")) {
+      const item = server.view.breaks.find((entry) => url.endsWith(entry.id));
+      Object.assign(item, JSON.parse(options.body));
+      return item;
+    }
+    if (method === "DELETE" && url.startsWith("/api/ads/breaks/")) {
+      server.view.breaks = server.view.breaks.filter((item) => !url.endsWith(item.id));
+      return {};
+    }
     if (method === "POST" && url.endsWith("/run")) {
       return { break_name: "Quarter past", message: "Ad break Quarter past airs at the next song change it can join." };
     }
@@ -145,21 +158,7 @@ beforeEach(() => {
 });
 
 describe("words", () => {
-  it("says each spot, break and outcome in a sentence", () => {
-    expect(spotText(SPOT)).toBe(
-      "Fall sale, Example Motors, campaign Autumn. 30 seconds. Competing category Car dealers. "
-      + "Flight from 1 October 2026 until 31 October 2026. Airs at most 4 a day and at most 1 an hour. "
-      + "Aired or booked 1 time today.",
-    );
-    expect(spotText({ ...SPOT, enabled: false, missing: true, campaign: "", category: "" })).toContain(
-      "Turned off. Its audio file is missing.",
-    );
-    expect(breakText(BREAK)).toBe(
-      "Quarter past: At :15, :45 past the hour. Up to 3 spots. Next Tuesday 13 October 2026 at 12:15.",
-    );
-    expect(breakText({ ...BREAK, enabled: false, max_seconds: 90 })).toBe(
-      "Quarter past: At :15, :45 past the hour. Up to 3 spots, 90 seconds at most. Turned off.",
-    );
+  it("formats outcomes, report totals and scheduling values", () => {
     expect(outcomeText(REPORT.rows[1])).toBe(
       "Missed: Example Motors, Fall sale, in Quarter past due 13 October 2026 at 12:45:00. skipped before it aired.",
     );
@@ -180,27 +179,98 @@ describe("words", () => {
 });
 
 describe("the Ads tab", () => {
-  it("lists spots and breaks with named buttons, and says why ads do not air", async () => {
+  // ADR-0021-39
+  it("uses shared spot and break columns with one Actions menu and disabled run reasons", async () => {
     await start({ spots: [SPOT], breaks: [BREAK], reason: "Ad breaks are off for this station." });
-    expect(byId("ads-reason").hidden).toBe(false);
     expect(byId("ads-reason").textContent).toBe("Ad breaks are off for this station.");
     expect(byId("ads-timezone").textContent).toBe("UTC");
-    const spotButtons = [...byId("ads-spots").querySelectorAll("button")];
-    expect(spotButtons.map((button) => button.getAttribute("aria-label"))).toEqual([
-      "Edit spot Fall sale, Example Motors", "Delete spot Fall sale, Example Motors",
-    ]);
-    const breakButtons = [...byId("ads-breaks").querySelectorAll("button")];
-    expect(breakButtons.map((button) => button.textContent)).toEqual(["Edit", "Run now", "Delete"]);
-    expect(breakButtons[1].hasAttribute("aria-describedby")).toBe(false);
-    for (const list of [byId("ads-spots"), byId("ads-breaks")]) {
-      const actions = [...list.querySelectorAll("button")];
-      expect(actions.filter((item) => item.tabIndex === 0)).toHaveLength(1);
-      actions[0].focus();
-      actions[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-      expect(document.activeElement).toBe(actions[1]);
+    for (const id of ["ads-spots", "ads-breaks"]) {
+      const table = byId(id).querySelector(".collection-table");
+      expect(table).not.toBeNull();
+      expect(table.querySelectorAll("tbody th")).toHaveLength(0);
+      expect(table.querySelectorAll('td[tabindex="0"]')).toHaveLength(1);
+      const row = table.querySelector("tbody tr");
+      expect([...row.querySelectorAll("button")].filter((button) => !button.closest("[hidden]"))
+        .map((button) => button.textContent)).toEqual(["Options"]);
+      row.cells[0].focus();
+      row.cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      expect(document.activeElement).toBe(row.cells[1]);
+    }
+    const spot = byId("ads-spots").querySelector("tbody tr");
+    expect([...byId("ads-spots").querySelectorAll("th")].map((cell) => cell.textContent))
+      .toEqual(["Title", "Advertiser", "Status", "Details", "Actions"]);
+    expect([...byId("ads-breaks").querySelectorAll("th")].map((cell) => cell.textContent))
+      .toEqual(["Name", "When", "Next run", "Details", "Actions"]);
+    expect([...spot.cells].slice(0, 2).map((cell) => cell.textContent)).toEqual(["Fall sale", "Example Motors"]);
+    // Every fact of the pre-#707 spot sentence, unset states included.
+    expect(spot.cells[3].textContent).toBe("Campaign Autumn. 30 seconds. Competing category Car dealers. Flight from 1 October 2026 until 31 October 2026. "
+      + "Airs at most 4 a day and at most 1 an hour. Aired or booked 1 time today.");
+    openOptions("ads-breaks");
+    const run = byId("ads-breaks").querySelector('[role="menuitem"][data-action="run-now"]');
+    expect(run.getAttribute("aria-disabled")).toBe("true");
+    expect(byId(run.getAttribute("aria-describedby")).textContent).toBe(server.view.reason);
+    run.click();
+    await vi.waitFor(() => expect(status()).toBe(server.view.reason));
+    expect(server.calls.some((call) => call.url.endsWith("/run"))).toBe(false);
+  });
+
+  // ADR-0021-29
+  it("preserves keyed ad rows and focus through refresh and returns cancelled delete to Options", async () => {
+    await start({ spots: [SPOT], breaks: [BREAK] });
+    const row = byId("ads-spots").querySelector("tbody tr");
+    expect(row).not.toBeNull();
+    row.cells[1].focus();
+    server.view.spots[0] = { ...SPOT, advertiser: "Example Autos" };
+    await controls.refresh();
+    expect(byId("ads-spots").querySelector("tbody tr")).toBe(row);
+    expect(document.activeElement).toBe(row.cells[1]);
+    expect(row.cells[1].textContent).toBe("Example Autos");
+    const options = openOptions("ads-spots");
+    byId("ads-spots").querySelector('[role="menuitem"][data-action="delete"]').click();
+    byId("confirm-cancel").click();
+    await flush();
+    expect(document.activeElement).toBe(options.closest("td"));
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    expect(document.activeElement.dataset.action).toBe("details");
+  });
+
+  it("says a spot's unset flight dates and play limits in its Details", async () => {
+    await start({ spots: [{ ...SPOT, campaign: "", category: "", dates_text: "", max_per_day: 0, max_per_hour: 0, plays_today: 2 }] });
+    expect(byId("ads-spots").querySelector('tbody tr td[data-action="details"]').textContent)
+      .toBe("30 seconds. No flight dates. No play limits. Aired or booked 2 times today.");
+  });
+
+  it("explains booked spot deletion and rechecks a booking before confirming", async () => {
+    await start({ spots: [{ ...SPOT, booked: true }] });
+    openOptions("ads-spots");
+    const remove = byId("ads-spots").querySelector('[role="menuitem"][data-action="delete"]');
+    expect(remove).not.toBeNull();
+    expect(remove.getAttribute("aria-disabled")).toBe("true");
+    remove.click();
+    await vi.waitFor(() => expect(status()).toBe("That spot is booked for a coming song change; delete it after it airs"));
+    expect(byId("confirm-dialog").open).toBe(false);
+    server.view.spots[0].booked = false;
+    await controls.refresh();
+    remove.click();
+    expect(byId("confirm-dialog").open).toBe(true);
+    server.view.spots[0].booked = true;
+    await controls.refresh();
+    byId("confirm-accept").click();
+    await flush();
+    expect(server.calls.some((call) => call.method === "DELETE")).toBe(false);
+    await vi.waitFor(() => expect(status()).toContain("booked for a coming song change"));
+  });
+
+  it("renders empty ad collections as one spanning row", async () => {
+    await start();
+    for (const id of ["ads-spots", "ads-breaks"]) {
+      const table = byId(id).querySelector(".collection-table");
+      expect(table).not.toBeNull();
+      expect(table.querySelectorAll("tbody tr")).toHaveLength(1);
+      expect(table.querySelector(".no-results").colSpan).toBe(table.querySelectorAll("thead th").length);
     }
     expect(byId("ads-rules-separation").value).toBe("15");
-    expect(byId("ads-pending").textContent).toBe("Nothing is waiting.");
+    expect([...byId("ads-pending").children].map((item) => item.textContent)).toEqual(["Nothing is waiting."]);
   });
 
   it("names a missing file, focuses it and links the error, then uploads", async () => {
@@ -233,13 +303,14 @@ describe("the Ads tab", () => {
     const post = server.calls.find((call) => call.method === "POST");
     expect(post.body.get("advertiser")).toBe("Example Motors");
     expect(post.body.get("max_per_day")).toBe("0");
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Edit spot Fall sale, Example Motors");
+    expect(document.activeElement.dataset.action).toBe("options");
+    expect(document.activeElement.closest("tr").dataset.rowName).toBe("spot Fall sale, Example Motors");
     expect(status()).toBe("Spot Fall sale saved");
   });
 
   it("puts the server's refusal on the field it names", async () => {
     await start({ spots: [SPOT] });
-    byId("ads-spots").querySelector('[data-role="edit"]').click();
+    byId("ads-spots").querySelector('button[data-action="edit"]').click();
     expect(byId("ads-spot-file-row").hidden).toBe(true);
     expect(document.activeElement).toBe(byId("ads-spot-title"));
     server.fail = new FakeError("Plays a day: too many", { field: "max_per_day" });
@@ -248,7 +319,8 @@ describe("the Ads tab", () => {
     expect(document.activeElement).toBe(byId("ads-spot-day"));
     expect(byId("ads-spot-day").getAttribute("aria-invalid")).toBe("true");
     byId("ads-spot-cancel").click();
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Edit spot Fall sale, Example Motors");
+    expect(document.activeElement.dataset.action).toBe("options");
+    expect(document.activeElement.closest("tr").dataset.rowName).toBe("spot Fall sale, Example Motors");
   });
 
   it("keeps a pending spot save modal open, ignores duplicate submits, and drops a stale save on clear", async () => {
@@ -276,7 +348,7 @@ describe("the Ads tab", () => {
     expect(byId("ads-spot-form-dialog").open).toBe(false);
     resolveSave({ ...SPOT, id: "pending", title: "Pending spot" });
     await flush();
-    expect(byId("ads-spots").textContent).toBe("");
+    expect(byId("ads-spots").querySelector("tbody").textContent).toBe("");
     expect(status()).toBe("");
   });
 
@@ -300,11 +372,13 @@ describe("the Ads tab", () => {
 
   it("deletes a spot after asking, then focuses the next row", async () => {
     await start({ spots: [SPOT, { ...SPOT, id: "9".repeat(32), title: "Winter sale" }] });
-    byId("ads-spots").querySelector('[data-role="delete"]').click();
+    openOptions("ads-spots");
+    byId("ads-spots").querySelector('[role="menuitem"][data-action="delete"]').click();
     expect(byId("confirm-title").textContent).toBe("Delete spot Fall sale?");
     byId("confirm-accept").click();
     await vi.waitFor(() => expect(status()).toBe("Spot Fall sale deleted"));
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Edit spot Winter sale, Example Motors");
+    expect(document.activeElement.dataset.action).toBe("options");
+    expect(document.activeElement.closest("tr").dataset.rowName).toBe("spot Winter sale, Example Motors");
   });
 
   it("checks a break's minutes and hours, saves it and runs it", async () => {
@@ -330,9 +404,44 @@ describe("the Ads tab", () => {
     await vi.waitFor(() => expect(status()).toBe("Ad break Quarter past saved"));
     const post = server.calls.find((call) => call.method === "POST" && call.url === "/api/ads/breaks");
     expect(JSON.parse(post.body)).toMatchObject({ minutes: [15, 45], days: [0], from_hour: 20, until_hour: 24 });
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Edit ad break Quarter past");
-    byId("ads-breaks").querySelector('[data-role="run-now"]').click();
+    expect(document.activeElement.dataset.action).toBe("options");
+    expect(document.activeElement.closest("tr").dataset.rowName).toBe("ad break Quarter past");
+    openOptions("ads-breaks");
+    byId("ads-breaks").querySelector('[role="menuitem"][data-action="run-now"]').click();
     await vi.waitFor(() => expect(status()).toMatch(/airs at the next song change/));
+  });
+
+  it("edits and deletes the named break through its collection controls", async () => {
+    await start({ breaks: [BREAK] });
+    byId("ads-breaks").querySelector('button[data-action="edit"]').click();
+    byId("ads-break-name").value = "Evening ads";
+    byId("ads-break-form").requestSubmit();
+    await vi.waitFor(() => expect(status()).toBe("Ad break Evening ads saved"));
+    expect(server.view.breaks[0].name).toBe("Evening ads");
+    expect(document.activeElement.dataset.action).toBe("options");
+    openOptions("ads-breaks");
+    byId("ads-breaks").querySelector('[role="menuitem"][data-action="delete"]').click();
+    expect(byId("confirm-title").textContent).toBe("Delete ad break Evening ads?");
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(status()).toBe("Ad break Evening ads deleted"));
+    expect(server.view.breaks).toHaveLength(0);
+    expect(document.activeElement).toBe(byId("ads-break-add"));
+  });
+
+  it("associates a server days refusal with every checkbox and clears the group on input", async () => {
+    await start({ breaks: [BREAK] });
+    byId("ads-breaks").querySelector('button[data-action="edit"]').click();
+    server.fail = new FakeError("Choose valid days", { field: "days" });
+    byId("ads-break-form").requestSubmit();
+    const boxes = [...byId("ads-break-days").querySelectorAll("input")];
+    await vi.waitFor(() => expect(document.activeElement).toBe(boxes[0]));
+    for (const box of boxes) {
+      expect(box.getAttribute("aria-invalid")).toBe("true");
+      expect(box.getAttribute("aria-describedby").split(" ")).toContain("ads-break-error");
+    }
+    boxes[1].dispatchEvent(new Event("input", { bubbles: true }));
+    expect(boxes.every((box) => !box.hasAttribute("aria-invalid"))).toBe(true);
+    expect(byId("ads-break-error").hidden).toBe(true);
   });
 
   it("keeps a pending break save modal open, ignores duplicate submits, and drops a stale save on clear", async () => {
@@ -358,7 +467,7 @@ describe("the Ads tab", () => {
     expect(byId("ads-break-form-dialog").open).toBe(false);
     resolveSave({ ...BREAK, id: "pending", name: "Pending break" });
     await flush();
-    expect(byId("ads-breaks").textContent).toBe("");
+    expect(byId("ads-breaks").querySelector("tbody").textContent).toBe("");
     expect(status()).toBe("");
   });
 
@@ -398,6 +507,7 @@ describe("the Ads tab", () => {
     expect(JSON.parse(put.body)).toEqual({ separation_minutes: 15, late_minutes: 40, miss_after_minutes: 45 });
   });
 
+  // ADR-0021-30
   it("shows the report as tables with headers and says its totals once", async () => {
     await start();
     expect(byId("ads-report-from").value).toMatch(/^\d{4}-\d{2}-01$/);
@@ -406,6 +516,7 @@ describe("the Ads tab", () => {
     await vi.waitFor(() => expect(byId("ads-rows-wrap").hidden).toBe(false));
     expect(document.activeElement).toBe(byId("ads-report-show"));
     expect(status()).toBe(reportSummary(REPORT));
+    // Plain native tables (#712): the first cell is the row header.
     const totals = byId("ads-totals").querySelector("tr");
     expect(totals.firstElementChild.tagName).toBe("TH");
     expect(totals.firstElementChild.getAttribute("scope")).toBe("row");
@@ -422,6 +533,26 @@ describe("the Ads tab", () => {
     byId("ads-report-form").requestSubmit();
     expect(document.activeElement).toBe(byId("ads-report-to"));
     expect(byId("ads-report-to").getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("keeps the report out of grid navigation in scrollable regions and hides empty tables", async () => {
+    await start();
+    byId("ads-report-form").requestSubmit();
+    await vi.waitFor(() => expect(byId("ads-rows-wrap").hidden).toBe(false));
+    for (const id of ["ads-rows", "ads-totals"]) {
+      const wrap = byId(`${id}-wrap`);
+      expect(wrap.getAttribute("role")).toBe("region");
+      expect(wrap.tabIndex).toBe(0);
+      expect(wrap.querySelector('[role="grid"], .collection-table, [tabindex], button')).toBeNull();
+      expect(wrap.querySelector("caption").textContent).toBeTruthy();
+    }
+    const request = server.request.getMockImplementation();
+    server.request.mockImplementation((url, options) => url.startsWith("/api/ads/report?")
+      ? Promise.resolve({ ...REPORT, rows: [], summary: [], count: 0 }) : request(url, options));
+    byId("ads-report-form").requestSubmit();
+    await vi.waitFor(() => expect(byId("ads-report-summary").textContent).toContain("No ad breaks ran"));
+    expect(byId("ads-rows-wrap").hidden).toBe(true);
+    expect(byId("ads-totals-wrap").hidden).toBe(true);
   });
 
   it("exports the report through the page and says how many rows", async () => {
@@ -446,8 +577,8 @@ describe("the Ads tab", () => {
     await start({ spots: [SPOT], breaks: [BREAK] });
     controls.clear();
     await flush();
-    expect(byId("ads-spots").children).toHaveLength(0);
-    expect(byId("ads-breaks").children).toHaveLength(0);
+    expect(byId("ads-spots").querySelector("tbody").children).toHaveLength(0);
+    expect(byId("ads-breaks").querySelector("tbody").children).toHaveLength(0);
     expect(byId("ads-spot-form").hidden).toBe(true);
   });
 });
