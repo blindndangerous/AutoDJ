@@ -64,6 +64,20 @@ previously saved GPU choice. You do not need an AMD environment or GPU drivers f
 Use the launcher for ordinary commands. You do not need to activate an environment or run
 `uv sync` separately.
 
+After pulling an update, start AutoDJ with the same launcher. Before `serve`
+starts, it updates a setup-managed environment when the lockfile or installation
+recipe has changed, keeping your saved backend and model choice. The terminal
+shows "Updating AutoDJ's packages..."; package output goes to
+`.uv/runtime-sync.log`. The first start after upgrading to this launcher also
+checks the environment once. Subsequent starts skip installation until those
+inputs change.
+
+Stop other AutoDJ processes using that checkout before starting the updated
+version. A failed package update leaves the server stopped; start it again to
+retry and consult `.uv/runtime-sync.log` for details. `doctor` and help remain
+available without an automatic install. Externally managed environments and
+`AUTODJ_RUNTIME=current` retain their existing package-management behavior.
+
 ## No-model installation
 
 Choose No at the model-support prompt, or pass `--model no`, when the server needs the web UI, basic

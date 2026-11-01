@@ -11,6 +11,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+_WINDOWS = os.name == "nt"
+
 
 @dataclass(frozen=True)
 class Process:
@@ -246,7 +248,14 @@ def _busy_port(port: int) -> bool:
         return True
 
 
-def ensure_idle(root: Path, environment: Path, port: int, updater_pid: int | None = None) -> None:
+def ensure_idle(
+    root: Path,
+    environment: Path,
+    port: int,
+    updater_pid: int | None = None,
+    *,
+    launcher: bool = False,
+) -> None:
     """Stop setup before mutation when a known AutoDJ process or server is active.
 
     The launcher's existing serving locks detect servers started through the
@@ -284,6 +293,25 @@ def ensure_idle(root: Path, environment: Path, port: int, updater_pid: int | Non
             f"Could not inspect running processes ({exc}); setup cannot safely verify that "
             "AutoDJ is idle. Close AutoDJ and rerun setup."
         ) from exc
+    if launcher and _WINDOWS:
+        # A Windows venv redirector waits for this interpreter with the same
+        # argv. It is part of this launch, not another server using the runtime.
+        current = next((p for p in processes if p.pid == os.getpid()), None)
+        parent = next((p for p in processes if current and p.pid == current.parent_pid), None)
+        if current and parent and parent.name.casefold() == "python.exe":
+            try:
+                args = [part.strip('"') for part in shlex.split(current.command, posix=False)]
+                parent_args = [part.strip('"') for part in shlex.split(parent.command, posix=False)]
+            except ValueError:
+                pass
+            else:
+                if (
+                    args[1:] == parent_args[1:]
+                    and _activity(current.name, current.command) == "serve"
+                    and _activity(parent.name, parent.command) == "serve"
+                    and _scoped(parent, root.resolve(), environment.resolve())
+                ):
+                    own_pids.add(parent.pid)
     found = [
         (process, activity)
         for process in processes

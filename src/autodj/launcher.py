@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import runpy
 import signal
 import subprocess  # nosec B404 -- explicit Python interpreter and argv, never a shell
 import sys
@@ -95,6 +96,36 @@ def run_setup(arguments: list[str]) -> int:
     except OSError as exc:
         print(f"Could not start AutoDJ setup: {exc}", file=sys.stderr)
         return 1
+
+
+def sync_runtime(selected: tuple[Path, str]) -> bool:
+    """Refresh changed managed packages before the server or its supervisor starts."""
+    from autodj.runtime_sync import needs_sync
+    from autodj.update_contract import try_lock, unlock
+
+    script = ROOT / "scripts/runtime_sync.py"
+    if not script.is_file() or not needs_sync(ROOT, *selected):
+        return True
+    handle = try_lock(ROOT / ".uv/update/lock")
+    if handle is None:
+        print(UPDATE_RUNNING, file=sys.stderr)
+        return False
+    try:
+        # Read the stamp again after taking the shared update lock.
+        if needs_sync(ROOT, *selected):
+            scripts = str(script.parent)
+            sys.path.insert(0, scripts)
+            try:
+                helper = runpy.run_path(str(script))
+                helper["synchronize"](ROOT, *selected)
+            finally:
+                sys.path.remove(scripts)
+        return True
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f"AutoDJ: {exc}", file=sys.stderr)
+        return False
+    finally:
+        unlock(handle)
 
 
 def _command_index(arguments: list[str]) -> int:
@@ -456,6 +487,12 @@ def main() -> int:
                 )
                 return 0 if help_requested else 1
         if selected is not None:
+            if (
+                runs_serve(arguments)
+                and not any(arg in {"--help", "-h"} for arg in arguments)
+                and not sync_runtime(selected)
+            ):
+                return 1
             environment, backend = selected
             child_environment = _runtime_environment(environment, backend)
             # Compare prefixes, since venv executables can be symlinks.

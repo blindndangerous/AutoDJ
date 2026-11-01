@@ -67,12 +67,25 @@ def prepare_caches(environment: Path, backend: str) -> None:
             (environment / directory).mkdir(parents=True, exist_ok=True)
 
 
-def run(command: list[str], root: Path, env: dict[str, str] | None = None) -> None:
+def run(
+    command: list[str], root: Path, env: dict[str, str] | None = None, *, log: Path | None = None
+) -> None:
     """Run a visible command without a shell and stop on failure."""
     executable = shutil.which(command[0])
     if executable is None:
         raise ValueError(f"Command not found: {command[0]}")
-    subprocess.run([executable, *command[1:]], cwd=root, env=env, check=True)
+    if log is None:
+        subprocess.run([executable, *command[1:]], cwd=root, env=env, check=True)
+    else:
+        with log.open("a", encoding="utf-8") as output:
+            subprocess.run(
+                [executable, *command[1:]],
+                cwd=root,
+                env=env,
+                check=True,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+            )
 
 
 def profiles(root: Path) -> dict:
@@ -206,6 +219,8 @@ def install_python(
     system: str,
     machine: str = "x86_64",
     amd_arch: str | None = None,
+    *,
+    log: Path | None = None,
 ) -> None:
     """Synchronize a dedicated environment, leaving the project's .venv alone."""
     env = os.environ.copy()
@@ -225,8 +240,15 @@ def install_python(
             pins.append(match.group(1) + match.group(2))
         constraints.write_text("\n".join(pins) + "\n", encoding="utf-8")
     for command in install_commands(root, environment, backend, system, machine, amd_arch):
-        run(command, root, env)
-    run(["uv", "pip", "check", "--python", str(python_path(environment))], root, env)
+        if log is None:
+            run(command, root, env)
+        else:
+            run(command, root, env, log=log)
+    check = ["uv", "pip", "check", "--python", str(python_path(environment))]
+    if log is None:
+        run(check, root, env)
+    else:
+        run(check, root, env, log=log)
 
 
 def create_configuration(root: Path, port: int) -> None:
