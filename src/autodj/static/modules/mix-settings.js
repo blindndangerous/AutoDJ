@@ -10,7 +10,7 @@
 // 422.  A refused or failed value goes straight back to what the server
 // has, so the field never shows a setting that is not in effect.
 
-import { announceStatus } from "./live-region.js";
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
 import { applySoundModeVisibility } from "./settings-panel.js";
 import { registerSettingsGroup, settingsDraftHolds } from "./settings-drafts.js";
 
@@ -193,6 +193,13 @@ export function installMixSettings(els, { settingsStatus }) {
   for (const spec of NUMBER_FIELDS) {
     const input = els[spec.key];
     if (!input) continue;
+    const error = input.ownerDocument.createElement("p");
+    error.id = `${input.id}-error`;
+    error.className = "field-error";
+    error.hidden = true;
+    input.after(error);
+    const clearError = () => clearFieldError(input, error);
+    input.addEventListener("input", clearError);
     const group = spec.group;
     const draft = registerSettingsGroup({
       panel: input.closest('[id^="spanel-"]'), group, controls: [input],
@@ -200,11 +207,11 @@ export function installMixSettings(els, { settingsStatus }) {
       write(value) {
         const shown = spec.read({ [spec.group]: value });
         if (shown != null) input.value = shown;
+        clearError();
       },
       validate() {
-        if (parseSettingValue(input.value, spec) !== null) { input.removeAttribute("aria-invalid"); return true; }
-        input.setAttribute("aria-invalid", "true"); input.focus();
-        announceStatus(settingsStatus, invalidText(spec), { force: true, tone: "error" });
+        if (parseSettingValue(input.value, spec) !== null) { clearError(); return true; }
+        showFieldError(input, invalidText(spec), error, settingsStatus);
         return false;
       },
     });

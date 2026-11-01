@@ -2335,7 +2335,7 @@ describe("app request behavior", () => {
     }
   });
 
-  it("returns to Now Playing and the Settings liner button", async () => {
+  it("returns to Now Playing and the Settings liner Options cell", async () => {
     window.location.hash = "#now";
     try {
       await setupApp({
@@ -2357,9 +2357,11 @@ describe("app request behavior", () => {
       const { renderLinerFileList } = await vi.importActual("../../src/autodj/static/modules/liners.js");
       const list = document.querySelector("#ln-file-list");
       renderLinerFileList(list, [{ id: "liner-1", name: "liner.wav", path: "N:/liner.wav" }], vi.fn());
-      const liner = list.querySelector('[aria-label="Track info for liner.wav"]');
+      const linerOptions = list.querySelector('[aria-label="Options for liner.wav"]');
+      const liner = linerOptions.closest("td");
       liner.focus();
-      liner.click();
+      linerOptions.click();
+      list.querySelector('[role="menuitem"][data-action="info"]').click();
       await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
       expect(document.querySelector("#track-info-return").textContent).toBe("Return to Settings");
       document.querySelector("#track-info-return").click();
@@ -2868,6 +2870,28 @@ describe("app request behavior", () => {
     expect(document.querySelector("#progress-track").getAttribute("aria-valuenow")).toBe("0");
     expect(fetchImpl.mock.calls.some(([url]) => url === "/api/seek")).toBe(false);
     expect(deckAudio.currentTime).toBe(10);
+  });
+
+  it("signs out cleanly when the Profiles and Browser access installers found no markup", async () => {
+    const profilesPath = "../../src/autodj/static/modules/profiles.js";
+    const devicesPath = "../../src/autodj/static/modules/devices.js";
+    vi.doMock(profilesPath, async () => ({ ...(await vi.importActual(profilesPath)), installProfiles: () => undefined }));
+    vi.doMock(devicesPath, async () => ({ ...(await vi.importActual(devicesPath)), installAccess: () => undefined }));
+    try {
+      const { dialog } = await setupApp({
+        initialState: { current_track: { path: "current.mp3", title: "Current" } },
+        onRequest: (url) => url === "/api/pause"
+          ? jsonResponse({ detail: "Authentication required" }, 401)
+          : jsonResponse({ ok: true }),
+      });
+      document.querySelector("#btn-pause").click();
+      await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledOnce());
+      expect(document.getElementById("profiles-status").textContent).toBe("");
+      expect(document.getElementById("access-status").textContent).toBe("");
+    } finally {
+      vi.doUnmock(profilesPath);
+      vi.doUnmock(devicesPath);
+    }
   });
 
   it("does not apply a shuffle response completed after confirmed expiry", async () => {

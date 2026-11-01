@@ -193,7 +193,6 @@ export function renumberConditionRows(host) {
 
 /** Read and validate the common row format into the condition objects sent to the API. */
 export function readConditionRows(rows, {
-  interactive = true,
   parsePointTime,
   folderRequired = "Choose a library folder.",
   durationError = "Enter a duration in seconds or minutes:seconds.",
@@ -205,16 +204,11 @@ export function readConditionRows(rows, {
   errorField,
 } = {}) {
   const invalid = (control, message) => {
-    if (interactive) {
-      control?.setAttribute("aria-invalid", "true");
-      control?.focus();
-    }
     const error = new Error(message);
     error.control = control;
     if (errorField) error.field = errorField;
     throw error;
   };
-  for (const row of rows) row.querySelectorAll("[aria-invalid]").forEach((control) => control.removeAttribute("aria-invalid"));
   return rows.map((row) => {
     const controls = ROW_CONTROLS.get(row);
     const { field: fieldSelect, source: sourceSelect, operator: operatorSelect, genre: genreSelect, name: beetsSelect, category: categorySelect } = controls;

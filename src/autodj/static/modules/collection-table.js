@@ -81,6 +81,8 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
       button.dataset.action = action.id;
       button.setAttribute("aria-label", `${action.label} ${name}`);
       button.setAttribute("aria-disabled", String(Boolean(action.disabledReason)));
+      if (action.ariaPressed === undefined) button.removeAttribute("aria-pressed");
+      else button.setAttribute("aria-pressed", String(action.ariaPressed));
       record.reason.textContent = action.disabledReason || "";
       if (action.disabledReason) button.setAttribute("aria-describedby", record.reason.id);
       else button.removeAttribute("aria-describedby");
@@ -105,7 +107,8 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
       onFocusLost: ({ target }) => {
         if (!announceFocus) return;
         const control = target?.querySelector?.("button");
-        const name = control?.getAttribute("aria-label") || target?.getAttribute("aria-label") || target?.textContent.trim() || label;
+        const fieldLabel = [...(target?.labels || [])].map((item) => item.textContent.trim()).join(" ");
+        const name = control?.getAttribute("aria-label") || target?.getAttribute("aria-label") || fieldLabel || target?.textContent.trim() || label;
         announceStatus(status, `The ${label} list changed. Focus moved to ${name}.`, { force: true });
       },
     });
@@ -130,5 +133,6 @@ export function createCollectionTable({ host, label, columns, keyOf, nameOf,
     for (const menu of removed) menu.close();
     navigation.refresh();
   }
+  update([], { announceFocus: false });
   return { table, body, update, target, clear };
 }

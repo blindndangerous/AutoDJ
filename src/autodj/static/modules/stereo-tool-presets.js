@@ -8,9 +8,10 @@
 // the file field when the file is missing or refused.  Included is the
 // bundled preset; it is always listed first and cannot be deleted.
 
-import { requestJson } from "./api-client.js";
+import { failureText, requestJson } from "./api-client.js";
+import { onCardOpen } from "./card-state.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 
 const INCLUDED = "included";
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -23,8 +24,7 @@ export function installStereoToolPresets({ document: doc = document, request = r
   const upload = doc.getElementById("stereo-preset-upload");
   const remove = doc.getElementById("stereo-preset-delete");
   if (!panel || !select || !file || !upload || !remove) return null;
-  const speak = (message, error = false) => announceStatus(status, message,
-    { force: true, dwellMs: 8000, tone: error ? "error" : "info" });
+  const speak = makeSay(status, { dwellMs: 8000 });
   let active = INCLUDED;
   let uploading = false;
   let selectionDirty = false;
@@ -50,10 +50,8 @@ export function installStereoToolPresets({ document: doc = document, request = r
   }
 
   const loadFailed = (error) =>
-    speak(`Could not load Stereo Tool presets: ${error.message}`, true);
-  panel.addEventListener("toggle", () => {
-    if (panel.open) void refresh().catch(loadFailed);
-  });
+    speak(failureText("load Stereo Tool presets", error), "error");
+  onCardOpen(panel, () => refresh().catch(loadFailed));
   if (panel.open) void refresh().catch(loadFailed);
 
   const choose = async (name) => {
@@ -72,7 +70,7 @@ export function installStereoToolPresets({ document: doc = document, request = r
     if (uploading) return;
     const chosen = file.files?.[0];
     const refuse = (message) => {
-      speak(message, true);
+      speak(message, "error");
       file.focus();
     };
     if (!chosen) {
@@ -93,7 +91,7 @@ export function installStereoToolPresets({ document: doc = document, request = r
     try {
       await request("/api/stereo-tool-presets/upload", { method: "POST", body });
     } catch (error) {
-      refuse(`Could not upload ${chosen.name}: ${error.message}`);
+      refuse(failureText(`upload ${chosen.name}`, error));
       return;
     } finally {
       uploading = false;
@@ -103,7 +101,7 @@ export function installStereoToolPresets({ document: doc = document, request = r
       await refresh();
     } catch (error) {
       select.focus();
-      speak(`Uploaded ${chosen.name}, but could not reload the presets: ${error.message}`, true);
+      speak(`Uploaded ${chosen.name}, but could not reload the presets: ${error.message}`, "error");
       return;
     }
     select.focus();
@@ -133,12 +131,12 @@ export function installStereoToolPresets({ document: doc = document, request = r
             { method: "DELETE" });
           selectionDirty = false;
           await refresh();
-          result = [`Preset ${label} deleted. ${labelOf(active)} is active.`, false];
+          result = [`Preset ${label} deleted. ${labelOf(active)} is active.`, "info"];
         } catch (error) {
           select.value = active;
           selectionDirty = false;
           syncDelete();
-          result = [`Could not delete preset ${label}: ${error.message}`, true];
+          result = [failureText(`delete preset ${label}`, error), "error"];
         }
         return select;
       },

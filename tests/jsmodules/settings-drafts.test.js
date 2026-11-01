@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ request: vi.fn(), choose: vi.fn(), station: "default", epoch: 1 }));
-vi.mock("../../src/autodj/static/modules/api-client.js", () => ({
+vi.mock("../../src/autodj/static/modules/api-client.js", async (importOriginal) => ({
+  ...await importOriginal(),
   requestJson: mocks.request, captureAuthenticatedRequestEpoch: () => mocks.epoch,
   isAuthenticatedRequestCurrent: (epoch) => epoch === mocks.epoch,
 }));
@@ -179,6 +180,56 @@ describe("Settings drafts", () => {
     expect(input.getAttribute("aria-invalid")).toBe("true");
     expect(input.getAttribute("aria-describedby")).toContain("spanel-sound-save-error");
     expect(drafts.settingsHaveChanges()).toBe(true);
+  });
+  it("maps a refused server field to its control by key, and says one it cannot place", async () => {
+    panel.innerHTML = '<input id="lo" value="1"><input id="hi" value="2">';
+    const lo = document.getElementById("lo"), hi = document.getElementById("hi");
+    const read = () => ({ hi: Number(hi.value), lo: Number(lo.value) });
+    const write = (value) => { lo.value = value.lo; hi.value = value.hi; };
+    const range = drafts.registerSettingsGroup({ panel, group: "bpm_range", controls: [lo, hi], fields: { lo, hi }, read, write });
+    drafts.applySettingsDrafts({ revision: "one", profile: "", values: { bpm_range: { lo: 1, hi: 2 } } });
+    hi.value = "9";
+    hi.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(range.dirty()).toBe(true);
+    mocks.request.mockRejectedValue(Object.assign(new Error("High was refused."), { field: "hi", status: 422 }));
+    expect(await drafts.saveSettingsPanel(panel)).toBe(false);
+    expect(hi.getAttribute("aria-invalid")).toBe("true");
+    expect(lo.hasAttribute("aria-invalid")).toBe(false);
+    expect(document.activeElement).toBe(hi);
+
+    mocks.request.mockRejectedValue(Object.assign(new Error("Low was refused."), { field: "lo", status: 422 }));
+    const unmapped = document.createElement("div");
+    unmapped.id = "spanel-other";
+    unmapped.innerHTML = '<input id="a" value="1"><input id="b" value="2">';
+    document.body.append(unmapped);
+    const [a, b] = unmapped.querySelectorAll("input");
+    drafts.registerSettingsGroup({ panel: unmapped, group: "pair", controls: [a, b],
+      read: () => ({ lo: Number(a.value), hi: Number(b.value) }), write: () => {} });
+    drafts.applySettingsDrafts({ revision: "one", profile: "", values: { bpm_range: { lo: 1, hi: 2 }, pair: { lo: 1, hi: 2 } } });
+    a.value = "5";
+    a.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(await drafts.saveSettingsPanel(unmapped)).toBe(false);
+    expect(a.hasAttribute("aria-invalid")).toBe(false);
+    expect(b.hasAttribute("aria-invalid")).toBe(false);
+    await vi.waitFor(() => expect(unmapped.querySelector(".settings-save-status").textContent)
+      .toBe("Could not save all settings: Low was refused. Unsaved changes remain."));
+  });
+  it("keeps Save and Discard enabled and busy while a save started elsewhere runs (#331)", async () => {
+    register(); drafts.applySettingsDrafts(snapshot()); edit(2);
+    input.focus();
+    let finish; mocks.request.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const saving = drafts.saveSettingsPanel(panel);
+    for (const button of [panel.querySelector("[data-settings-save]"), panel.querySelector("[data-settings-discard]")]) {
+      expect(button.disabled).toBe(false);
+      expect(button.getAttribute("aria-busy")).toBe("true");
+    }
+    expect(document.activeElement).toBe(input);
+    finish({ revision: "two", applied: ["playback"], settings: snapshot("two", 2) });
+    await saving;
+    for (const button of [panel.querySelector("[data-settings-save]"), panel.querySelector("[data-settings-discard]")]) {
+      expect(button.disabled).toBe(false);
+      expect(button.hasAttribute("aria-busy")).toBe(false);
+    }
   });
   // ADR-0017-02
   it("blocks duplicate submits and preserves edits made during a request", async () => {

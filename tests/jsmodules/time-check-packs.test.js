@@ -249,7 +249,7 @@ describe("adding and removing voice packs", () => {
     choose(input, "notes.zip");
     byId("tc-pack-add").click();
     const message = "Could not add the voice pack. The upload is not a zip file";
-    await vi.waitFor(() => expect(said()).toBe(message));
+    await vi.waitFor(() => expect(byId("tc-pack-error").textContent).toBe(message));
     expect(document.activeElement).toBe(input);
     expect(input.getAttribute("aria-invalid")).toBe("true");
     expect(input.getAttribute("aria-describedby")).toBe("tc-pack-error tc-add-pack-desc");
@@ -281,8 +281,8 @@ describe("adding and removing voice packs", () => {
     });
     byId("tc-status").textContent = "";
     byId("tc-pack-add").click();
-    expect(await liveText()).toBe("Could not add the voice pack. notes.txt is not an audio "
-      + "file; a pack holds only .wav, .mp3, .flac, .ogg files");
+    await vi.waitFor(() => expect(byId("tc-pack-error").textContent).toBe("Could not add the voice pack. notes.txt is not an audio "
+      + "file; a pack holds only .wav, .mp3, .flac, .ogg files"));
     // A refusal that cannot be replaced is not offered as a replace.
     expect(confirm).toHaveBeenCalledTimes(1);
   });
@@ -292,7 +292,7 @@ describe("adding and removing voice packs", () => {
     const controls = installTimeChecks({ request, interval: () => {} });
     await controls.refresh();
     byId("tc-pack-add").click();
-    expect(await liveText()).toBe("Choose a zip file first.");
+    expect(byId("tc-pack-error").textContent).toBe("Choose a zip file first.");
     expect(document.activeElement).toBe(byId("tc-pack-file"));
     expect(request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
   });

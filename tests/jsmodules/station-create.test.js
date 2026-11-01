@@ -287,17 +287,47 @@ describe("Settings > Station > Stations", () => {
     expect(slug.getAttribute("aria-describedby")).toBe("station-create-slug-help");
   });
 
+  // ADR-0022-06: an already-focused field needs one status announcement, without a focus jump.
+  it("announces a server refusal once when its field already has focus", async () => {
+    const message = "Could not create the station. An earlier station folder still exists.";
+    const request = vi.fn(async () => { throw Object.assign(new Error("An earlier station folder still exists."), { field: "slug" }); });
+    setup({ request });
+    fill({ name: "Owl 2", slug: "owl2" });
+    const slug = byId("station-create-slug");
+    const region = byId("stations-status");
+    slug.focus();
+    const said = [], focused = [];
+    const observer = new window.MutationObserver(() => { if (region.textContent) said.push(region.textContent); });
+    observer.observe(region, { childList: true, characterData: true, subtree: true });
+    const recordFocus = (event) => focused.push(event.target);
+    document.addEventListener("focusin", recordFocus);
+    try {
+      submit();
+      await vi.waitFor(() => expect(said).toEqual([message]));
+      expect(document.activeElement).toBe(slug);
+      expect(focused).toEqual([]);
+      expect(slug.getAttribute("aria-invalid")).toBe("true");
+      expect(slug.getAttribute("aria-describedby").split(" ")).toEqual(["station-create-error", "station-create-slug-help"]);
+      expect(byId("station-create-error").textContent).toBe(message);
+    } finally {
+      observer.disconnect();
+      document.removeEventListener("focusin", recordFocus);
+    }
+  });
+
   it("puts the server's refusal on the field it names", async () => {
     const error = Object.assign(new Error("Night Owl Radio already uses recordings/owl2."),
       { status: 409, field: "name" });
     const request = vi.fn(async () => { throw error; });
     setup({ request });
     fill({ name: "Owl 2", slug: "owl2" });
+    byId("station-create-submit").focus();
     submit();
     const name = byId("station-create-name");
     await vi.waitFor(() => expect(name.getAttribute("aria-invalid")).toBe("true"));
     expect(name.getAttribute("aria-describedby")).toBe("station-create-error");
     expect(document.activeElement).toBe(name);
+    expect(byId("stations-status").textContent).toBe("");
     expect(byId("station-create-error").textContent)
       .toBe("Could not create the station. Night Owl Radio already uses recordings/owl2.");
   });

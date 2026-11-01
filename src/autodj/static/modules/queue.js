@@ -4,8 +4,8 @@
 import { fmtTrack } from "./dom-helpers.js";
 import { createCollectionTable } from "./collection-table.js";
 import { deleteCollectionItem } from "./collection-delete.js";
-import { announceStatus } from "./live-region.js";
-import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, staleActionText } from "./api-client.js";
+import { makeSay } from "./live-region.js";
+import { withDisabled, failureText, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, staleActionText } from "./api-client.js";
 import { currentStation } from "./stations.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { sendWithVoiceTrackConflict, voiceTrackConflict } from "./voice-track-conflict.js";
@@ -22,8 +22,9 @@ function controller(els) {
   let state = controllers.get(queueList);
   if (state) { Object.assign(state.els, els); return state; }
   state = { els: { ...els }, items: [], nextId: 0, generation: 0, key: "", pendingFromKey: null,
-    busy: false, disabledReason: "", installed: false };
+    busy: false, busyController: new AbortController(), disabledReason: "", installed: false };
   controllers.set(queueList, state);
+  state.say = makeSay(() => state.els.queueAnnounce, { dwellMs: 3000, errorDwellMs: 6000 });
   state.grid = createCollectionTable({
     host: queueList, label: "Queued tracks", status: els.queueAnnounce, fallback: queueList,
     emptyText: EMPTY_TEXT, nameIndex: 1,
@@ -92,6 +93,9 @@ export function applyQueueState(queue, els) {
 export function resetQueueState(els) {
   const state = controller(els);
   if (!state) return;
+  state.busyController.abort();
+  state.busyController = new AbortController();
+  state.busy = false;
   state.pendingFromKey = null;
   draw(state, []);
 }
@@ -105,16 +109,12 @@ export function setQueueDisabledReason(els, reason = "") {
   state.grid.update(state.items, { announceFocus: false });
 }
 
-function announce(state, text, error = false) {
-  announceStatus(state.els.queueAnnounce, text, { force: true, dwellMs: error ? 6000 : 3000,
-    ...(error ? { tone: "error" } : {}) });
-}
 
 function beginChange(state, action, id) {
   const index = state.items.findIndex((entry) => entry.id === id);
   if (index < 0) return null;
   const reason = actionReason(state, action, index);
-  if (reason) { announce(state, reason); return null; }
+  if (reason) { state.say(reason); return null; }
   const snapshot = state.items.slice();
   const entry = snapshot[index];
   const next = snapshot.slice();
@@ -129,8 +129,8 @@ function beginChange(state, action, id) {
   const epoch = captureAuthenticatedRequestEpoch();
   const station = currentStation();
   const { queueList } = state.els;
+  const busyController = state.busyController;
   state.busy = true;
-  queueList.setAttribute("aria-busy", "true");
   state.pendingFromKey = queueKey(snapshot.map((item) => item.track));
   draw(state, next, false);
   const generation = state.generation;
@@ -143,39 +143,42 @@ function beginChange(state, action, id) {
     });
   };
   async function settle(send) {
-    let restoreRemovedFocus = false;
-    const rollback = () => {
-      if (state.generation !== generation) return;
-      restoreRemovedFocus = action === "remove" && queueList.contains(queueList.ownerDocument.activeElement);
-      draw(state, snapshot, false);
-    };
-    try {
-      const sent = await send();
-      if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return;
-      if (!sent) {
-        rollback();
-        announce(state, "Queue change canceled.");
-      } else {
-        const name = fmtTrack(entry.track);
-        announce(state, action === "remove"
-          ? `Removed ${name} from queue. Focus moved to ${state.items[Math.min(index, state.items.length - 1)] ? entryName(state.items[Math.min(index, state.items.length - 1)]) : "Queued tracks"}.`
-          : `Moved ${name} to position ${destination + 1} of ${next.length}.`);
+    return withDisabled(queueList, async () => {
+      let restoreRemovedFocus = false;
+      const rollback = () => {
+        if (state.generation !== generation) return;
+        restoreRemovedFocus = action === "remove" && queueList.contains(queueList.ownerDocument.activeElement);
+        draw(state, snapshot, false);
+      };
+      try {
+        const sent = await send();
+        if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return;
+        if (!sent) {
+          rollback();
+          state.say("Queue change canceled.");
+        } else {
+          const name = fmtTrack(entry.track);
+          state.say(action === "remove"
+            ? `Removed ${name} from queue. Focus moved to ${state.items[Math.min(index, state.items.length - 1)] ? entryName(state.items[Math.min(index, state.items.length - 1)]) : "Queued tracks"}.`
+            : `Moved ${name} to position ${destination + 1} of ${next.length}.`);
+        }
+      } catch (error) {
+        if (!isAuthenticatedRequestCurrent(epoch)) return;
+        const stale = staleActionText(error);
+        if (stale) state.say(stale, error.actionDone ? "info" : "error");
+        else {
+          rollback();
+          state.say(failureText("update queue", error), "error");
+        }
+      } finally {
+        if (state.busyController === busyController) {
+          state.busy = false;
+          state.pendingFromKey = null;
+          state.grid.update(state.items, { announceFocus: false });
+        }
       }
-    } catch (error) {
-      if (!isAuthenticatedRequestCurrent(epoch)) return;
-      const stale = staleActionText(error);
-      if (stale) announce(state, stale, !error.actionDone);
-      else {
-        rollback();
-        announce(state, `Could not update queue: ${error.message}`, true);
-      }
-    } finally {
-      state.busy = false;
-      state.pendingFromKey = null;
-      queueList.setAttribute("aria-busy", "false");
-      state.grid.update(state.items, { announceFocus: false });
-    }
-    if (restoreRemovedFocus) state.grid.target(entry.id, "options")?.focus();
+      if (restoreRemovedFocus) state.grid.target(entry.id, "options")?.focus();
+    }, { signal: busyController.signal });
   }
   return { request, settle, focusTarget };
 }
@@ -190,7 +193,7 @@ async function changeQueue(state, action, id, button) {
   const index = state.items.findIndex((entry) => entry.id === id);
   if (index < 0) return;
   const reason = actionReason(state, action, index);
-  if (reason) { announce(state, reason); return; }
+  if (reason) { state.say(reason); return; }
   const generation = state.generation;
   const epoch = captureAuthenticatedRequestEpoch();
   const station = currentStation();
@@ -202,7 +205,7 @@ async function changeQueue(state, action, id, button) {
     confirmLabel: "Remove", pendingText: "Removing…",
     onConfirm: async () => {
       if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return null;
-      if (generation !== state.generation) { announce(state, "The queue changed. Choose the track again."); return button; }
+      if (generation !== state.generation) { state.say("The queue changed. Choose the track again."); return button; }
       change = beginChange(state, action, id);
       if (!change) return button;
       try { result = await change.request(); } catch (error) { failure = error; }
@@ -229,13 +232,13 @@ export function installQueueButtons(els) {
 
 export function installQueueClear(els) {
   const state = controller(els);
-  const { queueList, queueClear } = els;
+  const { queueClear } = els;
   if (!state || !queueClear) return;
   const doc = queueClear.ownerDocument;
   queueClear.addEventListener("click", async () => {
-    if (state.disabledReason || state.busy) { announce(state, state.disabledReason || "Still sending the last change…"); return; }
+    if (state.disabledReason || state.busy) { state.say(state.disabledReason || "Still sending the last change…"); return; }
     const count = state.items.length;
-    if (!count) { announce(state, "The queue is already empty."); return; }
+    if (!count) { state.say("The queue is already empty."); return; }
     const plural = count === 1 ? "track" : "tracks";
     const epoch = captureAuthenticatedRequestEpoch();
     const station = currentStation();
@@ -261,7 +264,7 @@ export function installQueueClear(els) {
         } catch (error) {
           if (!isAuthenticatedRequestCurrent(epoch)) return null;
           if (voiceTrackConflict(error)) conflict = error;
-          else result = `Could not clear the queue: ${error.message}`;
+          else result = failureText("clear the queue", error);
         }
         return queueClear;
       },
@@ -273,10 +276,9 @@ export function installQueueClear(els) {
         const sent = await sendWithVoiceTrackConflict(doc, clear, conflict);
         if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return;
         if (sent) done(); else result = "Queue clear canceled.";
-      } catch (error) { result = `Could not clear the queue: ${error.message}`; }
+      } catch (error) { result = failureText("clear the queue", error); }
       queueClear.focus();
     }
-    if (confirmed && result && isAuthenticatedRequestCurrent(epoch)) announce(state, result, result.startsWith("Could not"));
-    queueList.setAttribute("aria-busy", "false");
+    if (confirmed && result && isAuthenticatedRequestCurrent(epoch)) state.say(result, result.startsWith("Could not") ? "error" : "info");
   });
 }

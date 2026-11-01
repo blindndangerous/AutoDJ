@@ -92,7 +92,9 @@ export async function audit(_name, launcher) {
     assert.ok(inventory.devices.some((device) => device.device_id === other.device_id));
     assert.ok(inventory.devices.some((device) => device.device_id === initial.device_id && device.name === renamed));
     await page.getByRole("button", { name: "Refresh device list", exact: true }).click();
-    const forget = page.locator(`#device-list button[data-action="revoke"][data-device-id="${other.device_id}"]`);
+    const deviceRow = page.locator(`#device-list tr[data-row-key="${other.device_id}"]`);
+    await deviceRow.locator('button[aria-haspopup="menu"]').click();
+    const forget = deviceRow.locator('[role="menuitem"][data-action="revoke"]');
     await expect(forget).toHaveAccessibleName(`Forget ${other.device_name}`);
     await forget.click();
     const confirmation = page.getByRole("dialog", { name: `Forget ${other.device_name}?`, exact: true });

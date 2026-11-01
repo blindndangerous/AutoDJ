@@ -1,9 +1,10 @@
 // One draft per Settings tab; server configuration and browser preferences keep their owners.
-import { requestJson, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent } from "./api-client.js";
+import { failureText, requestJson, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, withDisabled } from "./api-client.js";
 import { currentStation, stationName } from "./stations.js";
-import { announceStatus, sayIfStillPending } from "./live-region.js";
+import { makeSay } from "./live-region.js";
+import { onCardOpen } from "./card-state.js";
 import { chooseAction } from "./confirm-dialog.js";
-import { clearFieldError, showFieldError } from "./dom-helpers.js";
+import { clearFieldError, showFieldError, applyServerFieldError } from "./dom-helpers.js";
 
 const editors = new WeakMap();
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -43,10 +44,7 @@ function refresh(panel) {
   const changed = dirtyPanel(panel);
   for (const button of [panel.save, panel.discard]) {
     if (!panel.saving) button.setAttribute("aria-disabled", String(!changed));
-    button.classList.toggle("is-pending", panel.saving);
   }
-  if (panel.saving) panel.save.setAttribute("aria-busy", "true");
-  else panel.save.removeAttribute("aria-busy");
   panel.note.textContent = panel.saving ? "Saving changes…" : changed ? "Unsaved changes" : "No unsaved changes";
   const scopes = [];
   if (panel.parts.some((part) => part.group && part.scope !== "server")) scopes.push(`Station: ${stationName()}`);
@@ -62,8 +60,17 @@ function controls(part) {
   return (typeof part.controls === "function" ? part.controls() : part.controls).filter(Boolean);
 }
 
-function say(panel, text, error = false) {
-  announceStatus(panel.status, text, { force: true, tone: error ? "error" : "info" });
+// The control for a setting the server refused, found by the setting's
+// name: the part's own *fields* map, then a control named for it, then the
+// only control of a part that reads only that setting.  Null when none is
+// certain; the refusal is then said in the panel status instead.
+function fieldControl(part, key) {
+  const mapped = part.fields?.[key];
+  if (mapped) return mapped;
+  const all = controls(part);
+  const named = all.find((control) => control.name === key || control.dataset?.setting === key);
+  if (named) return named;
+  return all.length === 1 && Object.keys(part.read()).length === 1 ? all[0] : null;
 }
 
 function accept(part, value) {
@@ -114,7 +121,7 @@ export async function loadSettingsDrafts(doc = document, profile = editorFor(doc
   }).catch((error) => {
     if (generation !== editor.generation) return;
     for (const panel of editor.panels.values()) {
-      if (!panel.element.hidden) say(panel, `Could not load settings: ${error.message}`, true);
+      if (!panel.element.hidden) panel.say(failureText("load settings", error), "error");
     }
   }).finally(() => { if (generation === editor.generation) editor.loading = null; });
   return editor.loading;
@@ -161,7 +168,7 @@ export function registerSettingsGroup(spec) {
     actions.append(discard, save);
     bar.append(scope, note, actions, error, status);
     element.append(bar);
-    panel = { element, parts: [], save, discard, status, error, note, scope, saving: false };
+    panel = { element, parts: [], save, discard, status, error, note, scope, saving: false, say: makeSay(status), busyController: null };
     editor.panels.set(element, panel);
     save.addEventListener("click", () => { if (!unavailable(save)) void saveSettingsPanel(element); });
     discard.addEventListener("click", () => { if (!unavailable(discard)) discardSettingsPanel(element); });
@@ -173,7 +180,7 @@ export function registerSettingsGroup(spec) {
       refresh(panel);
     });
     if (spec.loadSettings !== false) {
-      element.addEventListener("toggle", () => { if (element.open) void loadSettingsDrafts(doc); });
+      onCardOpen(element, () => loadSettingsDrafts(doc));
     }
   }
   const part = { ...spec, baseline: null, latest: null, initial: clone(spec.read()), echoUntil: 0 };
@@ -223,7 +230,7 @@ export function discardSettingsPanel(element) {
     for (const control of controls(part)) clearFieldError(control, panel.error);
   }
   refresh(panel);
-  say(panel, "Changes discarded.");
+  panel.say("Changes discarded.");
   void loadSettingsDrafts(editor.doc);
 }
 
@@ -259,7 +266,7 @@ export async function saveSettingsPanel(element) {
       }
     }
   } catch (error) {
-    say(panel, error.message, true);
+    panel.say(error.message, "error");
     return false;
   }
   const station = currentStation();
@@ -269,64 +276,67 @@ export async function saveSettingsPanel(element) {
   const current = () => generation === editor.generation && station === currentStation() && isAuthenticatedRequestCurrent(epoch);
   panel.saving = true;
   refresh(panel);
-  const stopPending = sayIfStillPending((text) => { if (current()) say(panel, text); }, "Saving changes…");
-  try {
-    let result = { applied: [], failed: {} };
-    if (Object.keys(changes).length) {
-      if (!editor.revision) throw new Error("Reload settings before saving.");
-      result = await requestJson("/api/settings", {
-        method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ revision: editor.revision, changes, profile }),
-      });
-      if (!current()) return false;
-      editor.revision = result.revision;
-      editor.values = clone(result.settings.values);
-    }
-    for (const [part, value] of submitted) {
-      if (part.group && !result.applied.includes(part.group)) continue;
-      if (!part.group && await part.commit(value) === false) throw new Error("Settings could not be applied.");
-      if (!current()) return false;
-      const unchanged = equal(part.read(), value);
-      part.latest = clone(part.group ? editor.values[part.group] : value);
-      part.baseline = value;
-      if (unchanged) {
-        part.write(part.latest);
-        part.baseline = clone(part.read());
+  panel.busyController = new AbortController();
+  const signal = panel.busyController.signal;
+  // keepEnabled: Save or Discard may not hold focus (a save confirmed from
+  // the leave-page dialog), and a disabled one is reported unavailable (#331).
+  return withDisabled(panel.save, () => withDisabled(panel.discard, async () => {
+    try {
+      let result = { applied: [], failed: {} };
+      if (Object.keys(changes).length) {
+        if (!editor.revision) throw new Error("Reload settings before saving.");
+        result = await requestJson("/api/settings", {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ revision: editor.revision, changes, profile }),
+        });
+        if (!current()) return false;
+        editor.revision = result.revision;
+        editor.values = clone(result.settings.values);
       }
-      // shortcut: legacy pushes have no revision; hold old echoes for five seconds.
-      if (part.group) part.echoUntil = Date.now() + 5000;
-    }
-    if (Object.keys(result.failed || {}).length) {
-      const saved = result.applied.length || parts.some((part) => !part.group);
-      say(panel, `${saved ? "Some settings were saved." : "No settings were saved."} ${Object.values(result.failed).join(" ")} Unsaved changes remain.`, true);
+      for (const [part, value] of submitted) {
+        if (part.group && !result.applied.includes(part.group)) continue;
+        if (!part.group && await part.commit(value) === false) throw new Error("Settings could not be applied.");
+        if (!current()) return false;
+        const unchanged = equal(part.read(), value);
+        part.latest = clone(part.group ? editor.values[part.group] : value);
+        part.baseline = value;
+        if (unchanged) {
+          part.write(part.latest);
+          part.baseline = clone(part.read());
+        }
+        // shortcut: legacy pushes have no revision; hold old echoes for five seconds.
+        if (part.group) part.echoUntil = Date.now() + 5000;
+      }
+      if (Object.keys(result.failed || {}).length) {
+        const saved = result.applied.length || parts.some((part) => !part.group);
+        panel.say(`${saved ? "Some settings were saved." : "No settings were saved."} ${Object.values(result.failed).join(" ")} Unsaved changes remain.`, "error");
+        return false;
+      }
+      for (const other of editor.panels.values()) {
+        for (const part of other.parts) if (part.group && !submitted.has(part)) accept(part, editor.values[part.group]);
+        refresh(other);
+      }
+      const scope = parts.every((part) => part.scope === "server") ? "for this server"
+        : parts.some((part) => part.scope === "server") ? ""
+          : parts.some((part) => part.group) ? `for ${stationName()}` : "in this browser";
+      const done = [...described].filter(([part]) => !part.group || result.applied.includes(part.group))
+        .map(([, words]) => words);
+      panel.say([`Settings saved${scope ? ` ${scope}` : ""}.`, ...done, result.message || ""].join(" ").trim());
+      return true;
+    } catch (error) {
+      if (current()) {
+        const part = error.field && parts.find((item) => Object.hasOwn(item.read(), error.field));
+        const control = part && fieldControl(part, error.field);
+        if (control && applyServerFieldError(error, { [error.field]: control }, panel.error, panel.status)) return false;
+        panel.say(error.status === 409
+          ? "Settings changed elsewhere. Your draft is kept. Discard to load the current settings, then edit again."
+          : `${failureText("save all settings", error)} Unsaved changes remain.`, "error");
+      }
       return false;
+    } finally {
+      if (generation === editor.generation) { panel.busyController.abort(); panel.saving = false; refresh(panel); }
     }
-    for (const other of editor.panels.values()) {
-      for (const part of other.parts) if (part.group && !submitted.has(part)) accept(part, editor.values[part.group]);
-      refresh(other);
-    }
-    const scope = parts.every((part) => part.scope === "server") ? "for this server"
-      : parts.some((part) => part.scope === "server") ? ""
-        : parts.some((part) => part.group) ? `for ${stationName()}` : "in this browser";
-    const done = [...described].filter(([part]) => !part.group || result.applied.includes(part.group))
-      .map(([, words]) => words);
-    say(panel, [`Settings saved${scope ? ` ${scope}` : ""}.`, ...done, result.message || ""].join(" ").trim());
-    return true;
-  } catch (error) {
-    if (current()) {
-      const part = error.field && parts.find((item) => Object.hasOwn(item.read(), error.field));
-      if (part) {
-        const index = Object.keys(part.read()).indexOf(error.field);
-        showFieldError(controls(part)[index] || controls(part)[0], error.message, panel.error, panel.status);
-      } else say(panel, error.status === 409
-        ? "Settings changed elsewhere. Your draft is kept. Discard to load the current settings, then edit again."
-        : `Could not save all settings: ${error.message} Unsaved changes remain.`, true);
-    }
-    return false;
-  } finally {
-    stopPending();
-    if (generation === editor.generation) { panel.saving = false; refresh(panel); }
-  }
+  }, { signal, keepEnabled: true }), { signal, keepEnabled: true, pendingText: "Saving changes\u2026", say: (text) => { if (current()) panel.say(text); } });
 }
 
 // For diagnostics (the browser audits): every part with unsaved changes,
@@ -380,6 +390,7 @@ export function resetSettingsDrafts(doc = document) {
   editor.profile = "";
   editor.loading = null;
   for (const panel of editor.panels.values()) {
+    panel.busyController?.abort();
     panel.saving = false;
     for (const part of panel.parts) if (part.group) { part.baseline = null; part.latest = null; part.echoUntil = 0; }
     refresh(panel);

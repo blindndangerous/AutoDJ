@@ -11,9 +11,9 @@
 // progress bar, never a live region, so a long run is not read out every
 // second.  The results are headings and lists (no tables), filled in
 // without moving focus.
-import { requestJson } from "./api-client.js";
-import { focusRevealed } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+import { failureText, requestJson, withDisabled } from "./api-client.js";
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
+import { makeSay } from "./live-region.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const POLL_MS = 1000;
@@ -125,20 +125,11 @@ export function installRotationTest({
   // Bumped by clear(): an answer for an older session is dropped.
   let session = 0;
 
-  function say(message, tone = "info") {
-    announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 8000 : 6000, tone });
-  }
+  const say = makeSay(status, { dwellMs: 6000, errorDwellMs: 8000 });
 
-  function markSeed(problem) {
-    if (problem) {
-      seed.setAttribute("aria-invalid", "true");
-      seed.setAttribute("aria-describedby", "rotation-seed-desc rotation-error");
-    } else {
-      seed.removeAttribute("aria-invalid");
-      seed.setAttribute("aria-describedby", "rotation-seed-desc");
-    }
-    errorText.textContent = problem || "";
-    errorText.hidden = !problem;
+  function markSeed(problem, focus = false) {
+    if (problem) showFieldError(seed, problem, errorText, focus ? status : null, { focus });
+    else clearFieldError(seed, errorText);
   }
 
   function stopPolling() {
@@ -176,7 +167,7 @@ export function installRotationTest({
           say(stoppedFollowingMessage(failed, error), "error");
           return;
         }
-        if (failed === 1) say(`Could not check the rotation test: ${error.message} Trying again.`, "error");
+        if (failed === 1) say(`${failureText("check the rotation test", error)} Trying again.`, "error");
         follow(mine, failed);
         return;
       }
@@ -193,12 +184,8 @@ export function installRotationTest({
       return;
     }
     const problem = seedProblem(seed.value);
-    markSeed(problem);
-    if (problem) {
-      focusRevealed(seed);
-      say(problem, "error");
-      return;
-    }
+    markSeed(problem, true);
+    if (problem) return;
     const mine = session;
     let view;
     try {
@@ -232,8 +219,8 @@ export function installRotationTest({
     say("Cancelling the rotation test.");
   }
 
-  runButton.addEventListener("click", () => { void run(); });
-  cancelButton.addEventListener("click", () => { void cancel(); });
+  runButton.addEventListener("click", () => { void withDisabled(runButton, run); });
+  cancelButton.addEventListener("click", () => { void withDisabled(cancelButton, cancel); });
   seed.addEventListener("input", () => {
     if (seed.getAttribute("aria-invalid") === "true") markSeed(seedProblem(seed.value));
   });

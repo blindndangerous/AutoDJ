@@ -32,7 +32,7 @@
 // WebSocket, about 43 ms per message.  A slow link drops audio rather
 // than letting it queue up behind the talker.
 
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 import { stationApi } from "./stations.js";
 import { clockText } from "./time-format.js";
 
@@ -188,7 +188,7 @@ export function installLiveDesk({
   let ownEnded = -Infinity;
 
   const othersTalking = () => busy && !session && now() - ownEnded > OWN_TALK_ECHO_MS;
-  const say = (message) => announceStatus(srStatus, message, { force: true, dwellMs: 5000 });
+  const say = makeSay(srStatus, { dwellMs: 5000, errorDwellMs: 6000 });
 
   function describe() {
     const ids = [help.id];
@@ -206,7 +206,7 @@ export function installLiveDesk({
   function showError(text) {
     setText(error, text);
     describe();
-    if (text) announceStatus(srStatus, text, { force: true, tone: "error", dwellMs: 6000 });
+    if (text) say(text, "error");
   }
 
   // Shown, not said: who may talk now.

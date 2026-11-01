@@ -5,10 +5,11 @@ import {
 import { confirmAction } from "./confirm-dialog.js";
 import { createCollectionTable } from "./collection-table.js";
 import { deleteCollectionItem } from "./collection-delete.js";
-import { createEditorDialog, showEditorError } from "./editor-dialog.js";
+import { createEditorDialog } from "./editor-dialog.js";
 import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
-import { clearFieldError, fmtTime } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+import { clearFieldError, clearFormErrors, showFieldError, fmtTime } from "./dom-helpers.js";
+import { onCardOpen } from "./card-state.js";
+import { makeSay } from "./live-region.js";
 import { stationApi, stationEpoch } from "./stations.js";
 import {
   INSECURE_TEXT, NO_RECORDER_TEXT, microphoneProblem, recordingToWav,
@@ -28,6 +29,7 @@ export function installPreparedEditions({
   const root = get("card"), panel = doc.getElementById("panel-library");
   if (!root) return { openShow: async () => {}, confirmLeave: async () => true, clear() {}, active: () => false, addSong: async () => {}, destroy() {} };
   let show = null, edition = null, generation = 0, recording = null, starting = false, localTake = null;
+  let pending = new AbortController();
   let busy = false, rerecord = null, timer = null, clock = null;
   let loadNumber = 0, refreshNumber = 0;
   const receipts = new Map(), requested = new Map(), approving = new Set();
@@ -35,22 +37,22 @@ export function installPreparedEditions({
   const current = ([mine, station, auth]) => mine === generation && station === stationEpoch()
     && isAuthenticatedRequestCurrent(auth);
   const endpoint = (tail = "") => `/api/editions/${encodeURIComponent(edition.id)}${tail}`;
+  const localSay = makeSay(get("status"), { force: false });
   const say = (text) => {
     if (edition?.committed_audio_notice && !text.includes(edition.committed_audio_notice))
       text += ` ${edition.committed_audio_notice}`;
     if (announce) { get("status").textContent = text; announce(text); }
-    else announceStatus(get("status"), text);
+    else localSay(text);
   };
   const send = (url, method, value) => request(url, {
     method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
   });
   function fail(error, ticket, control = null) {
     if (!current(ticket)) return;
-    if (control) {
-      if (control.matches("input, select, textarea")) control.setAttribute("aria-invalid", "true");
-      control.focus();
-    }
-    say(error.message || "The edition request failed. Reload the edition and try again.");
+    const message = error.message || "The edition request failed. Reload the edition and try again.";
+    if (control?.matches("input, select, textarea")) showFieldError(control, message, get("error"), null);
+    else control?.focus();
+    say(message);
   }
   const occurrenceTable = createCollectionTable({
     host: get("occurrences"), label: "Edition occurrences", keyOf: (item) => item.id,
@@ -106,7 +108,7 @@ export function installPreparedEditions({
         (takeTable.target(draft.take.id, "options") || get("heading")).focus();
         say("Take reattached. Review and approve its new position before broadcast.");
       } catch (error) {
-        if (current(draft.ticket) && editorCurrent()) showEditorError(get("reattach-position"), error.message, get("reattach-error"), reattachEditor.status);
+        if (current(draft.ticket) && editorCurrent()) showFieldError(get("reattach-position"), error.message, get("reattach-error"), reattachEditor.status);
       }
     },
   });
@@ -185,7 +187,7 @@ export function installPreparedEditions({
     const hadResumeChoice = sameEdition && get("resume-item").options.length > 0;
     const resumeChoice = hadResumeChoice ? get("resume-item").value : value.run?.resume_occurrence;
     edition = value;
-    root.querySelectorAll("[aria-invalid]").forEach((control) => control.removeAttribute("aria-invalid"));
+    clearFormErrors(root);
     for (const [id, receipt] of receipts) {
       const take = edition.takes.find((item) => item.id === id);
       if (!take || take.dependency_hash !== receipt.dependency_hash || take.asset_id !== receipt.asset_id) receipts.delete(id);
@@ -484,6 +486,7 @@ export function installPreparedEditions({
     } catch (error) { fail(error, ticket, get("schedule-at")); }
   }
   function clear() {
+    pending.abort(); pending = new AbortController();
     reattachEditor.close(); reattachment = null;
     generation += 1; loadNumber += 1; refreshNumber += 1; starting = false; stopRecording(true); stopAudio(); dropLocal();
     receipts.clear(); requested.clear(); approving.clear(); edition = null; show = null; busy = false; rerecord = null;
@@ -506,7 +509,7 @@ export function installPreparedEditions({
         say("Prepared edition created. The reusable show stays independent.");
       }
     } catch (error) { fail(error, ticket, get("new-name")); }
-  }));
+  }, { signal: pending.signal }));
   get("save-name").addEventListener("click", () => {
     if (!get("name").value.trim()) { fail(new Error("Enter an edition name."), context(), get("name")); return; }
     void mutate({ name: get("name").value.trim() });
@@ -529,20 +532,20 @@ export function installPreparedEditions({
     if (!localTake) return; const ticket = context(), take = localTake;
     try { const wav = await toWav(take.blob, 44100); if (current(ticket) && localTake === take) await upload(wav, take.binding, "recording.wav", get("save-take")); }
     catch (error) { fail(error, ticket); }
-  }));
+  }, { signal: pending.signal }));
   get("import").addEventListener("click", () => void withDisabled(get("import"), async () => {
     const ticket = context(), file = get("file").files?.[0];
     if (!file) { fail(new Error("Choose an audio file to import."), ticket, get("file")); return; }
     if (!await confirmRecordingReplacement()) return;
     try { await upload(file, binding(), file.name, get("file")); } catch (error) { fail(error, ticket); }
-  }));
+  }, { signal: pending.signal }));
   get("discard").addEventListener("click", async () => { if (!await confirmRecordingReplacement()) return; stopRecording(true); stopAudio(); dropLocal(); rerecord = null; say("Local recording discarded; saved takes are unchanged."); });
   get("review").addEventListener("click", () => reviewTake());
   get("start").addEventListener("click", () => void start());
   get("start-now").addEventListener("click", () => void start(false, true));
   get("resume").addEventListener("click", () => void start(true));
   get("schedule").addEventListener("click", () => void schedule());
-  root.addEventListener("toggle", () => { if (root.open) void refresh(); });
+  onCardOpen(root, refresh);
   doc.addEventListener("autodj:edition-review-ready", reviewReady);
   const visible = () => { if (panel?.hidden || doc.visibilityState === "hidden") stopRecording(); };
   doc.addEventListener("visibilitychange", visible);
@@ -565,6 +568,6 @@ export function installPreparedEditions({
       await mutate({ occurrences: [...edition.occurrences, { id: globalThis.crypto.randomUUID().replaceAll("-", ""), kind: "song", path: song.path, asset_id: null, take_id: null }] }, null, `Added ${song.title || "song"} to the edition.`);
     },
     clear,
-    destroy() { clear(); observer.disconnect(); doc.removeEventListener("visibilitychange", visible); doc.removeEventListener("autodj:edition-review-ready", reviewReady); },
+    destroy() { clear(); reattachEditor.destroy(); observer.disconnect(); doc.removeEventListener("visibilitychange", visible); doc.removeEventListener("autodj:edition-review-ready", reviewReady); },
   };
 }

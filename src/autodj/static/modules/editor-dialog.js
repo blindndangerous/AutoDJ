@@ -1,21 +1,20 @@
-import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent } from "./api-client.js";
+import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, withDisabled } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { closeDialog, openDialog } from "./dialog-guard.js";
-import { dialogStatusLine, focusAfterDialog, showFieldError } from "./dom-helpers.js";
-import { announceStatus, clearAnnouncedStatus, sayIfStillPending } from "./live-region.js";
+import { dialogStatusLine, focusAfterDialog } from "./dom-helpers.js";
+import { clearAnnouncedStatus, makeSay } from "./live-region.js";
 import { tableFocusTarget } from "./table-row.js";
 
 const openEditors = new WeakMap();
 const closeEditors = new WeakMap();
 const editorStatuses = new WeakMap();
 
-export const showEditorError = showFieldError;
 
 // Keep dialogs outside tab panels so hidden panels cannot hide an open editor
 // from assistive technology.  An editor opens with show() and aria-modal,
 // not showModal(), so NVDA keeps its place on the page (#631, see
 // dialog-guard.js); editors and the dialogs opened from them stack.
-export function createEditorDialog({ form, heading, cancel, fallback, save, onCancel, dialog: existingDialog, submit }) {
+export function createEditorDialog({ form, heading, cancel, fallback, save, onCancel, dialog: existingDialog, submit, pendingText = "Saving…" }) {
   const doc = form.ownerDocument;
   const dialog = existingDialog || doc.createElement("dialog");
   if (!dialog.id) dialog.id = `${form.id}-dialog`;
@@ -45,13 +44,14 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
   openEditors.set(doc, stack);
   let generation = 0;
   let pending = false;
+  let busyController = null;
   let confirming = false;
   let opener = null;
   let original = "";
   const snapshot = () => JSON.stringify([...form.querySelectorAll("input, select, textarea")]
     .map((control) => [control.id, control.value, control.checked,
       [...(control.files || [])].map((file) => [file.name, file.size, file.lastModified])]));
-  const say = (message, tone = "info") => announceStatus(status, message, { force: true, tone });
+  const say = makeSay(status);
 
   // *restore*: focus goes back to the opener, which the browser does as the
   // dialog closes.  Otherwise the caller moves focus on in the same task,
@@ -64,11 +64,7 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
     generation += 1;
     if (confirming) doc.getElementById("confirm-dialog")?.close();
     pending = false;
-    form.removeAttribute("aria-busy");
-    form.querySelectorAll('[data-editor-pending]').forEach((button) => {
-      button.disabled = false;
-      delete button.dataset.editorPending;
-    });
+    busyController?.abort();
     closeDialog(dialog, restore ? { opener: opener?.isConnected ? opener : null } : { opener, handOff: true });
     const index = stack.indexOf(dialog);
     if (index !== -1) stack.splice(index, 1);
@@ -102,33 +98,51 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
     const mine = generation;
     const epoch = captureAuthenticatedRequestEpoch();
     const current = () => dialog.open && generation === mine && isAuthenticatedRequestCurrent(epoch);
-    form.setAttribute("aria-busy", "true");
-    [...form.querySelectorAll('button[type="submit"]:not(:disabled)'), ...(submit && !submit.disabled ? [submit] : [])].forEach((button) => {
-      button.dataset.editorPending = "";
-      button.disabled = true;
-    });
-    const stop = sayIfStillPending((message) => { if (current()) say(message); }, "Saving…");
-    try {
+    const controller = new AbortController();
+    busyController = controller;
+    const signal = controller.signal;
+    const buttons = new Set([...form.querySelectorAll('button[type="submit"]:not(:disabled)'), ...(submit && !submit.disabled ? [submit] : [])]);
+    const finish = () => {
+      if (generation === mine && busyController === controller) {
+        pending = false;
+        controller.abort();
+      }
+    };
+    let run = () => withDisabled(form, () => {
       const result = save(event, current);
-      if (result?.then) await result;
+      if (result?.then) return Promise.resolve(result).finally(finish);
+      finish();
+      return result;
+    }, {
+      signal, pendingText, say: (message) => { if (current()) say(message); },
+    });
+    for (const button of buttons) {
+      const operation = run;
+      run = () => withDisabled(button, operation, { signal });
+    }
+    try {
+      await run();
     }
     catch (error) { if (current()) say(error.message, "error"); }
     finally {
-      stop();
-      if (generation === mine) {
-        pending = false;
-        form.removeAttribute("aria-busy");
-        form.querySelectorAll('[data-editor-pending]').forEach((button) => {
-          button.disabled = false;
-          delete button.dataset.editorPending;
-        });
-      }
+      finish();
     }
   }
   form.addEventListener("submit", saveEdit);
   submit?.addEventListener("click", saveEdit);
   return {
     dialog, status, close,
+    // The owning panel is going away: close the editor and remove every
+    // listener added here, so none outlives the panel.
+    destroy() {
+      close();
+      cancel.removeEventListener("click", cancelEdit);
+      dialog.removeEventListener("cancel", cancelEdit);
+      form.removeEventListener("submit", saveEdit);
+      submit?.removeEventListener("click", saveEdit);
+      closeEditors.delete(dialog);
+      editorStatuses.delete(dialog);
+    },
     region(fallbackStatus) {
       const top = stack.findLast((item) => item.isConnected && item.open);
       return top ? editorStatuses.get(top) : fallbackStatus;

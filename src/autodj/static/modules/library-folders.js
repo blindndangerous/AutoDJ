@@ -1,15 +1,15 @@
 // Music and liner source folders plus the saved song-points editor.
-import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
+import { withDisabled, failureText, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { closeDialog, openDialog } from "./dialog-guard.js";
 import {
-  dialogReturnPlace, dialogStatusLine, fmtTrack, focusAfterDialog, focusSteadyPlace, placeRows,
+  showFieldError, clearFieldError, dialogReturnPlace, dialogStatusLine, fmtTrack, focusAfterDialog, focusSteadyPlace, placeRows,
 } from "./dom-helpers.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { collectionHost } from "./collection-table.js";
 import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
-import { NBSP, announceStatus, sayIfStillPending } from "./live-region.js";
+import { makeSay, clearAnnouncedStatus, announceStatus } from "./live-region.js";
 import { installAutoRescan } from "./auto-rescan.js";
 import { installAdvancedLength } from "./advanced-length.js";
 import { installMusicFadeDrop } from "./music-fade-drop.js";
@@ -105,9 +105,6 @@ export function installLibraryFolders({ document: doc = document, request = requ
   const pendingFolderEdits = new Set();
   const status = doc.getElementById("source-folders-status");
   status.textContent = "";
-  status.setAttribute("role", "status");
-  status.setAttribute("aria-live", "polite");
-  status.setAttribute("aria-atomic", "true");
   let progress = doc.getElementById("source-folders-progress");
   if (!progress) {
     progress = doc.createElement("p");
@@ -165,9 +162,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
   let saving = false;
   let folderSignature = null;
   let protectedGeneration = 0;
-  let actionAnnouncement = 0;
+  let busyController = new AbortController();
   let rescanResult = null;
   let rescanGeneration = 0;
+  let rescanController = new AbortController();
   let rescanBusy = false;
   let suspended = false;
   let addError = null;
@@ -249,32 +247,21 @@ export function installLibraryFolders({ document: doc = document, request = requ
     return !suspended && generation === protectedGeneration && isAuthenticatedRequestCurrent(epoch);
   }
 
-  function announceAction(message, error = false) {
-    status.dataset.tone = error ? "error" : "info";
-    // A no-break space on every other repeat makes the same message change the text.
-    const text = status.textContent === message ? message + NBSP : message;
-    status.textContent = "";
-    const announcement = ++actionAnnouncement;
-    setTimeout(() => {
-      if (!suspended && announcement === actionAnnouncement) status.textContent = text;
-    }, 0);
-  }
+  const announceAction = makeSay(() => suspended ? null : status);
+  const pointSay = makeSay(pointStatus, { force: false });
+  const folderError = doc.getElementById("source-folder-error") || doc.createElement("p");
+  folderError.id = "source-folder-error";
+  folderError.classList.add("field-error");
+  folderError.hidden = true;
+  if (!folderError.isConnected) pathInput.after(folderError);
   function clearAddError() {
-    actionAnnouncement += 1;
+    if (addError) clearAnnouncedStatus(status);
     addError = null;
-    pathInput.removeAttribute("aria-invalid");
-    pathInput.removeAttribute("aria-describedby");
+    clearFieldError(pathInput, folderError);
   }
   function reportAddError(message) {
     addError = message;
-    pathInput.setAttribute("aria-invalid", "true");
-    pathInput.setAttribute("aria-describedby", status.id);
-    announceAction(message, true);
-    pathInput.focus();
-  }
-  function pointSay(message, error = false) {
-    pointStatus.textContent = message;
-    pointStatus.dataset.tone = error ? "error" : "info";
+    showFieldError(pathInput, message, folderError, status);
   }
   function folderRow(folder) {
     const recursive = doc.createElement("input");
@@ -366,7 +353,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       const data = await request("/api/library/folders");
       if (requestCurrent(epoch, generation)) renderFolders(data);
     } catch (error) {
-      if (requestCurrent(epoch, generation)) progress.textContent = `Could not load folders: ${error.message}`;
+      if (requestCurrent(epoch, generation)) progress.textContent = failureText("load folders", error);
     }
   }
   function visible() { return !suspended && !!panel && !panel.closest("[hidden]") && !doc.hidden; }
@@ -397,11 +384,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   kindInput.addEventListener("change", updateFolderAnalysisControl);
   updateFolderAnalysisControl();
   pathInput.addEventListener("input", () => {
-    if (addError) {
-      const previousError = addError;
-      clearAddError();
-      if (status.textContent === previousError) status.textContent = "";
-    }
+    if (addError) clearAddError();
   });
   doc.getElementById("source-folder-add").addEventListener("click", async () => {
     if (suspended) return;
@@ -417,7 +400,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       pathInput.value = "";
       announceAction(`Folder added; import queued for ${path}.`);
       await refresh();
-    } catch (error) { if (requestCurrent(epoch, generation)) reportAddError(`Could not add folder: ${error.message}`); }
+    } catch (error) { if (requestCurrent(epoch, generation)) reportAddError(failureText("add folder", error)); }
   });
   list.addEventListener("change", async (event) => {
     if (suspended) return;
@@ -432,21 +415,17 @@ export function installLibraryFolders({ document: doc = document, request = requ
     // control, so the press was heard as "unavailable" (#331).  aria-busy
     // says it is busy instead, and a slow reply says "Saving…" (#384).
     pendingFolderEdits.add(input);
-    input.classList.add("is-pending");
-    input.setAttribute("aria-busy", "true");
-    const stopPending = sayIfStillPending(announceAction, "Saving folder settings…");
-    try {
-      await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (requestCurrent(epoch, generation)) announceAction("Folder settings saved.");
-    } catch (error) {
-      if (requestCurrent(epoch, generation)) { if (input.type === "checkbox") input.checked = !body[input.dataset.field]; else await refresh(); announceAction(`Could not save folder settings: ${error.message}`, true); }
-    } finally {
-      stopPending();
-      pendingFolderEdits.delete(input);
-      input.classList.remove("is-pending");
-      input.removeAttribute("aria-busy");
-      if (requestCurrent(epoch, generation)) await refresh();
-    }
+    await withDisabled(input, async () => {
+      try {
+        await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        if (requestCurrent(epoch, generation)) announceAction("Folder settings saved.");
+      } catch (error) {
+        if (requestCurrent(epoch, generation)) { if (input.type === "checkbox") input.checked = !body[input.dataset.field]; else await refresh(); announceAction(failureText("save folder settings", error), "error"); }
+      } finally {
+        pendingFolderEdits.delete(input);
+      }
+    }, { signal: busyController.signal, pendingText: "Saving folder settings…", say: announceAction });
+    if (requestCurrent(epoch, generation)) await refresh();
   });
   list.addEventListener("click", async (event) => {
     if (suspended) return;
@@ -458,21 +437,17 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
     pendingFolderEdits.add(button);
-    button.classList.add("is-pending");
-    button.setAttribute("aria-busy", "true");
-    const stopPending = sayIfStillPending(announceAction, "Removing the folder…");
-    try {
-      await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "DELETE" });
-      if (!requestCurrent(epoch, generation)) return;
-      announceAction("Folder removed from the library.");
-    } catch (error) { if (requestCurrent(epoch, generation)) announceAction(`Could not remove folder: ${error.message}`, true); }
-    finally {
-      stopPending();
-      pendingFolderEdits.delete(button);
-      button.classList.remove("is-pending");
-      button.removeAttribute("aria-busy");
-      if (requestCurrent(epoch, generation)) await refresh();
-    }
+    await withDisabled(button, async () => {
+      try {
+        await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "DELETE" });
+        if (!requestCurrent(epoch, generation)) return;
+        announceAction("Folder removed from the library.");
+      } catch (error) { if (requestCurrent(epoch, generation)) announceAction(failureText("remove folder", error), "error"); }
+      finally {
+        pendingFolderEdits.delete(button);
+      }
+    }, { signal: busyController.signal, pendingText: "Removing the folder…", say: announceAction });
+    if (requestCurrent(epoch, generation)) await refresh();
   });
   const autoRescan = installAutoRescan({
     document: doc,
@@ -483,9 +458,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   const advancedLength = installAdvancedLength({
     document: doc,
     request,
-    say: (message, error = false) => announceStatus(doc.getElementById("sr-status"), message, {
-      force: true, dwellMs: error ? 6000 : 4000, tone: error ? "error" : "info",
-    }),
+    say: makeSay(doc.getElementById("sr-status"), { dwellMs: 4000, errorDwellMs: 6000 }),
     isCurrent: () => !suspended,
   });
   const musicFadeDrop = installMusicFadeDrop({
@@ -500,7 +473,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const generation = protectedGeneration;
     const overrideTags = doc.getElementById("source-folder-override-tags").checked;
     try { await request("/api/library/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ override_tags: overrideTags }) }); if (requestCurrent(epoch, generation)) { announceAction(overrideTags ? "Rescan started; populated file tags will be refreshed." : "Rescan started."); await refresh(); } }
-    catch (error) { if (requestCurrent(epoch, generation)) announceAction(`Could not start rescan: ${error.message}`, true); }
+    catch (error) { if (requestCurrent(epoch, generation)) announceAction(failureText("start rescan", error), "error"); }
   });
 
   function setPointFields(points, sources = {}) {
@@ -547,9 +520,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
   }
   function clearRescan(message = "") {
     rescanGeneration += 1;
+    rescanController.abort();
+    rescanController = new AbortController();
     rescanBusy = false;
-    const rescanButton = doc.getElementById("points-rescan");
-    if (rescanButton) rescanButton.disabled = false;
     rescanResult = null;
     const results = doc.getElementById("points-rescan-results");
     if (results) results.hidden = true;
@@ -603,25 +576,23 @@ export function installLibraryFolders({ document: doc = document, request = requ
     }
     clearRescan("Scanning cue points…");
     rescanBusy = true;
-    doc.getElementById("points-rescan").disabled = true;
+
     const identity = { path: currentPath, station: currentStation, epoch: captureAuthenticatedRequestEpoch(), generation: protectedGeneration, scan: rescanGeneration };
     const body = { path: identity.path, ...(identity.station === "default" ? {} : { station: identity.station }) };
     let focusAfter = null;
     try {
-      const data = await request("/api/library/points/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await withDisabled(doc.getElementById("points-rescan"), () => request("/api/library/points/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }), { signal: rescanController.signal });
       if (!requestCurrent(identity.epoch, identity.generation) || identity.scan !== rescanGeneration || currentPath !== identity.path || getStation() !== identity.station) return;
       renderRescan(data, { ...identity, token: data.token, points: data.points, point_sources: data.point_sources, current_points: data.current_points, current_sources: data.current_sources });
     } catch (error) {
       if (requestCurrent(identity.epoch, identity.generation) && identity.scan === rescanGeneration && currentPath === identity.path && getStation() === identity.station) {
         const status = doc.getElementById("points-rescan-status");
-        status.textContent = `Could not rescan cue points: ${error.message}`;
+        status.textContent = failureText("rescan cue points", error);
         focusAfter = doc.getElementById("points-rescan");
       }
     } finally {
       if (identity.scan === rescanGeneration) {
         rescanBusy = false;
-        const button = doc.getElementById("points-rescan");
-        button.disabled = false;
         focusAfter?.focus();
       }
     }
@@ -644,11 +615,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
     editor.inert = true;
     const button = doc.getElementById("points-rescan-apply");
     let focusAfter = null;
-    button.setAttribute("aria-busy", "true");
     doc.getElementById("points-rescan-status").textContent = "Applying cue points…";
     try {
       const body = { path: result.path, ...(result.station === "default" ? {} : { station: result.station }), token: result.token, fields };
-      const data = await request("/api/library/points/rescan/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await withDisabled(button, () => request("/api/library/points/rescan/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }), { signal: busyController.signal });
       if (!requestCurrent(result.epoch, result.generation) || currentPath !== result.path || getStation() !== result.station) return;
       currentRecord = { ...(currentRecord || {}), ...data };
       setPointFields(data.points || {}, data.point_sources || {});
@@ -659,12 +629,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
     } catch (error) {
       if (requestCurrent(result.epoch, result.generation) && currentPath === result.path && getStation() === result.station) {
         const status = doc.getElementById("points-rescan-status");
-        status.textContent = `Could not apply cue points: ${error.message}`;
+        status.textContent = failureText("apply cue points", error);
         focusAfter = doc.getElementById("points-rescan-apply");
       }
     } finally {
       if (result.generation === protectedGeneration) { saving = false; editor.inert = false; }
-      button.removeAttribute("aria-busy");
       focusAfter?.focus();
     }
   }
@@ -750,9 +719,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
       return true;
     } catch (error) {
       if (!requestCurrent(epoch, generation)) return false;
-      const message = `Could not save changes: ${error.message}`;
+      const message = failureText("save changes", error);
       if (errorTarget) errorTarget.textContent = `${message} Press Escape to return to editing.`;
-      else pointSay(message, true);
+      else pointSay(message, "error");
       return false;
     } finally {
       if (generation === protectedGeneration) {
@@ -772,7 +741,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const dialog = doc.getElementById("track-info-dialog");
     if (!dialog || dialog.open) {
       showTrackInfo();
-      pointSay("Save your changes before choosing another track.", true);
+      pointSay("Save your changes before choosing another track.", "error");
       return Promise.resolve(false);
     }
     const save = doc.getElementById("track-info-save");
@@ -802,24 +771,22 @@ export function installLibraryFolders({ document: doc = document, request = requ
       async function accept() {
         if (saving || pending) return;
         pending = true;
-        save.setAttribute("aria-busy", "true");
         // Its own status line: #track-info-error keeps the errors.
         const progress = dialogStatusLine(dialog, "track-info-progress");
-        const stopPending = sayIfStillPending((text) => { progress.textContent = text; }, "Saving…");
         const said = [];
         try {
-          const saved = (savedFields === fieldSnapshot() || await savePoints(error, said))
-            && (!tags.dirty() || await tags.save(error, said));
+          const saved = await withDisabled(save, async () => (savedFields === fieldSnapshot() || await savePoints(error, said))
+            && (!tags.dirty() || await tags.save(error, said)), {
+            signal: busyController.signal, pendingText: "Saving\u2026", say: makeSay(progress),
+          });
           if (!saved) return;
           // The result is said once the other track has opened, not as
           // the dialog closes and focus moves.
           savedBeforeSwitch = said.join(" ");
           closeTo("save");
         } finally {
-          stopPending();
-          progress.textContent = "";
+          clearAnnouncedStatus(progress);
           pending = false;
-          save.removeAttribute("aria-busy");
         }
       }
       function reject() {
@@ -857,7 +824,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (suspended || opening || saving) return;
     const sourceList = returnCollection(opener);
     const sourcePanel = opener?.closest?.("section[data-view]");
-    if (!path) { rememberReturn(opener); showTrackInfo(); pointSay("Choose a track first.", true); return; }
+    if (!path) { rememberReturn(opener); showTrackInfo(); pointSay("Choose a track first.", "error"); return; }
     if (path === currentPath && unsaved()) { rememberReturn(opener); showTrackInfo(); return; }
     opening = true;
     clearRescan();
@@ -904,7 +871,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
         const saved = takeSavedBeforeSwitch();
         const message = (saved ? `${saved} ` : "") + (error.status === 404
           ? "This recording is no longer in the library. Its current details and cue points are unavailable."
-          : `Could not load track info: ${error.message}`);
+          : failureText("load track info", error));
         if (error.status === 404 && opener) {
           if (opener.isConnected && !opener.disabled) opener.focus();
           else {
@@ -976,7 +943,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       const time = preview?.getAttribute("src") === `/api/audio?path=${encodeURIComponent(currentPath)}`
         ? preview.currentTime
         : (getCurrentTrack()?.path === currentPath ? getCurrentPosition() : null);
-      if (!Number.isFinite(time)) { pointSay("This track is not playing in the preview or on the station.", true); return; }
+      if (!Number.isFinite(time)) { pointSay("This track is not playing in the preview or on the station.", "error"); return; }
       const name = setButton.dataset.setCurrent;
       try {
         const value = currentKind === "liner" && name === "overlap_start"
@@ -984,7 +951,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
           : time;
         clearRescan();
         doc.querySelector(`[data-point="${name}"]`).value = formatPointTime(value);
-      } catch (error) { pointSay(error.message, true); }
+      } catch (error) { pointSay(error.message, "error"); }
       return;
     }
     const button = event.target.closest("button[data-preview], button[data-rescan-preview]");
@@ -1009,7 +976,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       preview.currentTime = time;
       await preview.play();
     }
-    catch (error) { pointSay(error.message, true); }
+    catch (error) { pointSay(error.message, "error"); }
   });
   window.addEventListener("hashchange", updatePolling);
   doc.addEventListener("visibilitychange", updatePolling);
@@ -1019,7 +986,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
     suspended = true;
     clearRescan();
     protectedGeneration += 1;
-    actionAnnouncement += 1;
+    busyController.abort();
+    busyController = new AbortController();
+    clearAnnouncedStatus(status);
+    clearAnnouncedStatus(pointStatus);
     if (timer != null) clearInterval(timer);
     timer = null;
     searchShown = false;

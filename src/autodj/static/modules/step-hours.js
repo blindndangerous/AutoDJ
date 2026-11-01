@@ -1,3 +1,4 @@
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
 // A clockwheel step's days and hours ("When this step plays"), for the
 // clockwheel editor (clockwheel-panel.js).  Outside them the server skips
 // the step, as it skips an empty one, and the clockwheel moves on.
@@ -36,15 +37,9 @@ export function stepHoursText(step) {
   return `only ${when} from ${step.hours_from.slice(0, 5)} until ${step.hours_until.slice(0, 5)}`;
 }
 
-function unmark(field) {
-  field?.removeAttribute("aria-invalid");
-  field?.removeAttribute("aria-describedby");
-}
-
 function clearStepHoursError(doc) {
   const { days, from, until, error } = controls(doc);
-  for (const field of [...days, from, until]) unmark(field);
-  if (error) { error.textContent = ""; error.hidden = true; }
+  clearFieldError([...days, from, until], error);
 }
 
 // Fills the fields from *step*, or clears them for a new step.
@@ -58,12 +53,8 @@ export function fillStepHours(doc, step = null) {
 
 function refuse(doc, fields, message) {
   const { error } = controls(doc);
-  for (const field of fields) {
-    field.setAttribute("aria-invalid", "true");
-    if (error) field.setAttribute("aria-describedby", ERROR_ID);
-  }
-  if (error) { error.textContent = message; error.hidden = false; }
-  fields[0]?.focus();
+  if (error) showFieldError(fields, message, error);
+  else fields[0]?.focus();
   throw new Error(message);
 }
 
@@ -93,7 +84,7 @@ export function readStepHours(doc) {
 
 // Clears a field's error mark once it is changed; the days as one group.
 export function installStepHours(doc) {
-  const { days, from, until } = controls(doc);
-  for (const field of [from, until]) field?.addEventListener("input", () => unmark(field));
-  for (const box of days) box.addEventListener("input", () => days.forEach(unmark));
+  const { days, from, until, error } = controls(doc);
+  for (const field of [from, until]) field?.addEventListener("input", () => clearFieldError(field, error));
+  for (const box of days) box.addEventListener("input", () => clearFieldError(days, error));
 }

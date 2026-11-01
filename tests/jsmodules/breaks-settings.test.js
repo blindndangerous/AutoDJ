@@ -197,7 +197,7 @@ describe("Break settings panel", () => {
     field.value = "90";
     expect(groups.find((group) => group.group === "breaks").validate()).toBe(false);
     expect(field.getAttribute("aria-invalid")).toBe("true");
-    expect(field.getAttribute("aria-describedby")).toBe("brk-min-intro-help brk-min-intro-error");
+    expect(field.getAttribute("aria-describedby")).toBe("brk-min-intro-error brk-min-intro-help");
     expect(byId("brk-min-intro-error").hidden).toBe(false);
     expect(byId("brk-min-intro-error").textContent).toBe(MIN_INTRO_ERROR);
     expect(document.activeElement).toBe(field);

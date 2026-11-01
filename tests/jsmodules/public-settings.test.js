@@ -67,7 +67,8 @@ describe("public station settings", () => {
     expect(get("origins").getAttribute("aria-invalid")).toBe("true");
     expect(get("origins").getAttribute("aria-describedby")).toContain("public-origins-error");
     expect(document.activeElement).toBe(get("origins"));
-    await vi.waitFor(() => expect(document.getElementById("settings-status").textContent).toMatch(/HTTP\(S\)/));
+    expect(get("origins-error").textContent).toMatch(/HTTP\(S\)/);
+    expect(document.getElementById("settings-status").textContent).toBe("");
     expect(request).toHaveBeenCalledTimes(1);
     get("origins").dispatchEvent(new Event("input", { bubbles: true }));
     expect(get("origins").hasAttribute("aria-invalid")).toBe(false);

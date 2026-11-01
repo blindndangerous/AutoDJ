@@ -57,8 +57,8 @@ stage's count is the check that this choice worked.
    or dates. Press **Check**.
 6. Confirm that exactly one song matches, then press **Save category**.
 
-Check **Saved categories** for Practice anchor and its count. If zero songs
-match, edit the category form, compare **Value** with the library title, and
+Check the **Name** and **Songs** columns in **Saved categories** for Practice anchor and its count. If zero songs
+match, press that row's **Edit** action, compare **Value** with the library title, and
 check the folder selection. Press **Check** again before saving. If more than
 one matches, choose a unique title and replace **Value**. Do not continue until
 this pool contains one song.

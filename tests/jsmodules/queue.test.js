@@ -30,6 +30,7 @@ function setup(tracks = initial()) {
   applyQueueState(tracks, els);
   installQueueButtons(els);
   installQueueClear(els);
+  watchBusy(els.queueList);
   const rows = () => [...els.queueList.querySelectorAll("tbody tr[data-row-key]")];
   const options = (index) => rows()[index].querySelector('[aria-haspopup="menu"]');
   const action = (index, id) => {
@@ -40,7 +41,26 @@ function setup(tracks = initial()) {
   return { els, dialog, rows, options, action, answer: (yes = true) =>
     document.getElementById(yes ? "confirm-accept" : "confirm-cancel").click() };
 }
-const settled = (els) => vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+// The aria-busy values the list has left since setup or the last settled().
+// Each record's old value is kept, so a busy state set and removed in one
+// task is still seen.
+const busyHistory = new WeakMap();
+function watchBusy(list) {
+  const seen = [];
+  busyHistory.set(list, seen);
+  new window.MutationObserver((records) => seen.push(...records.map((record) => record.oldValue)))
+    .observe(list, { attributes: true, attributeFilter: ["aria-busy"], attributeOldValue: true });
+}
+// The action marked the list busy while it ran, and the shared helper then
+// removed the attribute again.
+async function settled(els) {
+  const seen = busyHistory.get(els.queueList);
+  await vi.waitFor(() => {
+    expect(seen).toContain("true");
+    expect(els.queueList.hasAttribute("aria-busy")).toBe(false);
+  });
+  seen.length = 0;
+}
 const bodies = (fetch) => fetch.mock.calls.map(([, init]) => JSON.parse(init.body));
 afterEach(() => { selectStation("default"); vi.unstubAllGlobals(); });
 
@@ -68,6 +88,7 @@ describe("queue collection", () => {
     expect(dialog.open).toBe(true); expect(fetch).not.toHaveBeenCalled();
     answer(false); expect(rows()).toHaveLength(3);
     action(1, "remove"); answer();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Removed Bravo from queue. Focus moved to Charlie."));
     await settled(els);
     expect(fetch.mock.calls[0][0]).toBe("/api/queue/remove");
     expect(bodies(fetch)).toEqual([{ path: "b.mp3", position: 1 }]);
@@ -195,6 +216,32 @@ describe("queue collection", () => {
     reply(response()); await settled(els);
   });
 
+  it("keeps a new session's mutation pending when an older mutation finishes", async () => {
+    const replies = [];
+    const fetch = vi.fn(() => new Promise((resolve) => replies.push(resolve)));
+    vi.stubGlobal("fetch", fetch);
+    const { els, action, rows } = setup();
+    action(1, "down");
+    invalidateAuthenticatedRequestEpoch();
+    resetQueueState(els);
+    applyQueueState(initial(), els);
+    action(2, "top");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    replies[0](response());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(els.queueList.getAttribute("aria-busy")).toBe("true");
+    applyQueueState(initial(), els);
+    expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Charlie", "Alpha", "Bravo"]);
+    action(1, "down");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    replies[1](response());
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).not.toBe("true"));
+    action(1, "down");
+    expect(fetch).toHaveBeenCalledTimes(3);
+    replies[2](response());
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).not.toBe("true"));
+  });
+
   it("ignores a push of the original queue while the reorder is pending", async () => {
     let reply; vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { reply = resolve; })));
     const { els, rows, action } = setup(); action(2, "top"); applyQueueState(initial(), els);
@@ -227,7 +274,9 @@ describe("queue collection", () => {
 
   it("restores the removed occurrence and its focus after a rejected removal", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => response({ detail: "write failed" }, 500)));
-    const { els, rows, action, answer } = setup(); action(1, "remove"); answer(); await settled(els);
+    const { els, rows, action, answer } = setup(); action(1, "remove"); answer();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("write failed"));
+    await settled(els);
     expect(rows().map((row) => row.cells[1].textContent)).toEqual(["Alpha", "Bravo", "Charlie"]);
     expect(rows()[1].contains(document.activeElement)).toBe(true);
   });
@@ -236,8 +285,10 @@ describe("queue collection", () => {
     setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
     let reply; vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { reply = resolve; })));
     const { els, rows, action } = setup(); action(1, "down"); selectStation("night"); resetQueueState(els);
-    reply(response()); await settled(els);
-    expect(rows()).toHaveLength(0); expect(els.queueAnnounce.textContent).toContain("Done on Main");
+    reply(response());
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("Done on Main"));
+    await settled(els);
+    expect(rows()).toHaveLength(0);
   });
 
   it("does not send a removal confirmed after station or auth context changed", async () => {
@@ -256,7 +307,9 @@ describe("queue collection", () => {
 
   it("uses a shared empty row and named fallback after removing the last occurrence", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => response()));
-    const { els, action, answer } = setup([track("a.mp3", "Alpha")]); action(0, "remove"); answer(); await settled(els);
+    const { els, action, answer } = setup([track("a.mp3", "Alpha")]); action(0, "remove"); answer();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Removed Alpha from queue. Focus moved to Queued tracks."));
+    await settled(els);
     const empty = els.queueList.querySelector("td.no-results"); expect(empty.colSpan).toBe(5);
     expect(document.activeElement).toBe(els.queueList);
   });

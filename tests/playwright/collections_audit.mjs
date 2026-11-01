@@ -359,6 +359,8 @@ async function stoppedStation(page, row, evidence) {
   await expect(item).toHaveAccessibleDescription(reason);
   await axe(page, evidence, "Station stopped menu");
   const before = await page.evaluate(() => window.collectionFixture.calls.length);
+  // A background clockwheel read must not count as an attempted Run now.
+  await page.evaluate(() => window.collectionFixture.clockwheel.refresh());
   for (const method of ["mouse", "Enter", "Space", "type-ahead then Enter"]) {
     await page.evaluate(() => { document.getElementById("schedule-status").textContent = ""; });
     if (method === "mouse") {
@@ -376,14 +378,16 @@ async function stoppedStation(page, row, evidence) {
       await page.keyboard.press(method === "Space" ? "Space" : "Enter");
     }
     await page.waitForFunction((text) => document.getElementById("schedule-status").textContent === text, reason);
-    assert.equal(await page.evaluate(() => window.collectionFixture.calls.length), before, `off-air ${method} sends no request`);
+    const delta = await page.evaluate((index) => window.collectionFixture.calls.slice(index), before);
+    const actions = delta.filter(({ method, url }) => method !== "GET" || /\/run(?:\?|$)/.test(url));
+    assert.deepEqual(actions, [], `off-air ${method} sends no action request: ${JSON.stringify(delta.map(({ method, url }) => ({ method, url })))}`);
     assert.equal(await button.getAttribute("aria-expanded"), "true");
   }
   await page.keyboard.press("Escape");
   await page.evaluate(() => window.collectionFixture.scheduler.setOffAir(false));
   assert.equal(await item.getAttribute("aria-disabled"), "false");
   assert.equal(await item.getAttribute("aria-describedby"), null);
-  evidence.checks.push("Station stopped: mouse, Enter, Space and type-ahead/Enter send no request; each announces the linked disabled reason");
+  evidence.checks.push("Station stopped: mouse, Enter, Space and type-ahead/Enter send no Run now or mutation request during passive clockwheel refresh; each announces the linked disabled reason");
 }
 
 async function journey(page, evidence) {
@@ -536,7 +540,7 @@ async function journey(page, evidence) {
   });
   await cellReturn(page, '#schedule-events tr[data-row-key="event-1"] td[data-action="options"]');
   assert.equal(await page.locator('[role="menu"]:visible').count(), 0, "removed native popover closes");
-  await page.waitForFunction(() => document.getElementById("schedule-status").textContent.includes("Focus moved to Options for Evening"));
+  await expect(page.locator("#schedule-status")).toContainText("Focus moved to Options for Evening", { timeout: 10000 });
   await page.keyboard.press("Enter");
   await page.evaluate(async () => {
     window.collectionFixture.events.splice(0);
@@ -545,7 +549,7 @@ async function journey(page, evidence) {
   await focused(page, "#schedule-add");
   assert.equal(await page.locator("#schedule-events .no-results").count(), 1);
   assert.equal(await page.locator('[role="menu"]:visible').count(), 0);
-  await page.waitForFunction(() => document.getElementById("schedule-status").textContent.includes("Focus moved to Add event"));
+  await expect(page.locator("#schedule-status")).toContainText("Focus moved to Add event", { timeout: 10000 });
   evidence.checks.push("Native open popup survives passive refresh; row removal closes it and announces adjacent-row/final Add fallback");
 }
 
@@ -850,16 +854,24 @@ async function queueJourney(page, evidence, calls) {
   assert.equal(await page.evaluate(() => window.batchFixture.trackInfo.path), "/music/1.flac");
   await trackInfoRoundtrip(page, row, evidence, "Queued track");
   const last = '#queue-list tr[data-row-key]:last-child';
+  const beforeMove = calls.length;
   await choose(page, last, "top");
-  await page.waitForFunction(() => document.getElementById("queue-list").getAttribute("aria-busy") === "false");
+  await expect.poll(() => calls.length).toBe(beforeMove + 1);
+  await expect(page.locator("#queue-announce")).toContainText("Moved Charlie to position 1 of 3.");
+  await expect(page.locator("#queue-list")).not.toHaveAttribute("aria-busy", "true");
+  await cellReturn(page, `${row} td[data-action="options"]`);
   assert.deepEqual(calls.at(-1).body.order, [2, 0, 1]);
   await choose(page, row, "remove"); await confirmationScan(page, evidence, "Remove queued track");
   const count = calls.length;
   await page.locator("#confirm-cancel").click(); assert.equal(calls.length, count);
   await cellReturn(page, `${row} td[data-action="options"]`);
   await choose(page, row, "remove"); await page.locator("#confirm-accept").click();
-  await page.waitForFunction(() => document.querySelectorAll('#queue-list tr[data-row-key]').length === 2);
-  await page.waitForFunction(() => document.getElementById("queue-list").getAttribute("aria-busy") === "false");
+  await expect.poll(() => calls.length).toBe(count + 1);
+  await expect(page.locator("#confirm-dialog")).not.toBeVisible();
+  await expect(page.locator('#queue-list tr[data-row-key]')).toHaveCount(2);
+  await expect(page.locator("#queue-announce")).toContainText("Removed Charlie from queue.");
+  await expect(page.locator("#queue-list")).not.toHaveAttribute("aria-busy", "true");
+  await cellReturn(page, `${row} td[data-action="options"]`);
   await page.evaluate(() => window.batchFixture.restrict("Start the station to change its queue."));
   const restrictedCount = calls.length;
   const restrictedOrder = await page.locator('#queue-list tr[data-row-key]').evaluateAll((rows) => rows.map((item) => item.dataset.rowKey));
@@ -1018,6 +1030,252 @@ async function batchSurface(page, theme, surface, evidence) {
   else await voiceJourney(page, evidence, voice);
 }
 
+// Batch 3 uses the same production markup and browser interactions. The small
+// in-memory transport also serves requestJson callers (liners/profiles/devices).
+async function mountBatchThree(page, theme, surface) {
+  await page.goto(BASE);
+  await page.evaluate(async ({ theme, surface }) => {
+    document.documentElement.dataset.theme = theme;
+    const source = new globalThis.DOMParser().parseFromString(await (await fetch("/source-index")).text(), "text/html");
+    const fixture = document.getElementById("fixture");
+    const ids = { categories: "categories-card", rules: "intro-rules", intros: "intros-editor",
+      ads: "ads-panel", liners: "spanel-liners", profiles: "spanel-access" };
+    let card;
+    if (surface === "devices") {
+      card = document.createElement("section");
+      card.id = "audit-access";
+      card.setAttribute("aria-label", "Browser access");
+      for (const id of ["access-status", "access-note", "access-controls"]) card.append(source.getElementById(id));
+      document.body.append(source.getElementById("device-rename-dialog"));
+    } else card = source.getElementById(ids[surface]);
+    card.hidden = false;
+    card.open = true;
+    // A standalone settings card has no surrounding Settings tablist.
+    if (card.getAttribute("role") === "tabpanel") {
+      card.removeAttribute("role"); card.removeAttribute("aria-labelledby");
+    }
+    for (const details of card.querySelectorAll("details")) details.open = true;
+    if (["categories", "rules"].includes(surface)) {
+      const library = document.createElement("section");
+      library.id = "panel-library";
+      library.setAttribute("aria-label", "Library tools");
+      library.append(card); fixture.append(library);
+    } else fixture.append(card);
+    document.body.append(source.getElementById("confirm-dialog"));
+    const clone = (value) => JSON.parse(JSON.stringify(value));
+    const state = window.batchThree = { calls: [], controls: null };
+    const categories = { categories: [{ id: "c1", name: "Rock songs", source: "query", query: "genre:Rock", tracks: 1, used_by: [] }],
+      playlists: [], folders: [], genres: ["Rock"], beets_fields: [], beets: true };
+    const rules = { rules: [{ id: "r1", label: "Rock introduction", match: "all", conditions: [{ field: "genre", operator: "is", value: "Rock" }],
+      clip_ids: ["l1"], chance: 100, cooldown_minutes: 0 }], liners: [{ id: "l1", label: "sample.wav" }],
+      liner_folders: [], sources: [], genres: ["Rock"], beets_fields: [], categories: [] };
+    const intros = { track: { id: "track1", title: "Song", artist: "Artist" }, active: true, limits: { max_bytes: 41943040 },
+      song: [{ id: "i1", label: "Song intro", rules_text: "Plays every time", speech_s: 3, playable: true }],
+      artist: [{ id: "i2", label: "Artist intro", rules_text: "Plays every time", speech_s: 2, playable: true }] };
+    const ads = { station: "default", enabled: true, reason: null, problem: null, timezone: "UTC",
+      limits: { max_bytes: 1024, max_seconds: 120, max_spots: 200, max_breaks: 50, max_spots_per_break: 10 },
+      settings: { separation_minutes: 15, late_minutes: 10, miss_after_minutes: 30 }, pending: [], recent: [],
+      spots: [{ id: "spot1", title: "Autumn sale", advertiser: "Example Motors", campaign: "Autumn", category: "Cars",
+        start_date: null, end_date: null, dates_text: "Any date", in_flight: true, max_per_day: 4, max_per_hour: 1,
+        enabled: true, seconds: 30, plays_today: 1, booked: false, missing: false },
+      { id: "spot2", title: "Booked sale", advertiser: "Second advertiser", campaign: "", category: "",
+        start_date: null, end_date: null, dates_text: "Any date", in_flight: true, max_per_day: 0, max_per_hour: 0,
+        enabled: true, seconds: 20, plays_today: 1, booked: true, missing: false }],
+      breaks: [{ id: "break1", name: "Quarter past", minutes: [15, 45], days: [], from_hour: 0, until_hour: 24,
+        start_date: null, end_date: null, max_spots: 3, max_seconds: 0, enabled: true,
+        when_text: "At :15, :45 past the hour", next_text: "Tomorrow at 12:15" }] };
+    const adReport = { from: "2026-10-01", to: "2026-10-31", count: 1, truncated: false, damaged: 0,
+      totals: { aired: 1, late: 0, missed: 0, waiting: 0, missed_breaks: 0 },
+      summary: [{ advertiser: "Example Motors", campaign: "Autumn", aired: 1, late: 0, missed: 0, interrupted: 0, waiting: 0, seconds: 30 }],
+      rows: [{ id: "air1", scheduled_text: "31 October 2026 at 12:15:00", aired_text: "31 October 2026 at 12:15:00",
+        delay_minutes: 0, status: "aired", status_text: "Aired", break_name: "Quarter past", source_text: "Minutes past the hour",
+        spot_id: "spot1", title: "Autumn sale", advertiser: "Example Motors", campaign: "Autumn", seconds: 30, reason: "" }] };
+    const liners = { config: {}, items: [{ id: "l1", name: "ID.wav", path: "/liners/ID.wav", editable: true,
+      dates_text: "", playable: true, not_before: null, not_after: null }], files: ["ID.wav"] };
+    const profiles = { profiles: ["Morning", "Evening"], active: "Morning" };
+    const devices = { pairing: true, devices: [{ device_id: "d1", name: "Desk", paired_at: 1, last_seen_at: 2, current: false }] };
+    Object.assign(state, { categories, rules, intros, ads, adReport, liners, profiles, devices });
+    const request = async (url, options = {}) => {
+      const method = options.method || "GET", body = options.body ? JSON.parse(options.body) : {};
+      state.calls.push({ url, method, body });
+      if (url === "/api/categories/check") return { tracks: 1 };
+      if (url === "/api/categories") return clone(categories);
+      if (url === "/api/categories/c1" && method === "PUT") {
+        Object.assign(categories.categories[0], body);
+        return clone({ ...categories, category: categories.categories[0] });
+      }
+      if (url === "/api/intros/rules") return clone(rules);
+      if (url === "/api/intros/rules/r1" && method === "PUT") return clone(Object.assign(rules.rules[0], body));
+      if (url.startsWith("/api/intros?")) return clone(intros);
+      if (url === "/api/ads") return clone(ads);
+      if (url.startsWith("/api/ads/report?")) return clone(adReport);
+      if (url === "/api/ads/spots/spot1" && method === "PUT") return clone(Object.assign(ads.spots[0], body));
+      if (url === "/api/ads/breaks/break1" && method === "PUT") return clone(Object.assign(ads.breaks[0], body));
+      if (url === "/api/ads/breaks/break1/run") return { name: ads.breaks[0].name, spots: 1, seconds: 30 };
+      if (url === "/api/liners") return clone(liners);
+      if (url === "/api/liners/dates/l1" && method === "PUT") return clone(Object.assign(liners.items[0], body));
+      if (url === "/api/profiles") return clone(profiles);
+      if (url === "/api/profiles/Evening/apply") { profiles.active = "Evening"; return clone(profiles); }
+      if (url === "/api/devices") return clone(devices);
+      if (url === "/api/devices/d1" && method === "PATCH") return clone(Object.assign(devices.devices[0], body));
+      throw new Error(`Unexpected Batch 3 fixture ${method} ${url}`);
+    };
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (url, options) => String(url).startsWith("/api/")
+      ? new globalThis.Response(JSON.stringify(await request(String(url), options)), { headers: { "Content-Type": "application/json" } })
+      : nativeFetch(url, options);
+    const get = (id) => document.getElementById(id);
+    if (surface === "categories") {
+      const { installCategoriesPanel } = await import(new URL("/modules/categories-panel.js", window.location.href).href);
+      state.controls = installCategoriesPanel({ request });
+    } else if (surface === "rules") {
+      const { installIntroRulesPanel } = await import(new URL("/modules/intro-rules-panel.js", window.location.href).href);
+      state.controls = installIntroRulesPanel({ request });
+    } else if (surface === "intros") {
+      const { installMatchedIntros } = await import(new URL("/modules/matched-intros.js", window.location.href).href);
+      // Playback is a separate hardware concern; exercise the actual toggle.
+      get("intro-playback").play = async () => {};
+      get("intro-playback").pause = () => {};
+      state.controls = installMatchedIntros({ request });
+      await state.controls.load({ id: "track1", kind: "music", title: "Song", artist: "Artist" });
+      return;
+    } else if (surface === "ads") {
+      const { installAdsPanel } = await import(new URL("/modules/ads-panel.js", window.location.href).href);
+      state.controls = installAdsPanel({ request });
+    } else if (surface === "liners") {
+      const { installLiners } = await import(new URL("/modules/liners.js", window.location.href).href);
+      state.controls = installLiners({ lnFileList: get("ln-file-list"), lnStatus: get("ln-status"), lnBrowseStatus: get("ln-browse-status") }, { canPlay: () => false });
+    } else if (surface === "profiles") {
+      const { installProfiles } = await import(new URL("/modules/profiles.js", window.location.href).href);
+      state.controls = installProfiles({ card, nameInput: get("profile-name"), saveButton: get("profile-save"), list: get("profile-list"), status: get("profiles-status") });
+    } else {
+      const { installAccess } = await import(new URL("/modules/devices.js", window.location.href).href);
+      state.controls = installAccess({ card, note: get("access-note"), controls: get("access-controls"), signOut: get("access-sign-out"),
+        refresh: get("access-refresh"), list: get("device-list"), status: get("access-status") }, { onSignedOut: () => {} });
+      return;
+    }
+    await state.controls.refresh();
+  }, { theme, surface });
+  await page.addScriptTag({ url: `${BASE}/axe.js` });
+}
+
+async function batchThreeEditor(page, evidence, { row, action = "edit", field, save, value, label }) {
+  const cell = `${row} td[data-action="${action}"]`;
+  await traceEditorOpen(page, cell, field, evidence);
+  await editorDescription(page);
+  await axe(page, evidence, `${label} editor`);
+  await visuals(page, evidence, `${label} editor`);
+  await page.keyboard.press("Escape");
+  await cellReturn(page, cell);
+  await page.keyboard.press("Enter");
+  await page.locator(field).fill(value);
+  await page.locator(save).focus();
+  await page.keyboard.press("Enter");
+  await cellReturn(page, cell);
+  evidence.checks.push(`${label}: keyboard editor open, one focus event, Escape to exact cell, edit/save and grid navigation after return`);
+}
+
+async function batchThreeSurface(page, theme, surface, evidence) {
+  await mountBatchThree(page, theme, surface);
+  const hosts = { categories: ["#categories-list"], rules: ["#intro-rules-list"], intros: ["#intros-song-list", "#intros-artist-list"],
+    ads: ["#ads-spots", "#ads-breaks"], liners: ["#ln-file-list"], profiles: ["#profile-list"], devices: ["#device-list"] }[surface];
+  for (const host of hosts) {
+    await page.locator(`${host} tr[data-row-key]`).first().waitFor();
+    await checkTable(page, host); await tableArrows(page, host);
+  }
+  const first = page.locator(`${hosts[0]} tr[data-row-key] td`).first();
+  await first.focus();
+  await axe(page, evidence, `${surface} loaded`); await visuals(page, evidence, `${surface} loaded`);
+  await first.evaluate((element) => element.blur());
+  await page.setViewportSize({ width: 320, height: 800 });
+  await first.focus();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${surface} 320px page reflow`);
+  await visuals(page, evidence, `${surface} 320px`);
+  await page.emulateMedia({ forcedColors: "active" });
+  await visuals(page, evidence, `${surface} forced colors`);
+  await page.emulateMedia({ forcedColors: "none" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const specs = {
+    categories: { row: '#categories-list tr[data-row-key="c1"]', field: "#categories-name", save: "#categories-save", value: "Rock revised", label: "Category" },
+    rules: { row: '#intro-rules-list tr[data-row-key="r1"]', field: "#intro-rules-label", save: "#intro-rules-save", value: "Intro revised", label: "Intro rule" },
+    liners: { row: '#ln-file-list tr[data-row-key="l1"]', action: "dates", field: "#ln-not-before", save: "#ln-dates-save", value: "2026-10-01", label: "Liner dates" },
+    devices: { row: '#device-list tr[data-row-key="d1"]', action: "rename", field: "#device-rename-name", save: "#device-rename-save", value: "Desk revised", label: "Device rename" },
+  };
+  if (specs[surface]) {
+    const spec = specs[surface];
+    await menuJourney(page, spec.row, evidence, spec.label, surface === "devices" ? "r" : "d");
+    await batchThreeEditor(page, evidence, spec);
+    await choose(page, spec.row, surface === "devices" ? "revoke" : "delete");
+    await confirmationScan(page, evidence, `${spec.label} delete`);
+    await page.keyboard.press("Escape");
+    await cellReturn(page, `${spec.row} td[data-action="options"]`);
+  } else if (surface === "intros") {
+    for (const host of hosts) {
+      const row = `${host} tr[data-row-key]`;
+      await menuJourney(page, row, evidence, host, "r");
+      await page.locator(`${row} td[data-action="listen"]`).focus(); await page.keyboard.press("Enter");
+      await expect(page.locator(`${row} button[data-action="listen"]`)).toHaveAttribute("aria-pressed", "true");
+      await page.keyboard.press("Enter");
+      await expect(page.locator(`${row} button[data-action="listen"]`)).toHaveAttribute("aria-pressed", "false");
+      await choose(page, row, "remove"); await confirmationScan(page, evidence, `${host} remove`);
+      await page.keyboard.press("Escape"); await cellReturn(page, `${row} td[data-action="options"]`);
+    }
+    await traceEditorOpen(page, "#intro-add", "#intro-file", evidence);
+    await editorDescription(page); await axe(page, evidence, "Matched intro upload editor");
+    await page.keyboard.press("Escape"); await focused(page, "#intro-add");
+    evidence.checks.push("Song and artist intros: Listen/Stop toggle, Remove cancellation and upload editor focus return; audio playback stubbed");
+  } else if (surface === "profiles") {
+    const row = '#profile-list tr[data-row-key="Evening"]';
+    await menuJourney(page, row, evidence, "Profile");
+    await page.locator(`${row} td[data-action="activate"]`).focus(); await page.keyboard.press("Enter");
+    await expect(page.locator(`${row} td[data-action="active"]`)).toHaveText("Yes");
+    await choose(page, row, "reset"); await confirmationScan(page, evidence, "Profile reset");
+    await page.keyboard.press("Escape"); await cellReturn(page, `${row} td[data-action="options"]`);
+    await choose(page, row, "delete"); await confirmationScan(page, evidence, "Profile delete");
+    await page.keyboard.press("Escape"); await cellReturn(page, `${row} td[data-action="options"]`);
+    evidence.checks.push("Profiles: keyboard Activate updates Active column; Reset/Delete confirmations cancel to exact Options cell");
+  } else {
+    for (const spec of [
+      { row: '#ads-spots tr[data-row-key="spot1"]', field: "#ads-spot-title", save: "#ads-spot-save", value: "Sale revised", label: "Ad spot" },
+      { row: '#ads-breaks tr[data-row-key="break1"]', field: "#ads-break-name", save: "#ads-break-save", value: "Break revised", label: "Ad break" },
+    ]) { await menuJourney(page, spec.row, evidence, spec.label); await batchThreeEditor(page, evidence, spec); }
+    const booked = '#ads-spots tr[data-row-key="spot2"]';
+    const deletesBefore = await page.evaluate(() => window.batchThree.calls.filter(({ method }) => method === "DELETE").length);
+    await choose(page, booked, "delete");
+    const disabled = page.locator(`${booked} button[data-action="delete"]`);
+    await expect(disabled).toHaveAttribute("aria-disabled", "true");
+    assert.ok(await disabled.getAttribute("aria-describedby"), "Booked spot deletion explains its restriction");
+    assert.equal(await page.locator('#confirm-dialog[open]').count(), 0);
+    assert.equal(await page.evaluate(() => window.batchThree.calls.filter(({ method }) => method === "DELETE").length), deletesBefore);
+    await axe(page, evidence, "Booked spot menu"); await page.keyboard.press("Escape");
+    await page.locator("#ads-report-from").fill("2026-10-01");
+    await page.locator("#ads-report-to").fill("2026-10-31");
+    await page.locator("#ads-report-show").focus(); await page.keyboard.press("Enter");
+    for (const host of ["#ads-totals", "#ads-rows"]) {
+      await page.locator(`${host} tr[data-row-key]`).first().waitFor();
+      await checkTable(page, host); await tableArrows(page, host);
+      assert.equal(await page.locator(`${host} button`).count(), 0, `${host} is read only`);
+    }
+    await axe(page, evidence, "Ad report"); await visuals(page, evidence, "Ad report");
+    await page.locator('#ads-rows tr[data-row-key] td').first().evaluate((element) => element.blur());
+    await page.setViewportSize({ width: 320, height: 800 });
+    await page.locator('#ads-rows tr[data-row-key] td').first().focus();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "Ad report 320px page reflow");
+    await visuals(page, evidence, "Ad report 320px");
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.locator('#ads-rows tr[data-row-key] td').last().focus();
+    await page.evaluate(() => {
+      Object.assign(window.batchThree.adReport, { rows: [], summary: [], count: 0 });
+      document.getElementById("ads-report-form").requestSubmit();
+    });
+    await focused(page, "#ads-report-from");
+    for (const host of ["#ads-totals", "#ads-rows"]) await emptyTable(page, host, evidence);
+    await axe(page, evidence, "Empty ad report");
+    evidence.checks.push("Ads: both editors and menus, booked Delete linked reason/no request; report totals and outcomes use read-only keyboard grids and empty refresh returns to From date");
+  }
+  evidence.checks.push(`${surface}: collection Tab/Shift+Tab and cell arrows, axe, 320px reflow, target sizes and forced-colors focus`);
+}
+
 async function audit(name, launcher) {
   const browser = await launcher.launch({ headless: true });
   const results = { browser: name, version: browser.version(), fixture: "Production index/CSS/modules; in-memory API replies; loopback static server", themes: [], limitations: ["No live AutoDJ backend, station routing or persistence", "No screen-reader speech capture or human listening", "Chromium forced-colors emulation is not Windows high-contrast hardware evidence", "320 CSS pixels models reflow width; browser zoom and custom text spacing are not exercised", "Computed focus-ring and button-text contrast are measured against composited CSS backgrounds; pixel-level appearance still needs platform review"] };
@@ -1029,16 +1287,27 @@ async function audit(name, launcher) {
       const evidence = { theme, checks: [], axe: [], visual: [], errors: [] };
       results.themes.push(evidence);
       page.on("pageerror", (error) => evidence.errors.push(error.message));
+      console.log(`[${name}/${theme}] Schedule and clockwheels`);
       try { await mount(page, theme); await journey(page, evidence); }
-      catch (error) { evidence.errors.push(error.stack || String(error)); }
+      catch (error) { evidence.errors.push(error.stack || String(error)); console.error(`[${name}/${theme}] ${error.stack || error}`); }
       finally { await page.close(); }
       try {
         for (const surface of ["shows", "editions", "queue", "requests", "voice"]) {
           const batchPage = await context.newPage();
+          console.log(`[${name}/${theme}] ${surface}`);
           batchPage.setDefaultTimeout(10000);
           batchPage.on("pageerror", (error) => evidence.errors.push(`${surface}: ${error.message}`));
           try { await batchSurface(batchPage, theme, surface, evidence); }
-          catch (error) { evidence.errors.push(`${surface}: ${error.stack || String(error)}`); }
+          catch (error) { evidence.errors.push(`${surface}: ${error.stack || String(error)}`); console.error(`[${name}/${theme}/${surface}] ${error.stack || error}`); }
+          finally { await batchPage.close(); }
+        }
+        for (const surface of ["categories", "rules", "intros", "ads", "liners", "profiles", "devices"]) {
+          const batchPage = await context.newPage();
+          console.log(`[${name}/${theme}] ${surface}`);
+          batchPage.setDefaultTimeout(10000);
+          batchPage.on("pageerror", (error) => evidence.errors.push(`${surface}: ${error.message}`));
+          try { await batchThreeSurface(batchPage, theme, surface, evidence); }
+          catch (error) { evidence.errors.push(`${surface}: ${error.stack || String(error)}`); console.error(`[${name}/${theme}/${surface}] ${error.stack || error}`); }
           finally { await batchPage.close(); }
         }
       }

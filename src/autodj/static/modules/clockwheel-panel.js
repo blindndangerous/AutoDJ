@@ -14,11 +14,11 @@
 // Category conditions name a saved category (Categories, above) by its ID.
 import { createCollectionTable } from "./collection-table.js";
 import { deleteCollectionItem } from "./collection-delete.js";
-import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
+import { failureText, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { createEditorDialog, showEditorError } from "./editor-dialog.js";
+import { createEditorDialog } from "./editor-dialog.js";
 import { clearFieldError, clearFormErrors, showFieldError } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
 import { createConditionRow, readConditionRows, renumberConditionRows, updateConditionCategories } from "./condition-editor.js";
 import { describeConditions, describeStep } from "./clockwheel-step.js";
@@ -125,7 +125,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
   const stepCountCurrent = (epoch, mine) => !suspended && stepCountGeneration === mine && isAuthenticatedRequestCurrent(epoch);
-  const say = (message, error = false) => announceStatus(stepEditor.region(status), message, { force: true, tone: error ? "error" : "info" });
+  const say = makeSay(() => stepEditor.region(status), {});
   const clockUrl = (name) => `/api/library/clock/${encodeURIComponent(name)}`;
   // A track step's file, inside the library folder chosen above it.
   const stepPath = el("clock-step-path");
@@ -141,7 +141,9 @@ export function installClockwheelPanel({ document: doc = document, request = req
   installStepHours(doc);
   // A refused ad break field is unmarked once it is changed.
   for (const id of AD_FIELDS) {
-    el(id)?.addEventListener("input", () => { el(id).removeAttribute("aria-invalid"); el(id).removeAttribute("aria-describedby"); });
+    el(id)?.addEventListener("input", () => {
+      if (el(id).getAttribute("aria-invalid") === "true") clearFieldError(el(id), el(AD_ERROR));
+    });
   }
   const describe = (step) => describeStep(step, data.sources, data.categories);
   const position = (index) => `Step ${index + 1} of ${clock.steps.length}, ${describe(clock.steps[index])}`;
@@ -149,11 +151,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
   function typedName() {
     const value = nameInput.value.trim();
     if (!NAME.test(value) || RESERVED.test(value)) {
-      nameInput.setAttribute("aria-invalid", "true");
-      nameInput.focus();
-      throw new Error("A clockwheel name needs 1 to 64 letters, digits, spaces, dashes or underscores.");
+      const message = "A clockwheel name needs 1 to 64 letters, digits, spaces, dashes or underscores.";
+      showFieldError(nameInput, message, el("clock-import-name-error"), null);
+      throw new Error(message);
     }
-    nameInput.removeAttribute("aria-invalid");
+    clearFieldError(nameInput, el("clock-import-name-error"));
     return value;
   }
 
@@ -311,25 +313,14 @@ export function installClockwheelPanel({ document: doc = document, request = req
     select.value = match ? match[0] : "";
   }
 
-  function clearAdError() {
-    for (const id of AD_FIELDS) {
-      el(id)?.removeAttribute("aria-invalid");
-      el(id)?.removeAttribute("aria-describedby");
-    }
-    const error = el(AD_ERROR);
-    if (error) { error.textContent = ""; error.hidden = true; }
-  }
+  function clearAdError() { clearFieldError(AD_FIELDS.map(el), el(AD_ERROR)); }
 
   function refuseAd(field, message, interactive) {
     if (interactive) {
       clearAdError();
-      field.setAttribute("aria-invalid", "true");
-      field.setAttribute("aria-describedby", AD_ERROR);
-      const error = el(AD_ERROR);
-      if (error) { error.textContent = message; error.hidden = false; }
-      field.focus();
+      showFieldError(field, message, el(AD_ERROR), null, { focus: false });
     }
-    throw new Error(message);
+    throw Object.assign(new Error(message), { control: field });
   }
 
   // A whole number typed in *field*, or the error said for it.
@@ -491,7 +482,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       notice.textContent = data.notice || "";
       notice.hidden = !data.notice;
     }
-    if (data.notice && data.notice !== lastNotice) say(data.notice, true);
+    if (data.notice && data.notice !== lastNotice) say(data.notice, "error");
     lastNotice = data.notice;
   }
 
@@ -730,13 +721,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const value = (field?.value || "").trim().replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
     const bad = value.split("/").some((part) => !part.trim() || part === "." || part === "..") || value.includes(":");
     if (value ? bad : !optional) {
-      if (interactive) {
-        field?.setAttribute("aria-invalid", "true");
-        field?.focus();
-      }
-      throw new Error(`${label} must be a path inside the library folder, such as Rock/Live, with no "..".`);
+      const message = `${label} must be a path inside the library folder, such as Rock/Live, with no "..".`;
+      if (interactive) showFieldError(field, message, stepError, null, { focus: false });
+      throw Object.assign(new Error(message), { control: field });
     }
-    field?.removeAttribute("aria-invalid");
+    clearFieldError(field, stepError);
     return value;
   }
 
@@ -806,11 +795,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
             ? `Count unavailable: ${result.error}`
             : result.tracks === null ? "Preset changes do not select tracks."
               : `${Number(result.tracks).toLocaleString("en-US")} ${Number(result.tracks) === 1 ? "track" : "tracks"}`;
-          if (result.error || result.tracks !== null) announceStatus(stepEditor.region(status), output.textContent, { tone: result.error ? "error" : "info" });
+          if (result.error || result.tracks !== null) makeSay(() => stepEditor.region(status), { force: false })(output.textContent, result.error ? "error" : "info");
         } catch (error) {
           if (stepCountCurrent(item.epoch, item.mine)) {
             output.textContent = `Count unavailable: ${error.message}`;
-            announceStatus(stepEditor.region(status), output.textContent, { tone: "error" });
+            makeSay(() => stepEditor.region(status), { force: false })(output.textContent, "error");
           }
         }
       }
@@ -845,7 +834,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   el("clock-add-condition")?.addEventListener("click", () => {
     const host = el("clock-step-conditions");
     if (host.children.length >= 32) {
-      say("A step can have at most 32 conditions.", true);
+      say("A step can have at most 32 conditions.", "error");
       return;
     }
     const controls = conditionRow();
@@ -871,14 +860,14 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
   function saveStep() {
     clearStepError();
-    if (!clock) { say("Open or create a clockwheel first.", true); return; }
+    if (!clock) { say("Open or create a clockwheel first.", "error"); return; }
     let step;
     try { step = { ...formStep(), ...readStepHours(doc) }; }
     catch (error) {
       const control = error.control || el("clock-step-form").querySelector('[aria-invalid="true"]');
       const existing = control?.getAttribute("aria-describedby")?.split(/\s+/)
         .map(el).find((node) => node?.classList.contains("field-error") && !node.hidden);
-      showEditorError(control, error.message, existing || stepError, stepEditor.status);
+      showFieldError(control, error.message, existing || stepError, stepEditor.status);
       return;
     }
     rememberSteps(editing ?? clock.steps.length);
@@ -895,7 +884,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     }
   }
   newStep?.addEventListener("click", () => {
-    if (!clock) { say("Open or create a clockwheel first.", true); return; }
+    if (!clock) { say("Open or create a clockwheel first.", "error"); return; }
     resetForm();
     showFields();
     scheduleStepCount();
@@ -914,7 +903,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   // A refused station name: marked, its error tied to it and said, focus on it.
   function refuseStationName(message) {
     if (stationName && stationNameError) showFieldError(stationName, message, stationNameError, stepEditor.region(status));
-    else say(message, true);
+    else say(message, "error");
   }
   el("clock-step-match")?.addEventListener("change", scheduleStepCount);
 
@@ -940,7 +929,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     savedPicking = fresh ? null : picking(value);
     resetForm();
     resync.value = clock.resync_minutes.join(", ");
-    resync.removeAttribute("aria-invalid");
+    clearFieldError(resync, el("clock-resync-error"));
     if (stationName) {
       stationName.value = clock.station_name || "";
       if (stationNameError) clearFieldError(stationName, stationNameError);
@@ -965,7 +954,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       if (!current(epoch, mine)) return;
       load(value);
       if (!quiet) say(`Opened ${name}, ${count(value.steps.length)}${name === data.active ? ", active" : ""}.`);
-    } catch (error) { if (current(epoch, mine)) say(`Could not open ${name}: ${error.message}`, true); }
+    } catch (error) { if (current(epoch, mine)) say(failureText(`open ${name}`, error), "error"); }
   }
 
   async function refresh() {
@@ -988,7 +977,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       if (current(epoch, mine)) void refreshSavedCounts();
     } catch (error) {
       // A failed automatic refresh is said once, not on every retry.
-      if (current(epoch, mine) && !loadFailed) say(`Could not load clockwheels: ${error.message}`, true);
+      if (current(epoch, mine) && !loadFailed) say(failureText("load clockwheels", error), "error");
       if (current(epoch, mine)) loadFailed = true;
     }
   }
@@ -1030,7 +1019,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     } catch (error) {
       if (current(epoch, mine)) {
         if (isStationNameError(error.message)) { refuseStationName(error.message); return null; }
-        say(error.message, true);
+        say(error.message, "error");
         const step = /^Step (\d+):/.exec(error.message);
         if (step && clock) focusRow(Number(step[1]) - 1, "edit");
       }
@@ -1047,7 +1036,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   function savedActionAllowed(name) {
     const reason = savedActionReason(name);
     if (reason) {
-      say(reason, true);
+      say(reason, "error");
       return false;
     }
     return true;
@@ -1102,11 +1091,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const name = editorName.value.trim();
     const { action, name: source } = naming;
     if (!NAME.test(name) || RESERVED.test(name)) {
-      showEditorError(editorName, "A clockwheel name needs 1 to 64 letters, digits, spaces, dashes or underscores.", nameError, nameEditor.status);
+      showFieldError(editorName, "A clockwheel name needs 1 to 64 letters, digits, spaces, dashes or underscores.", nameError, nameEditor.status);
       return;
     }
     if (data.names.some((item) => item.toLowerCase() === name.toLowerCase())) {
-      showEditorError(editorName, `A clockwheel named ${name} already exists. Type another name.`, nameError, nameEditor.status);
+      showFieldError(editorName, `A clockwheel named ${name} already exists. Type another name.`, nameError, nameEditor.status);
       return;
     }
     if (action === "create") {
@@ -1169,15 +1158,13 @@ export function installClockwheelPanel({ document: doc = document, request = req
   el("clock-create")?.addEventListener("click", () => void openNameEditor("create"));
 
   el("clock-save")?.addEventListener("click", async () => {
-    if (!clock) { say("Open or create a clockwheel first.", true); return; }
+    if (!clock) { say("Open or create a clockwheel first.", "error"); return; }
     let minutes;
     try { minutes = parseResyncMinutes(resync.value); } catch (error) {
-      resync.setAttribute("aria-invalid", "true");
-      resync.focus();
-      say(error.message, true);
+      showFieldError(resync, error.message, el("clock-resync-error"), stepEditor.region(status));
       return;
     }
-    resync.removeAttribute("aria-invalid");
+    clearFieldError(resync, el("clock-resync-error"));
     const named = checkStationName(stationName?.value);
     if (named.error) { refuseStationName(named.error); return; }
     if (stationNameError) clearFieldError(stationName, stationNameError);
@@ -1207,15 +1194,15 @@ export function installClockwheelPanel({ document: doc = document, request = req
   el("clock-import")?.addEventListener("click", async () => {
     const fileInput = el("clock-pal-file");
     const file = fileInput?.files?.[0];
-    if (!file) { fileInput?.focus(); say("Choose a .PAL file first.", true); return; }
-    if (file.size > 256 * 1024) { say(".PAL files must be 256 KB or smaller.", true); return; }
+    if (!file) { fileInput?.focus(); say("Choose a .PAL file first.", "error"); return; }
+    if (file.size > 256 * 1024) { say(".PAL files must be 256 KB or smaller.", "error"); return; }
     let name, minutes;
-    try { name = typedName(); minutes = parseResyncMinutes(resync.value); } catch (error) { say(error.message, true); return; }
+    try { name = typedName(); minutes = parseResyncMinutes(resync.value); } catch (error) { say(error.message, "error"); return; }
     if (!(await discardChanges())) return;
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     let text;
     try { text = await file.text(); } catch (error) {
-      if (current(epoch, mine)) say(`Could not read ${file.name}: ${error.message}`, true);
+      if (current(epoch, mine)) say(failureText(`read ${file.name}`, error), "error");
       return;
     }
     if (!current(epoch, mine)) return;
@@ -1277,6 +1264,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
     resume() { suspended = false; updatePolling(); },
     destroy() {
       clearProtectedData();
+      stepEditor.destroy();
+      nameEditor.destroy();
       editor?.removeEventListener("keydown", undoKey);
       undoButton?.removeEventListener("click", undoSteps);
       window.removeEventListener("hashchange", updatePolling);

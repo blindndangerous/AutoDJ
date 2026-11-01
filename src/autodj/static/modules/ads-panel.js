@@ -1,25 +1,14 @@
-import { createEditorDialog, showEditorError } from "./editor-dialog.js";
-// Ads tab (#51): spots, scheduled ad breaks, their rules and the ad report.
-//
-// Everything is found inside #ads-panel.  The panel loads when its tab
-// shows, when the page changes station and after each change it makes.
-// The lists are plain text, not live regions; each result of a button is
-// said once through #ads-status, and the report's totals once when it is
-// shown.  The report is two tables with column headers and a row header.
-//
-// Focus: Add spot and Add ad break move to the form's first field.  Save
-// and Cancel move to the row's Edit button (the Add button when there is
-// none).  Delete asks first, then moves to the Edit button of the row that
-// took its place.  A refused field is named in words, marked aria-invalid,
-// described by the error and focused.  Rows are updated in place, so a
-// refresh never takes focus away from a row's button.
-
-import { requestFile, requestJson } from "./api-client.js";
-import { confirmAction } from "./confirm-dialog.js";
-import { focusAfterDialog, reconcileRows, stationDay } from "./dom-helpers.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
+// Ads: station-owned spots, scheduled breaks, rules and read-only reports.
+// Collections retain keyed rows and cell focus; record edits use shared dialogs.
+import { createEditorDialog } from "./editor-dialog.js";
+import { failureText, requestFile, requestJson, withDisabled } from "./api-client.js";
+import { deleteCollectionItem } from "./collection-delete.js";
+import { createCollectionTable } from "./collection-table.js";
+import {
+  applyServerFieldError, clearFieldError, clearFormErrors, focusAfterDialog, showFieldError, stationDay,
+} from "./dom-helpers.js";
 import { exportFilename, saveFile } from "./history-export.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
@@ -39,33 +28,6 @@ export function parseMinutes(text) {
     if (!minutes.includes(value)) minutes.push(value);
   }
   return minutes.sort((a, b) => a - b);
-}
-
-export function spotText(spot) {
-  const parts = [`${spot.title}, ${spot.advertiser}`];
-  if (spot.campaign) parts[0] += `, campaign ${spot.campaign}`;
-  parts.push(`${spot.seconds} seconds`);
-  if (spot.category) parts.push(`Competing category ${spot.category}`);
-  parts.push(spot.dates_text || "No flight dates");
-  const limits = [];
-  if (spot.max_per_day) limits.push(`at most ${spot.max_per_day} a day`);
-  if (spot.max_per_hour) limits.push(`at most ${spot.max_per_hour} an hour`);
-  parts.push(limits.length ? `Airs ${limits.join(" and ")}` : "No play limits");
-  parts.push(`Aired or booked ${spot.plays_today} ${spot.plays_today === 1 ? "time" : "times"} today`);
-  if (!spot.enabled) parts.push("Turned off");
-  else if (!spot.in_flight) parts.push(`Not airing: ${spot.flight_text}`);
-  if (spot.missing) parts.push("Its audio file is missing");
-  if (spot.booked) parts.push("Booked for a coming song change");
-  return `${parts.join(". ")}.`;
-}
-
-export function breakText(item) {
-  let text = `${item.name}: ${item.when_text}. Up to ${item.max_spots} ${item.max_spots === 1 ? "spot" : "spots"}`;
-  if (item.max_seconds) text += `, ${item.max_seconds} seconds at most`;
-  text += ".";
-  if (!item.enabled) text += " Turned off.";
-  else if (item.next_text) text += ` Next ${item.next_text}.`;
-  return text;
 }
 
 export function outcomeText(row) {
@@ -101,8 +63,6 @@ export function installAdsPanel({
   const status = get("status");
   const spotList = get("spots");
   const breakList = get("breaks");
-  const listNavigation = [spotList, breakList].map(installActionListNavigation);
-  let listFocusAnnouncementSuppressed = false;
   const spotForm = get("spot-form");
   const breakForm = get("break-form");
   const rulesForm = get("rules-form");
@@ -124,11 +84,8 @@ export function installAdsPanel({
     fallback: breakAdd, save: saveBreak, onCancel: closeBreakForm });
 
   const shown = () => !panel.hidden;
-  function say(message, tone = "info") {
-    announceStatus(spotEditor.region(shown() ? status : (doc.getElementById("sr-status") || status)), message, {
-      force: true, dwellMs: tone === "error" ? 6000 : 3000, tone,
-    });
-  }
+  const say = makeSay(() => spotEditor.region(shown() ? status : (doc.getElementById("sr-status") || status)),
+    { dwellMs: 3000, errorDwellMs: 6000 });
 
   function setText(element, text) {
     if (element.textContent !== text) element.textContent = text;
@@ -153,38 +110,16 @@ export function installAdsPanel({
 
   // ---- Errors: words in the form, linked to the field, said once ----
 
-  function linkError(control, error, linked) {
-    const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
-      .filter((id) => id && id !== error.id);
-    if (linked) ids.unshift(error.id);
-    if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
-    else control.removeAttribute("aria-describedby");
-  }
-
-  function clearError(form) {
-    const error = form.querySelector(".field-error");
-    error.hidden = true;
-    error.textContent = "";
-    for (const control of form.querySelectorAll("[aria-invalid]")) {
-      control.removeAttribute("aria-invalid");
-      linkError(control, error, false);
-    }
+  function formStatus(form) {
+    return form === spotForm && spotEditor.dialog.open ? spotEditor.status
+      : form === breakForm && breakEditor.dialog.open ? breakEditor.status : status;
   }
 
   function showError(form, controls, message) {
     if (!controls.length) return false;
-    clearError(form);
-    const error = form.querySelector(".field-error");
-    error.textContent = message;
-    error.hidden = false;
-    for (const control of controls.slice(1)) {
-      control.setAttribute("aria-invalid", "true");
-      linkError(control, error, true);
-    }
-    const targetStatus = form === spotForm && spotEditor.dialog.open ? spotEditor.status
-      : form === breakForm && breakEditor.dialog.open ? breakEditor.status : status;
-    showEditorError(controls[0], message, error, targetStatus);
-    return controls.length > 0;
+    clearFormErrors(form);
+    showFieldError(controls, message, form.querySelector(".field-error"), formStatus(form));
+    return true;
   }
 
   const SPOT_FIELDS = {
@@ -210,84 +145,99 @@ export function installAdsPanel({
 
   // The server's refusal: on its field when it names one, else said.
   function refused(form, fields, error, what) {
-    if (!error.field || !showError(form, fieldControls(fields, error.field), error.message)) {
-      say(`Could not save ${what}: ${error.message}`, "error");
+    const fieldMap = Object.fromEntries(Object.keys(fields).map((field) => [field, fieldControls(fields, field)]));
+    if (form === breakForm) fieldMap.days = dayBoxes;
+    if (!applyServerFieldError(error, fieldMap, form.querySelector(".field-error"), formStatus(form))) {
+      say(failureText(`save ${what}`, error), "error");
     }
   }
 
-  // ---- Lists ----
+  // ---- Collections ----
 
-  function rowButton(label, onClick) {
-    const button = doc.createElement("button");
-    button.type = "button";
-    button.dataset.role = label.toLowerCase().replace(/\s+/g, "-");
-    button.textContent = label;
-    button.addEventListener("click", () => void onClick(button));
-    return button;
-  }
+  const bookedReason = "That spot is booked for a coming song change; delete it after it airs";
+  const spotTable = createCollectionTable({
+    host: spotList, label: "Spots", keyOf: (spot) => spot.id,
+    nameOf: (spot) => `spot ${spot.title}, ${spot.advertiser}`, fallback: spotAdd, status,
+    emptyText: "No spots yet.",
+    columns: [
+      { key: "title", label: "Title", value: (spot) => spot.title },
+      { key: "advertiser", label: "Advertiser", value: (spot) => spot.advertiser },
+      { key: "campaign", label: "Campaign", value: (spot) => spot.campaign || "None" },
+      { key: "seconds", label: "Seconds", value: (spot) => spot.seconds },
+      { key: "category", label: "Competing category", value: (spot) => spot.category || "None" },
+      { key: "dates", label: "Flight dates", value: (spot) => spot.dates_text || "No flight dates" },
+      { key: "day", label: "Plays a day", value: (spot) => spot.max_per_day || "No limit" },
+      { key: "hour", label: "Plays an hour", value: (spot) => spot.max_per_hour || "No limit" },
+      { key: "plays", label: "Aired or booked today", value: (spot) => spot.plays_today },
+      { key: "status", label: "Status", value: (spot) => [
+        !spot.enabled ? "Turned off" : !spot.in_flight ? `Not airing: ${spot.flight_text}` : "Airs",
+        spot.missing ? "Its audio file is missing" : "",
+        spot.booked ? "Booked for a coming song change" : "",
+      ].filter(Boolean).join(". ") },
+    ],
+    primary: (spot) => ({ id: "edit", label: "Edit", run: (button) => openSpotForm(spot, button) }),
+    actions: (spot) => [{ id: "delete", label: "Delete", disabledReason: spot.booked ? bookedReason : "",
+      run: (button) => deleteSpot(spot, button) }],
+  });
+  const breakTable = createCollectionTable({
+    host: breakList, label: "Ad breaks", keyOf: (item) => item.id,
+    nameOf: (item) => `ad break ${item.name}`, fallback: breakAdd, status, emptyText: "No ad breaks yet.",
+    columns: [
+      { key: "name", label: "Name", value: (item) => item.name },
+      { key: "when", label: "When", value: (item) => item.when_text },
+      { key: "spots", label: "Spots in the break", value: (item) => item.max_spots },
+      { key: "seconds", label: "Longest break in seconds", value: (item) => item.max_seconds || "No limit" },
+      { key: "next", label: "Next run", value: (item) => item.enabled ? item.next_text || "None" : "None" },
+      { key: "enabled", label: "Airs", value: (item) => item.enabled ? "Yes" : "Turned off" },
+    ],
+    primary: (item) => ({ id: "edit", label: "Edit", run: (button) => openBreakForm(item, button) }),
+    actions: (item) => [
+      { id: "run-now", label: "Run now", disabledReason: data?.reason || "",
+        run: (button) => withDisabled(button, () => runBreak(item)) },
+      { id: "delete", label: "Delete", run: (button) => deleteBreak(item, button) },
+    ],
+  });
+  const totalsTable = createCollectionTable({
+    host: get("totals"), label: "Totals by advertiser and campaign",
+    keyOf: (group) => JSON.stringify([group.advertiser, group.campaign]),
+    nameOf: (group) => `${group.advertiser}${group.campaign ? `, ${group.campaign}` : ""}`,
+    fallback: get("report-from"), status, emptyText: "No totals for these dates.",
+    columns: [
+      { key: "advertiser", label: "Advertiser", value: (group) => group.advertiser },
+      { key: "campaign", label: "Campaign", value: (group) => group.campaign || "None" },
+      { key: "aired", label: "Aired", value: (group) => group.aired },
+      { key: "late", label: "Aired late", value: (group) => group.late },
+      { key: "missed", label: "Missed", value: (group) => group.missed },
+      { key: "interrupted", label: "May have aired", value: (group) => group.interrupted ?? 0 },
+      { key: "waiting", label: "Waiting", value: (group) => group.waiting },
+      { key: "seconds", label: "Seconds aired", value: (group) => group.seconds },
+    ],
+  });
+  const reportTable = createCollectionTable({
+    host: get("rows"), label: "Every spot", keyOf: (entry) => entry.id,
+    nameOf: (entry) => `${entry.scheduled_text}, ${entry.title || "No spot"}`,
+    fallback: get("report-from"), status, emptyText: "No ad breaks ran for these dates.",
+    columns: [
+      { key: "scheduled", label: "Break time", value: (entry) => entry.scheduled_text },
+      { key: "aired", label: "Aired", value: (entry) => entry.aired_text || "Did not air" },
+      { key: "result", label: "Result", value: (entry) => entry.status_text
+        + (entry.delay_minutes == null ? "" : `, ${entry.delay_minutes} minutes after its time`) },
+      { key: "spot", label: "Spot", value: (entry) => entry.spot_id
+        ? `${entry.advertiser}: ${entry.title}${entry.campaign ? `, campaign ${entry.campaign}` : ""}` : "No spot" },
+      { key: "break", label: "Break", value: (entry) => `${entry.break_name}, ${entry.source_text}` },
+      { key: "reason", label: "Reason", value: (entry) => entry.reason || "None" },
+    ],
+  });
 
-  // Keep the rows that still exist so focus on their buttons survives.
-  function renderRows(list, items, emptyText, build, fill) {
-    const controls = list === spotList ? listNavigation[0] : listNavigation[1];
-    const fallback = list === spotList ? spotAdd : breakAdd;
-    const hasRows = !!list.querySelector(":scope > li[data-row-key]");
-    if (items.length || hasRows) reconcileRows(list, items, (item) => item.id, build, fill, { fallback, onFocusLost: ({ target }) => {
-      if (!listFocusAnnouncementSuppressed) say(`The ad list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "the Add control"}.`);
-    } });
-    if (!items.length && !list.querySelector(":scope > li.no-results")) list.append(textItem(emptyText, "no-results"));
-    controls.refresh();
-  }
-
-  function spotRow(spot) {
-    const row = doc.createElement("li");
-    row.dataset.id = spot.id;
-    row.append(doc.createElement("span"));
-    row.append(rowButton("Edit", (button) => openSpotForm(spotById(row.dataset.id), button)));
-    row.append(rowButton("Delete", (button) => deleteSpot(spotById(row.dataset.id), button)));
-    return row;
-  }
-
-  function fillSpot(row, spot) {
-    const [text, edit, remove] = row.children;
-    setText(text, spotText(spot));
-    const editName = `Edit spot ${spot.title}, ${spot.advertiser}`;
-    const deleteName = `Delete spot ${spot.title}, ${spot.advertiser}`;
-    if (edit.getAttribute("aria-label") !== editName) edit.setAttribute("aria-label", editName);
-    if (remove.getAttribute("aria-label") !== deleteName) remove.setAttribute("aria-label", deleteName);
-  }
-
-  function breakRow(item) {
-    const row = doc.createElement("li");
-    row.dataset.id = item.id;
-    row.append(doc.createElement("span"));
-    row.append(rowButton("Edit", (button) => openBreakForm(breakById(row.dataset.id), button)));
-    const run = rowButton("Run now", (button) => runBreak(breakById(row.dataset.id), button));
-    // Run now changes what is on air at the station the page controls.
-    row.append(run);
-    row.append(rowButton("Delete", (button) => deleteBreak(breakById(row.dataset.id), button)));
-    return row;
-  }
-
-  function fillBreak(row, item) {
-    const [text, edit, run, remove] = row.children;
-    setText(text, breakText(item));
-    const labels = [[edit, `Edit ad break ${item.name}`], [run, `Run now, ad break ${item.name}`],
-      [remove, `Delete ad break ${item.name}`]];
-    for (const [button, name] of labels) if (button.getAttribute("aria-label") !== name) button.setAttribute("aria-label", name);
-  }
-
-  const spotById = (id) => data?.spots.find((spot) => spot.id === id) || null;
-  const breakById = (id) => data?.breaks.find((item) => item.id === id) || null;
-
-  function render() {
+  function render({ announceFocus = true } = {}) {
     setText(get("timezone"), data.timezone || "");
     for (const [id, text] of [["reason", data.reason], ["problem", data.problem]]) {
       const note = get(id);
       setText(note, text || "");
       note.hidden = !text;
     }
-    renderRows(spotList, data.spots, "No spots yet.", spotRow, fillSpot);
-    renderRows(breakList, data.breaks, "No ad breaks yet.", breakRow, fillBreak);
+    spotTable.update(data.spots, { announceFocus });
+    breakTable.update(data.breaks, { announceFocus });
     const pending = data.pending.map((run) => textItem(
       `${run.break_name}, due ${run.scheduled_text}, from ${run.source_text}: waiting for a song change.`,
     ));
@@ -310,33 +260,28 @@ export function installAdsPanel({
     rulesStation = data.station;
   }
 
-  async function load() {
+  async function load(options) {
     const mine = ++generation;
     const current = session;
     const reply = await request("/api/ads");
     if (mine !== generation || current !== session) return false;
     data = reply;
-    render();
+    render(options);
     return true;
   }
 
   function refresh() {
     const current = session;
     return load().catch((error) => {
-      if (current === session && shown()) say(`Could not load the ads: ${error.message}`, "error");
+      if (current === session && shown()) say(failureText("load the ads", error), "error");
     });
-  }
-
-  function focusRow(list, id, fallback) {
-    const row = [...list.children].find((item) => item.dataset.id === id);
-    focusAfterDialog(row?.querySelector('[data-role="edit"]') || fallback);
   }
 
   // ---- Spots ----
 
   function openSpotForm(spot = null, opener = doc.activeElement) {
     editingSpot = spot?.id ?? null;
-    clearError(spotForm);
+    clearFormErrors(spotForm);
     setText(get("spot-legend"), spot ? `Edit spot ${spot.title}` : "Add spot");
     get("spot-file-row").hidden = Boolean(spot);
     get("spot-file-desc").hidden = Boolean(spot);
@@ -356,7 +301,7 @@ export function installAdsPanel({
   function closeSpotForm() {
     spotEditor.close();
     editingSpot = null;
-    clearError(spotForm);
+    clearFormErrors(spotForm);
   }
 
   function wholeNumber(id, low, high) {
@@ -404,7 +349,7 @@ export function installAdsPanel({
       showError(spotForm, fieldControls(SPOT_FIELDS, problem[0]), problem[1]);
       return;
     }
-    clearError(spotForm);
+    clearFormErrors(spotForm);
     const current = session;
     const id = editingSpot;
     const fields = spotFields();
@@ -429,7 +374,7 @@ export function installAdsPanel({
     await load().catch(() => false);
     if (current !== session || !active()) return;
     closeSpotForm();
-    focusRow(spotList, saved.id, spotAdd);
+    focusAfterDialog(spotTable.target(saved.id) || spotAdd);
     say(`Spot ${saved.title} saved`);
   }
 
@@ -438,32 +383,33 @@ export function installAdsPanel({
     const current = session;
     const index = data.spots.findIndex((item) => item.id === spot.id);
     let result = null;
-    const confirmed = await confirmAction(doc, {
+    const confirmed = await deleteCollectionItem(doc, {
       title: `Delete spot ${spot.title}?`,
       message: "The spot and its audio are removed. What it aired stays in the ad report.",
       confirmLabel: "Delete spot",
       onConfirm: async () => {
         try {
+          if (current !== session) return null;
+          if (data?.spots.find((item) => item.id === spot.id)?.booked) {
+            result = [bookedReason, "error"];
+            return button;
+          }
           await request(`/api/ads/spots/${encodeURIComponent(spot.id)}`, { method: "DELETE" });
           if (current !== session) return null;
           if (editingSpot === spot.id) closeSpotForm();
-          listFocusAnnouncementSuppressed = true;
-          try { await load(); } finally { listFocusAnnouncementSuppressed = false; }
+          await load({ announceFocus: false });
           if (current !== session) return null;
           result = [`Spot ${spot.title} deleted`];
-          const edits = spotList.querySelectorAll('[data-role="edit"]');
-          return edits[Math.min(index, edits.length - 1)] || spotAdd;
+          const next = data.spots[Math.min(index, data.spots.length - 1)];
+          return next ? spotTable.target(next.id) : spotAdd;
         } catch (error) {
           if (current !== session) return null;
-          result = [`Could not delete ${spot.title}: ${error.message}`, "error"];
+          result = [failureText(`delete ${spot.title}`, error), "error"];
           return button;
         }
       },
     });
-    if (!confirmed) {
-      button.focus();
-      return;
-    }
+    if (!confirmed) return;
     if (result) say(...result);
   }
 
@@ -471,7 +417,7 @@ export function installAdsPanel({
 
   function openBreakForm(item = null, opener = doc.activeElement) {
     editingBreak = item?.id ?? null;
-    clearError(breakForm);
+    clearFormErrors(breakForm);
     setText(get("break-legend"), item ? `Edit ad break ${item.name}` : "Add ad break");
     get("break-name").value = item?.name ?? "";
     get("break-minutes").value = item ? item.minutes.join(", ") : "15, 45";
@@ -489,7 +435,7 @@ export function installAdsPanel({
   function closeBreakForm() {
     breakEditor.close();
     editingBreak = null;
-    clearError(breakForm);
+    clearFormErrors(breakForm);
   }
 
   function breakProblem() {
@@ -533,7 +479,7 @@ export function installAdsPanel({
       showError(breakForm, fieldControls(BREAK_FIELDS, problem[0]), problem[1]);
       return;
     }
-    clearError(breakForm);
+    clearFormErrors(breakForm);
     const current = session;
     const id = editingBreak;
     let saved;
@@ -549,7 +495,7 @@ export function installAdsPanel({
     await load().catch(() => false);
     if (current !== session || !active()) return;
     closeBreakForm();
-    focusRow(breakList, saved.id, breakAdd);
+    focusAfterDialog(breakTable.target(saved.id) || breakAdd);
     say(`Ad break ${saved.name} saved`);
   }
 
@@ -562,7 +508,7 @@ export function installAdsPanel({
       await load().catch(() => false);
       if (current === session) say(reply.message);
     } catch (error) {
-      if (current === session) say(`Could not run ${item.name}: ${error.message}`, "error");
+      if (current === session) say(failureText(`run ${item.name}`, error), "error");
     }
   }
 
@@ -571,32 +517,29 @@ export function installAdsPanel({
     const current = session;
     const index = data.breaks.findIndex((entry) => entry.id === item.id);
     let result = null;
-    const confirmed = await confirmAction(doc, {
+    const confirmed = await deleteCollectionItem(doc, {
       title: `Delete ad break ${item.name}?`,
       message: "The break no longer runs. A Schedule event that names it fails until it names another. What it aired stays in the ad report.",
       confirmLabel: "Delete ad break",
       onConfirm: async () => {
         try {
+          if (current !== session) return null;
           await request(`/api/ads/breaks/${encodeURIComponent(item.id)}`, { method: "DELETE" });
           if (current !== session) return null;
           if (editingBreak === item.id) closeBreakForm();
-          listFocusAnnouncementSuppressed = true;
-          try { await load(); } finally { listFocusAnnouncementSuppressed = false; }
+          await load({ announceFocus: false });
           if (current !== session) return null;
           result = [`Ad break ${item.name} deleted`];
-          const edits = breakList.querySelectorAll('[data-role="edit"]');
-          return edits[Math.min(index, edits.length - 1)] || breakAdd;
+          const next = data.breaks[Math.min(index, data.breaks.length - 1)];
+          return next ? breakTable.target(next.id) : breakAdd;
         } catch (error) {
           if (current !== session) return null;
-          result = [`Could not delete ${item.name}: ${error.message}`, "error"];
+          result = [failureText(`delete ${item.name}`, error), "error"];
           return button;
         }
       },
     });
-    if (!confirmed) {
-      button.focus();
-      return;
-    }
+    if (!confirmed) return;
     if (result) say(...result);
   }
 
@@ -621,7 +564,7 @@ export function installAdsPanel({
       showError(rulesForm, [get("rules-missed")], "Missed after must not be shorter than Late after");
       return;
     }
-    clearError(rulesForm);
+    clearFormErrors(rulesForm);
     const current = session;
     try {
       await request("/api/ads/settings", { method: "PUT", headers: JSON_HEADERS, body: JSON.stringify(values) });
@@ -636,14 +579,6 @@ export function installAdsPanel({
 
   // ---- The report ----
 
-  function cell(tag, text, className = "") {
-    const element = doc.createElement(tag);
-    if (tag === "th") element.scope = "row";
-    if (className) element.className = className;
-    element.textContent = text;
-    return element;
-  }
-
   function reportDates() {
     const from = get("report-from");
     const to = get("report-to");
@@ -655,48 +590,16 @@ export function installAdsPanel({
       showError(reportForm, [to], "To must be on or after From");
       return null;
     }
-    clearError(reportForm);
+    clearFormErrors(reportForm);
     return new URLSearchParams({ from: from.value, to: to.value });
   }
 
   function renderReport(report) {
-    const totals = (report.summary || []).map((group) => {
-      const row = doc.createElement("tr");
-      row.append(
-        cell("th", group.advertiser),
-        cell("td", group.campaign || "None"),
-        cell("td", String(group.aired), "ads-number"),
-        cell("td", String(group.late), "ads-number"),
-        cell("td", String(group.missed), "ads-number"),
-        cell("td", String(group.interrupted ?? 0), "ads-number"),
-        cell("td", String(group.waiting), "ads-number"),
-        cell("td", String(group.seconds), "ads-number"),
-      );
-      return row;
-    });
-    get("totals").replaceChildren(...totals);
-    get("totals-wrap").hidden = !totals.length;
-    const rows = (report.rows || []).map((entry) => {
-      const row = doc.createElement("tr");
-      let result = entry.status_text;
-      if (entry.delay_minutes !== null && entry.delay_minutes !== undefined) {
-        result += `, ${entry.delay_minutes} minutes after its time`;
-      }
-      const spot = entry.spot_id
-        ? `${entry.advertiser}: ${entry.title}${entry.campaign ? `, campaign ${entry.campaign}` : ""}`
-        : "No spot";
-      row.append(
-        cell("th", entry.scheduled_text),
-        cell("td", entry.aired_text || "Did not air"),
-        cell("td", result),
-        cell("td", spot),
-        cell("td", `${entry.break_name}, ${entry.source_text}`),
-        cell("td", entry.reason || "None"),
-      );
-      return row;
-    });
-    get("rows").replaceChildren(...rows);
-    get("rows-wrap").hidden = !rows.length;
+    const rows = report.rows || [];
+    totalsTable.update(report.summary || [], { announceFocus: false });
+    reportTable.update(rows, { announceFocus: false });
+    get("totals-wrap").hidden = false;
+    get("rows-wrap").hidden = false;
     const summary = get("report-summary");
     summary.textContent = rows.length ? reportSummary(report) : `No ad breaks ran from ${report.from} to ${report.to}.`;
     summary.hidden = false;
@@ -718,7 +621,7 @@ export function installAdsPanel({
       const report = await request(`/api/ads/report?${query}`);
       if (current === session) say(renderReport(report));
     } catch (error) {
-      if (current === session) say(`Could not show the ad report: ${error.message}`, "error");
+      if (current === session) say(failureText("show the ad report", error), "error");
     }
   }
 
@@ -735,7 +638,7 @@ export function installAdsPanel({
       const count = Number(response.headers.get("X-Row-Count")) || 0;
       say(`Ad report saved: ${count} ${count === 1 ? "row" : "rows"}.`);
     } catch (error) {
-      if (current === session) say(`Could not export the ad report: ${error.message}`, "error");
+      if (current === session) say(failureText("export the ad report", error), "error");
     }
   }
 
@@ -743,9 +646,9 @@ export function installAdsPanel({
 
   spotAdd.addEventListener("click", () => openSpotForm(null, spotAdd));
   breakAdd.addEventListener("click", () => openBreakForm(null, breakAdd));
-  rulesForm.addEventListener("submit", (event) => void saveRules(event));
-  reportForm.addEventListener("submit", (event) => void showReport(event));
-  get("report-export").addEventListener("click", () => void exportReport());
+  rulesForm.addEventListener("submit", (event) => void withDisabled(get("rules-save"), () => saveRules(event)));
+  reportForm.addEventListener("submit", (event) => void withDisabled(get("report-show"), () => showReport(event)));
+  get("report-export").addEventListener("click", () => void withDisabled(get("report-export"), exportReport));
   // A field the user changes is no longer marked as the bad one.
   const clearInvalid = (event) => {
     const control = event.target;
@@ -753,10 +656,7 @@ export function installAdsPanel({
     const form = control.closest("form");
     const error = form?.querySelector(".field-error");
     const group = dayBoxes.includes(control) ? dayBoxes : [control];
-    for (const item of group) {
-      item.removeAttribute("aria-invalid");
-      if (error) linkError(item, error, false);
-    }
+    clearFieldError(group, error);
   };
   root.addEventListener("input", clearInvalid);
   spotForm.addEventListener("input", clearInvalid);
@@ -778,18 +678,12 @@ export function installAdsPanel({
       closeSpotForm();
       closeBreakForm();
       status.textContent = "";
-      listFocusAnnouncementSuppressed = true;
-      try {
-        for (const [list, fallback] of [[spotList, spotAdd], [breakList, breakAdd]]) {
-          reconcileRows(list, [], (item) => item.id, () => null, () => {}, { fallback, onFocusLost: ({ target }) => {
-            if (!listFocusAnnouncementSuppressed) say(`The ad list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "the Add control"}.`);
-          } });
-        }
-      } finally { listFocusAnnouncementSuppressed = false; }
+      spotTable.clear();
+      breakTable.clear();
       get("pending").replaceChildren();
       get("recent").replaceChildren();
-      get("totals").replaceChildren();
-      get("rows").replaceChildren();
+      totalsTable.clear();
+      reportTable.clear();
       get("totals-wrap").hidden = true;
       get("rows-wrap").hidden = true;
       get("report-summary").hidden = true;

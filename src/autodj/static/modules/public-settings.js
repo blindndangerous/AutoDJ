@@ -1,7 +1,7 @@
 // Station configuration for DMCA mode and the public player pages.
-import { isStaleStationReply, requestJson } from "./api-client.js";
-import { focusRevealed } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+import { failureText, isStaleStationReply, requestJson } from "./api-client.js";
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
+import { makeSay } from "./live-region.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 
 export function installPublicSettings({ doc = document, request = requestJson } = {}) {
@@ -20,29 +20,9 @@ export function installPublicSettings({ doc = document, request = requestJson } 
   let generation = 0;
   let loadSequence = 0;
 
-  function say(message, tone = "success") {
-    announceStatus(status, message, { tone, force: true, dwellMs: tone === "error" ? 6000 : 4000 });
-  }
-
-  function clearError() {
-    origins.removeAttribute("aria-invalid");
-    origins.setAttribute("aria-describedby", "public-origins-help");
-    if (errorNode) {
-      errorNode.textContent = "";
-      errorNode.hidden = true;
-    }
-  }
-
-  function showError(message) {
-    origins.setAttribute("aria-invalid", "true");
-    origins.setAttribute("aria-describedby", "public-origins-help public-origins-error");
-    if (errorNode) {
-      errorNode.textContent = message;
-      errorNode.hidden = false;
-    }
-    focusRevealed(origins);
-    say(message, "error");
-  }
+  const say = makeSay(status, { tone: "success", dwellMs: 4000, errorDwellMs: 6000 });
+  const clearError = () => clearFieldError(origins, errorNode);
+  const showError = (message) => showFieldError(origins, message, errorNode, status);
 
   function fillDmca(settings) {
     if ("dmca_enabled" in settings) dmca.checked = settings.dmca_enabled === true;
@@ -70,6 +50,7 @@ export function installPublicSettings({ doc = document, request = requestJson } 
   const draft = registerSettingsGroup({
     panel: doc.getElementById("spanel-stream"), group: "public",
     controls: [page, embed, origins],
+    fields: { player_page_enabled: page, embed_enabled: embed, embed_origins: origins },
     read: () => ({ player_page_enabled: page.checked,
       embed_enabled: embed.checked,
       embed_origins: origins.value.split(/\r?\n/).map((site) => site.trim()).filter(Boolean) }),
@@ -103,7 +84,7 @@ export function installPublicSettings({ doc = document, request = requestJson } 
       }
     } catch (error) {
       if (mine === loadSequence && station === generation && !isStaleStationReply(error)) {
-        say(`Could not load public settings: ${error?.message || "no answer"}`, "error");
+        say(failureText("load public settings", error, "no answer"), "error");
       }
     }
   }

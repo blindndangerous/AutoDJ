@@ -10,11 +10,15 @@ import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
   requestJson,
+  failureText,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
-import { listRow, nextRowControl, reconcileRows, rowButton } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+import { createCollectionTable } from "./collection-table.js";
+import { deleteCollectionItem } from "./collection-delete.js";
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
+import { tableFocusTarget } from "./table-row.js";
+import { makeSay } from "./live-region.js";
+import { onCardOpen } from "./card-state.js";
 import { confirmSettingsNavigation, loadSettingsDrafts, registerSettingsGroup, setSettingsProfile } from "./settings-drafts.js";
 
 // profiles.validate_name on the server.
@@ -24,16 +28,27 @@ export function installProfiles(els) {
   const { card, nameInput, saveButton, list, status } = els;
   if (!card || !nameInput || !saveButton || !list || !status) return;
   const doc = card.ownerDocument;
-  const listNavigation = installActionListNavigation(list);
+  const nameError = doc.getElementById("profile-name-error");
   let names = [];
   let active = null;
   let clockwheels = [];
   let cartPages = [];
   let renderedNames = null;
 
-  const say = (message, tone = "info") => {
-    announceStatus(status, message, { dwellMs: tone === "error" ? 6000 : 3000, force: true, tone });
-  };
+  const say = makeSay(status, { dwellMs: 3000, errorDwellMs: 6000 });
+  const collection = createCollectionTable({
+    host: list, label: "saved profiles", status, fallback: nameInput,
+    emptyText: "No saved profiles yet.", keyOf: (name) => name, nameOf: (name) => name,
+    columns: [
+      { key: "name", label: "Name", value: (name) => name },
+      { key: "active", label: "Active", value: (name) => active === name ? "Yes" : "No" },
+    ],
+    primary: (name) => ({ id: "activate", label: "Activate", run: () => void applyProfile(name) }),
+    actions: (name) => [
+      { id: "reset", label: "Reset", run: () => void resetProfile(name) },
+      { id: "delete", label: "Delete", run: (button) => void deleteProfile(name, button) },
+    ],
+  });
 
   function choice(label, value) {
     const option = doc.createElement("option");
@@ -44,39 +59,9 @@ export function installProfiles(els) {
 
   function render() {
     const signature = JSON.stringify([names, active]);
-    if (signature === renderedNames) { listNavigation.refresh(); return; }
+    if (signature === renderedNames) return;
     renderedNames = signature;
-    if (names.length === 0) {
-      const empty = doc.createElement("li");
-      empty.className = "no-results";
-      empty.textContent = "No saved profiles yet.";
-      reconcileRows(list, [], (name) => name, () => null, () => {}, {
-        fallback: nameInput,
-        onFocusLost: ({ target }) => say(`The saved profiles list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "profile name"}.`),
-      });
-      list.append(empty);
-      listNavigation.refresh();
-      return;
-    }
-    reconcileRows(list, names, (name) => name, (name) => {
-      const activeLabel = active === name ? " (active)" : "";
-      const apply = rowButton(doc, "Activate", `Activate profile ${name}`, () => void applyProfile(name));
-      const remove = rowButton(doc, "Delete", `Delete profile ${name}`,
-        (button) => void deleteProfile(name, button));
-      const reset = rowButton(doc, "Reset", `Reset profile ${name} to defaults`,
-        () => void resetProfile(name));
-      remove.dataset.profile = name;
-      return listRow(doc, `${name}${activeLabel}`, "profile-name", apply, reset, remove);
-    }, (row, name) => {
-      const label = row.querySelector(".profile-name");
-      if (label) label.textContent = `${name}${active === name ? " (active)" : ""}`;
-      const apply = row.querySelector("button");
-      if (apply) {
-        apply.textContent = "Activate";
-        apply.setAttribute("aria-label", `Activate profile ${name}`);
-      }
-    }, { fallback: nameInput, onFocusLost: ({ target }) => say(`The saved profiles list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "profile name"}.`) });
-    listNavigation.refresh();
+    collection.update(names);
   }
 
   function updateActive(name) {
@@ -131,7 +116,7 @@ export function installProfiles(els) {
       return true;
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return false;
-      say(`Could not load profiles: ${errorValue.message}`, "error");
+      say(failureText(`load profiles`, errorValue), "error");
       return false;
     }
   }
@@ -147,15 +132,13 @@ export function installProfiles(els) {
   async function save() {
     const name = nameInput.value.trim();
     if (!NAME_PATTERN.test(name)) {
-      nameInput.setAttribute("aria-invalid", "true");
-      say("Could not save: a profile name needs 1 to 64 letters, digits, spaces, dashes or underscores.", "error");
+      showFieldError(nameInput, "Could not save: a profile name needs 1 to 64 letters, digits, spaces, dashes or underscores.", nameError, status);
       return;
     }
-    nameInput.removeAttribute("aria-invalid");
+    clearFieldError(nameInput, nameError);
     const exists = names.some((other) => other.toLowerCase() === name.toLowerCase());
     if (exists) {
-      nameInput.setAttribute("aria-invalid", "true");
-      say(`Profile ${name} already exists. Choose it in Profile to edit to change its settings.`, "error");
+      showFieldError(nameInput, `Profile ${name} already exists. Choose it in Profile to edit to change its settings.`, nameError, status);
       return;
     }
     const epoch = captureAuthenticatedRequestEpoch();
@@ -171,7 +154,7 @@ export function installProfiles(els) {
       say(`Created profile ${name}.`);
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      say(`Could not save profile ${name}: ${errorValue.message}`, "error");
+      say(failureText(`save profile ${name}`, errorValue), "error");
     }
   }
 
@@ -190,9 +173,10 @@ export function installProfiles(els) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
       if (editing) await setSettingsProfile(name, doc);
       await load();
+      if (!isAuthenticatedRequestCurrent(epoch)) return;
       say(`Reset profile ${name} to station defaults.`);
     } catch (errorValue) {
-      if (isAuthenticatedRequestCurrent(epoch)) say(`Could not reset profile ${name}: ${errorValue.message}`, "error");
+      if (isAuthenticatedRequestCurrent(epoch)) say(failureText(`reset profile ${name}`, errorValue), "error");
     }
   }
 
@@ -206,7 +190,7 @@ export function installProfiles(els) {
       say(`Activated profile ${name}.`);
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      say(`Could not activate profile ${name}: ${errorValue.message}`, "error");
+      say(failureText(`activate profile ${name}`, errorValue), "error");
     }
   }
 
@@ -219,13 +203,13 @@ export function installProfiles(els) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
       say("Activated station defaults.");
     } catch (errorValue) {
-      if (isAuthenticatedRequestCurrent(epoch)) say(`Could not activate station defaults: ${errorValue.message}`, "error");
+      if (isAuthenticatedRequestCurrent(epoch)) say(failureText(`activate station defaults`, errorValue), "error");
     }
   }
 
   // The delete runs while the confirmation is still open, so the list is
   // already updated when it closes and focus goes straight to the next
-  // row's Delete, or the name field when none is left (see confirmAction).
+  // row's Options cell, or the name field when none is left (see confirmAction).
   // The result is said after the dialog has closed: the status region is
   // behind it until then.
   async function deleteProfile(name, button) {
@@ -236,7 +220,7 @@ export function installProfiles(els) {
     const index = names.indexOf(name);
     const epoch = captureAuthenticatedRequestEpoch();
     let result = null;
-    const confirmed = await confirmAction(doc, {
+    const confirmed = await deleteCollectionItem(doc, {
       title: `Delete profile ${name}?`,
       message: "The saved settings are removed.  The settings in use now do not change.",
       confirmLabel: "Delete profile",
@@ -247,21 +231,22 @@ export function installProfiles(els) {
           await load();
           if (!isAuthenticatedRequestCurrent(epoch)) return null;
           result = [`Deleted profile ${name}.`];
-          return nextRowControl(list, "button[data-profile]", index, nameInput);
+          return collection.target(names[Math.min(index, names.length - 1)], "options") || nameInput;
         } catch (errorValue) {
           if (!isAuthenticatedRequestCurrent(epoch)) return null;
-          result = [`Could not delete profile ${name}: ${errorValue.message}`, "error"];
-          return button;
+          result = [failureText(`delete profile ${name}`, errorValue), "error"];
+          return tableFocusTarget(button);
         }
       },
     });
     if (!confirmed) {
-      button.focus();
+      tableFocusTarget(button).focus();
       return;
     }
     if (result && isAuthenticatedRequestCurrent(epoch)) say(...result);
   }
 
+  nameInput.addEventListener("input", () => clearFieldError(nameInput, nameError));
   saveButton.addEventListener("click", () => void save());
   els.applyDefaultsButton?.addEventListener("click", () => void applyDefaults());
   nameInput.addEventListener("keydown", (event) => {
@@ -269,9 +254,7 @@ export function installProfiles(els) {
     event.preventDefault();
     void save();
   });
-  card.addEventListener("toggle", () => {
-    if (card.open) void load().then(() => loadSettingsDrafts(doc));
-  });
+  onCardOpen(card, () => load().then(() => loadSettingsDrafts(doc)));
   if (card.open) void load().then(() => loadSettingsDrafts(doc));
   const settingsPanel = doc.getElementById("panel-settings");
   const Observer = doc.defaultView?.MutationObserver;
@@ -298,5 +281,11 @@ export function installProfiles(els) {
     write: (value) => { if ("page" in value) showChoice(cart, value.page); },
   });
   // After a station switch (#70): the open list shows the new station's.
-  return { refresh: load, updateActive };
+  return { refresh: load, updateActive, clear() {
+    names = [];
+    active = null;
+    renderedNames = null;
+    clearFieldError(nameInput, nameError);
+    collection.clear();
+  } };
 }

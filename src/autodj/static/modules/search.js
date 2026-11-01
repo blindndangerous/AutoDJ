@@ -8,9 +8,9 @@
 import { fmtTrack, selectOnFocus } from "./dom-helpers.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay, announceStatus } from "./live-region.js";
 import { sendWithDmcaConfirm } from "./dmca-ui.js";
-import {
+import { failureText,
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
   requestJson,
@@ -42,9 +42,7 @@ export function installSearch({
   // Announced once and shown once: announceStatus writes the region and
   // copies the same string into the visible #status-toast, so a failed
   // "Next" is no longer silent for a sighted user.
-  function announce(message, tone = "info") {
-    announceStatus(queueAnnounce, message, { dwellMs: 3000, force: true, tone });
-  }
+  const announce = makeSay(queueAnnounce, { dwellMs: 3000 });
 
   // #search-count is visible, so it keeps its text instead of being
   // wiped after a dwell; announceStatus still guarantees one write per
@@ -86,7 +84,7 @@ export function installSearch({
     } catch (errorValue) {
       if (request.signal.aborted) return;
       if (browsing && searchRequest !== request) return;
-      setCount(`Could not search: ${errorValue.message}`,
+      setCount(failureText("search", errorValue),
         { mirror: true, tone: "error" });
       if (!browsing) searchInput.focus();
       return;

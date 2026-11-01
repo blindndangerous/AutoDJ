@@ -1,3 +1,4 @@
+import { failureText, withDisabled } from "./api-client.js";
 import { copyByCommand } from "./clipboard.js";
 // Settings > Stream > Now-playing feed: the public feed's address, whether
 // it shows the next song, and the webhooks set in the station's secrets.json.
@@ -18,7 +19,8 @@ import { copyByCommand } from "./clipboard.js";
 //     leaves it unticked: listeners never get the next song in that mode.
 
 import { DEFAULT_STATION, currentStation } from "./stations.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
+import { onCardOpen } from "./card-state.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 import { listRow, rowButton } from "./dom-helpers.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
@@ -128,41 +130,36 @@ export function installNowPlayingSettings({
   let loading = null;
   let lastLoad = -Infinity;
   let loadFailureSpoken = false;
-  const sending = new Set();
+  let sendController = new AbortController();
 
-  function say(region, text, tone = "info") {
-    announceStatus(region, text, { dwellMs: tone === "error" ? 6000 : 4000, force: true, tone });
-  }
+  const saySettings = makeSay(settingsStatus, { dwellMs: 4000, errorDwellMs: 6000 });
+  const sayStatus = makeSay(srStatus, { dwellMs: 4000, errorDwellMs: 6000 });
 
   function setEmptyText(text) {
     if (empty.textContent !== text) empty.textContent = text;
     if (empty.hidden) empty.hidden = false;
   }
 
-  function sendTest(hook) {
-    if (sending.has(hook.index)) return;
-    sending.add(hook.index);
-    say(settingsStatus, `Sending a test to ${hook.host}.`);
+  function sendTest(hook, button) {
+    saySettings(`Sending a test to ${hook.host}.`);
     const mine = generation;
-    void (async () => {
+    void withDisabled(button, async () => {
       try {
         const reply = await request(`/api/webhooks/${hook.index}/test`, { method: "POST" });
         if (mine !== generation) return;
         if (reply && reply.delivered === true) {
-          say(settingsStatus, `Test delivered to ${hook.host}.`);
+          saySettings(`Test delivered to ${hook.host}.`);
         } else {
-          say(settingsStatus,
+          saySettings(
             `Test to ${hook.host} failed. Check its address in this station's secrets.json and the AutoDJ log.`,
             "error");
         }
         void load();
       } catch (err) {
         if (mine !== generation || isAuthFailure(err)) return;
-        say(settingsStatus, `Could not send a test to ${hook.host}: ${err.message}`, "error");
-      } finally {
-        sending.delete(hook.index);
+        saySettings(failureText(`send a test to ${hook.host}`, err), "error");
       }
-    })();
+    }, { signal: sendController.signal });
   }
 
   // The configured list only changes when AutoDJ restarts, so an update
@@ -182,7 +179,7 @@ export function installNowPlayingSettings({
       const hadFocus = list.contains(doc.activeElement);
       list.replaceChildren(...hooks.map((hook) => {
         const button = rowButton(doc, "Send test", testButtonName(hook),
-          () => sendTest(hook));
+          (button) => sendTest(hook, button));
         const item = listRow(doc, webhookText(hook), "", button);
         item.dataset.key = `${hook.index}|${hook.host}`;
         return item;
@@ -214,7 +211,7 @@ export function installNowPlayingSettings({
       // Reloads repeat while the panel is open; the failure is said once.
       if (!loadFailureSpoken) {
         loadFailureSpoken = true;
-        say(settingsStatus, `Could not load the webhooks: ${err.message}`, "error");
+        saySettings(failureText("load the webhooks", err), "error");
       }
     } finally {
       if (loading === token) loading = null;
@@ -225,9 +222,7 @@ export function installNowPlayingSettings({
     return active && Boolean(panel?.open);
   }
 
-  panel?.addEventListener("toggle", () => {
-    if (seen()) void load();
-  });
+  onCardOpen(panel, () => { if (seen()) void load(); });
 
   function installCopy(button, field, copied, failed) {
     button?.addEventListener("click", async () => {
@@ -238,11 +233,11 @@ export function installNowPlayingSettings({
           // Focus moves to the selected link, ready for Ctrl+C.
           field.focus();
           field.select();
-          say(srStatus, failed, "error");
+          sayStatus(failed, "error");
           return;
         }
       }
-      say(srStatus, copied);
+      sayStatus(copied);
     });
   }
   installCopy(copy, link, COPIED_TEXT, COPY_FAILED_TEXT);
@@ -256,7 +251,7 @@ export function installNowPlayingSettings({
   showNext.addEventListener("click", (event) => {
     if (!dmcaLocked()) return;
     event.preventDefault();
-    say(settingsStatus, dmcaReason?.textContent.trim() || "DMCA mode is on.");
+    saySettings(dmcaReason?.textContent.trim() || "DMCA mode is on.");
   });
 
   function applyDmca(on) {
@@ -294,6 +289,8 @@ export function installNowPlayingSettings({
 
   // Sign-out: forget the list along with the rest of the session state.
   function reset() {
+    sendController.abort();
+    sendController = new AbortController();
     active = false;
     generation += 1;
     loading = null;

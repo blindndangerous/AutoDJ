@@ -311,7 +311,7 @@ describe("Stereo Tool setup controls", () => {
     await vi.waitFor(() => expect($("stereo-license-error").hidden).toBe(false));
     expect($("stereo-license-error").textContent).toContain("Could not save the licence key: A Stereo Tool");
     expect($("stereo-license-key").getAttribute("aria-invalid")).toBe("true");
-    expect($("stereo-license-key").getAttribute("aria-errormessage")).toBe("stereo-license-error");
+    expect($("stereo-license-key").getAttribute("aria-describedby")).toBe("stereo-license-error");
     expect(document.activeElement).toBe($("stereo-license-key"));
     $("stereo-license-key").value = "better";
     $("stereo-license-key").dispatchEvent(new Event("input"));

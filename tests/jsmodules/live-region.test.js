@@ -1,6 +1,7 @@
 // Live-region clear-after-dwell behaviour.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import * as liveRegion from "../../src/autodj/static/modules/live-region.js";
 import {
   announceStatus,
   clearAnnouncedStatus,
@@ -12,6 +13,76 @@ import {
   writeLive,
   writeQuietly,
 } from "../../src/autodj/static/modules/live-region.js";
+
+// ADR-0011-11
+it("creates one string-tone announcer with dynamic regions and preserved repeat timing", () => {
+  expect(typeof liveRegion.makeSay).toBe("function");
+  vi.useFakeTimers();
+  try {
+    document.body.innerHTML = '<p id="first"></p><p id="second"></p><p id="status-toast"></p>';
+    let region = document.getElementById("first");
+    const say = liveRegion.makeSay(() => region, { dwellMs: 3000, errorDwellMs: 6000 });
+    say("Saved.", "success");
+    vi.advanceTimersByTime(0);
+    expect(region.textContent).toBe("Saved.");
+    say("Saved.", "success");
+    vi.advanceTimersByTime(0);
+    expect(region.textContent).toBe("Saved.\u00a0");
+    region = document.getElementById("second");
+    say("Refused.", "error");
+    vi.advanceTimersByTime(3000);
+    expect(region.textContent).toBe("Refused.");
+    vi.advanceTimersByTime(3000);
+    expect(region.textContent).toBe("");
+    expect(() => say("Bad tone", true)).toThrow(TypeError);
+    liveRegion.makeSay(region, { tone: "error" })("Refused again.");
+    expect(document.getElementById("status-toast").classList.contains("is-error")).toBe(true);
+  } finally { vi.useRealTimers(); }
+});
+
+// ADR-0011-11
+it("does not let an old dwell clear a newer persistent announcement", () => {
+  vi.useFakeTimers();
+  try {
+    for (const force of [false, true]) {
+      const region = document.createElement("p");
+      announceStatus(region, "Saved.", { dwellMs: 1000, force: true });
+      vi.advanceTimersByTime(900);
+      announceStatus(region, "The list changed. Focus moved to Add.", { force });
+      vi.advanceTimersByTime(1000);
+      expect(region.textContent).toBe("The list changed. Focus moved to Add.");
+    }
+  } finally { vi.useRealTimers(); }
+});
+
+it("does not let an old dwell clear words written live or quietly afterwards", () => {
+  vi.useFakeTimers();
+  try {
+    for (const write of [writeLive, writeQuietly]) {
+      const region = document.createElement("p");
+      announceStatus(region, "Saved.", { dwellMs: 1000, force: true });
+      vi.advanceTimersByTime(900);
+      write(region, "Scanning the library.");
+      vi.advanceTimersByTime(2000);
+      expect(region.textContent).toBe("Scanning the library.");
+    }
+  } finally { vi.useRealTimers(); }
+});
+
+it("keeps a later announcement made in the same tick as a forced one", () => {
+  vi.useFakeTimers();
+  try {
+    const region = document.createElement("p");
+    announceStatus(region, "Moved up.", { force: true });
+    announceStatus(region, "Queue updated.");
+    vi.advanceTimersByTime(0);
+    expect(region.textContent).toBe("Queue updated.");
+    announceStatus(region, "Moved up.", { force: true });
+    writeLive(region, "Disconnected, retrying");
+    vi.advanceTimersByTime(0);
+    expect(region.textContent).toBe("Disconnected, retrying");
+  } finally { vi.useRealTimers(); }
+});
 
 describe("clearLiveRegionLater", () => {
   beforeEach(() => { vi.useFakeTimers(); });

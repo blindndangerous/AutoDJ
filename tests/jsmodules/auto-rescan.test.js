@@ -18,6 +18,23 @@ const field = (id) => document.getElementById(id);
 describe("automatic rescan", () => {
   beforeEach(mount);
 
+  it("blocks duplicate saves and rejects a save reply after the controls are cleared", async () => {
+    let finish;
+    const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const controls = installAutoRescan({ document, request, say: vi.fn() });
+    field("auto-rescan-hours").value = "2";
+    field("auto-rescan-save").focus();
+    field("auto-rescan-save").click();
+    field("auto-rescan-save").click();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(field("auto-rescan-save").getAttribute("aria-busy")).toBe("true");
+    controls.clear();
+    finish({ hours: 2, minutes: 0 });
+    await flush();
+    expect(field("auto-rescan-hours").value).toBe("0");
+    expect(field("auto-rescan-save").hasAttribute("aria-busy")).toBe(false);
+  });
+
   it("labels hours and minutes in a named group with plain help", () => {
     const group = field("auto-rescan");
     expect(group.querySelector("legend").textContent).toBe("Automatic rescan every");
@@ -79,7 +96,11 @@ describe("automatic rescan", () => {
     expect(error.textContent).toBe("Use at least 5 minutes, or 0 to turn it off.");
     expect(minutes.getAttribute("aria-invalid")).toBe("true");
     expect(minutes.getAttribute("aria-describedby")).toBe("auto-rescan-error");
-    expect(minutes.closest(".settings-row").nextElementSibling).toBe(error);
+    // As in every settings row that uses the shared field error: straight
+    // after the control, inside the row that holds its label.
+    expect(minutes.nextElementSibling).toBe(error);
+    expect(error.parentElement).toBe(minutes.closest(".settings-row"));
+    expect(error.parentElement.querySelector("label").htmlFor).toBe("auto-rescan-minutes");
     expect(document.activeElement).toBe(minutes);
 
     minutes.value = "0";
@@ -101,7 +122,7 @@ describe("automatic rescan", () => {
     expect(field("auto-rescan-error").textContent).toBe(refused.message);
     field("auto-rescan-save").click();
     await flush();
-    expect(say).toHaveBeenCalledWith("Could not save automatic rescan: Network down", true);
+    expect(say).toHaveBeenCalledWith("Could not save automatic rescan: Network down", "error");
   });
 
   it("clears to the defaults when the session ends", async () => {

@@ -1,5 +1,6 @@
 // Shared-library similarity limit. Longer songs retain their selected audio
 // preparation; 0 permits model analysis at every length.
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 
 const MAX_ADVANCED_MINUTES = 600;
@@ -16,28 +17,12 @@ export function advancedLengthProblem(text) {
 // *isCurrent()* is false when the session has ended or the panel was cleared.
 export function installAdvancedLength({ document: doc, request, isCurrent = () => true }) {
   const input = doc.getElementById("advanced-length");
-  const help = doc.getElementById("advanced-length-help");
   const error = doc.getElementById("advanced-length-error");
   if (!input || !error) return null;
-  const helpId = help?.id || "";
   let loaded = 0;
 
-  function clearError() {
-    input.removeAttribute("aria-invalid");
-    if (helpId) input.setAttribute("aria-describedby", helpId);
-    else input.removeAttribute("aria-describedby");
-    error.textContent = "";
-    error.hidden = true;
-  }
-
-  // The message under the field, linked to it and read when focus moves there.
-  function showError(message) {
-    error.textContent = message;
-    error.hidden = false;
-    input.setAttribute("aria-invalid", "true");
-    input.setAttribute("aria-describedby", [error.id, helpId].filter(Boolean).join(" "));
-    input.focus();
-  }
+  const clearError = () => clearFieldError(input, error);
+  const showError = (message) => showFieldError(input, message, error);
 
   function show(value) {
     const minutes = Number(value?.minutes);

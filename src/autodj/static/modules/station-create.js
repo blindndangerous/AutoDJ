@@ -18,14 +18,15 @@
 // Switching moves focus to the Station button, which names the station.
 
 import {
-  captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, withDisabled,
+  captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, withDisabled, failureText,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 import { isOnAir, knownStations } from "./stations.js";
 import { installTableNavigation } from "./table-navigation.js";
+import { onCardOpen } from "./card-state.js";
 import { tableRow } from "./table-row.js";
-import { placeRows } from "./dom-helpers.js";
+import { applyServerFieldError, clearFieldError, placeRows, showFieldError } from "./dom-helpers.js";
 
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const NAME_MAX = 80;
@@ -124,8 +125,7 @@ export function installStationCreator({
   }
   let createdSlug = null;
   const navigation = installTableNavigation(list);
-  const say = (text, error = false) =>
-    announceStatus(status, text, { force: true, dwellMs: 6000, tone: error ? "error" : "info" });
+  const say = makeSay(status, { dwellMs: 6000 });
 
   function syncAutostart(row) {
     const box = row.children[3].querySelector("input");
@@ -162,14 +162,15 @@ export function installStationCreator({
     row.autostartSaving = pending;
     syncAutostart(row);
     try {
-      await request(`/api/stations/${encodeURIComponent(station.slug)}/autostart`, {
+      const buttons = row.autostartActions.querySelectorAll("button");
+      await withDisabled(buttons[0], () => request(`/api/stations/${encodeURIComponent(station.slug)}/autostart`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
-      });
+      }));
     } catch (errorValue) {
       if (isAuthenticatedRequestCurrent(epoch) && row.isConnected && row.station.slug === station.slug) {
-        say(`Could not save the Start with the server change for ${station.name}. ${errorValue?.message || ""}`.trim(), true);
+        say(failureText(`save the Start with the server change for ${station.name}.`, errorValue, ""), "error");
       }
       return;
     } finally {
@@ -200,7 +201,7 @@ export function installStationCreator({
       entry = await request(`/api/stations/${encodeURIComponent(station.slug)}/${stop ? "stop" : "start"}`,
         { method: "POST" });
     } catch (errorValue) {
-      say(`Could not ${stop ? "stop" : "start"} ${station.name}. ${errorValue?.message || ""}`.trim(), true);
+      say(failureText(`${stop ? "stop" : "start"} ${station.name}.`, errorValue, ""), "error");
       return;
     }
     const warnings = Array.isArray(entry?.warnings) ? entry.warnings.join(" ") : "";
@@ -324,36 +325,11 @@ export function installStationCreator({
     renderSources(all);
   }
 
-  function linkError(control, linked) {
-    const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
-      .filter((id) => id && id !== errorText.id);
-    if (linked) ids.unshift(errorText.id);
-    if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
-    else control.removeAttribute("aria-describedby");
-  }
-
-  function clearErrors() {
-    for (const id of Object.values(FIELD_IDS)) {
-      const control = get(id);
-      control.removeAttribute("aria-invalid");
-      linkError(control, false);
-    }
-    errorText.textContent = "";
-    errorText.hidden = true;
-  }
-
+  const fieldControls = Object.fromEntries(Object.entries(FIELD_IDS).map(([field, id]) => [field, get(id)]));
+  function clearErrors() { clearFieldError(Object.values(fieldControls), errorText); }
   function showError(field, message) {
     clearErrors();
-    errorText.textContent = message;
-    errorText.hidden = false;
-    const control = field ? get(FIELD_IDS[field]) : null;
-    if (control) {
-      control.setAttribute("aria-invalid", "true");
-      linkError(control, true);
-      control.focus();
-    } else {
-      announceStatus(status, message, { force: true, dwellMs: 6000, tone: "error" });
-    }
+    showFieldError(fieldControls[field], message, errorText, status);
   }
 
   function hideDone() {
@@ -401,8 +377,8 @@ export function installStationCreator({
         body: JSON.stringify(payload),
       });
     } catch (errorValue) {
-      const field = errorValue?.field in FIELD_IDS ? errorValue.field : null;
-      showError(field, `Could not create the station. ${errorValue?.message || ""}`.trim());
+      const message = failureText("create the station.", errorValue, "");
+      if (!applyServerFieldError({ field: errorValue?.field, message }, fieldControls, errorText, status)) showError(null, message);
       return;
     }
     reset();
@@ -413,15 +389,14 @@ export function installStationCreator({
     switchButton.textContent = `Switch to ${entry.name}`;
     done.hidden = false;
     switchButton.focus();
-    announceStatus(status, createdText(entry), { force: true, dwellMs: 6000 });
+    say(createdText(entry));
   }
 
   source.addEventListener("change", showCopies);
   for (const control of [nameInput, slugInput]) {
     control.addEventListener("input", () => {
       if (control.getAttribute("aria-invalid") !== "true") return;
-      control.removeAttribute("aria-invalid");
-      linkError(control, false);
+      clearFieldError(control, errorText);
     });
   }
   // A name typed with the ID still empty suggests an ID, once the name is left.
@@ -438,9 +413,7 @@ export function installStationCreator({
     const slug = createdSlug;
     if (slug && await onSwitch(slug)) hideDone();
   }));
-  panel.addEventListener("toggle", () => {
-    if (panel.open) render();
-  });
+  onCardOpen(panel, render);
   render();
   return { render };
 }

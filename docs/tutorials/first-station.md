@@ -87,7 +87,7 @@ registered folder, so this example does not depend on genre tags or advanced ana
 6. Check **Include subfolders** and leave **Operator** set to **is**.
 7. Leave the days, times, and dates under **When the songs may play** unset.
 8. Press **Check**. Confirm that the matching count includes your songs.
-9. Press **Save category**. Confirm that `Practice` appears in **Saved categories**.
+9. Press **Save category**. Confirm that `Practice` appears in the **Name** column of **Saved categories**.
 
 If the count is zero, check the selected library folder and wait for basic
 analysis to finish. Press **Check** again. Do not build the next stage around

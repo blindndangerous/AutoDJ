@@ -1,9 +1,9 @@
-import { createEditorDialog, showEditorError } from "./editor-dialog.js";
+import { createEditorDialog } from "./editor-dialog.js";
 // Library tools, Intro rules (#127): voice liners that play as the next song
 // starts when that song matches a rule's conditions (genre, decade, artist,
 // a Beets field, a folder or a category), each station's own.
 //
-// The list is plain text with Edit and Delete for each rule; Add and Edit
+// The collection has primary Edit and Delete in Options; Add and Edit
 // share one form, which reuses the clockwheel and category condition rows
 // (condition-editor.js).  A refused field is marked aria-invalid, its error
 // is shown under it and linked to it with aria-describedby, and it takes
@@ -11,16 +11,16 @@ import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 // said once in #intro-rules-status.
 //
 // Focus: Add and Edit move it to Label; Save to the saved rule's Edit
-// button, Cancel back to the button that opened the form, and Delete to the
-// next rule's Delete button (or Add intro rule).
-import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
+// cell, Cancel back to the opener cell, and Delete to the next rule's
+// Options cell (or Add intro rule).
+import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, failureText, withDisabled } from "./api-client.js";
 import { describeConditions } from "./clockwheel-step.js";
 import { createConditionRow, readConditionRows, renumberConditionRows, updateConditionCategories } from "./condition-editor.js";
-import { confirmAction } from "./confirm-dialog.js";
-import { focusAfterDialog, nextRowControl, reconcileRows, rowButton } from "./dom-helpers.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
+import { deleteCollectionItem } from "./collection-delete.js";
+import { focusAfterDialog, clearFieldError, showFieldError, applyServerFieldError } from "./dom-helpers.js";
+import { createCollectionTable } from "./collection-table.js";
 import { parsePointTime } from "./library-folders.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 
 const MAX_CONDITIONS = 32;
 const MAX_COOLDOWN = 7 * 24 * 60;
@@ -65,24 +65,6 @@ function ruleName(rule, index) {
   return rule.label || `Rule ${index + 1}`;
 }
 
-// One rule in words, for its list item.
-export function describeRule(rule, index, data = {}) {
-  const liners = new Map((data.liners || []).map((item) => [item.id, item.label]));
-  const conditions = describeConditions(rule.conditions || [], rule.match, data.sources || [], data.categories || []);
-  const clips = (rule.clip_ids || []).map((id) => liners.get(id) || "a liner that is no longer registered");
-  if (rule.filename_pattern) clips.push(`liners matching filename pattern "${rule.filename_pattern}" in ${rule.liner_folder || "the selected folder"}`);
-  else if (rule.liner_folder) clips.push(`any liner in ${rule.liner_folder}`);
-  const sentences = [
-    `${ruleName(rule, index)}: when the next song matches ${conditions}.`,
-    `Plays ${clips.length > 1 ? "one of " : ""}${clips.join(", ")}.`,
-    `${rule.chance ?? 100}% chance, ${waitWords(rule.cooldown_minutes)}, ${PRIORITY_WORDS[rule.priority] || PRIORITY_WORDS.after_artist}.`,
-  ];
-  if (rule.not_before && rule.not_after) sentences.push(`Plays from ${dayWords(rule.not_before)} until ${dayWords(rule.not_after)}.`);
-  else if (rule.not_before) sentences.push(`Plays from ${dayWords(rule.not_before)}.`);
-  else if (rule.not_after) sentences.push(`Plays until ${dayWords(rule.not_after)}.`);
-  return sentences.join(" ");
-}
-
 // The error for the form's values besides its conditions, as [field,
 // message], or null.  The server checks the same rules again and names the
 // field it refuses.
@@ -111,12 +93,10 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   const section = el("intro-rules");
   const form = el("intro-rules-form");
   const list = el("intro-rules-list");
-  const listNavigation = installActionListNavigation(list);
   const addButton = el("intro-rules-add");
   if (!panel || !section || !form || !list || !addButton) return NO_PANEL;
   const status = el("intro-rules-status");
   const problem = el("intro-rules-problem");
-  const empty = el("intro-rules-empty");
   const legend = el("intro-rules-form-legend");
   const conditionHost = el("intro-rules-conditions");
   const conditionAdd = el("intro-rules-condition-add");
@@ -141,6 +121,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   let editing = null; // the rule ID being edited, or null when adding
   let generation = 0;
   let testGeneration = 0;
+  let testController = null;
   let suspended = false;
   let conditionId = 0;
   let listSignature = "";
@@ -152,31 +133,19 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     save, onCancel: () => { closeForm(); say("Cancelled. Nothing was saved."); } });
 
   const current = (epoch, mine) => !suspended && mine === generation && isAuthenticatedRequestCurrent(epoch);
-  const say = (message, tone = "info") => announceStatus(editor.region(status), message, { force: true, tone });
+  const say = makeSay(() => editor.region(status));
   const indexOf = (id) => data.rules.findIndex((rule) => rule.id === id);
   const nameOf = (id) => ruleName(data.rules[indexOf(id)] || {}, indexOf(id));
   const linerBoxes = () => [...linerHost.querySelectorAll('input[type="checkbox"]')];
 
   // ---- Errors ----------------------------------------------------------
-  function link(control, error, linked) {
-    const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== error.id);
-    if (linked) ids.unshift(error.id);
-    if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
-    else control.removeAttribute("aria-describedby");
-  }
   function clearError(field) {
-    const control = marked.get(field);
-    if (control) {
-      control.removeAttribute("aria-invalid");
-      link(control, errors[field], false);
-      marked.delete(field);
-    }
-    errors[field].textContent = "";
-    errors[field].hidden = true;
+    clearFieldError(marked.get(field), errors[field]);
+    marked.delete(field);
   }
   function clearErrors() {
     for (const field of FIELDS) clearError(field);
-    for (const control of conditionHost.querySelectorAll("[aria-invalid]")) control.removeAttribute("aria-invalid");
+    for (const control of conditionHost.querySelectorAll("[aria-invalid]")) clearFieldError(control, errors.conditions);
   }
   // The control a field's error belongs to: for the liners the first
   // checkbox (or the folder when there is none), for the conditions the
@@ -188,47 +157,44 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     }
     return inputs[field];
   }
-  function showError(field, message) {
-    const control = ({ pattern: patternInput, "pattern-folder": patternFolder, "test-song": testQuery })[field] || controlFor(field);
+  function showError(field, message, target) {
+    const control = target || ({ pattern: patternInput, "pattern-folder": patternFolder, "test-song": testQuery })[field] || controlFor(field);
     if (!control) { say(message, "error"); return; }
     marked.set(field, control);
-    showEditorError(control, message, errors[field], editor.region(status));
+    showFieldError(control, message, errors[field], editor.region(status));
   }
 
-  // ---- The list --------------------------------------------------------
+  const collection = createCollectionTable({
+    host: list, label: "intro rules", keyOf: (rule) => rule.id, nameOf: ruleName,
+    columns: [
+      { key: "name", label: "Name", value: ruleName },
+      { key: "conditions", label: "Conditions", value: (rule) => describeConditions(rule.conditions || [], rule.match, data.sources, data.categories) },
+      { key: "clips", label: "Clips", value: (rule) => {
+        const liners = new Map(data.liners.map((item) => [item.id, item.label]));
+        const clips = (rule.clip_ids || []).map((id) => liners.get(id) || "a liner that is no longer registered");
+        if (rule.filename_pattern) clips.push(`Filename pattern "${rule.filename_pattern}" in ${rule.liner_folder || "the selected folder"}`);
+        else if (rule.liner_folder) clips.push(`Any liner in ${rule.liner_folder}`);
+        return `${clips.length > 1 ? "One of " : ""}${clips.join(", ")}`;
+      } },
+      { key: "playback", label: "Playback", value: (rule) => `${rule.chance ?? 100}% chance, ${waitWords(rule.cooldown_minutes)}, ${PRIORITY_WORDS[rule.priority] || PRIORITY_WORDS.after_artist}.` },
+      { key: "dates", label: "Dates", value: (rule) => rule.not_before && rule.not_after
+        ? `From ${dayWords(rule.not_before)} until ${dayWords(rule.not_after)}`
+        : rule.not_before ? `From ${dayWords(rule.not_before)}` : rule.not_after ? `Until ${dayWords(rule.not_after)}` : "Any date" },
+    ],
+    primary: (rule) => ({ id: "edit", label: "Edit", run: (button) => openForm(rule, button) }),
+    actions: (rule) => [{ id: "delete", label: "Delete", run: (button) => void remove(rule.id, button) }],
+    fallback: addButton, status, emptyText: "No intro rules yet.",
+  });
+
   function renderList() {
     const signature = JSON.stringify([data.rules, data.liners, data.sources, data.categories]);
     if (signature === listSignature) return;
     listSignature = signature;
-    reconcileRows(list, data.rules, (rule) => rule.id, () => {
-      const row = doc.createElement("li");
-      const text = doc.createElement("span");
-      text.className = "intro-text";
-      row.append(text, rowButton(doc, "Edit", "", (button) => {
-        const rule = data.rules.find((item) => item.id === button.dataset.rule);
-        if (rule) openForm(rule, button);
-      }), rowButton(doc, "Delete", "", (button) => void remove(button.dataset.rule, button)));
-      return row;
-    }, (row, rule, index) => {
-      const name = ruleName(rule, index);
-      const description = describeRule(rule, index, data);
-      if (row.firstElementChild.textContent !== description) row.firstElementChild.textContent = description;
-      const [edit, drop] = row.querySelectorAll("button");
-      for (const button of [edit, drop]) if (button.dataset.rule !== rule.id) button.dataset.rule = rule.id;
-      if (edit.dataset.action !== "edit") edit.dataset.action = "edit";
-      if (drop.dataset.action !== "delete") drop.dataset.action = "delete";
-      if (edit.getAttribute("aria-label") !== `Edit intro rule ${name}`) edit.setAttribute("aria-label", `Edit intro rule ${name}`);
-      if (drop.getAttribute("aria-label") !== `Delete intro rule ${name}`) drop.setAttribute("aria-label", `Delete intro rule ${name}`);
-    }, { fallback: addButton, onFocusLost: ({ target }) => {
-      if (!listFocusAnnouncementSuppressed) say(`The intro rule list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Add intro rule"}.`);
-    } });
-    listNavigation.refresh();
-    const emptyHidden = data.rules.length > 0;
-    if (empty.hidden !== emptyHidden) empty.hidden = emptyHidden;
+    collection.update(data.rules, { announceFocus: !listFocusAnnouncementSuppressed });
   }
 
   function rowControl(id, action = "edit") {
-    return [...list.querySelectorAll("button")].find((button) => button.dataset.rule === id && button.dataset.action === action) || null;
+    return collection.target(id, action === "delete" ? "options" : action);
   }
 
   function apply(value) {
@@ -357,8 +323,9 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   }
 
   function invalidateTest(clearSong = false) {
+    testController?.abort();
+    testController = null;
     testGeneration += 1;
-    el("intro-rules-test").disabled = false;
     testOutput.hidden = true;
     testOutput.replaceChildren();
     if (clearSong) {
@@ -407,53 +374,66 @@ export function installIntroRulesPanel({ document: doc = document, request = req
       }));
       say(answer.results?.length ? `${answer.results.length} songs found. Choose a song to test.` : `No songs match ${query}.`);
     } catch (error) {
-      if (current(epoch, mine) && testMine === testGeneration) say(`Could not search songs: ${error.message}`, "error");
+      if (current(epoch, mine) && testMine === testGeneration) say(failureText(`search songs`, error), "error");
     }
   }
 
   async function testPattern() {
     if (!testSelected.dataset.trackPath) { showError("test-song", "Search for and choose a song first."); return; }
     let conditions;
-    try { conditions = readForm(); } catch (error) { showError("conditions", error.message); return; }
+    try { conditions = readForm(); } catch (error) { showError("conditions", error.message, error.control); return; }
     clearError("test-song");
     invalidateTest();
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation, testMine = testGeneration;
-    const control = el("intro-rules-test"); control.disabled = true;
-    try {
-      const answer = await request(`/api/intros/rules/test?path=${encodeURIComponent(testSelected.dataset.trackPath)}`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ruleBody(conditions)),
-      });
-      if (!current(epoch, mine) || testMine !== testGeneration) return;
-      const matches = answer.matches || [];
-      const eligible = matches.filter((item) => item.eligible).length;
-      const missing = answer.missing_fields || [];
-      const expansion = doc.createElement("p");
-      expansion.textContent = answer.expanded_pattern == null ? "Pattern did not expand." : `Expanded pattern: ${answer.expanded_pattern}`;
-      const missingText = doc.createElement("p");
-      missingText.textContent = missing.length ? `Missing song fields: ${missing.join(", ")}.` : "No song fields are missing.";
-      const linerList = doc.createElement("ul");
-      linerList.setAttribute("aria-label", "Filename pattern test results");
-      if (!matches.length) {
-        const none = doc.createElement("li"); none.textContent = "No matching liners."; linerList.append(none);
-      } else {
-        for (const item of matches) {
-          const row = doc.createElement("li");
-          row.textContent = `${item.label}: ${item.eligible ? "eligible" : item.reason || "not eligible"}`;
-          linerList.append(row);
+    const control = el("intro-rules-test");
+    testController = new AbortController();
+    const signal = testController.signal;
+    await withDisabled(control, async () => {
+      try {
+        const answer = await request(`/api/intros/rules/test?path=${encodeURIComponent(testSelected.dataset.trackPath)}`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ruleBody(conditions)),
+        });
+        if (!current(epoch, mine) || testMine !== testGeneration) return;
+        const matches = answer.matches || [];
+        const eligible = matches.filter((item) => item.eligible).length;
+        const missing = answer.missing_fields || [];
+        const expansion = doc.createElement("p");
+        expansion.textContent = answer.expanded_pattern == null ? "Pattern did not expand." : `Expanded pattern: ${answer.expanded_pattern}`;
+        const missingText = doc.createElement("p");
+        missingText.textContent = missing.length ? `Missing song fields: ${missing.join(", ")}.` : "No song fields are missing.";
+        const linerList = doc.createElement("ul");
+        linerList.setAttribute("aria-label", "Filename pattern test results");
+        if (!matches.length) {
+          const none = doc.createElement("li"); none.textContent = "No matching liners."; linerList.append(none);
+        } else {
+          for (const item of matches) {
+            const row = doc.createElement("li");
+            row.textContent = `${item.label}: ${item.eligible ? "eligible" : item.reason || "not eligible"}`;
+            linerList.append(row);
+          }
         }
+        const note = doc.createElement("p"); note.textContent = answer.note || "";
+        testOutput.replaceChildren(expansion, missingText, linerList, note);
+        testOutput.hidden = false;
+        say(`Pattern test complete: ${eligible} eligible, ${matches.length - eligible} excluded; ${missing.length} missing song fields.`);
+      } catch (error) {
+        if (!current(epoch, mine) || testMine !== testGeneration) return;
+        const field = error.field === "filename_pattern" ? "pattern"
+          : error.field === "liner_folder" ? (selectionMode.value === "pattern" ? "pattern-folder" : "folder")
+            : error.field === "path" ? "test-song" : SERVER_FIELDS[error.field];
+        showServerError(error, field, "test the pattern");
       }
-      const note = doc.createElement("p"); note.textContent = answer.note || "";
-      testOutput.replaceChildren(expansion, missingText, linerList, note);
-      testOutput.hidden = false;
-      say(`Pattern test complete: ${eligible} eligible, ${matches.length - eligible} excluded; ${missing.length} missing song fields.`);
-    } catch (error) {
-      if (!current(epoch, mine) || testMine !== testGeneration) return;
-      const field = error.field === "filename_pattern" ? "pattern"
-        : error.field === "liner_folder" ? (selectionMode.value === "pattern" ? "pattern-folder" : "folder")
-          : error.field === "path" ? "test-song" : SERVER_FIELDS[error.field];
-      if (field) showError(field, error.message);
-      else say(`Could not test the pattern: ${error.message}`, "error");
-    } finally { if (testMine === testGeneration) control.disabled = false; }
+    }, { signal });
+  }
+
+  // A refusal goes on the field the server names.  One the form cannot
+  // place there is said in the status, so it is never dropped.
+  function showServerError(error, field, action) {
+    const control = field
+      && (({ pattern: patternInput, "pattern-folder": patternFolder, "test-song": testQuery })[field] || controlFor(field));
+    if (control && applyServerFieldError(error, { [error.field]: control }, errors[field], editor.region(status))) {
+      marked.set(field, control);
+    } else say(failureText(action, error), "error");
   }
 
   function closeForm() {
@@ -485,7 +465,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     clearErrors();
     let conditions;
     try { conditions = readForm(); }
-    catch (error) { showError("conditions", error.message); return; }
+    catch (error) { showError("conditions", error.message, error.control); return; }
     const patternMode = selectionMode.value === "pattern";
     const values = {
       clipIds: linerBoxes().filter((box) => box.checked).map((box) => box.value),
@@ -524,18 +504,17 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     } catch (error) {
       if (!current(epoch, mine) || !active()) return;
       const field = error.field === "liner_folder" && patternMode ? "pattern-folder" : SERVER_FIELDS[error.field];
-      if (field) showError(field, error.message);
-      else say(`Could not save the intro rule: ${error.message}`, "error");
+      showServerError(error, field, "save the intro rule");
     }
   }
 
   async function remove(id, button) {
-    const index = [...list.querySelectorAll("button[data-action='delete']")].indexOf(button);
+    const index = indexOf(id);
     const name = nameOf(id);
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     let result = null;
     let tone = "info";
-    const confirmed = await confirmAction(doc, {
+    const confirmed = await deleteCollectionItem(doc, {
       title: `Delete intro rule ${name}?`,
       message: "Its voice liners stay in the library.",
       confirmLabel: "Delete intro rule",
@@ -544,16 +523,16 @@ export function installIntroRulesPanel({ document: doc = document, request = req
           await request(`/api/intros/rules/${encodeURIComponent(id)}`, { method: "DELETE" });
         } catch (error) {
           if (!current(epoch, mine)) return null;
-          result = `Could not delete intro rule ${name}: ${error.message}`;
+          result = failureText(`delete intro rule ${name}`, error);
           tone = "error";
-          return button;
+          return button.closest("td");
         }
         if (!current(epoch, mine)) return null;
         if (editing === id) closeForm();
         result = `Deleted intro rule ${name}.`;
         listFocusAnnouncementSuppressed = true;
         try { await refresh().catch(() => {}); } finally { listFocusAnnouncementSuppressed = false; }
-        return nextRowControl(list, "button[data-action='delete']", Math.max(0, index), addButton);
+        return rowControl(data.rules[Math.min(index, data.rules.length - 1)]?.id, "delete") || addButton;
       },
     });
     if (confirmed && result && current(epoch, mine)) say(result, tone);
@@ -569,7 +548,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
 
   function load() {
     if (suspended || panel.hidden || doc.hidden) return;
-    refresh().catch((error) => say(`Could not load the intro rules: ${error.message}`, "error"));
+    refresh().catch((error) => say(failureText(`load the intro rules`, error), "error"));
   }
 
   selectionMode.addEventListener("change", () => { invalidateTest(); updateSelectionMode(); });
@@ -635,6 +614,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     destroy() {
       suspended = true;
       clear();
+      editor.destroy();
       window.removeEventListener("hashchange", load);
       doc.removeEventListener("visibilitychange", load);
     },

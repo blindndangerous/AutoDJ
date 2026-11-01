@@ -72,7 +72,7 @@ such as a promotion that must stop after the event. Both days are included, and 
 read in the station time zone (`station.timezone in the station definition`). Leave both empty to play the clip
 on any day.
 
-- **Voice liners:** in **Settings > Voice liners**, press **Play dates** on a liner.
+- **Voice liners:** in **Settings > Voice liners**, press **Play dates** on a liner to open its editor. Save returns to that row's Play dates cell; Cancel or Escape asks before discarding changed dates. The row's **Options** menu contains **Track info** and **Delete**.
   Outside its dates, automatic liners (in the browser and on the server), clockwheel liner steps
   and scheduled liner events skip it, and a scheduled event's run says why in Recent runs. The
   liner list says the dates in words, such as "Plays until 26 December 2026", and adds "Skipped

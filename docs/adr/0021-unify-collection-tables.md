@@ -285,18 +285,43 @@ documentation checks separately from Vitest, browser keyboard/axe audits and
 screen-reader sampling. Test selectors below identify evidence to execute, not
 claims that it passed.
 
+## Batch 3 implementation and shared page helpers, 2026-10-31
+
+Categories and intro rules retain their shared editors and move to data-column
+collections with primary Edit and Delete in Options. Matched song and artist
+intros use primary Listen, Remove in Options, and Add intro opens the shared
+editor on Audio file. Selection checkboxes remain native form controls.
+
+Spots and ad breaks use primary Edit; Options contains Delete, plus Run now for
+breaks. Existing booking restrictions and scheduling remain authoritative. Ad
+report totals and spot entries use read-only shared tables, with native column
+headers and one cell Tab stop each; the old focusable report wrappers are removed.
+
+Liners use primary Play dates and Options for Track info and Delete. Profiles
+use primary Activate, with Reset and Delete in Options. Devices use primary
+Rename in the shared editor; Options contains Revoke access, or Forget for
+trusted-proxy browser registrations. Activation, reset, date selection and access
+revocation keep their existing confirmation and session behavior.
+
+The companion consolidation reuses field errors, busy presentation, announcements,
+failure text, standalone settings saves and card-open refresh throughout the web
+app. CONTRIBUTING specifies each helper. ADR 22 owns browser mapping of public
+field refusals and stale request wording; ADR 11 owns speech/busy presentation;
+ADR 17 retains the boundary between settings drafts, standalone saves and record
+editors. No endpoint, storage ownership or dependency changes are introduced.
+
 ## Current contracts
 
 | ID | Constraint | Method | Evidence |
 | --- | --- | --- | --- |
 | `ADR-0021-01` | Shared tables retain keyed rows and focus during data updates. | automated | `tests/jsmodules/collection-table.test.js::preserves keyed rows and focus while updating data` |
-| `ADR-0021-02` | Empty collections contain one no-results row spanning every column. | automated | `tests/jsmodules/collection-table.test.js::renders one empty row across all columns` |
-| `ADR-0021-03` | Removing a focused row selects a usable fallback and announces its destination through the shared status helper. | automated | `tests/jsmodules/collection-table.test.js::moves focus after removal and announces the new target` |
+| `ADR-0021-02` | Newly created and empty collections contain one no-results row spanning every column, including before the first asynchronous load. | automated | `tests/jsmodules/collection-table.test.js::renders one empty row across all columns`, `tests/jsmodules/collection-table.test.js::starts with a spanning empty row before the first asynchronous load` |
+| `ADR-0021-03` | Removing a focused row selects a usable fallback and announces its destination through the shared status helper. | automated | `tests/jsmodules/collection-table.test.js::moves focus after removal and announces the new target`, `tests/jsmodules/collection-table.test.js::names a labelled fallback field when the last focused row disappears` |
 | `ADR-0021-04` | Menus implement the menu-button keys, retain disabled choices and explain disabled activation. | automated | `tests/jsmodules/row-actions-menu.test.js::supports menu keys and disabled reasons` |
 | `ADR-0021-05` | Removal requires confirmation unless Undo is available. | automated | `tests/jsmodules/collection-delete.test.js::confirms removal unless undo is available` |
 | `ADR-0021-06` | Schedule events use data columns and one primary action in the shared table. | automated | `tests/jsmodules/scheduler-panel.test.js::uses shared collection tables with event columns and one primary action` |
 | `ADR-0021-07` | Table/menu/dialog interaction and visual accessibility require browser and speech evidence. | manual | Follow docs/accessibility-testing.md Collection tables in both themes; record revision, browser, screen reader, keyboard focus, speech method, axe results and remaining limits. Include one Tab stop, menu open/navigation/activation/close, disabled reasons, editor return, refresh/removal focus, clockwheel Undo and collection/menu button targets at least 24 CSS pixels wide and 44 CSS pixels high. |
-| `ADR-0021-08` | All non-exempt collection screens converge on this pattern. | gap | Schedule, Clockwheels and Batch 2 collections are migrated. Administrative/library collections in later batches remain unverified against the shared contract. |
+| `ADR-0021-08` | All non-exempt collection screens converge on this pattern. | gap | Schedule, Clockwheels and Batch 2/3 collections are migrated. Batch 4 administrative/library collections remain unverified against the shared contract. |
 | `ADR-0021-09` | Saved Clockwheels and their steps use shared data columns and row menus without row headers. | automated | `tests/jsmodules/clockwheel-panel.test.js::uses shared collection columns and row menus without row headers` |
 | `ADR-0021-10` | Saved shows, songs and search results share tables, primary actions, menus and modal metadata editing. | automated | `tests/jsmodules/shows-panel.test.js::uses shared show, song and search tables with one primary action` |
 | `ADR-0021-11` | Prepared occurrences and takes share tables while reattachment uses the modal editor and pending saves guard removal. | automated | `tests/jsmodules/prepared-editions.test.js::uses shared occurrence and take tables with dialog reattachment`, `tests/jsmodules/prepared-editions.test.js::does not remove a take while an edition save is pending` |
@@ -315,3 +340,10 @@ claims that it passed.
 | `ADR-0021-24` | Action return focus resolves its owning cell without selecting a sibling native control. | automated | `tests/jsmodules/table-navigation.test.js::returns actions to their cell without selecting a sibling native control` |
 | `ADR-0021-25` | Opening an editor focuses its requested field once without an intermediate field. | automated | `tests/jsmodules/editor-dialog.test.js::lets native opening focus the requested field once without an intermediate field` |
 | `ADR-0021-26` | The selected main tab remains the sole tab-strip Tab stop after selection and refresh. | automated | `tests/jsmodules/tabs.test.js::keeps Settings as the sole main tab stop after selection and refresh` |
+| `ADR-0021-27` | Categories and intro rules use keyed collection cells, one primary Edit and Delete in Options. | automated | `tests/jsmodules/categories-panel.test.js::uses a named collection grid with one primary action and a Delete menu` |
+| `ADR-0021-28` | Matched intros use collection cells and a shared Add editor with direct initial focus. | automated | `tests/jsmodules/matched-intros.test.js::uses collection cells and opens Add intro directly on Audio file` |
+| `ADR-0021-29` | Ads preserve keyed rows and Options-cell focus when deletion is cancelled. | automated | `tests/jsmodules/ads-panel.test.js::preserves keyed ad rows and focus through refresh and returns cancelled delete to Options` |
+| `ADR-0021-30` | Ad reports use read-only shared tables with native column headers and one announcement. | automated | `tests/jsmodules/ads-panel.test.js::shows the report as tables with headers and says its totals once` |
+| `ADR-0021-31` | Liners keep separate availability and date data with Options-cell return focus. | automated | `tests/jsmodules/asset-collections.test.js::keeps liner rows keyed with separate dates and availability cells and Options return focus` |
+| `ADR-0021-32` | Profiles expose active state separately and retain reset and deletion in Options. | automated | `tests/jsmodules/asset-collections.test.js::shows profile active state in its own cell and keeps reset and deletion in Options` |
+| `ADR-0021-33` | Devices expose data columns, primary Rename and a revocation menu. | automated | `tests/jsmodules/asset-collections.test.js::shows paired device data in columns with Rename and a revocation menu` |

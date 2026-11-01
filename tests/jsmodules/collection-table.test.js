@@ -21,6 +21,45 @@ function mount(extra = {}) {
   });
 }
 describe("collection tables", () => {
+  // ADR-0021-02
+  it("starts with a spanning empty row before the first asynchronous load", () => {
+    const grid = mount({ emptyText: "No items loaded." });
+    const empty = grid.body.querySelector(".no-results");
+    expect(empty).not.toBeNull();
+    expect(empty.colSpan).toBe(4);
+    expect(empty.textContent).toBe("No items loaded.");
+    expect(grid.table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    grid.update([{ id: "a", name: "Ready", count: 1 }]);
+    expect(grid.body.querySelector(".no-results")).toBeNull();
+    expect(grid.body.querySelectorAll("tr[data-row-key]")).toHaveLength(1);
+  });
+
+  // ADR-0021-03
+  it("names a labelled fallback field when the last focused row disappears", async () => {
+    const label = document.createElement("label"); label.htmlFor = "profile"; label.textContent = "Profile name";
+    const input = document.createElement("input"); input.id = "profile";
+    host.after(label, input);
+    const grid = mount({ fallback: input });
+    grid.update([{ id: "a", name: "Morning" }]);
+    grid.target("a", "options").focus();
+    grid.update([]);
+    expect(document.activeElement).toBe(input);
+    await vi.waitFor(() => expect(status.textContent).toBe("The Examples list changed. Focus moved to Profile name."));
+  });
+
+  it("preserves a primary toggle's pressed state across keyed updates", () => {
+    const grid = mount({ primary: (item) => ({ id: "listen", label: "Listen", ariaPressed: item.playing, run() {} }) });
+    grid.update([{ id: "a", name: "Intro", playing: false }]);
+    const button = grid.target("a").querySelector("button");
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    grid.target("a").focus();
+    grid.update([{ id: "a", name: "Intro", playing: true }]);
+    expect(grid.target("a").querySelector("button")).toBe(button);
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(document.activeElement).toBe(button.parentElement);
+    grid.update([{ id: "a", name: "Intro" }]);
+    expect(button.hasAttribute("aria-pressed")).toBe(false);
+  });
   // ADR-0021-23
   it("refreshes the focused row context after keyed data changes", () => {
     const grid = mount();

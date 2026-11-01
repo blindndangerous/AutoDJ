@@ -345,7 +345,9 @@ describe("cart editor", () => {
     byId("cart-save").click();
     expect(clip.getAttribute("aria-invalid")).toBe("true");
     expect(document.activeElement).toBe(clip);
-    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe("Choose a clip, or upload one first."));
+    expect(byId("cart-edit-error").textContent).toBe("Choose a clip, or upload one first.");
+    expect(byId("cart-edit-error").hidden).toBe(false);
+    expect(clip.getAttribute("aria-describedby")).toContain("cart-edit-error");
     expect(server.calls.some((call) => call.method === "PUT")).toBe(false);
   });
 
@@ -400,10 +402,12 @@ describe("cart editor", () => {
     const message = "Do not play after must be on or after the Not before date.";
     expect(document.activeElement).toBe(until);
     expect(until.getAttribute("aria-invalid")).toBe("true");
-    expect(until.getAttribute("aria-describedby")).toBe("cart-dates-desc cart-edit-error");
+    expect(until.getAttribute("aria-describedby")).toBe("cart-edit-error cart-dates-desc");
     expect(byId("cart-edit-error").textContent).toBe(message);
     expect(byId("cart-edit-error").hidden).toBe(false);
-    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe(message));
+    // Focus moved to the field, which reads its error: the status stays silent.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(byId("cart-status").textContent).toBe("");
     until.value = "2026-12-31";
     until.dispatchEvent(new Event("input"));
     expect(until.getAttribute("aria-describedby")).toBe("cart-dates-desc");
@@ -429,8 +433,9 @@ describe("cart editor", () => {
     await vi.waitFor(() => expect(byId("cart-edit-error").textContent).toBe(message));
     expect(document.activeElement).toBe(until);
     expect(until.getAttribute("aria-invalid")).toBe("true");
-    expect(until.getAttribute("aria-describedby")).toBe("cart-dates-desc cart-edit-error");
-    expect(byId("cart-status").textContent).toBe(message);
+    expect(until.getAttribute("aria-describedby")).toBe("cart-edit-error cart-dates-desc");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(byId("cart-status").textContent).toBe("");
   });
 
   it("says a cart has expired when the station's day changes, without moving focus", async () => {

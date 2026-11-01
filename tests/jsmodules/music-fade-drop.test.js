@@ -104,6 +104,6 @@ describe("music fade drop setting", () => {
     field("music-fade-drop-save").click();
     await flush();
     expect(field("music-fade-drop").value).toBe("12");
-    expect(say).toHaveBeenLastCalledWith("Could not save the fade detection threshold: Offline", true);
+    expect(say).toHaveBeenLastCalledWith("Could not save the fade detection threshold: Offline", "error");
   });
 });

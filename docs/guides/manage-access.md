@@ -11,7 +11,8 @@ local configuration, outside issues and station archives. Follow the
 In `server.auth_mode = "trusted_proxy"`, SSO replaces pairing. Follow the
 [trusted-proxy setup](operations/network.md#single-sign-on-through-a-trusted-proxy).
 Revoke access at the identity provider. **Your browsers** lets each user list,
-rename or forget their own records; forgetting does not revoke access. The
+rename or forget their own records. Choose **Forget** from the browser's **Options** menu;
+forgetting does not revoke access. The
 `devices` CLI commands below apply only to native mode and refuse SSO mode.
 
 A paired browser controls every station and can pair more browsers. Pair only
@@ -21,8 +22,9 @@ does not grant control.
 1. In **Settings, Global, Server**, find **Browser access** and choose
    **Show pairing code**. Enter the short-lived, single-use code on the new
    browser's pairing page; confirm its name appears in the device list.
-2. Use **Rename** for recognizable device names. Choose **Revoke** on a lost or
-   untrusted device's row; it loses access without a restart.
+2. Use **Rename** for recognizable device names. For a lost or untrusted device,
+   open **Options for <device name>** and choose **Revoke access**. Confirm to end
+   its access without a restart.
    **Sign out this browser** ends the current session.
 3. If no browser remains, use the server terminal. Replace `./autodj` with
    `.\autodj.cmd` in PowerShell. Put the same `--config PATH` before `devices`

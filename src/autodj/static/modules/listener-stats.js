@@ -10,10 +10,10 @@
 //     region; failures with the error tone.
 //   - Download keeps focus on its button.
 
-import { requestFile, requestJson } from "./api-client.js";
+import { failureText, requestFile, requestJson } from "./api-client.js";
 import { fmtTime } from "./dom-helpers.js";
 import { saveFile } from "./history-export.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 
 const SPANS = { 7: "the last 7 days", 30: "the last 30 days", 90: "the last 90 days" };
@@ -121,9 +121,7 @@ export function installListenerStats({
   let loaded = false;
   let sequence = 0;
 
-  function say(text, tone = "info") {
-    announceStatus(settingsStatus, text, { dwellMs: 5000, force: true, tone });
-  }
+  const say = makeSay(settingsStatus, { dwellMs: 5000 });
 
   function render(stats) {
     summary.textContent = summaryText(stats, locale);
@@ -181,7 +179,7 @@ export function installListenerStats({
       return true;
     } catch (err) {
       if (!active || mine !== sequence || err?.name === "AuthenticationRequiredError") return false;
-      say(`Could not load listener statistics: ${err.message}`, "error");
+      say(failureText("load listener statistics", err), "error");
       return false;
     }
   }
@@ -225,7 +223,7 @@ export function installListenerStats({
       save(doc, blob, match ? match[1] : "autodj-listeners.csv");
       say("Listener statistics downloaded.");
     } catch (err) {
-      say(`Could not download listener statistics: ${err.message}`, "error");
+      say(failureText("download listener statistics", err), "error");
     }
   });
 

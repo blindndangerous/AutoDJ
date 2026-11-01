@@ -20,6 +20,19 @@ const staticPath = (...parts) => join(
 const cssSource = readFileSync(staticPath("app.css"), "utf8");
 const htmlSource = readFileSync(staticPath("index.html"), "utf8");
 const appSource = readFileSync(staticPath("app.js"), "utf8");
+
+it("uses the shared polite atomic status-region markup throughout the page", () => {
+  const page = document.createElement("template");
+  page.innerHTML = htmlSource;
+  const regions = [...page.content.querySelectorAll('[role="status"], [aria-live="polite"]')];
+  expect(regions.length).toBeGreaterThan(10);
+  for (const region of regions) {
+    expect(region.getAttribute("role"), region.id).toBe("status");
+    expect(region.getAttribute("aria-live"), region.id).toBe("polite");
+    expect(region.getAttribute("aria-atomic"), region.id).toBe("true");
+  }
+});
+
 const tokensByTheme = new Map(THEMES.map((theme) => [theme, themeTokens(cssSource, theme)]));
 const token = (theme, name) => tokensByTheme.get(theme).get(name);
 
@@ -1008,15 +1021,17 @@ function focusOutlinesMeetContract({ extraCss = "", only = null, theme = "dark" 
 function libraryLogOwnershipIsScoped(html = htmlSource) {
   installDocument({ html });
   const status = document.querySelector("#lib-job-status");
-  // Folder browsing has its own announcement; scope this check to the job card.
+  // Folder browsing owns its section's announcements, separate from jobs.
   const panel = status.closest("details");
+  const folders = document.getElementById("source-folders-status")?.closest("section");
   const log = document.querySelector("#library-log");
-  const liveOwners = new Set(panel.querySelectorAll([
+  const liveOwners = new Set([...panel.querySelectorAll([
     '[aria-live]:not([aria-live="off"])',
     '[role="status"]',
     '[role="log"]',
-  ].join(", ")));
-  return status?.getAttribute("aria-live") === "polite"
+  ].join(", "))].filter((node) => !folders?.contains(node)));
+  return status?.getAttribute("role") === "status"
+    && status.getAttribute("aria-live") === "polite"
     && status.getAttribute("aria-atomic") === "true"
     && status.textContent.trim() !== ""
     && liveOwners.size === 1
@@ -1844,12 +1859,16 @@ describe("static accessibility contracts", () => {
   it("keeps durable playback evidence separate from scoped announcements", () => {
     expect(libraryLogOwnershipIsScoped()).toBe(true);
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
-      ' id="lib-job-status" aria-live="polite"',
-      ' id="lib-job-status"',
+      /(<p id="lib-job-status"[^>]*?) role="status"/,
+      '$1',
     ))).toBe(false);
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
-      ' aria-atomic="true">Idle.</p>',
-      '>Idle.</p>',
+      /(<p id="lib-job-status"[^>]*?) aria-live="polite"/,
+      '$1',
+    ))).toBe(false);
+    expect(libraryLogOwnershipIsScoped(htmlSource.replace(
+      /(<p id="lib-job-status"[^>]*?) aria-atomic="true"/,
+      '$1',
     ))).toBe(false);
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
       '>Idle.</p>',
@@ -2972,17 +2991,17 @@ describe("static accessibility contracts", () => {
     expect(height).toBeTruthy();
   });
 
-  it("gives Track info's matched intros labelled native fields, named lists and one status", () => {
+  it("gives Track info's matched intros labelled native fields, named collection hosts and one status", () => {
     installDocument({ html: htmlSource });
     const section = document.querySelector("#panel-track-info #intros-editor");
     expect(section.hidden).toBe(true);
     // A collapsible card, its heading in the summary as on Now Playing (#297).
     expect(section.querySelector(":scope > summary > h3").id).toBe("intros-heading");
     expect(document.getElementById("intros-heading").tagName).toBe("H3");
-    // Two lists, each named by its own heading, and still lists in Safari.
+    // Two collection hosts, each named by its own heading.
     for (const kind of ["song", "artist"]) {
       const list = document.getElementById(`intros-${kind}-list`);
-      expect(list.getAttribute("role")).toBe("list");
+      expect(list.tagName).toBe("DIV");
       const heading = document.getElementById(list.getAttribute("aria-labelledby"));
       expect(heading.tagName).toBe("H4");
       expect(list.closest("[aria-live], [role=status]")).toBeNull();
@@ -3111,7 +3130,7 @@ describe("static accessibility contracts", () => {
     const section = document.querySelector("#panel-library #intro-rules");
     expect(section.querySelector(":scope > summary > h2").id).toBe("intro-rules-heading");
     const list = document.getElementById("intro-rules-list");
-    expect(list.getAttribute("role")).toBe("list");
+    expect(list.tagName).toBe("DIV");
     expect(document.getElementById(list.getAttribute("aria-labelledby")).tagName).toBe("H3");
     expect(list.closest("[aria-live], [role=status]")).toBeNull();
     const form = section.querySelector("form#intro-rules-form");
@@ -3466,7 +3485,7 @@ describe("static accessibility contracts", () => {
     }
   });
 
-  it("gives the Ads tab labelled forms, one polite status and report tables with headers", () => {
+  it("gives the Ads tab labelled forms, one polite status and report tables with headers", async () => {
     installDocument({ html: htmlSource });
     const panel = document.getElementById("panel-ads");
     expect(panel.getAttribute("role")).toBe("tabpanel");
@@ -3496,20 +3515,26 @@ describe("static accessibility contracts", () => {
       expect(error.classList.contains("field-error"), id).toBe(true);
       expect(error.hidden, id).toBe(true);
     }
-    for (const id of ["ads-spots", "ads-breaks"]) {
-      expect(document.getElementById(id).getAttribute("role"), id).toBe("list");
+    // The shared runtime creates labelled collection grids inside these hosts.
+    const { installAdsPanel } = await import("../../src/autodj/static/modules/ads-panel.js");
+    installAdsPanel({ doc: document, request: async () => ({}) });
+    for (const [id, label] of [["ads-spots", "Spots"], ["ads-breaks", "Ad breaks"]]) {
+      const host = document.getElementById(id);
+      expect(host.tagName, id).toBe("DIV");
+      expect(host.querySelector("table").getAttribute("role"), id).toBe("grid");
+      expect(host.querySelector("table").getAttribute("aria-label"), id).toBe(label);
     }
-    // The report: tables with captions and column headers, each in a named
-    // region that takes focus, so a narrow window scrolls it by keyboard.
-    for (const [wrapId, tableId, columns] of [
-      ["ads-totals-wrap", "ads-totals-table", ["Advertiser", "Campaign", "Aired", "Aired late", "Missed", "May have aired", "Waiting", "Seconds aired"]],
-      ["ads-rows-wrap", "ads-rows-table", ["Break time", "Aired", "Result", "Spot", "Break", "Reason"]],
+    // Read-only reports use the same labelled table and column headers.
+    for (const [wrapId, hostId, label, columns] of [
+      ["ads-totals-wrap", "ads-totals", "Totals by advertiser and campaign", ["Advertiser", "Campaign", "Aired", "Aired late", "Missed", "May have aired", "Waiting", "Seconds aired"]],
+      ["ads-rows-wrap", "ads-rows", "Every spot", ["Break time", "Aired", "Result", "Spot", "Break", "Reason"]],
     ]) {
       const wrap = document.getElementById(wrapId);
-      const table = document.getElementById(tableId);
-      expect(wrap.getAttribute("role")).toBe("region");
-      expect(wrap.getAttribute("tabindex")).toBe("0");
-      expect(wrap.getAttribute("aria-labelledby")).toBe(table.querySelector("caption").id);
+      const table = document.querySelector(`#${hostId} table`);
+      expect(wrap.hidden).toBe(true);
+      expect(table.getAttribute("role")).toBe("grid");
+      expect(table.getAttribute("aria-label")).toBe(label);
+      expect(table.parentElement.classList.contains("data-table-scroll")).toBe(true);
       const headers = [...table.querySelectorAll("thead th")];
       expect(headers.map((th) => th.textContent)).toEqual(columns);
       expect(headers.every((th) => th.getAttribute("scope") === "col")).toBe(true);

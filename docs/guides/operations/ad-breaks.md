@@ -47,8 +47,8 @@ Choose **Add spot** and give:
 - **Airs**: clear it to keep the spot without airing it.
 
 **Edit** changes everything but the audio; to replace the audio, add a new spot and delete the old
-one. **Delete** asks first and removes the spot and its audio; a spot booked for a coming song
-change is kept until it has aired. What a spot aired stays in the report after it is deleted.
+one. Choose **Delete** from **Options for spot <title>, <advertiser>** and confirm to remove
+the spot and its audio. A booked spot's Delete action explains that it must air first. What a spot aired stays in the report after it is deleted.
 
 ## Ad breaks and when they run
 
@@ -65,7 +65,9 @@ a date range. Choose **Hard** timing for it: an ad break never fades a song out,
 it is booked at its time, where Soft first waits for the playing song to end. The hour preview
 shows each run as a fixed point to time to.
 
-**Run now** books a break at the next song change it can join, which is handy for a test.
+Choose **Run now** from **Options for ad break <name>** to book the next song change the
+break can join. An unavailable action explains its restriction when activated.
+The same menu contains confirmed **Delete**. **Edit** remains the row's primary action.
 
 ## Ad breaks in a clockwheel
 
@@ -130,8 +132,9 @@ and **Show report**. The summary is said once; below it are two tables with colu
 **Totals by advertiser and campaign** (aired, aired late, missed, may have aired, waiting and
 seconds aired) and
 **Every spot** (the break's time, when it aired, the result, the spot, the break and the reason).
-Each table sits in a region that takes focus, so on a narrow window it scrolls sideways with the
-arrow keys. The page lists the first 1000 spots; **Export report** saves them all as CSV:
+Each report table has one Tab stop. Use arrows to move between its data cells; the focused
+cell scrolls into view on narrow windows. Empty reports show one row spanning all columns.
+The report tables have no Options menus. The page lists the first 1000 spots; **Export report** saves them all as CSV:
 **Every spot** for an affidavit, or the **Totals**. The play log export (History, and `autodj
 export-plays`) also lists the spots that aired, as `kind` `ad`, with the advertiser as the artist
 and the campaign as the album; the SoundExchange report leaves them out.

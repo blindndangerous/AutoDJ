@@ -15,13 +15,14 @@ otherwise Track info says why and they do not play.
 ## Adding one
 
 Open **Track info** for the song (from Now Playing, History, or the lists in Queue & Search) and
-go to **Matched intros**, below the cue points. It lists the intros **For this song** and **For
-any song by** the song's artist, each with how often it plays, its play dates and how many seconds
-of speech it holds, and a **Listen** and a **Remove** button. Listen plays the clip on the Preview
+go to **Matched intros**, below the cue points. The **For this song** and **For any song by**
+tables show each intro's name, playback rules, dates, availability, and speech length.
+Use **Listen** in its action cell, or choose **Remove** from **Options for <name>**.
+Listen plays the clip on the Preview
 output device when one is chosen in Settings, Global, Browser preferences, and is pressed until the clip ends or you
 press it again. Remove asks first and deletes the clip.
 
-Under **Add an intro**:
+Press **Add intro** to open the editor at **Audio file**:
 
 - **Audio file**: MP3, WAV, Ogg, M4A, FLAC or AAC, at most `station.liner_upload_max_mib` (the
   liner upload limit) and one minute long. AutoDJ trims the silence before and after the voice.
@@ -36,7 +37,9 @@ Under **Add an intro**:
   as for liners (see [Liner and cart play dates](carts-and-liners.md#liner-and-cart-play-dates)).
 
 Choose **Upload intro**. A field the page or the server refuses is marked, its error is shown under
-it and it takes focus; any other result is said once.
+it and it takes focus; any other result is said once. A successful upload closes the editor
+and focuses the saved intro's Listen cell. **Cancel** or Escape returns to **Add intro** and
+asks before discarding a changed draft.
 
 ## How one is chosen and placed
 
@@ -75,8 +78,9 @@ hour preview lists an intro once its song change is mixed, as "Matched intro" an
 An intro rule plays a voice liner as the next song starts when that song matches the rule's
 conditions: a name drop for an artist, a jingle before rock songs, or "here's one from the eighties"
 before songs first released in the 1980s. Each station keeps its own rules. Manage them in
-**Library tools**, **Intro rules**, below Shows. Each rule is listed in words with an
-**Edit** and a **Delete** button; Delete asks first and leaves the liners in the library.
+**Library tools**, **Intro rules**, below Shows. The table separates each rule's name,
+conditions, clips, playback rules, and dates. Use **Edit** in its action cell. Choose
+**Delete** from **Options for <name>**; deletion asks first and leaves the liners in the library.
 
 **Add intro rule** (or Edit) opens the same modal form:
 

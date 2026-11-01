@@ -203,6 +203,7 @@ describe("listener requests card", () => {
     let answer;
     request.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
     const save = byId("requests-settings-save");
+    save.focus();
     byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
     // Busy while it saves: aria-busy, never aria-disabled (#331); a second press waits.
     expect(save.getAttribute("aria-busy")).toBe("true");
@@ -481,7 +482,7 @@ describe("listener requests card", () => {
     await flush();
     await decideRequest(A, "reject");
     await vi.waitFor(() => expect(row(A)).toBeUndefined());
-    expect(document.activeElement.closest("tr").dataset.rowKey).toBe(C);
+    await vi.waitFor(() => expect(document.activeElement.closest("tr")?.dataset.rowKey).toBe(C));
     expect(document.activeElement.dataset.action).toBe("approve");
   });
 

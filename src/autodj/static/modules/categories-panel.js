@@ -1,4 +1,4 @@
-import { createEditorDialog, showEditorError } from "./editor-dialog.js";
+import { createEditorDialog } from "./editor-dialog.js";
 // Categories: the rotation categories clockwheel steps pick from.
 //
 // The server keeps them in categories.json and works out their songs.  This
@@ -6,16 +6,15 @@ import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 // deletes them through one form. Button results and each settled background
 // count are announced once through #categories-status.
 //
-// Focus: Add and Edit move it to Name; Save moves it to the saved
-// category's Edit button, Cancel back to the button that opened the form,
-// and Delete to the next category (or Add category).  A refused field gets
+// Add/Edit focus Name; Save returns to the saved row's Edit cell. Cancel
+// returns to the opener cell; Delete chooses an adjacent row or Add category.  A refused field gets
 // aria-invalid, the error text as part of its description, and focus; the
 // words stay visible in the form.
-import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
-import { focusAfterDialog, reconcileRows } from "./dom-helpers.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
-import { confirmAction } from "./confirm-dialog.js";
-import { announceStatus } from "./live-region.js";
+import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, failureText } from "./api-client.js";
+import { focusAfterDialog, clearFieldError, showFieldError, applyServerFieldError } from "./dom-helpers.js";
+import { createCollectionTable } from "./collection-table.js";
+import { deleteCollectionItem } from "./collection-delete.js";
+import { makeSay } from "./live-region.js";
 import { showBeetsPaths } from "./beets-paths.js";
 import { createConditionRow, readConditionRows, renumberConditionRows } from "./condition-editor.js";
 import { describeConditions } from "./clockwheel-step.js";
@@ -55,33 +54,10 @@ export function countsText(counts) {
   return parts.join("; ");
 }
 
-// What one saved category is, for its list item.
-export function describeCategory(category, folders = []) {
-  const source = category.source === "m3u" ? `playlist ${category.playlist}`
-    : category.source === "filters" ? `filters: ${describeConditions(category.conditions, category.match, folders)}`
-      : `query ${category.query}`;
-  const sentences = [`${category.name}: ${countsText(category)}.`, `From ${source}.`];
-  // Dayparting and the season, in words; "outside its hours now" (or its
-  // dates) is said, not only shown.
-  if (category.daypart_text) {
-    const outside = ["days", "dates"].includes(category.outside_now) ? category.outside_now : "hours";
-    sentences.push(`${category.daypart_text}.${category.allowed_now === false ? ` Outside its ${outside} now.` : ""}`);
-  }
-  const examples = (category.missing_examples || []).slice(0, EXAMPLES_SHOWN);
-  if (category.missing && examples.length) {
-    const more = category.missing - examples.length;
-    sentences.push(`Not in the library: ${examples.join(", ")}${more > 0 ? `, and ${number(more)} more` : ""}.`);
-  }
-  const used = category.used_by || [];
-  sentences.push(used.length ? `Used by ${used.join(", ")}.` : "No clockwheel uses it.");
-  return sentences.join(" ");
-}
-
 export function installCategoriesPanel({ document: doc = document, request = requestJson, onChange = () => {} } = {}) {
   const el = (id) => doc.getElementById(id);
   const panel = el("panel-library");
   const list = el("categories-list");
-  const listNavigation = installActionListNavigation(list);
   const status = el("categories-status");
   const form = el("categories-form");
   const addButton = el("categories-add");
@@ -118,53 +94,42 @@ export function installCategoriesPanel({ document: doc = document, request = req
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
   const countCurrent = (epoch, mine) => editor.dialog.open && !suspended && countGeneration === mine && isAuthenticatedRequestCurrent(epoch);
-  const say = (message, error = false) => announceStatus(editor.region(status), message, { force: true, tone: error ? "error" : "info" });
+  const say = makeSay(() => editor.region(status));
+  const sayCount = makeSay(() => editor.region(status), { force: false });
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const source = () => el("categories-source-filters")?.checked ? "filters" : el("categories-source-m3u")?.checked ? "m3u" : "query";
   const byId = (id) => data.categories.find((category) => category.id === id);
-  const listFocusLost = ({ target }) => {
-    if (!listFocusAnnouncementSuppressed) say(`The category list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Add category"}.`);
-  };
+  const collection = createCollectionTable({
+    host: list, label: "categories", keyOf: (category) => category.id, nameOf: (category) => category.name,
+    columns: [
+      { key: "name", label: "Name", value: (category) => category.name },
+      { key: "songs", label: "Songs", value: (category) => {
+        const examples = (category.missing_examples || []).slice(0, EXAMPLES_SHOWN);
+        const more = category.missing - examples.length;
+        return countsText(category) + (category.missing && examples.length
+          ? `. Not in the library: ${examples.join(", ")}${more > 0 ? `, and ${number(more)} more` : ""}.` : "");
+      } },
+      { key: "source", label: "Source", value: (category) => category.source === "m3u" ? `Playlist ${category.playlist}`
+        : category.source === "filters" ? `Filters: ${describeConditions(category.conditions, category.match, data.folders)}`
+          : `Query ${category.query}` },
+      { key: "availability", label: "Availability", value: (category) => (category.daypart_text || "Any time")
+        + (category.allowed_now === false ? `. Outside its ${["days", "dates"].includes(category.outside_now) ? category.outside_now : "hours"} now.` : "") },
+      { key: "used", label: "Used by", value: (category) => category.used_by?.join(", ") || "No clockwheel uses it." },
+    ],
+    primary: (category) => ({ id: "edit", label: "Edit", run: (button) => openForm(category, button) }),
+    actions: (category) => [{ id: "delete", label: "Delete", run: () => void remove(category.id) }],
+    fallback: addButton, status, emptyText: "No categories yet. Press Add category to make one.",
+  });
 
-  // ---- The list --------------------------------------------------------
   function renderList() {
     const signature = JSON.stringify([data.categories, data.folders]);
     if (signature === listSignature) return;
     listSignature = signature;
-    // The same categories in the same order: change only the words of each
-    // row, so a poll that finds a category now outside its hours, days or
-    // dates (at the station's midnight, say) moves no focus and says nothing.
-    if (!data.categories.length) {
-      const none = doc.createElement("li");
-      none.textContent = "No categories yet. Press Add category to make one.";
-      reconcileRows(list, [], () => "", () => null, () => {}, { fallback: addButton, onFocusLost: listFocusLost });
-      list.append(none);
-      return;
-    }
-    reconcileRows(list, data.categories, (category) => category.id, () => {
-      const item = doc.createElement("li");
-      item.append(doc.createElement("span"), " ", doc.createElement("button"), " ", doc.createElement("button"));
-      return item;
-    }, (item, category) => {
-      if (item.dataset.id !== category.id) item.dataset.id = category.id;
-      if (item.dataset.name !== category.name) item.dataset.name = category.name;
-      const description = describeCategory(category, data.folders);
-      if (item.firstElementChild.textContent !== description) item.firstElementChild.textContent = description;
-      const [edit, drop] = item.querySelectorAll("button");
-      for (const [button, action, title] of [[edit, "edit", "Edit"], [drop, "delete", "Delete"]]) {
-        if (button.type !== "button") button.type = "button";
-        if (button.dataset.action !== action) button.dataset.action = action;
-        if (button.dataset.id !== category.id) button.dataset.id = category.id;
-        if (button.textContent !== title) button.textContent = title;
-        if (button.getAttribute("aria-label") !== `${title} ${category.name}`) button.setAttribute("aria-label", `${title} ${category.name}`);
-      }
-    }, { fallback: addButton, onFocusLost: listFocusLost });
-    listNavigation.refresh();
+    collection.update(data.categories, { announceFocus: !listFocusAnnouncementSuppressed });
   }
 
   function rowFor(id, action = "edit") {
-    return [...list.querySelectorAll("button[data-action]")]
-      .find((button) => button.dataset.id === id && button.dataset.action === action) || null;
+    return collection.target(id, action === "delete" ? "options" : action);
   }
 
   function renderPlaylists() {
@@ -227,9 +192,8 @@ export function installCategoriesPanel({ document: doc = document, request = req
     for (const value of conditions.length ? conditions : [{}]) filterHost.append(filterRow(value).row);
   }
 
-  function readFilterConditions(interactive = true) {
+  function readFilterConditions() {
     return readConditionRows([...filterHost.children], {
-      interactive,
       parsePointTime,
       folderRequired: "Choose a registered music folder.",
       numberError: (field) => `Enter a valid value for ${field}.`,
@@ -240,19 +204,8 @@ export function installCategoriesPanel({ document: doc = document, request = req
     });
   }
 
-  // The error text joins or leaves a control's own description.
-  function linkError(control, linked) {
-    if (!control || !errorText) return;
-    const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
-      .filter((id) => id && id !== errorText.id);
-    if (linked) ids.unshift(errorText.id);
-    if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
-    else control.removeAttribute("aria-describedby");
-  }
-
   function unmark(control) {
-    control?.removeAttribute("aria-invalid");
-    linkError(control, false);
+    if (control?.getAttribute("aria-invalid") === "true") clearFieldError(control, errorText);
   }
 
   function clearErrors() {
@@ -261,7 +214,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     if (errorText) { errorText.textContent = ""; errorText.hidden = true; }
   }
 
-  function showError(field, message) {
+  function errorTarget(field) {
     const target = (field === "conditions" && filterHost.querySelector("[aria-invalid]")) || el(FIELD_IDS[field] || FIELD_IDS.name);
     if (field === "source" || field === "query" || field === "playlist" || field === "conditions") {
       // The field must be visible to take focus.
@@ -270,14 +223,14 @@ export function installCategoriesPanel({ document: doc = document, request = req
       else if (field === "query") el("categories-source-query").checked = true;
       showSource();
     }
-    for (const control of field === "days" ? DAY_IDS.map(el) : [target]) {
-      control?.setAttribute("aria-invalid", "true");
-      linkError(control, true);
-    }
-    showEditorError(target, message, errorText, editor.region(status));
+    return field === "days" ? DAY_IDS.map(el) : target;
   }
 
-  function body(interactive = true) {
+  function showError(field, message, control) {
+    showFieldError(control || errorTarget(field), message, errorText, editor.region(status));
+  }
+
+  function body() {
     const kind = source();
     const value = {
       name: nameInput.value.trim(),
@@ -287,7 +240,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     };
     if (kind === "filters") {
       value.match = el("categories-filter-match").value;
-      value.conditions = readFilterConditions(interactive);
+      value.conditions = readFilterConditions();
     }
     // Sent only when set: none means every day, all day.
     const days = DAY_IDS.map(el).filter((box) => box?.checked).map((box) => Number(box.value));
@@ -422,7 +375,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     clearErrors();
     let value;
     try { value = body(); }
-    catch (error) { showError(error.field || "conditions", error.message); return; }
+    catch (error) { showError(error.field || "conditions", error.message, error.control); return; }
     if (!valid(value)) return;
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation, checkMine = countGeneration;
     try {
@@ -430,7 +383,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
       if (!current(epoch, mine) || checkMine !== countGeneration || !editor.dialog.open) return;
       const text = countsText(counts);
       match.textContent = `${text}.`;
-      say(`${value.name}: ${text}.`, Boolean(counts.error));
+      say(`${value.name}: ${text}.`, counts.error ? "error" : "info");
     } catch (error) {
       if (current(epoch, mine) && checkMine === countGeneration && editor.dialog.open) showError(error.field || "name", error.message);
     }
@@ -444,7 +397,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
       countTimer = null;
       const epoch = captureAuthenticatedRequestEpoch();
       let value;
-      try { value = body(false); }
+      try { value = body(); }
       catch { if (countCurrent(epoch, mine)) match.textContent = "Complete the selection to check matching tracks."; return; }
       if (!countCurrent(epoch, mine)) return;
       if (!value.name) { match.textContent = "Enter a name to check matching tracks."; return; }
@@ -468,11 +421,11 @@ export function installCategoriesPanel({ document: doc = document, request = req
           match.textContent = result.error
             ? `Count unavailable: ${result.error}`
             : `${countsText(result)}.`;
-          announceStatus(editor.region(status), match.textContent, { tone: result.error ? "error" : "info" });
+          sayCount(match.textContent, result.error ? "error" : "info");
         } catch (error) {
           if (countCurrent(item.epoch, item.mine)) {
             match.textContent = `Count unavailable: ${error.message}`;
-            announceStatus(editor.region(status), match.textContent, { tone: "error" });
+            sayCount(match.textContent, "error");
           }
         }
       }
@@ -485,7 +438,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     clearErrors();
     let value;
     try { value = body(); }
-    catch (error) { showError(error.field || "conditions", error.message); return; }
+    catch (error) { showError(error.field || "conditions", error.message, error.control); return; }
     if (!valid(value)) return;
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     try {
@@ -501,7 +454,10 @@ export function installCategoriesPanel({ document: doc = document, request = req
       onChange();
       say(`Saved ${result.category.name}: ${countsText(result.category)}.`);
     } catch (error) {
-      if (current(epoch, mine) && active()) showError(error.field || "name", error.message);
+      if (current(epoch, mine) && active()) {
+        const field = FIELD_IDS[error.field] ? error.field : "name";
+        applyServerFieldError({ field, message: error.message }, { [field]: errorTarget(field) }, errorText, editor.region(status));
+      }
     }
   }
 
@@ -527,7 +483,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
       if (!current(loading, loadingMine)) return;
       apply(value);
     } catch (error) {
-      if (current(loading, loadingMine)) say(`Could not delete ${name}: ${error.message}`, true);
+      if (current(loading, loadingMine)) say(failureText(`delete ${name}`, error), "error");
       return;
     }
     const category = byId(id);
@@ -540,7 +496,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     const index = data.categories.indexOf(category);
     let done = false;
     // The request runs while the dialog is open; the result is said after it closes.
-    await confirmAction(doc, {
+    await deleteCollectionItem(doc, {
       title: `Delete category ${category.name}?`,
       message: used.length
         ? `${used.join(", ")} ${used.length === 1 ? "has a step" : "have steps"} for it. Those steps are skipped until you change them.`
@@ -559,7 +515,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
           const next = data.categories[Math.min(index, data.categories.length - 1)];
           return (next && rowFor(next.id)) || addButton;
         } catch (error) {
-          if (current(epoch, mine)) say(`Could not delete ${category.name}: ${error.message}`, true);
+          if (current(epoch, mine)) say(failureText(`delete ${category.name}`, error), "error");
           return null;
         }
       },
@@ -567,14 +523,6 @@ export function installCategoriesPanel({ document: doc = document, request = req
     if (done) say(`Deleted ${category.name}.`);
   }
 
-  list.addEventListener("click", (event) => {
-    const button = event.target.closest?.("button[data-action]");
-    if (!button) return;
-    if (button.dataset.action === "edit") {
-      const category = byId(button.dataset.id);
-      if (category) openForm(category, button);
-    } else if (button.dataset.action === "delete") void remove(button.dataset.id);
-  });
   addButton.addEventListener("click", () => openForm(null, addButton));
   el("categories-check")?.addEventListener("click", () => void check());
   for (const id of ["categories-source-query", "categories-source-m3u", "categories-source-filters"]) {
@@ -616,7 +564,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
       if (!current(epoch, mine)) return;
       apply(value);
     } catch (error) {
-      if (current(epoch, mine)) say(`Could not load categories: ${error.message}`, true);
+      if (current(epoch, mine)) say(failureText(`load categories`, error), "error");
     }
   }
 
@@ -645,7 +593,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     playlistSignature = "";
     listFocusAnnouncementSuppressed = true;
     try {
-      reconcileRows(list, [], (category) => category.id, () => null, () => {}, { fallback: addButton, onFocusLost: listFocusLost });
+      collection.update([], { announceFocus: false });
     } finally { listFocusAnnouncementSuppressed = false; }
     closeForm();
     nameInput.value = "";
@@ -666,7 +614,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
         openForm(null, from);
         creation = { isCurrent, onCreated };
       } catch (error) {
-        if (current(epoch, mine) && isCurrent()) say(`Could not load categories: ${error.message}`, true);
+        if (current(epoch, mine) && isCurrent()) say(failureText(`load categories`, error), "error");
       } finally { if (generation === mine) opening = false; }
     },
     refresh,
@@ -674,6 +622,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     resume() { suspended = false; updatePolling(); },
     destroy() {
       clearProtectedData();
+      editor.destroy();
       window.removeEventListener("hashchange", updatePolling);
       doc.removeEventListener("visibilitychange", updatePolling);
     },

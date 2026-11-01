@@ -84,6 +84,9 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0011-08` | Every other dialog the page opens (editors, Browse…, Track info's unsaved changes, device Rename, the keyboard shortcuts list, pairing) opens the same way through `modules/dialog-guard.js`: `show()` and `aria-modal`, not `showModal()`, unless a modal dialog is open; a backdrop takes clicks; Tab and Shift+Tab go round the top dialog's controls; focus or a press aimed at the page, or at a dialog under it, does not reach it; Escape fires the dialog's cancel event; its safe button is last; and closing moves focus straight to the opener or the action's target, never through the page body. | automated | `tests/jsmodules/dialog-guard.test.js::opens with show() and aria-modal, with the backdrop shown until it closes`, `tests/jsmodules/dialog-guard.test.js::keeps Tab, Shift+Tab and focus in the dialog, past controls Tab cannot reach`, `tests/jsmodules/dialog-guard.test.js::stops a page control activated while it is open, as a screen reader may`, `tests/jsmodules/dialog-guard.test.js::fires cancel on Escape and closes with focus straight back on the opener`, `tests/jsmodules/dialog-guard.test.js::moves focus straight to a target, the opener inert while the dialog closes`, `tests/jsmodules/dialog-guard.test.js::stacks a dialog opened from another: only the top one guards`, `tests/jsmodules/path-picker.test.js::opens with show() and aria-modal, Cancel last, and keeps Tab and Escape in the dialog` |
 | `ADR-0011-09` | With NVDA in browse mode, Enter on a newly opened Browse… dialog does not choose the folder, and closing each dialog in `ADR-0011-08` reads the control focus returns to, not the top of the page. | manual | Open and close each dialog listed in docs/accessibility-testing.md with NVDA in Chrome and Firefox; record the revision, versions, flows, speech, and whether a person listened. |
 | `ADR-0011-10` | Outside non-pointer focus enters each tablist on its selected tab, or its first visible tab when none is selected. Internal movement, pointer clicks and browse-mode focus-then-click activation remain available. | automated | `tests/jsmodules/tabs.test.js::redirects outside focus to the selected main tab without blocking activation`, `tests/jsmodules/subtabs.test.js::uses the selected or first visible entry in every Settings tab group` |
+| `ADR-0011-11` | Shared announcers preserve repeat timing, dynamic regions and string tones; an old dwell timer cannot clear a newer persistent announcement. | automated | `tests/jsmodules/live-region.test.js::creates one string-tone announcer with dynamic regions and preserved repeat timing`, `tests/jsmodules/live-region.test.js::does not let an old dwell clear a newer persistent announcement` |
+| `ADR-0011-12` | Shared busy presentation survives overlapping owners and stops delayed speech on release. | automated | `tests/jsmodules/api-client.test.js::keeps busy state until the last owner ends and cancels delayed pending speech` |
+| `ADR-0011-13` | Card refresh wiring responds only to its own toggle and supports disposal. | automated | `tests/jsmodules/card-state.test.js::refreshes only its own open toggle and disposes the close listener` |
 
 ## Amendment 2026-10-27: dialog focus never rests on the page body
 
@@ -190,3 +193,16 @@ record's Proposed status.
 Browser/speech checks have explicit limits, and CI does not exercise every
 engine. This documentation pass changes no UI and does not create a fresh
 release sample. Maintainer acceptance of the reconstructed decision is pending.
+
+## Amendment 2026-10-31: shared browser-page helpers
+
+Shared browser `makeSay` delegates repeat handling and mirroring to
+`announceStatus`, with string tones and unchanged operator wording. `withDisabled`
+owns busy presentation and delayed pending speech while preserving focused native
+controls. Its `keepEnabled` option gives an unfocused Save the same guard, without
+`disabled` (#331). It runs nothing for an already-cancelled view; work spanning
+several requests uses its `markPending` presentation. Every write to a region,
+including `writeLive` and `writeQuietly`, takes it over from an older pending
+announcement or dwell. `onCardOpen` prevents nested toggles from triggering unrelated refreshes.
+These helpers do not establish fresh screen-reader evidence or change this ADR's
+Proposed status.

@@ -198,7 +198,7 @@ Each code pairs one device and changes every five minutes. To keep LAN mode on, 
 lan = true
 ```
 
-**Browser access** in **Settings**, **Global**, **Server** has **Rename**, **Revoke**, and **Sign out this browser**.
+**Browser access** in **Settings**, **Global**, **Server** has a **Rename** action on each row. To revoke a device, choose **Options for <device name>**, then **Revoke access**. Use **Sign out this browser** to end the current browser's session.
 
 If another device cannot connect, check the firewall on the AutoDJ computer. Windows may show a
 Windows Security prompt the first time; allow access on private networks. On Linux, open the

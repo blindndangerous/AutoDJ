@@ -20,9 +20,10 @@
 // back; after Update or Go back, it says the updater's own sentence about
 // how it went.
 
-import { requestJson, withDisabled } from "./api-client.js";
+import { onCardOpen } from "./card-state.js";
+import { failureText, requestJson, withDisabled } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { announceStatus } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 
 const RESTART_POLL_MS = 2000;
@@ -168,9 +169,7 @@ export function installUpdates({
   let view = null;
   let loading = null;
 
-  const say = (message, tone = "info") => {
-    announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 6000 : 4000, tone });
-  };
+  const say = makeSay(status, { dwellMs: 4000, errorDwellMs: 6000 });
 
   // Each refusable button and the note that says why it was refused.
   const refusals = [
@@ -272,7 +271,7 @@ export function installUpdates({
         return true;
       } catch (errorValue) {
         if (!view) latest.textContent = "Could not load the update status.";
-        say(`Could not load the update status: ${errorValue.message}`, "error");
+        say(failureText("load the update status", errorValue), "error");
         return false;
       } finally {
         loading = null;
@@ -291,7 +290,7 @@ export function installUpdates({
       }));
     } catch (errorValue) {
       if (view) latest.textContent = checkWords(view);
-      say(`Could not check for updates: ${errorValue.message}`, "error");
+      say(failureText("check for updates", errorValue), "error");
       return;
     }
     say(view.check ? foundWords(view.check) : "Checked.");
@@ -301,6 +300,7 @@ export function installUpdates({
     panel: panel.closest('[role="tabpanel"]') || panel,
     scope: "server",
     controls: [enabled, channel],
+    fields: { check: enabled, channel },
     read: () => ({ check: enabled.checked, channel: channel.value }),
     write: (value) => {
       enabled.checked = value.check !== false;
@@ -500,7 +500,7 @@ export function installUpdates({
             body: "{}",
           });
         } catch (errorValue) {
-          refused = `Could not restart AutoDJ: ${errorValue.message}`;
+          refused = failureText("restart AutoDJ", errorValue);
           showRefusal(restartButton, restartRefused, refused);
         }
         return restartButton;
@@ -539,9 +539,7 @@ export function installUpdates({
   goBackButton.addEventListener("click", act(goBackButton, goBackNow));
   restartButton.addEventListener("click", act(restartButton, restart));
   reloadButton.addEventListener("click", () => reload());
-  panel.addEventListener("toggle", () => {
-    if (panel.open) void load();
-  });
+  onCardOpen(panel, load);
   if (panel.open) void load();
   async function restartForHttps(url) {
     const target = await httpsRestartTarget(url);

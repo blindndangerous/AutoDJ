@@ -100,9 +100,9 @@ Chrome and Firefox:
   press Track info on another song in **Queue & Search**. The buttons are
   Save, Discard and Keep editing, in that order. Escape keeps
   editing and returns to the control that asked.
-- **Rename a paired device**: in **Settings**, **Profiles and access**,
+- **Rename a paired device**: in **Settings**, **Global**, **Server**,
   **Browser access**, press Rename on a device. Save comes before Cancel.
-  Escape and Cancel return to Rename; a save returns to it too.
+  Escape and Cancel return to the Rename action cell; a save returns to it too.
 - **Editors**: Add event in **Settings**, **Schedule**; Add spot and Add ad
   break in **Ads**; Add category, a clockwheel's New step, and Add intro rule in
   **Library tools**. Escape on an unchanged editor returns to the opening control
@@ -367,8 +367,10 @@ output-routing, speech or Windows/NVDA evidence.
 [ADR 21](adr/0021-unify-collection-tables.md) establishes one collection pattern.
 Schedule events, Upcoming and Runs, saved Clockwheels and clockwheel steps,
 Shows and songs, prepared occurrences and takes, the queue, listener requests
-and voice-track bookings use this pattern. Other collections remain migration work; do not
-treat a passing pilot audit as evidence for every screen.
+and voice-track bookings, categories, intro rules, matched intros, liner files,
+ad spots and breaks, profiles and browser access use this pattern. Ad delivery
+reports use the same table navigation without actions. Do not treat a passing
+audit as evidence for flows or platforms it did not exercise.
 
 Run `node tests/playwright/collections_audit.mjs` for the focused headless
 Chromium collection audit. It starts its own loopback static server, loads the actual
@@ -495,15 +497,36 @@ disabled reasons, removed-row focus and Undo. Record revision, OS, browser and
 screen-reader versions, exact flows and defects, speech-capture method and whether
 a person listened. Unperformed platform or speech checks remain explicit limits.
 
+For the remaining collection panels, repeat the keyboard and speech checks above:
+
+- Categories and intro rules: Edit opens on Name, errors retain the field's help,
+  and Save returns to the saved Edit cell. Options, Delete returns to its Options
+  cell when cancelled and a nearby row or Add when confirmed.
+- Matched intros: Add intro opens on Audio file. Upload returns to the saved
+  Listen cell. Listen retains its pressed state until stopped or ended; Options,
+  Remove confirms before deletion. Check both song and artist tables.
+- Liner files: Play dates opens its editor; Save and Cancel return to the same
+  action cell. Options offers Track info and Delete, with readable restrictions
+  for legacy entries.
+- Ads: Edit opens the spot or break editor. Options contains Delete and, for
+  breaks, Run now. Check booked-spot and station restrictions, plus empty and
+  populated delivery report tables without action menus.
+- Profiles and Browser access: test Activate and Rename, then the secondary
+  Reset/Delete or Revoke access/Forget actions. Cancelled confirmations return
+  to Options; a renamed device returns to its Rename cell with the new name.
+
+These are procedures to perform, not records of completed platform testing.
+
 ## Continuous integration
 
 Add/Edit forms for categories, intro rules, scheduled events, clockwheel steps,
-ad spots and ad breaks use `editor-dialog.js`. Migrated collections use it for
+ad spots and ad breaks, matched-intro uploads, liner play dates and browser
+renaming use `editor-dialog.js`. Migrated collections use it for
 all add/edit operations. Keep feature validation and API operations in
 their panel; pass the save callback the controller's current-request guard and
 check it after every await before changing the UI. Close the controller when
 station or authentication state is cleared. Save closes onto the saved row's
-Edit control (the action cell in a shared collection table); Cancel and Escape
+primary action cell in a shared collection table; Cancel and Escape
 return to the opener, asking before discarding changed fields. A pending save
 prevents another submission or dismissal.
 Preserve caller-provided short help as the dialog description. Otherwise the
@@ -514,7 +537,7 @@ Opening assigns focus to the requested field once; do not focus another field,
 the form or the dialog first. Test the opening focus sequence separately from
 speech: a DOM focus assertion cannot establish how often NVDA speaks a title.
 
-Use the dialog's own status region while it is open. `showEditorError` places
+Use the dialog's own status region while it is open. `showFieldError` places
 the error beside its field and links and focuses it; it announces separately
 only when focus cannot convey the error. Each editor owns its dialog and draft,
 so opening a second editor preserves the first. Test this with nested dialogs,
@@ -535,8 +558,10 @@ The visual audit (`npm run audit:visual`, part of `audit:ci`) loads every view a
 Checkboxes and radio buttons are a deliberate exception to the authored control-boundary rule. In the default color mode they keep the browser and operating system's native appearance; AutoDJ does not replace that appearance or draw a custom border. The forced-colors rules may apply system colors such as `CanvasText` and `Highlight`, but they do not disable the native appearance. Test both checked and unchecked states during release sampling when a sampled flow contains these controls.
 
 Settings > Station > Stations is audited again with a refused New station request from a stood-in server.
-The error must appear beside Station ID, link to that field, and move focus there. Each browser
-must keep a refused create silent apart from the focused field. A stood-in successful create
+The error must appear beside Station ID and link to that field. Submitting from the Create
+button must move focus to Station ID without repeating the error in the status region.
+Submitting with Enter while Station ID already has focus must keep focus there and announce
+the same error once through the shared status helper. A stood-in successful create
 must announce once in the panel's status region and move focus to Switch. The audit never
 creates a station; the stand-in answers every create request.
 
@@ -615,7 +640,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   between tabs says the tab's name and "selected" once, not "selected selected".
 - Settings subtabs: the arrow keys, Home and End move between them and skip Stream outside
   stream mode; clicking one moves focus to its panel's heading; the page reopens on the last
-  one used; and Profiles and access loads its lists when shown.  Settings that have no
+  one used; and Station, Profiles and Global, Server load their collection tables when shown.  Settings that have no
   effect stay hidden, for example the DJ-mix options with saved segue points.
 - Playback controls, seeking, volume, and the spoken hotkeys.
 - Search, queue additions, reordering, removal, and empty states.
@@ -632,7 +657,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   radio group read with its name, its help available through browsing, a choice said as the checked radio button and
   nothing more, and the visible status message's Dismiss button reachable without it being
   announced along with the message.
-- Settings, Profiles and access: renaming a device (focus back on its Rename, the new name said
+- Settings, Global, Server: renaming a device (focus back on its Rename action cell, the new name said
   once), and Show pairing code (the code said once, the countdown silent, a device that pairs
   meanwhile said once, and the used code hidden with focus on Show pairing code).
 - Library-job status and review of the persistent output log. Leave a job running for several
@@ -688,7 +713,9 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Settings, Station, Stations (#233): browse the station list and read New station fields with their short
   labels. Station ID includes its format hint. Choosing a copy reveals Also copy as a group of
   three checkboxes; choosing AutoDJ defaults hides that group and its help. A refused ID or name
-  is read once with focus on its field. Create station says "Created <name>, off air." once and
+  is read once with focus on its field. Check both submission from Create station and Enter
+  from the refused field: the latter keeps focus and says the error through the status region.
+  Create station says "Created <name>, off air." once and
   focuses Switch; Switch focuses the Station button, now named after the new station.
 - The listener request page (`/requests`), without JavaScript:
   - The search field is read with its label. A refused search is read with its error, and the
@@ -724,8 +751,9 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Queue & Search, browsing: Tab to Type, Folder, Search text and Search; one result grid with
   arrows, Home and End, and Enter or Space activating each action; the track count said once per
   search and page, with focus staying on Previous or Next (or moving to the other when a page ends);
-  and Track info returning focus to its result. Under Settings > Voice liners, check Delete and
-  Play dates with focus moving to the next liner or the list.
+  and Track info returning focus to its result. Under Settings > Voice liners, check primary Play dates and Options, Delete.
+  Saving or cancelling dates returns to the Play dates cell. Confirmed deletion
+  moves to a nearby row or the panel fallback and announces the destination.
 - Track info, Tags: each field read with its label and, for Year, BPM, Key and ISRC, its help;
   Save tags with a refused field marking it invalid, focusing the first one and reading its
   error; a save said once with focus staying on Save tags; and switching tracks with unsaved tags
@@ -734,9 +762,9 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Library tools, Categories: Add category and Edit landing on Name; the source radio buttons
   showing the query or the playlist field; Check saying the count once while the count line
   stays silent; a missing name or a refused query said once, marked invalid and focused; Save
-  saying the count once and landing on the category's Edit button; Cancel returning to the
-  button that opened the form; Delete naming the clockwheels that use the category and landing
-  on the next Edit button or Add category; and the list never spoken on its 15-second refresh.
+  saying the count once and landing on the category's Edit cell; Cancel returning to the
+  opening cell or Add category; Options, Delete naming the clockwheels that use the category
+  and landing on a nearby row or Add category; and the table never spoken on its 15-second refresh.
   In Clockwheels, a Music condition with Field Category showing the named Category choice;
   multiple categories read with the chosen Match all/any; a legacy category step opening as
   Music with its category selected; a missing category named as unavailable; Category absent
@@ -848,3 +876,12 @@ candidate revision. Check these flows with the real station:
 
 Capture NVDA speech, keyboard focus and actual heard joins separately. Do not
 infer an aired take from an estimate or a previous run's lost temporary booking.
+
+### Initial collection state and announcement lifetime
+
+Before the first collection request completes, verify a spanning `.no-results`
+row is present rather than headers alone. When the last focused row disappears,
+verify the announcement names the actual fallback control, including a labelled
+input such as Profile name. A later persistent focus announcement must survive
+the previous action message's dwell timer. The collection-table and live-region
+unit tests cover these regressions; browser/speech evidence remains separate.

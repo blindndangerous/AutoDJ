@@ -1,9 +1,8 @@
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent } from "./api-client.js";
+import { failureText, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, withDisabled } from "./api-client.js";
 import { clearFieldError, clearFormErrors, showFieldError } from "./dom-helpers.js";
-import { sayIfStillPending } from "./live-region.js";
 import { stationEpoch } from "./stations.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 
@@ -35,6 +34,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
   let generation = 0;
   let saving = false;
   let formSaveId = 0;
+  let pending = new AbortController();
   const rowByName = new Map();
   function validationError(error) {
     const named = ["name", "type", "host", "port", "password", "mount", "user", "stream_id", "bitrate"].includes(error.field)
@@ -164,7 +164,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
       relays = Array.isArray(result.relays) ? result.relays : [];
       render();
     } catch (err) {
-      if (available && mine === generation) announce(`Could not load relays: ${err.message}`, true);
+      if (available && mine === generation) announce(failureText("load relays", err), "error");
     }
   }
 
@@ -180,36 +180,28 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
     if (fromForm) saving = true;
     const onError = fromForm
       ? (error) => { if (current()) validationError(error); }
-      : (error) => { if (current()) announce(error.message, true); };
-    const submitButtons = fromForm ? [...form.querySelectorAll('button[type="submit"]')] : [];
-    if (fromForm) {
-      form.setAttribute("aria-busy", "true");
-      submitButtons.forEach((button) => button.setAttribute("aria-busy", "true"));
-    }
-    const stopPending = fromForm
-      ? sayIfStillPending((message) => { if (current()) announce(message); }, "Saving relay settings…")
-      : () => {};
-    try {
-      const ok = await post(`${root(slug)}/stream/relays`, payload, form, { onError });
-      if (!current()) return false;
-      if (!ok) return false;
-      form.hidden = true;
-      id("relay-password").value = "";
-      await refresh();
-      if (!current()) return false;
-      if (fromForm) {
-        (rowByName.get(payload.name)?.row.querySelector("button") || returnFocus || id("relay-add")).focus();
-      }
-      announce("Relay settings saved.");
-      return true;
-    } finally {
-      stopPending();
-      if (fromForm && saveId === formSaveId) {
-        saving = false;
-        form.removeAttribute("aria-busy");
-        submitButtons.forEach((button) => button.removeAttribute("aria-busy"));
-      }
-    }
+      : (error) => { if (current()) announce(error.message, "error"); };
+    const signal = pending.signal;
+    return withDisabled(fromForm ? form.querySelector('button[type="submit"]') : null, () =>
+      withDisabled(fromForm ? form : null, async () => {
+        try {
+          const ok = await post(`${root(slug)}/stream/relays`, payload, form, { onError });
+          if (!current()) return false;
+          if (!ok) return false;
+          form.hidden = true;
+          id("relay-password").value = "";
+          await refresh();
+          if (!current()) return false;
+          if (fromForm) {
+            (rowByName.get(payload.name)?.row.querySelector("button") || returnFocus || id("relay-add")).focus();
+          }
+          announce("Relay settings saved.");
+          return true;
+        } finally {
+          if (fromForm && saveId === formSaveId) saving = false;
+        }
+      }, { signal, pendingText: fromForm ? "Saving relay settings\u2026" : "",
+        say: (message) => { if (current()) announce(message); } }), { signal });
   }
 
   async function removeRelay(relay) {
@@ -264,8 +256,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
         generation++;
         formSaveId++;
         saving = false;
-        form.removeAttribute("aria-busy");
-        form.querySelectorAll('[aria-busy="true"]').forEach((button) => button.removeAttribute("aria-busy"));
+        pending.abort(); pending = new AbortController();
       }
     },
     applyStatuses(value) {
@@ -274,8 +265,8 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
     },
     refresh,
     reset() {
-      available = false; generation++; formSaveId++; saving = false; form.removeAttribute("aria-busy");
-      form.querySelectorAll('[aria-busy="true"]').forEach((button) => button.removeAttribute("aria-busy"));
+      available = false; generation++; formSaveId++; saving = false;
+      pending.abort(); pending = new AbortController();
       clearFormErrors(form, formError); statuses.clear(); relays = []; render(); form.hidden = true;
     },
   };

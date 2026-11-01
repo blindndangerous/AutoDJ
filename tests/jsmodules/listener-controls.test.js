@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createListenerControls } from "../../src/autodj/static/modules/listener-controls.js";
 import { requestJson } from "../../src/autodj/static/modules/api-client.js";
 
-vi.mock("../../src/autodj/static/modules/api-client.js", () => ({ requestJson: vi.fn() }));
+vi.mock("../../src/autodj/static/modules/api-client.js", async (importOriginal) => ({
+  ...await importOriginal(), requestJson: vi.fn(),
+}));
 
 const { groups } = vi.hoisted(() => ({ groups: [] }));
 vi.mock("../../src/autodj/static/modules/settings-drafts.js", () => ({

@@ -81,7 +81,7 @@ describe("liner authentication races", () => {
     const { installLiners } = await import(
       "../../src/autodj/static/modules/liners.js"
     );
-    const fileList = document.createElement("ul");
+    const fileList = document.createElement("div");
     installLiners({
       lnFileList: fileList,
       lnFolderDisplay: document.createElement("span"),
@@ -117,7 +117,7 @@ describe("liner authentication races", () => {
     setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
     const status = document.querySelector("#liner-status");
     installLiners({
-      lnFileList: document.createElement("ul"),
+      lnFileList: document.createElement("div"),
       lnFolderDisplay: document.createElement("span"),
       lnStatus: status,
       lnTestBtn: document.querySelector("#liner-test"),
@@ -137,7 +137,7 @@ describe("liner authentication races", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { replies.push(resolve); })));
     const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
     const status = document.querySelector("#liner-status");
-    const fileList = document.createElement("ul");
+    const fileList = document.createElement("div");
     const folder = document.createElement("span");
     const controls = installLiners({
       lnFileList: fileList, lnFolderDisplay: folder, lnStatus: status,
@@ -219,7 +219,7 @@ describe("liner authentication races", () => {
     const apiClient = await import("../../src/autodj/static/modules/api-client.js");
     const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
     const button = document.querySelector("#liner-test");
-    const fileList = document.createElement("ul");
+    const fileList = document.createElement("div");
     const playLiner = vi.fn().mockResolvedValue(true);
     installLiners({
       lnFileList: fileList,
@@ -261,7 +261,7 @@ describe("liner file controls", () => {
     document.body.innerHTML = `
       <p id="status"></p>
       <button id="upload" type="button">Upload liner</button>
-      <ul id="files" tabindex="-1"></ul>
+      <div id="files" tabindex="-1"></div>
       <p id="browse-status"></p>
       <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
         <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>`;
@@ -303,7 +303,7 @@ describe("liner file controls", () => {
     const { renderLinerFileList } = await import(
       "../../src/autodj/static/modules/liners.js"
     );
-    const list = document.createElement("ul");
+    const list = document.createElement("div");
     const onDelete = vi.fn();
     const filename = '<img src=x onerror="alert(1)">.mp3';
 
@@ -311,39 +311,36 @@ describe("liner file controls", () => {
     if (typeof renderLinerFileList !== "function") return;
     renderLinerFileList(list, [filename], onDelete);
 
-    const button = list.querySelector("button");
+    const button = list.querySelector('[role="menuitem"][data-action="delete"]');
     expect(list.querySelector("img")).toBeNull();
-    expect(list.querySelector("li > span").textContent).toBe(filename);
+    expect(list.querySelector("tbody tr").cells[0].textContent).toBe(filename);
     expect(button.textContent).toBe("Delete");
-    expect(button.getAttribute("aria-label")).toBe(`Delete ${filename}`);
+    expect(button.getAttribute("aria-label")).toBe("Delete");
+    list.querySelector('[aria-haspopup="menu"]').click();
     button.click();
-    expect(onDelete).toHaveBeenCalledWith(filename, button);
+    expect(onDelete).toHaveBeenCalledWith(filename, list.querySelector('[aria-haspopup="menu"]'));
   });
 
   it("keeps duplicate filenames distinct and offers a Track info action", async () => {
     const { renderLinerFileList } = await import("../../src/autodj/static/modules/liners.js");
-    const list = document.createElement("ul");
+    const list = document.createElement("div");
     document.body.append(list);
     const onDelete = vi.fn();
     renderLinerFileList(list, [
       { id: "record-a", name: "same.wav", path: "X:/one/same.wav" },
       { id: "record-b", name: "same.wav", path: "Y:/two/same.wav" },
     ], onDelete);
-    expect(list.querySelectorAll("li")).toHaveLength(2);
-    expect(list.querySelectorAll('button[aria-label="Track info for same.wav"]')).toHaveLength(2);
-    expect([...list.querySelectorAll("li")].every((row) => row.lastElementChild.textContent === "Track info")).toBe(true);
-    expect(list.querySelectorAll("button[tabindex='0']")).toHaveLength(1);
-    const first = list.querySelector("button[tabindex='0']");
-    first.focus();
-    first.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
-    expect(document.activeElement.textContent).toBe("Track info");
-    expect([...list.querySelectorAll("button")].some((button) => button.textContent === "Track info")).toBe(true);
-    const info = list.querySelectorAll('button[aria-label="Track info for same.wav"]')[1];
+    const rows = list.querySelectorAll("tbody tr[data-row-key]");
+    expect(rows).toHaveLength(2);
+    expect(list.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    const options = rows[1].querySelector('[aria-haspopup="menu"]');
     const edit = vi.fn();
     document.addEventListener("autodj:edit-points", edit, { once: true });
-    info.click();
-    expect(edit.mock.calls[0][0].detail).toEqual({ path: "Y:/two/same.wav", kind: "liner", opener: info });
-    list.querySelector("button").click();
+    options.click();
+    rows[1].querySelector('[role="menuitem"][data-action="info"]').click();
+    expect(edit.mock.calls[0][0].detail).toEqual({ path: "Y:/two/same.wav", kind: "liner", opener: options });
+    rows[0].querySelector('[aria-haspopup="menu"]').click();
+    rows[0].querySelector('[role="menuitem"][data-action="delete"]').click();
     expect(onDelete).toHaveBeenCalledWith("record-a", expect.anything(), "same.wav");
   });
 
@@ -351,10 +348,10 @@ describe("liner file controls", () => {
     const { renderLinerFileList } = await import(
       "../../src/autodj/static/modules/liners.js"
     );
-    const list = document.createElement("ul");
+    const list = document.createElement("div");
 
     renderLinerFileList(list, [], vi.fn());
-    expect(list.textContent).toBe("No liner files yet.");
+    expect(list.querySelector(".no-results").textContent).toBe("No liner files yet.");
 
     renderLinerFileList(list, null, vi.fn());
     expect(list.querySelector(".no-results")).not.toBeNull();
@@ -363,9 +360,9 @@ describe("liner file controls", () => {
   it("asks in the shared dialog and deletes nothing on Cancel", async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(inventory(["only.mp3"]));
     const { list, answer } = await installWithDialog(fetchImpl);
-    await vi.waitFor(() => expect(list.querySelector("button")).not.toBeNull());
-    const remove = list.querySelector("button");
-    remove.focus();
+    await vi.waitFor(() => expect(list.querySelector('[role="menuitem"][data-action="delete"]')).not.toBeNull());
+    const remove = list.querySelector('[role="menuitem"][data-action="delete"]');
+    remove.closest("td").querySelector('[aria-haspopup="menu"]').click();
     remove.click();
     await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
     expect(document.getElementById("confirm-title").textContent).toBe("Delete liner only.mp3?");
@@ -374,7 +371,7 @@ describe("liner file controls", () => {
     await answer("cancel");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(document.activeElement).toBe(remove);
+    expect(document.activeElement).toBe(remove.closest("td"));
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -383,15 +380,15 @@ describe("liner file controls", () => {
       .mockResolvedValueOnce(inventory(["first.mp3"]))
       .mockResolvedValueOnce(response({ detail: "disk unavailable" }, 500));
     const { list, status, answer } = await installWithDialog(fetchImpl);
-    await vi.waitFor(() => expect(list.querySelector("button")).not.toBeNull());
-    const remove = list.querySelector("button");
-    remove.focus();
+    await vi.waitFor(() => expect(list.querySelector('[role="menuitem"][data-action="delete"]')).not.toBeNull());
+    const remove = list.querySelector('[role="menuitem"][data-action="delete"]');
+    remove.closest("td").querySelector('[aria-haspopup="menu"]').click();
     remove.click();
 
     await answer("confirm");
     await vi.waitFor(() => expect(status.textContent).toContain("disk unavailable"));
 
-    expect(document.activeElement).toBe(remove);
+    expect(document.activeElement).toBe(remove.closest("td"));
   });
 
   it("focuses a stable control when inventory refresh fails after deletion", async () => {
@@ -400,16 +397,16 @@ describe("liner file controls", () => {
       .mockResolvedValueOnce(response({ ok: true }))
       .mockResolvedValueOnce(response({ detail: "inventory unavailable" }, 500));
     const { list, status, answer } = await installWithDialog(fetchImpl);
-    await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(2));
-    const originalButton = list.querySelectorAll("button")[0];
+    await vi.waitFor(() => expect(list.querySelectorAll('[role="menuitem"][data-action="delete"]')).toHaveLength(2));
+    const originalButton = list.querySelectorAll('[role="menuitem"][data-action="delete"]')[0];
 
-    originalButton.focus();
+    originalButton.closest("td").querySelector('[aria-haspopup="menu"]').click();
     originalButton.click();
     await answer("confirm");
     await vi.waitFor(() => expect(status.textContent).toContain("inventory unavailable"));
 
     expect(originalButton.isConnected).toBe(true);
-    expect(document.activeElement).toBe(originalButton);
+    expect(document.activeElement).toBe(originalButton.closest("td"));
   });
 
   it("moves focus from the dialog straight to the next Delete button", async () => {
@@ -418,9 +415,9 @@ describe("liner file controls", () => {
       .mockResolvedValueOnce(response({ ok: true }))
       .mockResolvedValueOnce(inventory(["first.mp3", "third.mp3"]));
     const { list, status, answer } = await installWithDialog(fetchImpl);
-    await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(3));
-    const remove = list.querySelectorAll("button")[1];
-    remove.focus();
+    await vi.waitFor(() => expect(list.querySelectorAll('[role="menuitem"][data-action="delete"]')).toHaveLength(3));
+    const remove = list.querySelectorAll('[role="menuitem"][data-action="delete"]')[1];
+    remove.closest("td").querySelector('[aria-haspopup="menu"]').click();
     remove.click();
     await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
 
@@ -433,8 +430,8 @@ describe("liner file controls", () => {
     await vi.waitFor(() => expect(status.textContent).toBe("Deleted second.mp3"));
     document.removeEventListener("focusin", record);
 
-    expect(focused).toEqual([list.querySelectorAll("button")[1]]);
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Delete third.mp3");
+    expect(focused).toEqual([list.querySelectorAll('[role="menuitem"][data-action="delete"]')[1].closest("td")]);
+    expect(document.activeElement.querySelector("button").getAttribute("aria-label")).toBe("Options for third.mp3");
   });
 
   // The list sits in Queue & Search, and Upload in Settings, a hidden
@@ -445,16 +442,16 @@ describe("liner file controls", () => {
       .mockResolvedValueOnce(response({ ok: true }))
       .mockResolvedValueOnce(inventory([]));
     const { list, upload, answer } = await installWithDialog(fetchImpl);
-    await vi.waitFor(() => expect(list.querySelector("button")).not.toBeNull());
+    await vi.waitFor(() => expect(list.querySelector('[role="menuitem"][data-action="delete"]')).not.toBeNull());
 
-    list.querySelector("button").focus();
-    list.querySelector("button").click();
+    list.querySelector('[aria-haspopup="menu"]').click();
+    list.querySelector('[role="menuitem"][data-action="delete"]').click();
     await answer("confirm");
-    await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(0));
+    await vi.waitFor(() => expect(list.querySelectorAll('[role="menuitem"][data-action="delete"]')).toHaveLength(0));
 
     expect(document.activeElement).toBe(list);
     expect(document.activeElement).not.toBe(upload);
-    expect(list.textContent).toBe("No liner files yet.");
+    expect(list.querySelector(".no-results").textContent).toBe("No liner files yet.");
   });
 
   it("says a Delete result once, in the status beside the list", async () => {
@@ -463,14 +460,14 @@ describe("liner file controls", () => {
       .mockResolvedValueOnce(response({ ok: true }))
       .mockResolvedValueOnce(inventory(["second.mp3"]));
     const { list, status, browse, answer } = await installWithDialog(fetchImpl, { browseStatus: true });
-    await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(2));
-    list.querySelector("button").focus();
-    list.querySelector("button").click();
+    await vi.waitFor(() => expect(list.querySelectorAll('[role="menuitem"][data-action="delete"]')).toHaveLength(2));
+    list.querySelector('[aria-haspopup="menu"]').click();
+    list.querySelector('[role="menuitem"][data-action="delete"]').click();
     await answer("confirm");
 
     await vi.waitFor(() => expect(browse.textContent).toBe("Deleted first.mp3"));
     expect(status.textContent).toBe("");
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Delete second.mp3");
+    expect(document.activeElement.querySelector("button").getAttribute("aria-label")).toBe("Options for second.mp3");
   });
 });
 
@@ -483,7 +480,7 @@ describe("Test liner in stream mode", () => {
     vi.resetModules();
     document.body.innerHTML = `
       <button id="liner-test">Test now</button>
-      <ul id="liner-files"></ul>
+      <div id="liner-files"></div>
       <div id="liner-status" role="status" aria-live="polite" aria-atomic="true"></div>`;
     const fetchImpl = vi.fn((url, options) => {
       if (url === "/api/liners") {
@@ -588,7 +585,7 @@ describe("Test liner in stream mode", () => {
     vi.resetModules();
     document.body.innerHTML = `
       <button id="liner-test">Test now</button>
-      <ul id="liner-files"></ul>
+      <div id="liner-files"></div>
       <div id="liner-status" role="status" aria-live="polite" aria-atomic="true"></div>`;
     vi.stubGlobal("fetch", vi.fn((url) => Promise.resolve(url === "/api/liners"
       ? json({ config: { duck_db: -12 }, files: ["station-id.mp3"] })
@@ -629,7 +626,7 @@ describe("liner settings and upload", () => {
       <input type="number" id="rand-min" value="">
       <input type="number" id="rand-max" value="">
       <select id="pick"><option value="random">Random</option></select>
-      <input type="number" id="duck" value="3">
+      <input type="number" id="duck" value="3"><p id="ln-duck-db-error" hidden></p><p id="ln-settings-error" hidden></p>
       <input type="file" id="upload"><button id="submit">Upload</button>
       <input type="checkbox" id="replace">
       <p id="status"></p><div id="status-toast" hidden></div>`;
@@ -677,7 +674,7 @@ describe("liner settings and upload", () => {
       elements.lnDuckDb.value = typed;
       elements.lnDuckDb.dispatchEvent(new Event("change"));
       expect(elements.lnDuckDb.value).toBe(typed);
-      await vi.waitFor(() => expect(elements.lnStatus.textContent).toMatch(/enter a number from 0 to 30/));
+      await vi.waitFor(() => expect(document.getElementById("ln-duck-db-error").textContent).toMatch(/enter a number from 0 to 30/));
       elements.lnStatus.textContent = "";
     }
     elements.lnDuckDb.value = "8";
@@ -688,6 +685,28 @@ describe("liner settings and upload", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("leaves focus where Tab took it when a refused duck depth is committed on blur", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => ok({ files: [], config: { duck_db: -9 } })));
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const elements = els();
+    installLiners(elements, { canPlay: () => false });
+    await vi.waitFor(() => expect(elements.lnDuckDb.value).toBe("9"));
+    const error = document.getElementById("ln-duck-db-error");
+
+    elements.lnDuckDb.focus();
+    elements.lnDuckDb.value = "31";
+    // Tab moves focus on first; the browser then commits the value with change.
+    elements.lnEveryN.focus();
+    elements.lnDuckDb.dispatchEvent(new Event("change"));
+
+    expect(document.activeElement).toBe(elements.lnEveryN);
+    expect(error.hidden).toBe(false);
+    expect(error.textContent).toMatch(/enter a number from 0 to 30/);
+    expect(elements.lnDuckDb.getAttribute("aria-invalid")).toBe("true");
+    expect(elements.lnDuckDb.getAttribute("aria-describedby").split(" ")).toContain("ln-duck-db-error");
+    await vi.waitFor(() => expect(elements.lnStatus.textContent).toBe(error.textContent));
+  });
+
   it("uses the default duck after a saved null replaces an older depth", async () => {
     vi.stubGlobal("fetch", vi.fn((url) => url === "/api/liners"
       ? ok({ files: ["station-id.mp3"], config: { duck_db: -12 } })
@@ -695,7 +714,7 @@ describe("liner settings and upload", () => {
         headers: { "Content-Type": "audio/mpeg" },
       }))));
     const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
-    document.body.insertAdjacentHTML("beforeend", '<ul id="liner-files"></ul><button id="liner-test">Test</button>');
+    document.body.insertAdjacentHTML("beforeend", '<div id="liner-files"></div><button id="liner-test">Test</button>');
     const playLiner = vi.fn().mockResolvedValue(true);
     const elements = { ...els(), lnFileList: document.getElementById("liner-files"),
       lnTestBtn: document.getElementById("liner-test") };
@@ -783,23 +802,43 @@ describe("liner play dates", () => {
     vi.stubGlobal("fetch", fetchImpl);
     const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
     const list = document.getElementById("ln-file-list");
-    installLiners({
+    const controls = installLiners({
       lnFileList: list,
       lnStatus: document.getElementById("ln-status"),
       lnBrowseStatus: document.getElementById("ln-browse-status"),
       lnTestBtn: document.getElementById("ln-test"),
     }, { canPlay: () => false, prepareTest: () => null, playLiner: vi.fn(), postSettings: vi.fn(), testOnServer: () => true });
-    await vi.waitFor(() => expect(list.querySelectorAll("li")).toHaveLength((listed.items || items).length));
-    return { list, fetchImpl, status: document.getElementById("ln-browse-status") };
+    await vi.waitFor(() => expect(list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength((listed.items || items).length));
+    return { list, fetchImpl, controls, status: document.getElementById("ln-browse-status") };
   }
 
-  const datesButton = (list, name) => list.querySelector(`button[aria-label="Play dates for ${name}"]`);
+  const datesButton = (list, name) => list.querySelector(`button[aria-label="Play dates ${name}"]`);
+
+  it("closes a pending dates editor on station clear and ignores its late save", async () => {
+    let finish;
+    const { list, fetchImpl, controls } = await install(() => new Promise((resolve) => { finish = resolve; }));
+    datesButton(list, "id.wav").click();
+    const form = document.getElementById("ln-dates-form");
+    const dialog = form.closest("dialog");
+    document.getElementById("ln-not-after").value = "2027-01-31";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(document.getElementById("ln-dates-form-status").textContent).toBe("");
+    controls.clear();
+    expect(dialog.open).toBe(false);
+    expect(form.hidden).toBe(true);
+    finish(json({ ...ID, not_after: "2027-01-31" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/liners")).toHaveLength(1);
+    expect(list.children).toHaveLength(0);
+  });
 
   it("says each liner's dates in words and that an expired one is skipped", async () => {
     const { list } = await install();
-    expect(list.querySelectorAll("li > span")[0].textContent).toBe(
-      "promo.mp3. Plays until 26 December 2026. Skipped now: expired after 26 December 2026");
-    expect(list.querySelectorAll("li > span")[1].textContent).toBe("id.wav");
+    expect([...list.querySelector("tbody tr").cells].slice(0, 3).map((cell) => cell.textContent)).toEqual(
+      ["promo.mp3", "Plays until 26 December 2026", "Skipped now: expired after 26 December 2026"]);
+    expect(list.querySelectorAll("tbody tr")[1].cells[0].textContent).toBe("id.wav");
     expect(datesButton(list, "id.wav").textContent).toBe("Play dates");
   });
 
@@ -848,20 +887,20 @@ describe("liner play dates", () => {
       const open = { ...PROMO, playable: true, unplayable_text: "" };
       const listed = { timezone: "America/Denver", today: "2026-12-26", items: [open, ID] };
       const { list, fetchImpl, status } = await install(undefined, listed);
-      const row = list.querySelector('li[data-liner-id="promo.mp3"]');
-      expect(row.firstElementChild.textContent).toBe("promo.mp3. Plays until 26 December 2026");
+      const row = list.querySelector('tr[data-row-key="promo.mp3"]');
+      expect(row.cells[1].textContent).toBe("Plays until 26 December 2026");
       const button = datesButton(list, "promo.mp3");
-      button.focus();
+      button.closest("td").focus();
       const said = status.textContent;
       vi.advanceTimersByTime(60_000); // the same day: nothing is asked
       expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/liners")).toHaveLength(1);
       vi.setSystemTime(new Date("2026-12-27T07:01:00Z"));
       Object.assign(listed, { today: "2026-12-27", items: [PROMO, ID] }); // as the server says then
       vi.advanceTimersByTime(60_000);
-      await vi.waitFor(() => expect(row.firstElementChild.textContent).toBe(
-        "promo.mp3. Plays until 26 December 2026. Skipped now: expired after 26 December 2026"));
-      expect(list.querySelector('li[data-liner-id="promo.mp3"]')).toBe(row); // not redrawn
-      expect(document.activeElement).toBe(button);
+      await vi.waitFor(() => expect(row.cells[2].textContent).toBe(
+        "Skipped now: expired after 26 December 2026"));
+      expect(list.querySelector('tr[data-row-key="promo.mp3"]')).toBe(row); // not redrawn
+      expect(document.activeElement).toBe(button.closest("td"));
       expect(status.textContent).toBe(said);
       vi.advanceTimersByTime(60_000);
       expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/liners")).toHaveLength(2);
@@ -877,14 +916,14 @@ describe("liner play dates", () => {
       const open = { ...PROMO, playable: true, unplayable_text: "" };
       const listed = { timezone: "America/Denver", today: "2026-12-26", items: [open, ID] };
       const { list } = await install(undefined, listed);
-      datesButton(list, "id.wav").focus();
+      datesButton(list, "id.wav").closest("td").focus();
       // A liner was added outside this page meanwhile, so the rows are drawn again.
       const added = { ...ID, id: "new.wav", name: "new.wav" };
       Object.assign(listed, { today: "2026-12-27", items: [added, PROMO, ID] });
       vi.setSystemTime(new Date("2026-12-27T07:01:00Z"));
       vi.advanceTimersByTime(60_000);
-      await vi.waitFor(() => expect(list.querySelectorAll("li")).toHaveLength(3));
-      await vi.waitFor(() => expect(document.activeElement).toBe(datesButton(list, "id.wav")));
+      await vi.waitFor(() => expect(list.querySelectorAll("tbody tr[data-row-key]")).toHaveLength(3));
+      await vi.waitFor(() => expect(document.activeElement).toBe(datesButton(list, "id.wav").closest("td")));
     } finally {
       vi.useRealTimers();
     }
@@ -899,7 +938,9 @@ describe("liner play dates", () => {
       dialog.open = false;
       dialog.dispatchEvent(new Event("close"));
     };
-    list.querySelector('button[aria-label="Delete id.wav"]').click();
+    const row = list.querySelector('tr[data-row-key="id.wav"]');
+    row.querySelector('[aria-haspopup="menu"]').click();
+    row.querySelector('[role="menuitem"][data-action="delete"]').click();
     await vi.waitFor(() => expect(dialog.open).toBe(true));
     document.getElementById("confirm-accept").click();
     await vi.waitFor(() => expect(status.textContent).toBe(
@@ -912,7 +953,7 @@ describe("liner play dates", () => {
       vi.setSystemTime(new Date("2026-12-27T06:50:00Z"));
       const listed = { timezone: "America/Denver", today: "2026-12-26", items: [ID] };
       const { list } = await install(undefined, listed);
-      datesButton(list, "id.wav").focus();
+      datesButton(list, "id.wav").closest("td").focus();
       Object.assign(listed, { today: "2026-12-27", items: [], files: [] });
       vi.setSystemTime(new Date("2026-12-27T07:01:00Z"));
       vi.advanceTimersByTime(60_000);
@@ -943,15 +984,15 @@ describe("liner play dates", () => {
     const [url, options] = fetchImpl.mock.calls.find(([called]) => called.startsWith("/api/liners/dates/"));
     expect(url).toBe("/api/liners/dates/id.wav");
     expect(JSON.parse(options.body)).toEqual({ not_before: null, not_after: "2027-01-31" });
-    expect(document.activeElement).toBe(datesButton(list, "id.wav"));
+    expect(document.activeElement).toBe(datesButton(list, "id.wav").closest("td"));
     await vi.waitFor(() => expect(status.textContent).toBe("Saved: id.wav. Plays until 31 January 2027."));
-    expect(list.querySelectorAll("li > span")[1].textContent).toBe("id.wav. Plays until 31 January 2027");
+    expect(list.querySelectorAll("tbody tr")[1].cells[1].textContent).toBe("Plays until 31 January 2027");
 
     datesButton(list, "promo.mp3").click();
     expect(document.getElementById("ln-not-after").value).toBe("2026-12-26");
     document.getElementById("ln-dates-cancel").click();
     expect(form.hidden).toBe(true);
-    expect(document.activeElement).toBe(datesButton(list, "promo.mp3"));
+    expect(document.activeElement).toBe(datesButton(list, "promo.mp3").closest("td"));
   });
 
   it("names a refused date, links it to the field and keeps the form open", async () => {
@@ -970,8 +1011,9 @@ describe("liner play dates", () => {
     expect(document.getElementById("ln-dates-error").textContent)
       .toBe("Do not play after must be on or after the Not before date");
     after.dispatchEvent(new Event("input"));
-    expect(after.getAttribute("aria-describedby")).toBe("");
+    expect(after.hasAttribute("aria-describedby")).toBe(false);
 
+    await Promise.resolve();
     after.value = "2027-01-01";
     form.dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(document.getElementById("ln-dates-error").textContent)

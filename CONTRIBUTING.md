@@ -338,13 +338,50 @@ browse-mode focus-then-click activation and internal arrow/Home/End navigation
 ([ADR 11](docs/adr/0011-verify-accessibility-with-browser-and-speech-evidence.md#amendment-2026-10-31-browse-mode-tab-entry)).
 Use `createEditorDialog` for add/edit and `deleteCollectionItem` for removal:
 confirm unless the screen offers Undo. Empty tables contain one `.no-results`
-row spanning every column. Disabled row actions remain focusable with
+row spanning every column, drawn by the builder before the first asynchronous load.
+Disabled row actions remain focusable with
 `aria-disabled` and explain why when activated. Read-only tables need no menu.
 The cart wall and text-only lists remain exceptions. See
 [ADR 21](docs/adr/0021-unify-collection-tables.md) for the contract and phased
 migration. Reuse theme and spacing tokens. Collection buttons and menu items
 must be at least 24 CSS pixels wide and 44 CSS pixels high. Preserve visible
 focus, forced-colors and narrow-screen behavior.
+
+### Shared browser helpers
+
+Use one shared implementation for each browser-page job, including older screens
+when they are touched. Do not add local copies of these helpers:
+
+- `dom-helpers.showFieldError` and `clearFieldError` own invalid state, visible
+  `.field-error` text and description links. Preserve existing help. Map server
+  `field` keys with `applyServerFieldError(error, fieldMap, errorNode, status)`;
+  unknown keys fall back to the ordinary failure message. Use `{ focus: false }`
+  only when an existing dialog or background workflow must keep its focus.
+- `api-client.withDisabled(control, operation, { pendingText, say, signal })`
+  owns pending CSS, `aria-busy`, control restoration and delayed progress words.
+  It preserves focused-button accessibility and serializes focused native input
+  changes. Keep feature-specific duplicate submission and stale-response guards.
+  Abort the presentation hold when its view clears; aborting does not undo a write.
+- `live-region.makeSay(region, options)` creates status announcers. Pass string
+  tones such as `"info"`, `"success"` and `"error"`, never booleans. A region resolver
+  can choose the active dialog. It delegates repeat handling and toasts to
+  `announceStatus`; do not copy timers or no-break-space toggles. Passive state
+  displays may update quietly without announcing each poll.
+- `api-client.failureText(action, error)` formats request failures and recognizes
+  stale station replies. Preserve action wording when migrating callers. Keep
+  actionable field refusals with their controls instead of flattening them into
+  generic failure text.
+- `standalone-settings.createSettingsSave` owns the single-flight lifecycle of
+  explicit standalone settings saves. Supply the feature's endpoint/validation
+  in its save callback and clear the controller on authentication/view reset.
+  Existing Settings draft groups retain `registerSettingsGroup`; individual
+  record editors retain `createEditorDialog`.
+- `card-state.onCardOpen(card, refresh, { onClose })` owns toggle-to-refresh wiring.
+  It ignores nested card toggles and does not perform an initial refresh. Keep
+  initial loading and long-running polling policy with the feature.
+- Status-region markup uses `role="status" aria-live="polite" aria-atomic="true"`.
+  Field errors use `.field-error`, not per-ID color rules or duplicate live alerts.
+  `dialogStatusLine` creates a status region inside an actual dialog only.
 
 ## Where things live
 

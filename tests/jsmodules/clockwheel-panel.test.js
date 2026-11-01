@@ -1112,7 +1112,8 @@ describe("clockwheel editor", () => {
     byId("clock-add-step").click();
     expect(document.activeElement).toBe(byId("clock-step-path"));
     expect(byId("clock-step-path").getAttribute("aria-invalid")).toBe("true");
-    await vi.waitFor(() => expect(status()).toContain('with no ".."'));
+    expect(byId("clock-step-form-error").textContent).toContain('with no ".."');
+    expect(byId("clock-step-path").getAttribute("aria-describedby")).toContain("clock-step-form-error");
     byId("clock-step-path").value = "Album\\Other.flac";
     byId("clock-add-step").click();
     expect(rowText(3)).toBe("track Album/Other.flac");
@@ -1472,11 +1473,15 @@ describe("clockwheel step conditions, for screen readers", () => {
     high.value = "ninety";
     // The empty artist is marked first.
     byId("clock-add-step").click();
-    await vi.waitFor(() => expect(status()).toBe("Enter a value for artist."));
+    expect(byId("clock-step-form-error").textContent).toBe("Enter a value for artist.");
+    expect(byId("clock-step-form-error").hidden).toBe(false);
+    expect(document.activeElement).toBe(first.querySelectorAll("input[type=text]")[1]);
+    expect(document.activeElement.getAttribute("aria-describedby")).toContain("clock-step-form-error");
     expect(first.querySelectorAll("input[type=text]")[1].getAttribute("aria-invalid")).toBe("true");
     first.querySelectorAll("input[type=text]")[1].value = "Björk";
     byId("clock-add-step").click();
-    await vi.waitFor(() => expect(status()).toBe("Enter the duration as seconds or minutes:seconds, for example 90 or 1:30."));
+    expect(byId("clock-step-form-error").textContent).toBe("Enter the duration as seconds or minutes:seconds, for example 90 or 1:30.");
+    expect(high.getAttribute("aria-describedby")).toContain("clock-step-form-error");
     expect(high.getAttribute("aria-invalid")).toBe("true");
     expect(document.activeElement).toBe(high);
     expect(first.querySelector("[aria-invalid]")).toBeNull();
@@ -1499,7 +1504,10 @@ describe("clockwheel step conditions, for screen readers", () => {
     const value = row.querySelectorAll("input[type=text]")[1];
     value.value = "-3";
     byId("clock-add-step").click();
-    await vi.waitFor(() => expect(status()).toBe("Duration must be non-negative."));
+    expect(byId("clock-step-form-error").textContent).toBe("Duration must be non-negative.");
+    expect(byId("clock-step-form-error").hidden).toBe(false);
+    expect(document.activeElement).toBe(value);
+    expect(value.getAttribute("aria-describedby")).toContain("clock-step-form-error");
     expect(value.getAttribute("aria-invalid")).toBe("true");
   });
 
@@ -1516,7 +1524,10 @@ describe("clockwheel step conditions, for screen readers", () => {
     secondValue.value = "Live";
     secondValue.setAttribute("aria-invalid", "true");
     byId("clock-add-step").click();
-    await vi.waitFor(() => expect(status()).toBe("Enter a value for artist."));
+    expect(byId("clock-step-form-error").textContent).toBe("Enter a value for artist.");
+    expect(byId("clock-step-form-error").hidden).toBe(false);
+    expect(document.activeElement).toBe(first.querySelectorAll("input[type=text]")[1]);
+    expect(document.activeElement.getAttribute("aria-describedby")).toContain("clock-step-form-error");
     expect(secondValue.hasAttribute("aria-invalid")).toBe(false);
   });
 
@@ -1608,7 +1619,7 @@ describe("clockwheel step conditions, for screen readers", () => {
     expect(seconds.getAttribute("aria-describedby")).toBe("clock-step-ad-error");
     expect(byId("clock-step-ad-error").hidden).toBe(false);
     expect(byId("clock-step-ad-error").textContent).toBe("Longest break must be 0 for no limit, or from 10 to 900 seconds.");
-    await vi.waitFor(() => expect(status()).toBe("Longest break must be 0 for no limit, or from 10 to 900 seconds."));
+    expect(status()).not.toBe("Longest break must be 0 for no limit, or from 10 to 900 seconds.");
     expect(rows()).toHaveLength(3);
     seconds.value = "60";
     seconds.dispatchEvent(new Event("input", { bubbles: true }));

@@ -7,7 +7,7 @@ import { registerSettingsGroup, settingsDraftHolds } from "./settings-drafts.js"
 
 import { escHtml } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
-import {
+import { failureText,
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
   requestJson,
@@ -53,7 +53,7 @@ export async function postSettings(url, body, { settingsStatus, control, onError
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
     if (onError) onError(err);
-    else announceStatus(settingsStatus, `Could not save. ${err.message}`,
+    else announceStatus(settingsStatus, failureText("save.", err),
       { dwellMs: 6000, force: true, tone: "error" });
     return false;
   }
@@ -171,9 +171,9 @@ function applyModeVisibility(st, els, doc) {
 }
 
 export function installSettingsControls(els) {
-  const bind = (group, controls, read, write) => {
+  const bind = (group, controls, read, write, fields) => {
     const draft = registerSettingsGroup({ panel: controls.find(Boolean)?.closest('[id^="spanel-"]'), group,
-      controls: controls.filter(Boolean), read, write });
+      controls: controls.filter(Boolean), read, write, fields });
     for (const control of controls.filter(Boolean)) drafts.set(control, draft);
     return draft;
   };
@@ -195,14 +195,14 @@ export function installSettingsControls(els) {
     (value) => { if (value.pick_mode != null) pbPickMode.value = value.pick_mode; });
   if (bpmLo && bpmHi) bind("bpm_range", [bpmLo, bpmHi],
     () => ({ lo: bpmLo.value === "" ? null : Number(bpmLo.value), hi: bpmHi.value === "" ? null : Number(bpmHi.value) }),
-    (value) => { bpmLo.value = value.lo ?? ""; bpmHi.value = value.hi ?? ""; });
+    (value) => { bpmLo.value = value.lo ?? ""; bpmHi.value = value.hi ?? ""; }, { lo: bpmLo, hi: bpmHi });
   if (discEnabled && discEvery) {
     bind("discovery", [discEnabled, discEvery], () => ({ every: discEnabled.checked ? Number(discEvery.value) : null }),
       (value) => {
         discEnabled.checked = value.every != null;
         if (value.every != null) discEvery.value = value.every;
         discEvery.disabled = !discEnabled.checked;
-      });
+      }, { every: discEvery });
     discEnabled.addEventListener("change", () => { discEvery.disabled = !discEnabled.checked; });
   }
 }

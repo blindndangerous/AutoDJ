@@ -1,3 +1,6 @@
+import { failureText } from "./api-client.js";
+import { clearFieldError, showFieldError, applyServerFieldError } from "./dom-helpers.js";
+import { createSettingsSave } from "./standalone-settings.js";
 // Library tools, Automatic rescan every: hours and minutes (#249).  The
 // server runs the same scan as the Rescan button once that long has passed
 // since the last scan ended; 0 and 0 turns it off.
@@ -17,7 +20,7 @@ export function autoRescanProblem(hours, minutes) {
   return null;
 }
 
-// *say(message, error)* writes the Library tools status region; *isCurrent()*
+// *say(message, tone)* writes the Library tools status region; *isCurrent()*
 // is false once the session has ended or the panel was cleared.  Returns
 // null when the page has no such fields.
 export function installAutoRescan({ document: doc, request, say, isCurrent = () => true }) {
@@ -29,25 +32,11 @@ export function installAutoRescan({ document: doc, request, say, isCurrent = () 
   const fields = { hours, minutes };
   let loaded = 0;
 
-  function clearError() {
-    for (const field of [hours, minutes]) {
-      field.removeAttribute("aria-invalid");
-      if (field.getAttribute("aria-describedby") === error.id) field.removeAttribute("aria-describedby");
-    }
-    error.textContent = "";
-    error.hidden = true;
-  }
-
-  // The message under the field, linked to it and read when focus moves there.
-  function showError(field, message) {
+  const clearError = () => clearFieldError([hours, minutes], error);
+  const showError = (field, message) => {
     clearError();
-    error.textContent = message;
-    error.hidden = false;
-    (field.closest(".settings-row") || field).after(error);
-    field.setAttribute("aria-invalid", "true");
-    field.setAttribute("aria-describedby", error.id);
-    field.focus();
-  }
+    showFieldError(field, message, error);
+  };
 
   function show(value) {
     hours.value = String(value?.hours ?? 0);
@@ -70,8 +59,7 @@ export function installAutoRescan({ document: doc, request, say, isCurrent = () 
     });
   }
 
-  save.addEventListener("click", async () => {
-    if (!isCurrent()) return;
+  const saver = createSettingsSave({ button: save, isCurrent, say, save: async (current) => {
     const problem = autoRescanProblem(hours.value, minutes.value);
     if (problem) { showError(fields[problem[0]], problem[1]); return; }
     clearError();
@@ -83,19 +71,21 @@ export function installAutoRescan({ document: doc, request, say, isCurrent = () 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!isCurrent()) return;
+      if (!current()) return;
       show(value);
       say("Saved.");
     } catch (err) {
-      if (!isCurrent()) return;
-      if (err?.status === 400) showError(minutes, err.message || SHORT_MESSAGE);
-      else say(`Could not save automatic rescan: ${err?.message || "error"}`, true);
+      if (!current()) return;
+      if (err?.status === 400) applyServerFieldError({ field: "minutes", message: err.message || SHORT_MESSAGE }, fields, error);
+      else say(failureText("save automatic rescan", err), "error");
     }
-  });
+  } });
+  save.addEventListener("click", saver.run);
 
   return {
     load,
     clear() {
+      saver.clear();
       loaded += 1;
       clearError();
       show(null);

@@ -25,7 +25,7 @@ function mount() {
       <input id="source-folder-recursive" type="checkbox" checked><select id="source-folder-analysis"><option value="basic">Basic</option><option value="audio" selected>Audio</option></select>
       <p id="source-folder-analysis-help"></p>
       <input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"><p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p><button id="source-folder-add"></button><button id="source-folder-rescan"></button>
-      <p id="source-folders-status"></p><p id="source-folders-progress"></p><table id="source-folders-table"><caption>Registered music and voice liner folders</caption><tbody id="source-folders"></tbody></table>
+      <p id="source-folders-status" role="status" aria-live="polite" aria-atomic="true"></p><p id="source-folders-progress"></p><table id="source-folders-table"><caption>Registered music and voice liner folders</caption><tbody id="source-folders"></tbody></table>
     </section>
     <button id="edit-current-points"></button><section id="points-editor" hidden>
       <h3 id="points-heading">Song points</h3><p id="points-liner-help" hidden></p><small id="negative-overlap-help" hidden>A negative value delays the liner. Preview and Use preview position are unavailable for negative values.</small><label id="points-allow-outro-label" hidden><input id="points-allow-outro" type="checkbox"> Allow start over outro</label>
@@ -55,6 +55,37 @@ document.addEventListener("click", (event) => {
 });
 
 describe("clock folder and points controls", () => {
+  it("keeps folder help when showing and clearing a field refusal", () => {
+    const field = document.getElementById("source-folder-path");
+    field.setAttribute("aria-describedby", "source-folder-analysis-help");
+    const error = document.createElement("p"); error.id = "source-folder-error"; error.hidden = true;
+    field.after(error);
+    installLibraryFolders({ document, request: vi.fn() });
+    document.getElementById("source-folder-add").click();
+    expect(field.getAttribute("aria-describedby")).toBe("source-folder-error source-folder-analysis-help");
+    expect(error.textContent).toBe("Enter a folder path on the AutoDJ machine.");
+    field.value = "M:/Music";
+    field.dispatchEvent(new Event("input"));
+    expect(field.getAttribute("aria-describedby")).toBe("source-folder-analysis-help");
+    expect(error.hidden).toBe(true);
+  });
+
+  it("cancels a queued folder refusal when its field is corrected", async () => {
+    installLibraryFolders({ document, request: vi.fn() });
+    const field = document.getElementById("source-folder-path");
+    const status = document.getElementById("source-folders-status");
+    field.focus();
+    document.getElementById("source-folder-add").click();
+    field.value = "M:/Music";
+    field.dispatchEvent(new Event("input"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(status.textContent).toBe("");
+    expect(field.hasAttribute("aria-invalid")).toBe(false);
+    status.textContent = "Import is running.";
+    field.dispatchEvent(new Event("input"));
+    expect(status.textContent).toBe("Import is running.");
+  });
+
   it("names folder tables by caption and matches the queue column to its action", () => {
     const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
     const page = document.createElement("template");
@@ -397,12 +428,12 @@ describe("clock folder and points controls", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(pathInput.getAttribute("aria-invalid")).toBe("true");
-    expect(pathInput.getAttribute("aria-describedby")).toBe("source-folders-status");
+    expect(pathInput.getAttribute("aria-describedby")).toBe("source-folder-error");
     expect(document.activeElement).toBe(pathInput);
     document.getElementById("panel-library").hidden = false;
     await controls.refresh();
     expect(request).toHaveBeenCalledWith("/api/library/folders");
-    await vi.waitFor(() => expect(document.getElementById("source-folders-status").textContent).toContain("Folder is unavailable"));
+    expect(document.getElementById("source-folder-error").textContent).toContain("Folder is unavailable");
     expect(document.getElementById("source-folders-status").getAttribute("role")).toBe("status");
 
     pathInput.value = "C:/fixed";
@@ -447,7 +478,7 @@ describe("clock folder and points controls", () => {
     expect(document.activeElement).toBe(checkbox);
     checkbox.click();
     expect(checkbox.checked).toBe(true);
-    expect(request.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(1);
+    await vi.waitFor(() => expect(request.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(1));
     folders = [{ ...folders[0], recursive: true }];
     await controls.refresh();
     expect(document.activeElement).toBe(checkbox);
@@ -732,6 +763,42 @@ describe("clock folder and points controls", () => {
     document.getElementById("points-rescan-discard").click();
     expect(document.getElementById("points-rescan-results").hidden).toBe(true);
     expect(document.activeElement).toBe(document.getElementById("points-rescan"));
+  });
+
+  it("releases a focused rescan when changing tracks without releasing the newer scan", async () => {
+    const scans = [];
+    const request = vi.fn((url, options) => {
+      if (url.startsWith("/api/library/points?")) {
+        const path = new URL(url, "http://localhost").searchParams.get("path");
+        return Promise.resolve({ path, kind: "music", points: { start: 0 } });
+      }
+      if (url === "/api/library/points/rescan") {
+        return new Promise((resolve) => scans.push({ path: JSON.parse(options.body).path, resolve }));
+      }
+      return Promise.resolve({});
+    });
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/first.flac");
+    const rescan = document.getElementById("points-rescan");
+    rescan.focus();
+    rescan.click();
+    expect(scans).toHaveLength(1);
+    expect(rescan.getAttribute("aria-busy")).toBe("true");
+    await controls.openEditor("M:/second.flac");
+    expect(rescan.hasAttribute("aria-busy")).toBe(false);
+    rescan.focus();
+    rescan.click();
+    expect(scans.map((scan) => scan.path)).toEqual(["M:/first.flac", "M:/second.flac"]);
+    scans[0].resolve({ token: "old", points: { start: 3 }, point_sources: {}, current_points: {}, current_sources: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(rescan.getAttribute("aria-busy")).toBe("true");
+    rescan.click();
+    expect(scans).toHaveLength(2);
+    expect(document.getElementById("points-rescan-results").hidden).toBe(true);
+    scans[1].resolve({ token: "new", points: { start: 5 }, point_sources: {}, current_points: {}, current_sources: {} });
+    await vi.waitFor(() => expect(document.getElementById("points-rescan-results").hidden).toBe(false));
+    expect(rescan.hasAttribute("aria-busy")).toBe(false);
+    expect(document.getElementById("points-rescan-comparison").textContent).toContain("0:05");
   });
 
   it("limits liner proposals to supported cues and ignores late scans after track navigation or auth change", async () => {

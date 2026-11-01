@@ -133,13 +133,14 @@ it.each(["start", "show_id"])("focuses the %s field after a worker validation er
   const request = vi.fn(async (url, options) => options?.method === "POST"
     ? { id: "job", status: "failed", error: "Correct the input", field }
     : url === "/api/shows" ? { shows: [{ id: "show-1", name: "Tomorrow" }] } : { results: [], job: null });
-  const { controls } = harness({ request });
+  const { controls, spoken } = harness({ request });
   await controls.refresh();
   get("source").value = field === "show_id" ? "show" : "forecast";
   get("form").dispatchEvent(new Event("submit", { cancelable: true })); await settle();
   const input = get(field === "show_id" ? "show" : "start");
   expect(input.getAttribute("aria-invalid")).toBe("true");
   expect(document.activeElement).toBe(input);
+  expect(spoken).not.toContain("Correct the input");
 });
 
 it("loads saved snapshots without generating audio and navigates matching download content", async () => {
@@ -194,6 +195,9 @@ it("rejects invalid timing with focus and announces server TTS failure once", as
   get("form").dispatchEvent(new Event("submit", { cancelable: true })); await settle();
   expect(document.activeElement).toBe(get("head"));
   expect(get("head").getAttribute("aria-invalid")).toBe("true");
+  // The focused field reads its own error; the status does not say it again.
+  expect(get("error").textContent).toMatch(/outside its supported range/);
+  expect(spoken.filter((s) => s.includes("outside its supported range"))).toEqual([]);
   expect(request.mock.calls.some(([, o]) => o?.method === "POST")).toBe(false);
   get("head").value = "10";
   request.mockRejectedValueOnce(new Error("Configure default TTS for missing ID"));
@@ -403,8 +407,12 @@ async function startReview(request) {
 it("says Cancel was accepted and resets the buttons once the worker stops", async () => {
   const { request, setPoll, calls } = cancelHarness(() => ({ id: "job", status: "running", cancel_requested: true }));
   const { timers, spoken } = await startReview(request);
+  expect(get("generate").getAttribute("aria-busy")).toBe("true");
+  expect(get("generate").classList.contains("is-pending")).toBe(true);
   get("cancel").click(); await settle();
   expect(get("cancel").getAttribute("aria-disabled")).toBe("true");
+  expect(get("cancel").getAttribute("aria-busy")).toBe("true");
+  expect(get("cancel").classList.contains("is-pending")).toBe(true);
   expect(get("generate").disabled).toBe(true);
   expect(spoken.at(-1)).toBe("Cancelling review generation…");
   get("cancel").click(); await settle();
@@ -415,6 +423,10 @@ it("says Cancel was accepted and resets the buttons once the worker stops", asyn
   expect(get("generate").disabled).toBe(false);
   expect(get("cancel").hidden).toBe(true);
   expect(get("cancel").hasAttribute("aria-disabled")).toBe(false);
+  for (const name of ["generate", "cancel"]) {
+    expect(get(name).hasAttribute("aria-busy")).toBe(false);
+    expect(get(name).classList.contains("is-pending")).toBe(false);
+  }
   expect(document.activeElement).toBe(get("generate"));
   expect(spoken.at(-1)).toBe("Review cancelled. Previous results are retained.");
 });

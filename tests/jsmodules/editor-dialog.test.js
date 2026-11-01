@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createEditorDialog, showEditorError } from "../../src/autodj/static/modules/editor-dialog.js";
+import { createEditorDialog } from "../../src/autodj/static/modules/editor-dialog.js";
+import { showFieldError } from "../../src/autodj/static/modules/dom-helpers.js";
 import { installIndexMarkup } from "./helpers.js";
 
 const byId = (id) => document.getElementById(id);
@@ -39,6 +40,27 @@ function makeEditor(id, { fallback, parent = document.body, save = vi.fn(), onCa
 }
 
 afterEach(() => document.body.replaceChildren());
+
+describe("destroying an editor", () => {
+  it("closes it and removes every listener it added", async () => {
+    document.body.insertAdjacentHTML("beforeend", '<button id="fallback">Add</button>');
+    const save = vi.fn();
+    const editor = makeEditor("gone", { save });
+    editor.open(editor.value);
+    editor.destroy();
+    expect(editor.dialog.open).toBe(false);
+    for (const [target, event] of [
+      [editor.form, new Event("submit", { cancelable: true })],
+      [editor.cancel, new window.MouseEvent("click", { bubbles: true, cancelable: true })],
+      [editor.dialog, new Event("cancel", { cancelable: true })],
+    ]) {
+      target.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    await Promise.resolve();
+    expect(save).not.toHaveBeenCalled();
+  });
+});
 
 describe("the dialog's name", () => {
   // ADR-0021-21
@@ -81,6 +103,23 @@ describe("the dialog's name", () => {
 });
 
 describe("editor dialog controller", () => {
+  it("keeps the focused Save button available and releases busy controls when closed", async () => {
+    let finish;
+    const save = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const editor = makeEditor("edit", { save });
+    editor.open(editor.value);
+    editor.submit.focus();
+    editor.form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(editor.submit.disabled).toBe(false);
+    expect(editor.submit.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(editor.submit);
+    editor.form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+    editor.close();
+    expect(editor.submit.hasAttribute("aria-busy")).toBe(false);
+    expect(editor.submit.classList.contains("is-pending")).toBe(false);
+    finish();
+  });
   it("opens from a raw table action directly on the first field without visiting its cell", () => {
     document.body.innerHTML = '<table><tbody><tr><td id="cell" role="gridcell" tabindex="0"><button id="opener">Edit</button></td></tr></tbody></table>';
     const editor = makeEditor("edit");
@@ -203,7 +242,7 @@ describe("editor dialog controller", () => {
 
   it("keeps a checkbox beside its label when showing its field error", () => {
     document.body.innerHTML = '<input id="day" type="checkbox"><label for="day">Monday</label><p id="error" hidden></p><p id="status"></p>';
-    showEditorError(byId("day"), "Choose a day", byId("error"), byId("status"));
+    showFieldError(byId("day"), "Choose a day", byId("error"), byId("status"));
     expect(byId("day").nextElementSibling.htmlFor).toBe("day");
     expect(byId("error").previousElementSibling.htmlFor).toBe("day");
     expect(byId("day").getAttribute("aria-describedby")).toBe("error");

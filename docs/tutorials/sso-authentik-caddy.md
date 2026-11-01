@@ -243,7 +243,7 @@ for installations managed another way.
    as the allowed test account. An existing Authentik session may skip the
    password prompt.
 2. Expect AutoDJ to open without a pairing-code dialog. Open **Settings**,
-   **Profiles and access**. **Browser access** should show `Signed in as`
+   **Global**, **Server**. **Browser access** should show `Signed in as`
    followed by the account's name, and a **Your browsers** list. There
    should be no **Show pairing code** control.
 3. Use that browser row's **Rename** control, enter `Practice laptop` in
@@ -309,7 +309,7 @@ anonymous at the gateway is a separate deployment change.
 Predict what happens if you **Forget** `Practice laptop`: will that stop
 the account controlling AutoDJ?
 
-Use **Forget** on that row and read the confirmation before accepting.
+Choose **Forget** from that row's **Options** menu and read the confirmation before accepting.
 Reload AutoDJ. It should still open and register a browser again, initially
 using the account's display name. Forgetting removes a saved browser record;
 Authentik still authorizes the account. Access revocation belongs in

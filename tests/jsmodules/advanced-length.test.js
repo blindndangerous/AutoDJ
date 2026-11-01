@@ -7,7 +7,8 @@ import { importSummary } from "../../src/autodj/static/modules/library-folders.j
 import { applySettingsDrafts, resetSettingsDrafts } from "../../src/autodj/static/modules/settings-drafts.js";
 
 const api = vi.hoisted(() => ({ request: vi.fn(), station: "default", epoch: 1 }));
-vi.mock("../../src/autodj/static/modules/api-client.js", () => ({
+vi.mock("../../src/autodj/static/modules/api-client.js", async (importOriginal) => ({
+  ...await importOriginal(),
   requestJson: api.request,
   captureAuthenticatedRequestEpoch: () => api.epoch,
   isAuthenticatedRequestCurrent: (epoch) => epoch === api.epoch,
@@ -119,6 +120,7 @@ describe("similarity analysis length (#391)", () => {
     setup({ request });
     const save = saveButton();
     edit(16);
+    save.focus();
     save.click();
     expect(save.getAttribute("aria-busy")).toBe("true");
     expect(save.getAttribute("aria-disabled")).toBe("false");

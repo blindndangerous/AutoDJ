@@ -3,8 +3,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../src/autodj/static/modules/confirm-dialog.js", () => ({ confirmAction: vi.fn(async () => true) }));
 import { confirmAction } from "../../src/autodj/static/modules/confirm-dialog.js";
 import { invalidateAuthenticatedRequestEpoch } from "../../src/autodj/static/modules/api-client.js";
-import * as liveRegion from "../../src/autodj/static/modules/live-region.js";
 import { installSecureConnections } from "../../src/autodj/static/modules/secure-connections.js";
+
+const speechObservers = [];
+function captureStatusMessages() {
+  const messages = [];
+  const observer = new globalThis.MutationObserver((changes) => {
+    for (const change of changes) {
+      if (change.target.id !== "sc-error") continue;
+      for (const node of change.addedNodes) if (node.textContent.trim()) messages.push(node.textContent.trim());
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  speechObservers.push(observer);
+  return messages;
+}
 
 const BASE = "/api/server/certificates";
 const task = (props = {}) => ({ id: "a".repeat(32), name: "Radio", domain: "radio.example.org", environment: "staging", phase: "ready", addresses: ["203.0.113.8"], confirmed: false, terms_url: "https://letsencrypt.org/terms", ...props });
@@ -36,7 +49,7 @@ async function preflight(requestHandler = null) {
 }
 describe("ACME secure connections", () => {
   beforeEach(() => { Object.defineProperty(window, "isSecureContext", { configurable: true, value: true }); confirmAction.mockClear(); });
-  afterEach(() => { button("sc-cancel")?.click(); document.body.innerHTML = ""; vi.useRealTimers(); vi.restoreAllMocks(); });
+  afterEach(() => { speechObservers.splice(0).forEach((observer) => observer.disconnect()); button("sc-cancel")?.click(); document.body.innerHTML = ""; vi.useRealTimers(); vi.restoreAllMocks(); });
 
   // ADR-0019-18
   it("offers ACME third in the existing wizard with staging first and private native inputs", async () => {
@@ -95,11 +108,11 @@ describe("ACME secure connections", () => {
 
   // ADR-0019-18.
   it("announces successful preflight exactly once while retaining heading focus", async () => {
-    const announce = vi.spyOn(liveRegion, "announceStatus");
+    const messages = captureStatusMessages();
     await preflight();
     const message = "Preflight complete. Review the addresses and terms before continuing.";
     await vi.waitFor(() => expect(button("sc-error").textContent).toBe(message));
-    expect(announce.mock.calls.filter(([, text]) => text === message)).toHaveLength(1);
+    expect(messages.filter((text) => text === message)).toHaveLength(1);
     expect(document.activeElement).toBe(button("sc-step-heading"));
   });
 
@@ -109,11 +122,11 @@ describe("ACME secure connections", () => {
     ["production", "complete", "Certificate saved. Activate it to use HTTPS."],
   ])("announces %s issuance %s exactly once while retaining heading focus", async (environment, phase, message) => {
     await preflight(async (path) => path === BASE ? inventory() : task({ environment, confirmed: true, ...(path.endsWith("/issue") ? { phase } : {}) }));
-    const announce = vi.spyOn(liveRegion, "announceStatus");
+    const messages = captureStatusMessages();
     button("sc-terms").checked = true;
     button("sc-next").click();
     await vi.waitFor(() => expect(button("sc-error").textContent).toBe(message));
-    expect(announce.mock.calls.filter(([, text]) => text === message)).toHaveLength(1);
+    expect(messages.filter((text) => text === message)).toHaveLength(1);
     expect(document.activeElement).toBe(button("sc-step-heading"));
   });
 
@@ -182,12 +195,12 @@ describe("ACME secure connections", () => {
     const request = await mount(async (path) => path === BASE ? inventory() : operation);
     vi.useFakeTimers(); chooseAcme(); fill(); button("sc-next").click();
     await vi.waitFor(() => expect(button("sc-check-operation")).toBeTruthy());
-    const announce = vi.spyOn(liveRegion, "announceStatus");
+    const messages = captureStatusMessages();
     button("sc-cancel").focus();
     await vi.advanceTimersByTimeAsync(3000);
     expect(document.activeElement).toBe(button("sc-cancel"));
     expect(button("sc-error").textContent).toBe("Checking DNS and certificate service. You can close this dialog and return to the saved setup.");
-    expect(announce).not.toHaveBeenCalled();
+    expect(messages).toEqual([]);
     operation = task();
     await vi.advanceTimersByTimeAsync(3000);
     expect(button("sc-error").textContent).toContain("Preflight complete");
@@ -255,7 +268,7 @@ describe("ACME secure connections", () => {
     expect(button("sc-zone").value).toBe("b".repeat(32));
     expect(button("sc-token").value).toBe("");
     expect(button("sc-terms")).toBeNull();
-    expect(button("sc-domain").getAttribute("aria-describedby")).toBe("sc-domain-help sc-error");
+    expect(button("sc-domain").getAttribute("aria-describedby")).toBe("sc-field-error sc-domain-help");
     expect(document.activeElement).toBe(button("sc-domain"));
     button("sc-domain").dispatchEvent(new Event("input"));
     expect(button("sc-domain").getAttribute("aria-describedby")).toBe("sc-domain-help");
@@ -279,7 +292,7 @@ describe("ACME secure connections", () => {
     });
     chooseAcme(); fill(); button("sc-domain").value = "station.local"; button("sc-next").click();
     await vi.waitFor(() => expect(button("sc-domain").getAttribute("aria-invalid")).toBe("true"));
-    expect(button("sc-domain").getAttribute("aria-describedby")).toBe("sc-domain-help sc-error");
+    expect(button("sc-domain").getAttribute("aria-describedby")).toBe("sc-field-error sc-domain-help");
     expect(button("sc-token").value).toBe("");
     expect(document.activeElement).toBe(button("sc-domain"));
   });

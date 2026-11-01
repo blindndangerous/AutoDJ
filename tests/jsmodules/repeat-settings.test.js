@@ -285,7 +285,7 @@ describe("repeat settings", () => {
     els.save.click();
     expect(els[name].getAttribute("aria-invalid")).toBe("true");
     expect(document.activeElement).toBe(els[name]);
-    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(message));
+    expect(settingsStatus.textContent).toBe("");
     expect(requests).toHaveLength(0);
     expect(els.error.hidden).toBe(false);
     expect(els.error.textContent).toBe(message);

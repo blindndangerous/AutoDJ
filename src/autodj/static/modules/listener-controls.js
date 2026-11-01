@@ -1,7 +1,7 @@
 import { registerSettingsGroup } from "./settings-drafts.js";
 // Settings > Stream listener admission and ban controls.
-import { requestJson } from "./api-client.js";
-import { announceStatus } from "./live-region.js";
+import { failureText, requestJson } from "./api-client.js";
+import { makeSay } from "./live-region.js";
 import { clearFieldError, showFieldError } from "./dom-helpers.js";
 
 const FORMAT_NAMES = { aac: "AAC", opus: "Opus" };
@@ -37,9 +37,7 @@ export function createListenerControls(doc, status) {
   let active = false;
   let opener = null;
 
-  function say(message, tone = "info") {
-    announceStatus(status, message, { dwellMs: 6000, force: true, tone });
-  }
+  const say = makeSay(status, { dwellMs: 6000 });
 
   function nextFocus(container, index, fallback) {
     const rows = [...container.children];
@@ -101,7 +99,7 @@ export function createListenerControls(doc, status) {
           nextFocus(list, index, heading);
           say(`Disconnected listener ${current.address}`);
           await refresh();
-        } catch (error) { say(`Could not disconnect listener: ${error.message}`, "error"); }
+        } catch (error) { say(failureText("disconnect listener", error), "error"); }
         }));
         row.append(" ");
         row.append(makeButton("Ban", () => {
@@ -147,7 +145,7 @@ export function createListenerControls(doc, status) {
             nextFocus(bans, index, banHeading);
             say(`Removed ban for ${current.address}`);
             await refresh();
-          } catch (error) { say(`Could not remove ban: ${error.message}`, "error"); }
+          } catch (error) { say(failureText("remove ban", error), "error"); }
         }));
       }
       row._ban = item;
@@ -182,7 +180,7 @@ export function createListenerControls(doc, status) {
     } catch (error) {
       if (!active || sequence !== requestSequence) return;
       if (!failedSpoken && error.name !== "AuthenticationRequiredError") {
-        say(`Could not load listeners: ${error.message}`, "error");
+        say(failureText("load listeners", error), "error");
         failedSpoken = true;
       }
     }
@@ -236,7 +234,7 @@ export function createListenerControls(doc, status) {
       banHeading.focus();
       say(duration.value ? `Banned ${target} for ${chosen}` : `Banned ${target} until removed`);
       await refresh();
-    } catch (error) { say(`Could not ban address: ${error.message}`, "error"); }
+    } catch (error) { say(failureText("ban address", error), "error"); }
   });
 
   return { apply, reset, refresh };

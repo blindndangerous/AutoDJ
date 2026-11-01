@@ -145,7 +145,7 @@ describe("Live DJ settings", () => {
     expect(username.getAttribute("aria-describedby").split(" ")).toContain("live-dj-error");
     expect(byId("live-dj-error").hidden).toBe(false);
     expect(document.activeElement).toBe(username);
-    expect(announce).toHaveBeenLastCalledWith(expect.stringMatching(/^Username/), true);
+    expect(announce).toHaveBeenLastCalledWith(expect.stringMatching(/^Username/), "error");
     expect(calls.some(([url]) => url === "/api/live/djs")).toBe(false);
     // Typing clears the mark.
     username.value = "bob";
