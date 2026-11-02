@@ -1312,7 +1312,13 @@ class LibraryCatalog:
             lufs, gain_db = float(lufs), float(gain_db)
         except OverflowError as exc:
             raise ValueError("invalid loudness measurement") from exc
-        if not math.isfinite(lufs) or not math.isfinite(gain_db) or not -60 <= gain_db <= 18:
+        from autodj.processing import MAX_GAIN_DB, MIN_GAIN_DB
+
+        if (
+            not math.isfinite(lufs)
+            or not math.isfinite(gain_db)
+            or not MIN_GAIN_DB <= gain_db <= MAX_GAIN_DB
+        ):
             raise ValueError("invalid loudness measurement")
         normalized = _path(path)
         with self._lock:
