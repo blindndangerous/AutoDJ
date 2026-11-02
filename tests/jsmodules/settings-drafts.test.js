@@ -49,7 +49,7 @@ describe("Settings drafts", () => {
     expect(sound.contains(duck)).toBe(true);
     expect(duck.closest("[data-show-when]")).toBeNull();
     expect(document.querySelector('label[for="ln-duck-db"]').textContent).toBe("Music duck (dB)");
-    expect(duck.getAttribute("aria-describedby")).toBe("ln-duck-db-desc");
+    expect(sound.querySelector("#ln-duck-db-desc").textContent).toContain("How far the music drops");
     mocks.request.mockResolvedValue({ files: [], config: { duck_db: -9 } });
     const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
     installLiners({ lnDuckDb: duck, lnEnabled: enabled }, { canPlay: () => false });
