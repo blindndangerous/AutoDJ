@@ -126,7 +126,7 @@ def test_loudness_column_migrates_and_persists(tmp_path: Path) -> None:
         {"lufs": float("nan")},
         {"lufs": float("inf")},
         {"gain_db": float("nan")},
-        {"gain_db": 18.1},
+        {"gain_db": 24.1},
         {"gain_db": -60.1},
         {"size": True},
     ],
@@ -148,6 +148,37 @@ def test_set_loudness_rejects_invalid_measurements(tmp_path: Path, updates: dict
         catalog.put_entry(entry(song))
         with pytest.raises(ValueError):
             catalog.set_loudness(song, measurement)
+
+
+@pytest.mark.parametrize("kind", ["music", "liner"])
+@pytest.mark.parametrize("amplitude", [0.004, 0.001])
+def test_quiet_audio_measurement_persists_and_decodes(tmp_path: Path, kind, amplitude) -> None:
+    import shutil
+
+    import numpy as np
+    import soundfile as sf
+
+    from autodj import processing
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("FFmpeg is unavailable")
+    song = tmp_path / "quiet.wav"
+    t = np.arange(3 * processing.SAMPLE_RATE) / processing.SAMPLE_RATE
+    sf.write(song, amplitude * np.sin(2 * np.pi * 440 * t), processing.SAMPLE_RATE)
+    measurement = processing.analyze_loudness(song, kind)
+    assert 18 < measurement["gain_db"] <= 24
+    if amplitude == 0.001:
+        assert measurement["gain_db"] == 24
+    database = tmp_path / "catalog.db"
+    with LibraryCatalog(database) as catalog:
+        catalog.put_entry(entry(song), kind=kind)
+        catalog.set_loudness(song, measurement)
+    with LibraryCatalog(database) as catalog:
+        cached = catalog.record_for_path(song)["loudness"]
+        assert cached == measurement
+        assert processing.loudness_matches(cached, song, kind)
+        audio = processing.load_processed_audio(song, cached, kind)
+        assert len(audio) and np.isfinite(audio).all() and np.any(audio)
 
 
 def test_set_loudness_discards_stale_source_measurement(tmp_path: Path) -> None:
