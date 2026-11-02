@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 PREPARATION_VERSION = "loudness-v1"
 LINER_PREPARATION_VERSION = "liner-loudness-v2"
 TARGET_LUFS = {"music": -28.0, "liner": -28.0, "voice": -28.0}
-MIN_GAIN_DB, MAX_GAIN_DB = -60.0, 18.0
+MIN_GAIN_DB, MAX_GAIN_DB = -60.0, 24.0
 _FFMPEG_TIMEOUT_S = 600
 _READ_CHUNK_BYTES = 1 << 16
 _SILENCE_AMPLITUDE = 10 ** (-60 / 20)
@@ -232,7 +232,7 @@ def loudness_matches(measurement: dict | None, source: Path, kind: str = "music"
             and MIN_GAIN_DB <= gain <= MAX_GAIN_DB
             and math.isclose(
                 gain,
-                min(target - lufs, MAX_GAIN_DB) if kind != "music" else target - lufs,
+                min(target - lufs, MAX_GAIN_DB),
                 abs_tol=0.01,
             )
         )
@@ -301,9 +301,7 @@ def _measurement(source: Path, kind: str, lufs: float, before: os.stat_result) -
     """Validate an integrated loudness and return the cacheable measurement."""
     if not math.isfinite(lufs) or lufs <= -65:
         raise ValueError(f"silent or invalid audio: {source}")
-    gain_db = _kind(kind) - lufs
-    if kind != "music":
-        gain_db = min(gain_db, MAX_GAIN_DB)
+    gain_db = min(_kind(kind) - lufs, MAX_GAIN_DB)
     if not MIN_GAIN_DB <= gain_db <= MAX_GAIN_DB:
         raise ValueError(f"required gain outside safe range: {source}")
     return {

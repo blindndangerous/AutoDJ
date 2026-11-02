@@ -25,21 +25,30 @@ def _source(path: Path, *, silence: bool = False) -> Path:
     return path
 
 
-def test_quiet_break_accepted_for_upload_can_be_processed_for_air(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["music", "liner", "voice"])
+def test_quiet_break_accepted_for_upload_can_be_processed_for_air(
+    tmp_path: Path, kind: str
+) -> None:
     from autodj.breaks_api import _decode_cues
     from autodj.stereo import SAMPLE_RATE
 
     t = np.arange(4 * SAMPLE_RATE, dtype=np.float32) / SAMPLE_RATE
-    voice = 0.005 * np.sin(2 * np.pi * 220 * t) * (0.5 + 0.5 * np.sin(2 * np.pi * 3 * t))
+    voice = 0.002 * np.sin(2 * np.pi * 220 * t) * (0.5 + 0.5 * np.sin(2 * np.pi * 3 * t))
     source = tmp_path / "quiet.wav"
     sf.write(source, np.column_stack((voice, voice)), SAMPLE_RATE)
     assert _decode_cues(source, 300.0)
-    audio, measurement = processing.load_and_measure_audio(
-        source, "voice", 301.0, input_format="wav"
-    )
+    audio, measurement = processing.load_and_measure_audio(source, kind, 301.0, input_format="wav")
     assert len(audio) > 0
+    assert processing.TARGET_LUFS[kind] - measurement["lufs"] > 24.0
+    assert measurement["gain_db"] == 24.0
     assert measurement["gain_db"] == processing.MAX_GAIN_DB
-    assert processing.loudness_matches(measurement, source, "voice")
+    assert processing.loudness_matches(measurement, source, kind)
+    assert not processing.loudness_matches(dict(measurement, gain_db=18.0), source, kind)
+    separate = processing.analyze_loudness(source, kind)
+    assert separate["gain_db"] == processing.MAX_GAIN_DB
+    assert processing.loudness_matches(separate, source, kind)
+    decoded = processing.load_processed_audio(source, separate, kind)
+    assert np.isfinite(decoded).all() and np.any(decoded)
 
 
 def _mono_48k_source(path: Path) -> Path:
