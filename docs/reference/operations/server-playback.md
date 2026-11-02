@@ -123,7 +123,8 @@ automation; run such audits after returning control.
   spoken breaks all use the same -28 LUFS preparation target before the master processor.
   Catalog liners (produced IDs and jingles) retain a 70 Hz high-pass but receive no extra
   compression. Recorded/uploaded breaks and matched intros retain that high-pass and use
-  lighter 2:1 voice compression. Both kinds of voice clip cap upward gain at 18 dB.
+  lighter 2:1 voice compression. All three kinds cap upward gain at 24 dB;
+  quiet tracks play below the preparation target when reaching it would require more gain.
   These are fixed processing defaults, not additional settings; Stereo Tool AGC drive and
   master limiting are unchanged. A raw voice file imported as a catalog liner follows the
   produced-ID treatment; use a break or matched intro for the voice treatment.
