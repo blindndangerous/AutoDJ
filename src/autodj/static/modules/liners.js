@@ -448,7 +448,7 @@ export function installLiners(els, deps) {
   let scheduledPlayback = null;
   const controls = [els.lnEnabled, els.lnMatchedIntroOnlyWithoutLiner,
     els.lnEveryN, els.lnEveryMin, els.lnRandMin, els.lnRandMax,
-    els.lnPickMode, els.lnDuckDb, els.lnTalkUp].filter(Boolean);
+    els.lnPickMode, els.lnTalkUp].filter(Boolean);
   const panel = controls[0]?.closest("#spanel-liners");
   const read = () => ({
     liners_enabled: Boolean(els.lnEnabled?.checked),
@@ -458,7 +458,6 @@ export function installLiners(els, deps) {
     liners_random_min_minutes: _floatOrOff(els.lnRandMin),
     liners_random_max_minutes: _floatOrOff(els.lnRandMax),
     liners_pick_mode: els.lnPickMode?.value || "random",
-    liners_duck_db: _floatOrNull(els.lnDuckDb) === null ? null : -_floatOrNull(els.lnDuckDb),
     liners_talk_up: Boolean(els.lnTalkUp?.checked),
   });
   registerSettingsGroup({
@@ -467,7 +466,7 @@ export function installLiners(els, deps) {
       liners_enabled: els.lnEnabled, matched_intro_only_without_liner: els.lnMatchedIntroOnlyWithoutLiner,
       liners_every_n_songs: els.lnEveryN, liners_every_minutes: els.lnEveryMin,
       liners_random_min_minutes: els.lnRandMin, liners_random_max_minutes: els.lnRandMax,
-      liners_pick_mode: els.lnPickMode, liners_duck_db: els.lnDuckDb, liners_talk_up: els.lnTalkUp,
+      liners_pick_mode: els.lnPickMode, liners_talk_up: els.lnTalkUp,
     },
     write(value) {
       const c = state.lib.config || (state.lib.config = {});
@@ -479,14 +478,12 @@ export function installLiners(els, deps) {
         ["liners_random_min_minutes", els.lnRandMin, "value", "random_min_minutes"],
         ["liners_random_max_minutes", els.lnRandMax, "value", "random_max_minutes"],
         ["liners_pick_mode", els.lnPickMode, "value", "pick_mode"],
-        ["liners_duck_db", els.lnDuckDb, "value", "duck_db"],
         ["liners_talk_up", els.lnTalkUp, "checked", null],
       ];
       for (const [key, control, prop, configKey] of fields) {
         if (!(key in value) || !control) continue;
         const item = value[key];
-        control[prop] = prop === "value" && key === "liners_duck_db"
-          ? String(Math.abs(item ?? -3)) : prop === "value" ? String(item ?? "") : Boolean(item);
+        control[prop] = prop === "value" ? String(item ?? "") : Boolean(item);
         if (configKey) c[configKey] = item;
       }
       c.enabled = value.liners_enabled ?? c.enabled;
@@ -495,7 +492,6 @@ export function installLiners(els, deps) {
       c.random_min_minutes = value.liners_random_min_minutes ?? c.random_min_minutes;
       c.random_max_minutes = value.liners_random_max_minutes ?? c.random_max_minutes;
       c.pick_mode = value.liners_pick_mode ?? c.pick_mode;
-      if ("liners_duck_db" in value) c.duck_db = value.liners_duck_db;
     },
     validate() {
       const error = controls[0]?.ownerDocument.getElementById("ln-settings-error");
@@ -505,7 +501,6 @@ export function installLiners(els, deps) {
         [els.lnEveryMin, { label: "Minutes between liners", min: 0, max: 240 }],
         [els.lnRandMin, { label: "Shortest random interval", min: 0, max: 240 }],
         [els.lnRandMax, { label: "Longest random interval", min: 0, max: 240 }],
-        [els.lnDuckDb, DUCK_DB],
       ];
       for (const [control, spec] of fields) {
         if (!control || control.value === "") continue;
@@ -523,6 +518,33 @@ export function installLiners(els, deps) {
   });
   for (const control of controls) {
     control.addEventListener("input", () => clearFieldError(control, control.ownerDocument.getElementById("ln-settings-error")));
+  }
+  if (els.lnDuckDb) {
+    const input = els.lnDuckDb;
+    const sound = input.closest("#spanel-sound");
+    const error = input.ownerDocument.getElementById("ln-duck-db-error");
+    const validate = (focus = true) => {
+      clearFieldError(input, error);
+      if (parseSettingValue(input.value, DUCK_DB) !== null) return true;
+      showFieldError(input, refusalText(DUCK_DB, input.value), error,
+        sound?.querySelector(".settings-save-status"), { focus });
+      return false;
+    };
+    registerSettingsGroup({
+      panel: sound, group: "playback", controls: [input],
+      fields: { liners_duck_db: input },
+      read: () => ({ liners_duck_db: _floatOrNull(input) === null ? null : -_floatOrNull(input) }),
+      write(value) {
+        if (!("liners_duck_db" in value)) return;
+        input.value = String(Math.abs(value.liners_duck_db ?? -3));
+        const c = state.lib.config || (state.lib.config = {});
+        c.duck_db = value.liners_duck_db;
+        clearFieldError(input, error);
+      },
+      validate: () => validate(),
+    });
+    input.addEventListener("input", () => clearFieldError(input, error));
+    input.addEventListener("change", () => validate(false));
   }
   const datesEditor = els.lnFileList && _installDatesForm(els, els.lnFileList.ownerDocument);
 
@@ -559,21 +581,6 @@ export function installLiners(els, deps) {
         _setStatus(els, err.status === 409 && !replace
           ? `Upload failed: a liner named ${f.name} already exists.  Tick Replace existing file to overwrite it.`
           : `Upload failed: ${err.message}`);
-      }
-    });
-  }
-
-  els.lnDuckDb?.addEventListener("input", () => clearFieldError(els.lnDuckDb, els.lnDuckDb.ownerDocument.getElementById("ln-duck-db-error")));
-  for (const el of [
-    els.lnEnabled, els.lnEveryN, els.lnEveryMin,
-    els.lnRandMin, els.lnRandMax, els.lnPickMode, els.lnDuckDb,
-  ]) {
-    if (!el) continue;
-    el.addEventListener("change", () => {
-      // change fires as Tab leaves the field: the error is linked and said,
-      // but focus stays where the reader moved it.
-      if (el === els.lnDuckDb && parseSettingValue(el.value, DUCK_DB) === null) {
-        showFieldError(el, refusalText(DUCK_DB, el.value), el.ownerDocument.getElementById("ln-duck-db-error"), els.lnStatus, { focus: false });
       }
     });
   }

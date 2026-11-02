@@ -626,7 +626,7 @@ describe("liner settings and upload", () => {
       <input type="number" id="rand-min" value="">
       <input type="number" id="rand-max" value="">
       <select id="pick"><option value="random">Random</option></select>
-      <input type="number" id="duck" value="3"><p id="ln-duck-db-error" hidden></p><p id="ln-settings-error" hidden></p>
+      <div id="spanel-sound"><input type="number" id="duck" value="3"><p id="ln-duck-db-error" hidden></p><p class="settings-save-status"></p></div><p id="ln-settings-error" hidden></p>
       <input type="file" id="upload"><button id="submit">Upload</button>
       <input type="checkbox" id="replace">
       <p id="status"></p><div id="status-toast" hidden></div>`;
@@ -679,9 +679,9 @@ describe("liner settings and upload", () => {
     }
     elements.lnDuckDb.value = "8";
     elements.lnDuckDb.dispatchEvent(new Event("change"));
-    expect(groups.find((group) => group.group === "playback").read().liners_duck_db).toBe(-8);
+    expect(groups.find((group) => group.fields.liners_duck_db).read().liners_duck_db).toBe(-8);
     elements.lnDuckDb.value = "";
-    expect(groups.find((group) => group.group === "playback").read().liners_duck_db).toBeNull();
+    expect(groups.find((group) => group.fields.liners_duck_db).read().liners_duck_db).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -704,7 +704,7 @@ describe("liner settings and upload", () => {
     expect(error.textContent).toMatch(/enter a number from 0 to 30/);
     expect(elements.lnDuckDb.getAttribute("aria-invalid")).toBe("true");
     expect(elements.lnDuckDb.getAttribute("aria-describedby").split(" ")).toContain("ln-duck-db-error");
-    await vi.waitFor(() => expect(elements.lnStatus.textContent).toBe(error.textContent));
+    await vi.waitFor(() => expect(document.querySelector(".settings-save-status").textContent).toBe(error.textContent));
   });
 
   it("uses the default duck after a saved null replaces an older depth", async () => {
@@ -721,7 +721,7 @@ describe("liner settings and upload", () => {
     installLiners(elements, { canPlay: () => false, testOnServer: () => false,
       prepareTest: () => null, playLiner });
     await vi.waitFor(() => expect(elements.lnDuckDb.value).toBe("12"));
-    groups.find((group) => group.group === "playback").write({ liners_duck_db: null });
+    groups.find((group) => group.fields.liners_duck_db).write({ liners_duck_db: null });
     elements.lnTestBtn.click();
     await vi.waitFor(() => expect(playLiner).toHaveBeenCalledWith(expect.any(ArrayBuffer), -3, expect.any(Number)));
   });
