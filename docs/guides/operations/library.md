@@ -34,7 +34,7 @@ One song plays next: a second Play next takes the place of the first, and the pa
 it replaced.
 Manage liner files under **Settings > Voice liners**: use a liner's **Options** menu for **Play dates**, **Track info** and **Delete** (see
 [Liner and cart play dates](carts-and-liners.md#liner-and-cart-play-dates)). Track info's Return button puts focus
-back on the result that opened it. **Music duck (dB)** sets the music drop under overlays and
+back on the result that opened it. **Settings > Sound > Music duck (dB)** sets the music drop under overlays and
 scheduled IDs, from 0 to 30 dB (default 3). Zero leaves music unchanged. Existing saved depths
 are preserved. The config/API value `liners_duck_db` remains negative: -3 means a 3 dB drop.
 

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 const mocks = vi.hoisted(() => ({ request: vi.fn(), choose: vi.fn(), station: "default", epoch: 1 }));
 vi.mock("../../src/autodj/static/modules/api-client.js", async (importOriginal) => ({
@@ -34,6 +35,62 @@ beforeEach(async () => {
 });
 
 describe("Settings drafts", () => {
+  it("saves and discards music duck in Sound independently of automatic liners", async () => {
+    const html = readFileSync("src/autodj/static/index.html", "utf8");
+    const fragment = html.slice(html.indexOf('<div class="card" role="tabpanel" id="spanel-sound"'),
+      html.indexOf('<div class="card" role="tabpanel" id="spanel-access"'));
+    const page = new globalThis.DOMParser().parseFromString(fragment, "text/html");
+    document.body.replaceChildren(page.getElementById("spanel-sound"), page.getElementById("spanel-announcements"));
+    const sound = document.getElementById("spanel-sound");
+    const announcements = document.getElementById("spanel-announcements");
+    sound.hidden = false;
+    const duck = document.getElementById("ln-duck-db");
+    const enabled = document.getElementById("ln-enabled");
+    expect(sound.contains(duck)).toBe(true);
+    expect(duck.closest("[data-show-when]")).toBeNull();
+    expect(document.querySelector('label[for="ln-duck-db"]').textContent).toBe("Music duck (dB)");
+    expect(sound.querySelector("#ln-duck-db-desc").textContent).toContain("How far the music drops");
+    mocks.request.mockResolvedValue({ files: [], config: { duck_db: -9 } });
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    installLiners({ lnDuckDb: duck, lnEnabled: enabled }, { canPlay: () => false });
+    await vi.waitFor(() => expect(duck.value).toBe("9"));
+    const initial = { revision: "one", profile: "Evening", values: { playback: {
+      liners_duck_db: -9, liners_enabled: false,
+    } } };
+    mocks.request.mockResolvedValue(initial);
+    await drafts.setSettingsProfile("Evening");
+    expect(enabled.checked).toBe(false);
+    const change = (value) => {
+      duck.value = value;
+      duck.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    change("7");
+    enabled.checked = true;
+    enabled.dispatchEvent(new Event("change", { bubbles: true }));
+    drafts.discardSettingsPanel(sound);
+    expect(duck.value).toBe("9");
+    expect(enabled.checked).toBe(true);
+    change("31");
+    mocks.request.mockClear();
+    expect(await drafts.saveSettingsPanel(sound)).toBe(false);
+    expect(mocks.request).not.toHaveBeenCalled();
+    expect(duck.getAttribute("aria-invalid")).toBe("true");
+    change("0");
+    mocks.request.mockResolvedValue({ revision: "two", applied: ["playback"], settings: {
+      ...initial, revision: "two", values: { playback: { liners_duck_db: 0, liners_enabled: false } },
+    } });
+    expect(await drafts.saveSettingsPanel(sound)).toBe(true);
+    const body = JSON.parse(mocks.request.mock.calls[0][1].body);
+    expect(body.profile).toBe("Evening");
+    expect(body.changes).toEqual({ playback: { liners_duck_db: 0 } });
+    expect(enabled.checked).toBe(true);
+    expect(duck.value).toBe("0");
+    expect(sound.querySelectorAll("[data-settings-save]")).toHaveLength(1);
+    drafts.discardSettingsPanel(announcements);
+    expect(enabled.checked).toBe(false);
+    expect(duck.value).toBe("0");
+  });
+
   it("saves combined sections through one tab bar and one grouped request", async () => {
     document.body.innerHTML = '<div id="spanel-mixing" role="tabpanel"><section id="spanel-transitions"><input value="0"></section><section id="spanel-djmix"><input type="checkbox"></section></div>';
     const tab = document.getElementById("spanel-mixing");
