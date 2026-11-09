@@ -21,15 +21,26 @@ ICECAST = {"type": "icecast", "host": "radio.example.com", "mount": "/live", "pa
 
 def test_icecast_defaults() -> None:
     relay = StreamConfig.from_dict({"relays": {"main": ICECAST}}).relays["main"]
-    assert (relay.name, relay.port, relay.user, relay.bitrate, relay.public, relay.enabled) == (
+    assert (
+        relay.name,
+        relay.port,
+        relay.user,
+        relay.bitrate,
+        relay.public,
+        relay.enabled,
+        relay.reconnect_seconds,
+    ) == (
         "main",
         8000,
         "source",
         None,
         False,
         True,
+        10,
     )
     assert relay.stream_id is None
+    minimum = RelayConfig.from_table("minimum", {**ICECAST, "reconnect_seconds": 1})
+    assert minimum.reconnect_seconds == 1
 
 
 def test_shoutcast2_defaults_to_stream_one() -> None:
@@ -66,6 +77,11 @@ def test_password_is_not_in_repr() -> None:
         {**ICECAST, "bitrate": True},
         {**ICECAST, "public": "yes"},
         {**ICECAST, "enabled": 1},
+        {**ICECAST, "reconnect_seconds": 0},
+        {**ICECAST, "reconnect_seconds": -1},
+        {**ICECAST, "reconnect_seconds": "10"},
+        {**ICECAST, "reconnect_seconds": 1.5},
+        {**ICECAST, "reconnect_seconds": True},
         {"type": "icecast", "host": "h", "password": "pw"},
         {"type": "shoutcast1", "host": "h", "password": "pw", "mount": "/live"},
         {"type": "shoutcast1", "host": "h", "password": "pw", "user": "source"},

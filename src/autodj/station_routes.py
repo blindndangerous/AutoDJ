@@ -327,6 +327,7 @@ class RelaySettingsBody(BaseModel):
     bitrate: Literal[128, 192, 256, 320] | None = None
     public: StrictBool = False
     enabled: StrictBool = True
+    reconnect_seconds: int = PydanticField(default=10, ge=1, strict=True)
     is_edit: StrictBool = False
 
 
@@ -771,6 +772,7 @@ def _save_stream_relay_locked(
                 "bitrate": body.bitrate,
                 "public": body.public,
                 "enabled": body.enabled,
+                "reconnect_seconds": body.reconnect_seconds,
             },
         )
         resolve_safe_relay_addresses(relay.host, source_port(relay))

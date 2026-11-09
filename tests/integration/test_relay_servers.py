@@ -20,7 +20,7 @@ import pytest
 
 from autodj import relay as relay_module
 from autodj.config import RelayConfig
-from autodj.relay import RelayManager
+from autodj.relay import Relay, RelayManager
 from autodj.stream import StreamOutput
 
 PASSWORD = "fake-server-password"
@@ -215,7 +215,7 @@ def _config(kind: str, port: int) -> RelayConfig:
 
 @pytest.fixture
 def fast(monkeypatch):
-    monkeypatch.setattr(relay_module, "BACKOFF_START", 0.05)
+    monkeypatch.setattr(Relay, "_wait_reconnect", lambda self: self._closed.wait(0.05))
     monkeypatch.setattr(relay_module, "FIRST_TITLE_DELAY", 0.1)
 
 

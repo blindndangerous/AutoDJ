@@ -73,6 +73,8 @@ The keys:
 - `public`: `true` asks the server to list the station in its public directories. Default
   `false`.
 - `enabled`: `false` keeps the table but does not connect. Default `true`.
+- `reconnect_seconds`: fixed wait between connection attempts, default 10 seconds.
+  Set **Reconnect interval (seconds)** to a whole number of at least 1, with no configured maximum.
 
 What a relay does:
 
@@ -83,13 +85,14 @@ What a relay does:
   `/admin/metadata` or Shoutcast's `/admin.cgi`, timed to the audio like the stream's own
   titles. A failed title update is shown and logged, and the next song tries again.
 - **It reconnects on its own.** When the server cannot be reached, refuses the login or drops
-  the connection, the relay tries again after 1 second, then 2, 4 and so on, up to once a
-  minute. A connection that lasted 30 seconds starts the count again. The audio sent after a
+  the connection, the relay waits its configured reconnect interval before each new attempt,
+  indefinitely while enabled and running. The default is 10 seconds. The audio sent after a
   reconnect is live; nothing is saved up while disconnected. A server too slow to take the
   audio (more than 5 seconds behind) is disconnected and tried again. Changing Quality makes
   the relays that send the stream's own audio log in again at the new bitrate. If the stream's
   encoder restarts at the same bitrate, after a crash say, the relay logs in again after the
-  same growing wait as after a failure.
+  same fixed wait as after a failure. Disabling the relay or stopping the station interrupts
+  the wait and stops retries.
 - **It never slows down the stream.** Each relay sends from its own queue and threads, so a
   stalled server cannot hold up the mix or the other listeners.
 

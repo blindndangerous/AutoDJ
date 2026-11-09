@@ -232,6 +232,11 @@ async function audit(name, launcher) {
     await page.locator("#stream-relay-port").fill("8002");
     await page.locator("#stream-relay-mount").fill(`/${slug}`);
     await page.locator("#stream-relay-password").fill("test123");
+    const reconnect = page.getByLabel("Reconnect interval (seconds)", { exact: true });
+    assert.equal(await reconnect.inputValue(), "10");
+    assert.equal(await reconnect.getAttribute("min"), "1");
+    assert.equal(await reconnect.getAttribute("max"), null);
+    await reconnect.fill("23");
     await page.locator("#stream-relay-enabled").uncheck();
     const relaySave = page.waitForResponse((response) => response.url() === `${endpoint}/stream/relays`
       && response.request().method() === "POST");
@@ -240,6 +245,10 @@ async function audit(name, launcher) {
     assert.equal(relayResponse.status(), 200, await relayResponse.text());
     const relays = await (await page.request.get(`${endpoint}/stream/relays`)).json();
     assert.equal(relays.relays[0].name, "Streammadness relay");
+    assert.equal(relays.relays[0].reconnect_seconds, 23);
+    await page.getByRole("button", { name: "Edit relay Streammadness relay", exact: true }).click();
+    assert.equal(await reconnect.inputValue(), "23");
+    await page.locator("#stream-relay-cancel").click();
     assert.equal(JSON.stringify(relays).includes("test123"), false);
     assert.equal(await page.locator("#spanel-live").isVisible(), true);
     assert.deepEqual(errors, []);

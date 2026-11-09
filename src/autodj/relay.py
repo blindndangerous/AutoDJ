@@ -6,8 +6,8 @@ stream title that chunk belongs to, through :meth:`Relay.feed`, which only
 queues and never blocks.  A slow or unreachable server therefore never
 holds up the encoder or the mix bus's pacing thread.  A sender thread per
 relay logs in to the server, sends the queued audio and, when anything
-fails, reconnects with exponential backoff.  A metadata thread per relay
-sends the now-playing title to the server's admin interface whenever the
+fails, reconnects after its configured fixed interval.  A metadata thread per
+relay sends the now-playing title to the server's admin interface whenever the
 title in the audio changes.
 
 The password is written only to the server's own socket or request.
@@ -51,10 +51,9 @@ LOGIN_TIMEOUT = 10.0
 #: How long stopping waits, in total, for every relay's threads to end.
 CLOSE_TIMEOUT = 3.0
 METADATA_TIMEOUT = 10.0
-BACKOFF_START = 1.0
-BACKOFF_MAX = 60.0
-# A connection that stayed up this long resets the backoff.
-STABLE_SECONDS = 30.0
+# Bound each interruptible wait so even arbitrarily large configured intervals
+# avoid platform timeout limits and can still be cancelled promptly.
+_RECONNECT_WAIT_SLICE = 60
 # Servers ignore a title sent the instant a source logs in.
 FIRST_TITLE_DELAY = 2.0
 _QUEUE_SECONDS = 5.0
@@ -488,7 +487,6 @@ class Relay:
         self._state = "connecting"
         self._error: str | None = None
         self._title_error: str | None = None
-        self._failures = 0
         self._logged_error: str | None = None
         self._threads = [
             station_thread(target=self._send_loop, name=f"autodj-relay-{cfg.name}", daemon=True),
@@ -615,18 +613,22 @@ class Relay:
         except Exception:
             logger.debug("Relay status callback failed", exc_info=True)
 
-    def _next_delay(self) -> float:
-        """Count a failure and return how long to wait before trying again."""
-        self._failures += 1
-        return min(BACKOFF_START * 2 ** (self._failures - 1), BACKOFF_MAX)
+    def _wait_reconnect(self) -> None:
+        """Wait the configured interval in bounded slices, interruptibly."""
+        remaining = self.cfg.reconnect_seconds
+        while remaining > 0 and not self._closed.is_set():
+            delay = min(remaining, _RECONNECT_WAIT_SLICE)
+            if self._closed.wait(delay):
+                return
+            remaining -= delay
 
     def _fail(self, error: str) -> None:
-        """Log *error* (once while it repeats), then wait out the backoff."""
-        delay = self._next_delay()
+        """Log *error* (once while it repeats), then wait before retrying."""
+        delay = self.cfg.reconnect_seconds
         self._set_state("retrying", error)
         if error != self._logged_error:
             logger.warning(
-                "Relay %s (%s): %s; trying again in %.0f s, then less often while it fails",
+                "Relay %s (%s): %s; trying again in %d s",
                 self.cfg.name,
                 describe_target(self.cfg),
                 error,
@@ -634,8 +636,8 @@ class Relay:
             )
             self._logged_error = error
         else:
-            logger.debug("Relay %s: %s; next try in %.0f s", self.cfg.name, error, delay)
-        self._closed.wait(delay)
+            logger.debug("Relay %s: %s; next try in %d s", self.cfg.name, error, delay)
+        self._wait_reconnect()
 
     def _send_loop(self) -> None:
         """Log in, send audio until something fails, wait, and repeat until closed."""
@@ -662,26 +664,22 @@ class Relay:
             if self._closed.is_set():
                 connection.close()
                 return
-            started = self._clock()
             error = self._pump(connection)
             if self._closed.is_set():
                 return
-            if self._clock() - started >= STABLE_SECONDS:
-                self._failures = 0
             if error is not None:
                 self._fail(error)
             elif self._bitrate() == self._live_bitrate:
-                # The encoder restarted at the same bitrate, as after a
-                # crash: wait like after a failure, so an encoder that keeps
-                # crashing does not cause a login per crash.
-                delay = self._next_delay()
+                # A same-bitrate encoder restart needs the same fixed retry
+                # interval as a failed connection.
+                delay = self.cfg.reconnect_seconds
                 self._set_state("connecting", None)
                 logger.debug(
-                    "Relay %s: the encoder restarted; logging in again in %.0f s",
+                    "Relay %s: the encoder restarted; logging in again in %d s",
                     self.cfg.name,
                     delay,
                 )
-                self._closed.wait(delay)
+                self._wait_reconnect()
 
     def _login_started(self, sock: socket.socket) -> None:
         """Remember the socket of the login in progress, or cut it if closing."""
@@ -705,8 +703,7 @@ class Relay:
             self._live_since = self._clock()
         self._set_state("live", None)
         self._title_event.set()
-        if self._logged_error is not None or self._failures == 0:
-            logger.info("Relay %s is live on %s", self.cfg.name, describe_target(self.cfg))
+        logger.info("Relay %s is live on %s", self.cfg.name, describe_target(self.cfg))
         self._logged_error = None
 
     def _pump(self, connection: Connection) -> str | None:

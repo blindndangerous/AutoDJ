@@ -477,6 +477,7 @@ Each entry in the station's private `relays.json` names one relay. Names use 1 t
 - `stream_id`. Values: whole number from 1 to 2147483647. Default: 1 for Shoutcast 2. Selects the stream on a Shoutcast 2 server. **Stream ID**.
 - `user`. Values: nonempty user name. Default: `source` for Icecast. Names the Icecast source account. **Username**.
 - `bitrate`. Values: station quality, 128, 192, 256, or 320 kbps. Default: station quality. Sets the MP3 bitrate sent to this relay. **Bitrate**.
+- `reconnect_seconds`. Values: whole seconds, at least 1, with no configured maximum. Default: 10. Waits this fixed interval between failed connection attempts, retrying indefinitely while the relay is enabled and running. **Reconnect interval (seconds)**.
 - `public`. Values: true or false. Default: false. Asks the host to list the relay publicly. **Public directory listing**.
 - `enabled`. Values: true or false. Default: true. Connects this relay when on. **Enabled**.
 

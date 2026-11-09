@@ -40,6 +40,19 @@ def test_private_relay_file_is_authoritative_redacted_and_owner_only(tmp_path):
     assert load_relays(path, {"main": config}, "default") == {}
 
 
+def test_reconnect_interval_persists_and_old_files_default_to_ten_seconds(tmp_path):
+    path = tmp_path / "relays.json"
+    configured = relay(reconnect_seconds=37)
+    save_relays(path, {"main": configured}, "default")
+    saved = json.loads(path.read_text(encoding="utf-8"))["relays"][0]
+    assert saved["reconnect_seconds"] == 37
+    assert load_relays(path, {}, "default")["main"].reconnect_seconds == 37
+
+    saved.pop("reconnect_seconds")
+    path.write_text(json.dumps({"version": 1, "relays": [saved]}), encoding="utf-8")
+    assert load_relays(path, {}, "default")["main"].reconnect_seconds == 10
+
+
 def test_environment_password_overrides_and_is_not_written(tmp_path, monkeypatch):
     config = relay()
     variable = relay_password_variable("main")
@@ -112,6 +125,24 @@ def _body(name):
     )
 
 
+def test_relay_settings_body_validates_unbounded_integer_interval():
+    from pydantic import ValidationError
+
+    from autodj.station_routes import RelaySettingsBody
+
+    body = _body("main")
+    assert body.reconnect_seconds == 10
+    assert (
+        RelaySettingsBody.model_validate(
+            {**body.model_dump(), "reconnect_seconds": 1_000_000_000}
+        ).reconnect_seconds
+        == 1_000_000_000
+    )
+    for value in (0, -1, True, "10", 1.5):
+        with pytest.raises(ValidationError):
+            RelaySettingsBody.model_validate({**body.model_dump(), "reconnect_seconds": value})
+
+
 def test_concurrent_relay_saves_keep_both_definitions(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -127,6 +158,16 @@ def test_concurrent_relay_saves_keep_both_definitions(tmp_path):
             job.result(timeout=5)
     assert set(station.cfg.stream.relays) == {"one", "two"}
     assert set(load_relays(station.paths.relays, {}, "default")) == {"one", "two"}
+
+
+def test_relay_save_applies_and_persists_reconnect_interval(tmp_path):
+    from autodj.station_routes import _save_stream_relay
+
+    station, registry = _station(tmp_path)
+    body = _body("main").model_copy(update={"reconnect_seconds": 43})
+    _save_stream_relay(station, body, registry)
+    assert station.cfg.stream.relays["main"].reconnect_seconds == 43
+    assert load_relays(station.paths.relays, {}, "default")["main"].reconnect_seconds == 43
 
 
 def test_failed_relay_remove_restores_authoritative_file(tmp_path):
