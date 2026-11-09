@@ -1795,6 +1795,10 @@
        Section switcher — ARIA tablist (replaces the old anchor nav)
        ---------------------------------------------------------------- */
     #view-nav {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.25rem;
       background: var(--bg-card);
       border-bottom: 1px solid var(--border);
       padding: 0.25rem 1rem;

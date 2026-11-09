@@ -36,6 +36,62 @@ function cards() {
   return [...document.querySelectorAll("details")];
 }
 
+it("collapses only the current tab's cards, retaining contents, focus and preferences", () => {
+  document.body.innerHTML = `
+    <button id="collapse-all-cards" type="button">Collapse all</button>
+    <section data-view="settings">
+      <section role="tabpanel">
+        <details class="card" id="outer" open><summary>Outer</summary>
+          <input value="unsaved draft">
+          <details class="card" id="nested" open><summary>Nested</summary></details>
+        </details>
+        <details class="card" id="closed"><summary>Closed</summary></details>
+        <details class="card" id="unavailable" open hidden></details>
+        <details id="other-disclosure" open><summary>Other disclosure</summary></details>
+      </section>
+      <section role="tabpanel" hidden>
+        <details class="card" id="other-subtab" open></details>
+      </section>
+    </section>
+    <section data-view="queue" hidden><details class="card" id="other-tab" open></details></section>`;
+  installCardState();
+  const button = document.getElementById("collapse-all-cards");
+  const input = document.querySelector("input");
+  input.value = "edited draft";
+  button.focus();
+  button.click();
+  button.click();
+  for (const id of ["outer", "nested", "closed", "unavailable"]) {
+    const card = document.getElementById(id);
+    expect(card.open).toBe(false);
+    card.dispatchEvent(new Event("toggle"));
+    expect(localStorage.getItem(`autodj.card.${id}`)).toBe("closed");
+  }
+  for (const id of ["other-subtab", "other-tab", "other-disclosure"]) {
+    expect(document.getElementById(id).open).toBe(true);
+  }
+  expect(document.querySelector("input")).toBe(input);
+  expect(input.value).toBe("edited draft");
+  expect(document.activeElement).toBe(button);
+  document.querySelector('[data-view="settings"]').hidden = true;
+  document.querySelector('[data-view="queue"]').hidden = false;
+  button.click();
+  expect(document.getElementById("other-tab").open).toBe(false);
+  expect(document.getElementById("other-subtab").open).toBe(true);
+});
+
+it("places a named native Collapse all button before the card panels", () => {
+  const template = document.createElement("template");
+  template.innerHTML = readFileSync("src/autodj/static/index.html", "utf8");
+  const button = template.content.getElementById("collapse-all-cards");
+  expect(button.tagName).toBe("BUTTON");
+  expect(button.type).toBe("button");
+  expect(button.getAttribute("aria-label")).toBe("Collapse all cards in the current tab");
+  expect(button.closest("details")).toBeNull();
+  expect(button.previousElementSibling.getAttribute("role")).toBe("tablist");
+  expect(button.parentElement.id).toBe("view-nav");
+});
+
 it("keeps defaults on first visit and restores both states after a reload", () => {
   localStorage.clear();
   const [first, second] = cards();

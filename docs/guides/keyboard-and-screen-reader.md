@@ -4,6 +4,8 @@ The control page has named tabs, headings, lists, buttons, and status messages. 
 
 ## Move around the page
 
+Use **Collapse all**, just after the main tabs, to close the cards in the current tab. In Settings, it affects only the current Settings panel. Tab to the button and press Enter or Space; focus stays on the button, and card contents and unsaved edits are preserved. Open individual cards again with their headings.
+
 Use `Alt+1` through `Alt+9` to open, in order: **Now Playing**, **Queue & Search**, **Track info**, **History**, **Carts**, **Voice tracks**, **Ads**, **Library tools**, and **Settings**. These work even in text fields. Some tabs are hidden when their feature is unavailable.
 
 Tab enters the main section tab strip on its selected tab, its only Tab stop. Use Left Arrow and Right Arrow to change tabs; Home and End jump to its ends. Settings uses the same keys within each tab group. Each Settings group stays reachable with Tab; a group without the selected panel starts on its first visible tab. Headings and landmarks let a screen reader jump to the page area you need. Lists and tables have named controls for each item. Grid tables use one Tab stop: arrows move between cells, and Tab leaves the table. A dialog keeps focus inside it until you close it. Press Escape to close the shortcut dialog or a message you can dismiss. A confirmation, such as Clear queue or Restart AutoDJ, opens with focus on Cancel, its last button: Enter on Cancel or Escape changes nothing and returns focus to the opener (its grid cell for a table row action). Other dialogs also put the button that changes nothing last: Cancel in Browse… and Rename, Keep editing when Track info asks about unsaved changes.
