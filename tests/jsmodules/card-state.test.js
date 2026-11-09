@@ -58,7 +58,7 @@ it("collapses only the current tab's cards, retaining contents, focus and prefer
   const button = document.getElementById("collapse-all-cards");
   const input = document.querySelector("input");
   input.value = "edited draft";
-  button.focus();
+  input.focus();
   button.click();
   button.click();
   for (const id of ["outer", "nested", "closed", "unavailable"]) {
