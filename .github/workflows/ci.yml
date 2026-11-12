@@ -40,7 +40,7 @@ jobs:
         run: uv run --frozen --no-sync python scripts/ci_pytest.py --profile no-model
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26.13.0"
+          node-version: "26.13.1"
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run lint
@@ -126,7 +126,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26.13.0"
+          node-version: "26.13.1"
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm test
@@ -255,7 +255,7 @@ jobs:
           python-version-file: .python-version
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26.13.0"
+          node-version: "26.13.1"
           cache: npm
       - run: uv sync --frozen --all-extras
       - run: npm ci --ignore-scripts
@@ -361,7 +361,7 @@ jobs:
           python-version-file: .python-version
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26.13.0"
+          node-version: "26.13.1"
           cache: npm
       - run: uv sync --frozen --all-extras
       - run: npm ci --ignore-scripts
