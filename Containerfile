@@ -1,5 +1,5 @@
 # Manifest-list digests reviewed 2026-10-28 via registry Docker-Content-Digest headers.
-FROM python:3.14.10-slim-bookworm@sha256:e6f981aeb339e6ead5e5e87e14c55b715ac76d6b2a710b86d70ca69c7f2399ce AS python-base
+FROM python:3.14.10-slim-bookworm@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb558c0c17db5ffefbcf8094871c32b AS python-base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_NO_CACHE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
-COPY --from=ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 /uv /usr/local/bin/uv
 # uv installs everything into /opt/venv, which does not see the base image's
 # site-packages, so the base image's pip and the pip wheel that ensurepip
 # bundles are never used. Their vendored msgpack, urllib3 and setuptools lag
