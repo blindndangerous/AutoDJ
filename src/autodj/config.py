@@ -1339,6 +1339,7 @@ class RelayConfig:
         bitrate: MP3 bitrate in kbps; ``None`` sends the stream's own audio.
         public: Ask the server to list the station in public directories.
         enabled: ``False`` keeps the table but does not connect.
+        reconnect_seconds: Seconds to wait before retrying a failed relay connection.
     """
 
     name: str
@@ -1352,6 +1353,7 @@ class RelayConfig:
     bitrate: int | None = None
     public: bool = False
     enabled: bool = True
+    reconnect_seconds: int = 10
 
     @classmethod
     def from_table(cls, name: str, data: Any) -> RelayConfig:
@@ -1403,6 +1405,10 @@ class RelayConfig:
         for key in ("public", "enabled"):
             if not isinstance(getattr(self, key), bool):
                 raise TypeError(f"{where}.{key} must be true or false")
+        if isinstance(self.reconnect_seconds, bool) or not isinstance(self.reconnect_seconds, int):
+            raise TypeError(f"{where}.reconnect_seconds must be an integer")
+        if self.reconnect_seconds < 1:
+            raise ValueError(f"{where}.reconnect_seconds must be at least 1")
         if self.bitrate is not None and (
             isinstance(self.bitrate, bool) or self.bitrate not in STREAM_BITRATES
         ):

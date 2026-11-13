@@ -165,12 +165,13 @@ for Icecast the mount point.
    - **Bitrate**: **Use station stream quality**, or 128, 192, 256 or 320 kbps.
    - **Public directory listing**: asks the host to list the station publicly.
    - **Enabled**: untick it to keep the relay but not connect.
+   - **Reconnect interval (seconds)**: how long to wait before each retry, starting at 10 seconds. Enter a whole number of at least 1; there is no configured maximum.
 3. Press **Save relay**. The change takes effect at once.
 
 The page warns: "Relay TLS is unsupported; the source password is sent without encryption."
 Use a host and network you trust.
 
-The Relays table shows status and the last error. A disconnected relay retries automatically.
+The Relays table shows status and the last error. A disconnected relay retries indefinitely at its fixed reconnect interval (10 seconds by default). Disabling the relay or stopping the station stops retries.
 A station can have up to 8 relays. Two relays cannot use the same server and mount.
 
 AutoDJ saves each station's relays and passwords in private

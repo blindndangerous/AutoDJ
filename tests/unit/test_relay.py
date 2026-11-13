@@ -413,8 +413,7 @@ class Script:
 
 @pytest.fixture
 def fast(monkeypatch):
-    monkeypatch.setattr(relay_module, "BACKOFF_START", 0.01)
-    monkeypatch.setattr(relay_module, "BACKOFF_MAX", 0.04)
+    monkeypatch.setattr(Relay, "_wait_reconnect", lambda self: self._closed.wait(0.01))
     monkeypatch.setattr(relay_module, "FIRST_TITLE_DELAY", 0.0)
 
 
@@ -434,9 +433,10 @@ def _relay(connect, titles: list | None = None, **kwargs: Any) -> Relay:
     )
 
 
-def test_relay_sends_audio_from_a_frame_boundary(fast) -> None:
+def test_relay_sends_audio_from_a_frame_boundary_and_logs_initial_connection(fast, caplog) -> None:
     script = Script()
     relay = _relay(script)
+    caplog.set_level(logging.INFO, logger="autodj.relay")
     relay.start()
     try:
         _wait_until(lambda: relay.status()["state"] == "live")
@@ -444,6 +444,7 @@ def test_relay_sends_audio_from_a_frame_boundary(fast) -> None:
         relay.feed(FRAME, "A - B")
         _wait_until(lambda: b"".join(script.connections[0].sent) == FRAME * 3)
         assert script.calls[0] == {"bitrate": 128, "station_name": "Radio"}
+        assert "Relay main is live" in caplog.text
     finally:
         relay.close()
     assert relay.status()["state"] == "stopped"
@@ -456,15 +457,24 @@ def test_audio_while_disconnected_is_dropped(fast) -> None:
     assert not relay._queue
 
 
-def test_relay_retries_with_backoff_and_recovers(fast, caplog) -> None:
+def test_relay_retries_at_a_fixed_interval_and_recovers(fast, caplog, monkeypatch) -> None:
     changes: list[str] = []
+    delays: list[int] = []
     script = Script(ConnectionRefusedError(111, "refused"), ConnectionRefusedError(111, "refused"))
-    relay = _relay(script, on_change=lambda: changes.append(relay.status()["state"]))
+    cfg = _icecast(reconnect_seconds=7)
+
+    def wait_reconnect(instance):
+        delays.append(instance.cfg.reconnect_seconds)
+        instance._closed.wait(0.01)
+
+    monkeypatch.setattr(Relay, "_wait_reconnect", wait_reconnect)
+    relay = _relay(script, cfg=cfg, on_change=lambda: changes.append(relay.status()["state"]))
     caplog.set_level(logging.DEBUG, logger="autodj.relay")
     relay.start()
     try:
         _wait_until(lambda: relay.status()["state"] == "live")
         assert len(script.calls) == 3
+        assert delays == [7, 7]
         assert "retrying" in changes and changes[-1] == "live"
         assert relay.status()["error"] is None
     finally:
@@ -476,27 +486,52 @@ def test_relay_retries_with_backoff_and_recovers(fast, caplog) -> None:
     assert PASSWORD not in caplog.text
 
 
-def test_backoff_doubles_up_to_the_cap() -> None:
-    relay = _relay(Script())
-    delays = [relay._next_delay() for _ in range(9)]
-    assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0]
-
-
-def test_a_stable_connection_resets_the_backoff(fast) -> None:
-    now = [0.0]
-    first = FakeConnection(fail_after=0)
-    script = Script(first)
-    relay = _relay(script, clock=lambda: now[0])
-    relay._failures = 5
+def test_close_interrupts_configured_reconnect_wait() -> None:
+    relay = _relay(Script(ConnectionRefusedError(111, "refused")))
     relay.start()
     try:
-        _wait_until(lambda: relay.status()["state"] == "live")
-        now[0] = relay_module.STABLE_SECONDS + 1
-        relay.feed(FRAME, "")
-        _wait_until(lambda: len(script.connections) == 2)
-        assert relay._failures <= 1
+        _wait_until(lambda: relay.status()["state"] == "retrying")
+        started = time.monotonic()
+        relay.close()
+        assert time.monotonic() - started < 1
     finally:
         relay.close()
+
+
+def test_reconnect_wait_totals_the_configured_interval(monkeypatch) -> None:
+    relay = _relay(Script(), cfg=_icecast(reconnect_seconds=125))
+
+    class RecordingEvent:
+        def __init__(self) -> None:
+            self.delays: list[int] = []
+
+        def is_set(self) -> bool:
+            return False
+
+        def wait(self, delay: int) -> bool:
+            self.delays.append(delay)
+            return False
+
+    event = RecordingEvent()
+    monkeypatch.setattr(relay, "_closed", event)
+    relay._wait_reconnect()
+    assert sum(event.delays) == 125
+    assert all(0 < delay <= threading.TIMEOUT_MAX for delay in event.delays)
+
+
+def test_very_large_reconnect_wait_avoids_timeout_overflow(monkeypatch) -> None:
+    relay = _relay(Script(), cfg=_icecast(reconnect_seconds=10**1000))
+
+    class ClosingEvent:
+        def is_set(self) -> bool:
+            return False
+
+        def wait(self, delay: int) -> bool:
+            assert 0 < delay <= threading.TIMEOUT_MAX
+            return True
+
+    monkeypatch.setattr(relay, "_closed", ClosingEvent())
+    relay._wait_reconnect()
 
 
 def test_dropped_connection_reconnects(fast) -> None:
@@ -614,7 +649,7 @@ def test_status_never_contains_the_password(fast) -> None:
 
     def record() -> None:
         # Called on the relay thread at each change: polling could miss the
-        # retry, which lasts only the 10 ms backoff before the next login.
+        # retry, which lasts only the test's shortened wait before the next login.
         statuses.append(relay.status())
         if statuses[-1]["state"] == "retrying":
             retrying.set()
@@ -792,7 +827,7 @@ def test_manager_reconfigures_only_changed_relays_and_releases_unused_outputs() 
     manager.reconfigure(
         [
             configs[0],
-            RelayConfig.from_table("change", {**_table(), "host": "other.example"}),
+            RelayConfig.from_table("change", {**_table(), "reconnect_seconds": 23}),
             RelayConfig.from_table("remove", {**_table(), "bitrate": 128, "enabled": False}),
             RelayConfig.from_table("add", {**_table(), "bitrate": 192}),
         ]
@@ -800,6 +835,7 @@ def test_manager_reconfigures_only_changed_relays_and_releases_unused_outputs() 
     assert manager._by_name["keep"][0] is keep
     assert changed.closed
     assert manager._by_name["change"][0].started
+    assert manager._by_name["change"][0].cfg.reconnect_seconds == 23
     assert manager._by_name["add"][0].started
     assert bus == [made[1]] and manager.outputs == [made[1]]
     assert made[0].closed
@@ -1032,23 +1068,24 @@ def test_manager_waits_for_all_relays_against_one_deadline(monkeypatch) -> None:
     assert [s["state"] for s in manager.status()] == ["stopped"] * 3
 
 
-def test_an_encoder_restart_at_the_same_bitrate_backs_off(fast, monkeypatch) -> None:
+def test_an_encoder_restart_at_the_same_bitrate_uses_fixed_interval(fast, monkeypatch) -> None:
     script = Script()
-    relay = _relay(script)
+    delays: list[int] = []
+
+    def wait_reconnect(instance):
+        delays.append(instance.cfg.reconnect_seconds)
+        instance._closed.wait(0.01)
+
+    monkeypatch.setattr(Relay, "_wait_reconnect", wait_reconnect)
+    relay = _relay(script, cfg=_icecast(reconnect_seconds=4))
     relay.start()
     try:
         for logins in (2, 3):
             _wait_until(lambda: relay.status()["state"] == "live")
             relay.encoder_changed()
             _wait_until(lambda logins=logins: len(script.calls) == logins)
-        assert relay._failures == 2  # each restart counts like a failure
-        monkeypatch.setattr(relay_module, "BACKOFF_START", 5.0)
-        monkeypatch.setattr(relay_module, "BACKOFF_MAX", 5.0)
-        _wait_until(lambda: relay.status()["state"] == "live")
-        relay.encoder_changed()
-        _wait_until(lambda: relay.status()["state"] == "connecting")
-        time.sleep(0.1)
-        assert len(script.calls) == 3  # still waiting before logging in again
+        assert delays == [4, 4]
+        assert len(script.calls) == 3
         assert relay.status()["error"] is None
     finally:
         started = time.monotonic()

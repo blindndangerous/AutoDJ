@@ -37,7 +37,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
   let pending = new AbortController();
   const rowByName = new Map();
   function validationError(error) {
-    const named = ["name", "type", "host", "port", "password", "mount", "user", "stream_id", "bitrate"].includes(error.field)
+    const named = ["name", "type", "host", "port", "password", "mount", "user", "stream_id", "bitrate", "reconnect_seconds"].includes(error.field)
       ? error.field.replaceAll("_", "-") : null;
     const key = named || (error.message.toLowerCase().includes("password") ? "password"
       : error.message.toLowerCase().includes("host") ? "host"
@@ -46,6 +46,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
       : error.message.toLowerCase().includes("user") ? "user"
       : error.message.toLowerCase().includes("stream_id") ? "stream-id"
       : error.message.toLowerCase().includes("bitrate") ? "bitrate"
+      : error.message.toLowerCase().includes("reconnect_seconds") ? "reconnect-seconds"
       : error.message.toLowerCase().includes("type") ? "type" : "name");
     clearFormErrors(form, formError);
     showFieldError(id(`relay-${key}`), error.message, formError, doc.getElementById("settings-status"));
@@ -60,6 +61,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
       user: id("relay-type").value === "icecast" ? id("relay-user").value.trim() : null,
       stream_id: id("relay-type").value === "shoutcast2" ? Number(id("relay-stream-id").value) : null,
       bitrate: id("relay-bitrate").value ? Number(id("relay-bitrate").value) : null,
+      reconnect_seconds: Number(id("relay-reconnect-seconds").value),
       public: id("relay-public").checked, enabled: id("relay-enabled").checked,
     };
   }
@@ -83,6 +85,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
     id("relay-user").value = relay?.user || "source";
     id("relay-stream-id").value = relay?.stream_id || 1;
     id("relay-bitrate").value = relay?.bitrate == null ? "" : String(relay.bitrate);
+    id("relay-reconnect-seconds").value = relay?.reconnect_seconds ?? 10;
     id("relay-public").checked = Boolean(relay?.public);
     id("relay-enabled").checked = relay ? Boolean(relay.enabled) : true;
     updateType();
@@ -127,6 +130,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
           port: record.relay.port, password: null, mount: record.relay.mount,
           user: record.relay.user, stream_id: record.relay.stream_id,
           bitrate: record.relay.bitrate, public: record.relay.public,
+          reconnect_seconds: record.relay.reconnect_seconds ?? 10,
           enabled: !record.relay.enabled,
         }));
         const removeButton = button("Remove", () => removeRelay(record.relay));
@@ -234,6 +238,9 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
     if (!payload.host) return { field: "host", message: "Enter the relay server's host." };
     if (!Number.isInteger(payload.port) || payload.port < 1 || payload.port > 65535) {
       return { field: "port", message: "Enter a listener port from 1 to 65535." };
+    }
+    if (!Number.isInteger(payload.reconnect_seconds) || payload.reconnect_seconds < 1) {
+      return { field: "reconnect_seconds", message: "Enter a reconnect interval of at least 1 whole second." };
     }
     return null;
   }

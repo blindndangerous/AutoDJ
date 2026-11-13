@@ -12,6 +12,7 @@ function markup() {
       <div id="stream-relay-icecast"><input id="stream-relay-mount"><input id="stream-relay-user"></div>
       <div id="stream-relay-shoutcast2"><input id="stream-relay-stream-id"></div>
       <select id="stream-relay-bitrate"><option value=""></option><option value="128"></option></select>
+      <input id="stream-relay-reconnect-seconds" type="number" min="1" step="1" value="10">
       <input id="stream-relay-public" type="checkbox"><input id="stream-relay-enabled" type="checkbox">
       <p id="stream-relay-form-error" class="field-error" hidden></p>
       <button type="submit"></button><button type="button" id="stream-relay-cancel"></button>
@@ -64,7 +65,44 @@ describe("relay settings", () => {
     );
     await vi.waitFor(() => expect(post).toHaveBeenCalled());
     expect(post.mock.calls[0][1].password).toBe("never-return-this");
+    expect(post.mock.calls[0][1].reconnect_seconds).toBe(10);
     expect(document.getElementById("stream-relay-rows").textContent).not.toContain("never-return-this");
+    ui.reset();
+  });
+
+  it("edits and saves a relay's reconnect interval without a configured maximum", async () => {
+    const post = vi.fn(async () => true);
+    const ui = installRelaySettings({
+      doc: document, request: vi.fn(async () => ({ relays: [{ name: "main", host: "relay.example", reconnect_seconds: 75 }] })),
+      post, remove: vi.fn(), announce: vi.fn(),
+    });
+    ui.setAvailable(true);
+    await vi.waitFor(() => expect(document.querySelector("#stream-relay-rows button")).toBeTruthy());
+    document.querySelector("#stream-relay-rows button").click();
+    const interval = document.getElementById("stream-relay-reconnect-seconds");
+    expect(interval.value).toBe("75");
+    interval.value = "1000000000";
+    document.getElementById("stream-relay-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(post).toHaveBeenCalled());
+    expect(post.mock.calls[0][1].reconnect_seconds).toBe(1000000000);
+    ui.reset();
+  });
+
+  it.each(["", "0", "-1", "1.5"])("refuses reconnect interval %s at its field", (value) => {
+    const post = vi.fn();
+    const ui = installRelaySettings({
+      doc: document, request: vi.fn(async () => ({ relays: [] })),
+      post, remove: vi.fn(), announce: vi.fn(),
+    });
+    document.getElementById("stream-relay-add").click();
+    document.getElementById("stream-relay-name").value = "main";
+    document.getElementById("stream-relay-host").value = "relay.example";
+    const interval = document.getElementById("stream-relay-reconnect-seconds");
+    interval.value = value;
+    document.getElementById("stream-relay-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(post).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(interval);
+    expect(interval.getAttribute("aria-invalid")).toBe("true");
     ui.reset();
   });
 
@@ -181,7 +219,7 @@ describe("relay settings", () => {
   it("keeps focus on a row's Enable or Disable button after it saves", async () => {
     const post = vi.fn(async () => true);
     const ui = installRelaySettings({
-      doc: document, request: vi.fn(async () => ({ relays: [{ name: "main", enabled: true }] })),
+      doc: document, request: vi.fn(async () => ({ relays: [{ name: "main", enabled: true, reconnect_seconds: 75 }] })),
       post, remove: vi.fn(), announce: vi.fn(),
     });
     ui.setAvailable(true);
@@ -190,6 +228,7 @@ describe("relay settings", () => {
     toggle.focus();
     toggle.click();
     await vi.waitFor(() => expect(post).toHaveBeenCalled());
+    expect(post.mock.calls[0][1].reconnect_seconds).toBe(75);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(document.activeElement).toBe(toggle.closest("td"));
     ui.reset();

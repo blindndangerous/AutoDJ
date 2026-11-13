@@ -2209,6 +2209,7 @@
           <div id="stream-relay-icecast"><label for="stream-relay-mount">Mount point</label><input id="stream-relay-mount" value="/live"><label for="stream-relay-user">Username</label><input id="stream-relay-user" value="source"></div>
           <div id="stream-relay-shoutcast2" hidden><label for="stream-relay-stream-id">Stream ID</label><input id="stream-relay-stream-id" type="number" min="1" value="1"></div>
           <label for="stream-relay-bitrate">Bitrate</label><select id="stream-relay-bitrate"><option value="">Use station stream quality</option><option>128</option><option>192</option><option>256</option><option>320</option></select>
+          <label for="stream-relay-reconnect-seconds">Reconnect interval (seconds)</label><input id="stream-relay-reconnect-seconds" type="number" min="1" step="1" value="10" aria-required="true">
           <label><input id="stream-relay-public" type="checkbox"> Public directory listing</label>
           <label><input id="stream-relay-enabled" type="checkbox" checked> Enabled</label>
           <p id="stream-relay-form-error" class="field-error" hidden></p>

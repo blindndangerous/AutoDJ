@@ -13,7 +13,18 @@ from autodj.secret_files import write_private_file
 
 logger = logging.getLogger(__name__)
 
-_FIELDS = ("type", "host", "port", "mount", "stream_id", "user", "bitrate", "public", "enabled")
+_FIELDS = (
+    "type",
+    "host",
+    "port",
+    "mount",
+    "stream_id",
+    "user",
+    "bitrate",
+    "public",
+    "enabled",
+    "reconnect_seconds",
+)
 _MISSING_CREDENTIAL = "autodj-relay-credential-unconfigured"
 
 
