@@ -16,6 +16,14 @@ export function onCardOpen(card, refresh, { onClose = () => {} } = {}) {
 // Card IDs keep browser preferences stable when cards move or headings change.
 export function installCardState(doc = document) {
   const storage = defaultStorage();
+  doc.getElementById("collapse-all-cards")?.addEventListener("click", (event) => {
+    event.currentTarget.focus();
+    const panel = doc.querySelector("section[data-view]:not([hidden])");
+    for (const card of panel?.querySelectorAll("details.card[open]") || []) {
+      // Settings has its own tabs. Leave their hidden panels untouched too.
+      if (!card.closest('[role="tabpanel"][hidden]')) card.open = false;
+    }
+  });
   for (const card of doc.querySelectorAll("details.card[id]")) {
     const key = `autodj.card.${card.id}`;
     const saved = readStorage(storage, key);

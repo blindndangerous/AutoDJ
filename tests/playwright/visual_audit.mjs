@@ -3433,6 +3433,31 @@ async function selectedTabEntryProblems(page) {
   return problems;
 }
 
+async function collapseCardsProblems(page) {
+  await page.goto(`${BASE}/#now`, { waitUntil: "networkidle" });
+  const button = page.getByRole("button", { name: "Collapse all cards in the current tab", exact: true });
+  const problems = [];
+  for (const activation of ["click", "Enter", "Space"]) {
+    await page.evaluate(() => {
+      document.querySelectorAll("details.card").forEach((card) => { card.open = true; });
+    });
+    const before = await page.locator('section[data-view][hidden] details.card[open]').count();
+    if (activation === "click") await button.click();
+    else {
+      await page.locator('#tab-now').focus();
+      await page.keyboard.press("Tab");
+      if (!await button.evaluate((node) => node === document.activeElement)) problems.push("Tab did not reach Collapse all");
+      await page.keyboard.press(activation);
+    }
+    if (await page.locator('#panel-now details.card[open]').count()) problems.push(`${activation}: current cards stayed open`);
+    if (await page.locator('section[data-view][hidden] details.card[open]').count() !== before) problems.push(`${activation}: changed another tab`);
+    if (!await button.evaluate((node) => node === document.activeElement)) problems.push(`${activation}: lost button focus`);
+  }
+  await page.reload({ waitUntil: "networkidle" });
+  if (await page.locator('#panel-now details.card[open]').count()) problems.push("Collapsed preferences did not survive reload");
+  return problems;
+}
+
 export async function audit(name, launcher) {
   const browser = await launcher.launch();
   const out = {
@@ -3462,6 +3487,8 @@ export async function audit(name, launcher) {
     page.on("pageerror", (error) => out.pageerrors.push(error.message));
     const selectedTab = await selectedTabEntryProblems(page);
     if (selectedTab.length) out.behaviour.selectedTabEntry = selectedTab;
+    const collapsedCards = await collapseCardsProblems(page);
+    if (collapsedCards.length) out.behaviour.collapseCards = collapsedCards;
     await eachTarget(page, async (target) => {
       const small = await smallChoiceControls(page);
       if (small.length) out.smallChoices[target] = small;
