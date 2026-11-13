@@ -210,6 +210,9 @@ def test_only_checkout_or_selected_environment_jobs_block(
 ) -> None:
     root, environment, _index_dir = _paths(tmp_path)
     _idle(monkeypatch)
+    # The fake external PID must never become this worker's own/updater PID.
+    monkeypatch.setattr(setup_activity.os, "getpid", lambda: 1234)
+    monkeypatch.delenv("AUTODJ_SETUP_UPDATE", raising=False)
     monkeypatch.setattr("autodj.update_contract.other_servers", lambda *_args: [])
     process = setup_activity.Process(
         4321,
