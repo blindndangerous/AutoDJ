@@ -365,6 +365,26 @@ describe("intro rules list and form", () => {
     byId("intro-rules-cancel").click();
   });
 
+  it.each([
+    ["composition", { isComposing: true }],
+    ["legacy IME key code", { keyCode: 229 }],
+  ])("leaves Enter for %s without searching", async (_label, composition) => {
+    const server = await open();
+    button(0, "edit").click();
+    byId("intro-rules-selection-mode").value = "pattern";
+    byId("intro-rules-selection-mode").dispatchEvent(new Event("change"));
+    const query = byId("intro-rules-test-query");
+    query.value = "Song";
+    const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...composition });
+    query.dispatchEvent(event);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(server.request.mock.calls.filter(([url]) => url.startsWith("/api/search?"))).toHaveLength(0);
+    expect(event.defaultPrevented).toBe(false);
+    query.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(byId("intro-rules-test-results").querySelectorAll("button")).toHaveLength(1));
+    expect(server.request.mock.calls.filter(([url]) => url.startsWith("/api/search?"))).toHaveLength(1);
+  });
+
   it("deletes after confirming, moves focus to the next Delete, and says so once", async () => {
     const server = await open();
     button(0, "delete").click();

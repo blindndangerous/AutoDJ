@@ -3276,6 +3276,8 @@ function noteTrackForHistory(s) {
     if (v > 0) void fetchHistory(v, { announce: true });
   });
   document.getElementById("hist-goto").addEventListener("keydown", (e) => {
+    // Leave IME candidate confirmation to the input method.
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter") {
       const v = parseInt(e.target.value, 10);
       if (v > 0) void fetchHistory(v, { announce: true });

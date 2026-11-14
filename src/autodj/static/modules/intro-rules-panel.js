@@ -564,6 +564,8 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   el("intro-rules-test-search").addEventListener("click", () => void searchTestSong());
   el("intro-rules-test").addEventListener("click", () => void testPattern());
   testQuery.addEventListener("keydown", (event) => {
+    // Leave IME candidate confirmation to the input method.
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); void searchTestSong(); }
   });
   addButton.addEventListener("click", () => openForm(null, addButton));

@@ -538,6 +538,24 @@ describe("editing a list", () => {
     expect(document.activeElement).toBe(byId("shows-search"));
   });
 
+  it.each([
+    ["composition", { isComposing: true }],
+    ["legacy IME key code", { keyCode: 229 }],
+  ])("leaves Enter for %s without searching shows", async (_label, composition) => {
+    const server = await open();
+    await openList(server);
+    const query = byId("shows-search");
+    query.value = "nine";
+    const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...composition });
+    query.dispatchEvent(event);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(server.calls.filter(({ url }) => url.startsWith("/api/search"))).toHaveLength(0);
+    expect(event.defaultPrevented).toBe(false);
+    query.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(byId("shows-results").querySelectorAll('button[data-action="add"]')).toHaveLength(1));
+    expect(server.calls.filter(({ url }) => url.startsWith("/api/search"))).toHaveLength(1);
+  });
+
   // #328: the list drawn again from scratch destroyed the focused button, and
   // NVDA read a cut-off line of the list after the status message.
   it("changes the song list in place, never leaving focus on the page", async () => {
