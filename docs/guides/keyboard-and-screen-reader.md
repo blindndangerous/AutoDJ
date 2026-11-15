@@ -4,7 +4,7 @@ The control page has named tabs, headings, lists, buttons, and status messages. 
 
 ## Move around the page
 
-Use **Collapse all cards**, just after the main tabs, to close the cards in the current tab. In Settings, it affects only the current Settings panel. The button appears when there are open cards to collapse. Press Enter or Space to collapse them; the button then hides and focus returns to the selected main tab. Card contents and unsaved edits are preserved. Open individual cards again with their headings.
+Use **Collapse all cards**, just after the main tabs, to close the cards in the current tab. In Settings, it affects only the current Settings panel. When all cards are closed, the same button becomes **Expand all cards**. Press Enter or Space to perform either action; focus stays on the button. Card contents and unsaved edits are preserved. The button is unavailable when the current panel has no cards.
 
 Listener request configuration is in **Settings > Station > Requests**. The **Request settings** link in Queue & Search opens that page. Waiting requests and recent decisions stay in Queue & Search; the Settings page links back there.
 

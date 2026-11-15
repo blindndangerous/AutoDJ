@@ -19,24 +19,20 @@ export function installCardState(doc = document) {
   const storage = defaultStorage();
   const button = doc.getElementById("collapse-all-cards");
   const panel = () => doc.querySelector("section[data-view]:not([hidden])");
-  const eligibleCards = (view = panel()) => [...(view?.querySelectorAll("details.card[open]") || [])]
-    .filter((card) => !card.closest('[role="tabpanel"][hidden]'));
+  const eligibleCards = () => [...(panel()?.querySelectorAll("details.card") || [])]
+    .filter((card) => !card.closest("[hidden]"));
   const updateButton = () => {
     if (!button) return;
-    const shouldHide = !eligibleCards().some((card) => !card.closest("[hidden]"));
-    if (shouldHide && doc.activeElement === button) {
-      const tab = doc.querySelector('#view-nav [role="tab"][aria-selected="true"]');
-      tab?.focus();
-    }
-    if (button.hidden !== shouldHide) button.hidden = shouldHide;
+    const cards = eligibleCards();
+    const label = cards.some((card) => card.open) ? "Collapse all cards" : "Expand all cards";
+    if (button.textContent !== label) button.textContent = label;
+    button.setAttribute("aria-disabled", String(cards.length === 0));
   };
   button?.addEventListener("click", (event) => {
     event.currentTarget.focus();
-    const view = panel();
-    for (const card of eligibleCards(view)) {
-      // Settings has its own tabs. Leave their hidden panels untouched too.
-      card.open = false;
-    }
+    const cards = eligibleCards();
+    const expand = !cards.some((card) => card.open);
+    for (const card of cards) card.open = expand;
     updateButton();
   });
   for (const card of doc.querySelectorAll("details.card[id]")) {
