@@ -663,7 +663,7 @@ async function openRequestSettingsError(page, visit) {
   await field.fill("12");
   await page.locator("#requests-settings-save").click();
   await page.locator("#requests-threshold-error").waitFor({ state: "visible" });
-  await visit("queue/request-settings-error");
+  await visit("settings/requests/error");
   await field.fill("2");
 }
 
@@ -1841,7 +1841,6 @@ async function eachTarget(page, measure) {
         await showBridgedQueue(page);
       }
       await visit(view);
-      if (view === "queue") await openRequestSettingsError(page, visit);
       if (view === "track-info") await openTrackTags(page, visit);
       if (view === "library") {
         await page.locator("#music-fade-drop").fill("0");
@@ -1874,6 +1873,7 @@ async function eachTarget(page, measure) {
         await page.waitForTimeout(150);
         await openEveryCard(page);
         await visit(`settings/${id.replace(/^stab-/, "")}`);
+        if (id === "stab-requests") await openRequestSettingsError(page, visit);
         if (id === "stab-picking") {
           await openRotationTest(page, visit);
           await openRepeatHoursError(page, visit);

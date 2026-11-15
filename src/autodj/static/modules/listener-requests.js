@@ -1,10 +1,9 @@
 // Queue & Search > Listener requests (#49): the requests listeners sent
 // from the public request page, for the operator to approve, play next or
-// turn down.
+// turn down. Settings > Station > Requests owns their station-wide policy.
 //
-// The card shows once the station answers.  Take listener requests opens
-// and closes the station's public request page; while requests are off the
-// summary says so and the lists stay hidden.  While the card is open (and
+// The card shows once the station answers. While requests are off the
+// summary says so and the lists stay hidden. While the card is open (and
 // the tab is showing) it refreshes every 15 seconds, silently:
 // the summary and shared tables are not live regions. A refresh updates
 // keyed rows in place; removing a focused request moves focus to a remaining
@@ -12,7 +11,7 @@
 //
 // After Approve, Play next or Turn down, focus moves to the next request's
 // Approve cell (Options when Approve is unavailable), or to the
-// card's summary when none is left.  The result ("Queued Song by Artist.")
+// card's summary when none is left. The result ("Queued Song by Artist.")
 // is said once through #requests-status a moment later, so the speech for
 // the newly focused button does not cut it off.
 //
@@ -21,11 +20,11 @@
 // button is marked busy (aria-busy), never aria-disabled, so NVDA does not
 // call the pressed button unavailable (#331).  A refresh fills the form only while
 // nobody is changing it.  A refused Roughness limit gets aria-invalid, its
-// error linked to the field and shown under it, and focus; the result of a
-// save is said once through #requests-status.
+// error linked to the field and shown under it, and focus; save results and
+// settings load errors are said through #requests-settings-status.
 
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, staleActionText, failureText, withDisabled } from "./api-client.js";
-import { makeSay } from "./live-region.js";
+import { makeSay, clearAnnouncedStatus } from "./live-region.js";
 import { clearFieldError, showFieldError } from "./dom-helpers.js";
 import { createSettingsSave } from "./standalone-settings.js";
 import { onCardOpen } from "./card-state.js";
@@ -127,6 +126,9 @@ export function installListenerRequests({
   const recentHeading = doc.getElementById("requests-recent-heading");
   const status = doc.getElementById("requests-status");
   const panel = doc.getElementById("panel-queue");
+  const settingsPanel = doc.getElementById("spanel-requests");
+  const settingsStatus = doc.getElementById("requests-settings-status");
+  const settingsView = doc.getElementById("panel-settings");
   if (!card || !summary || !list || !recent || !status) {
     return { refresh: async () => {}, clear: () => {}, setQueueDisabledReason: () => {} };
   }
@@ -143,6 +145,10 @@ export function installListenerRequests({
   }
 
   const say = makeSay(() => isEnabled() ? status : null, { dwellMs: 4000, errorDwellMs: 6000 });
+  const settingsVisible = () => Boolean(settingsPanel && settingsStatus
+    && !settingsPanel.hidden && !settingsView?.hidden && !doc.hidden);
+  const saySettings = makeSay(() => settingsVisible() ? settingsStatus : null,
+    { dwellMs: 4000, errorDwellMs: 6000 });
   let pending = new AbortController();
 
   // Under the Requested heading: who, if they gave a name, and when.
@@ -195,7 +201,7 @@ export function installListenerRequests({
   }
 
   function showThresholdError(message) {
-    showFieldError(threshold, message, thresholdError, status);
+    showFieldError(threshold, message, thresholdError, settingsStatus);
   }
 
   function noSmoothChoice() {
@@ -229,7 +235,7 @@ export function installListenerRequests({
   let settingsSpeechCurrent = () => false;
   const settingsSave = createSettingsSave({
     button: saveButton, isCurrent: isEnabled, pendingText: "Saving request settings\u2026",
-    say: (message) => { if (settingsSpeechCurrent()) say(message); },
+    say: (message) => { if (settingsSpeechCurrent()) saySettings(message); },
     save: async (current) => {
       clearThresholdError();
       const limit = parseThreshold(threshold?.value);
@@ -261,13 +267,14 @@ export function installListenerRequests({
         lastJson = null;
         const state = { ...reply, pending: reply.pending || [], recent: reply.recent || [] };
         render(state, { settingsSaved: true });
-        say(savedText(before, state));
+        saySettings(savedText(before, state));
       } catch (error) {
         if (!currentSave()) return;
         // Answered after a station switch: the form is the new station's (#70).
         const left = staleActionText(error);
-        if (left) say(left, error?.actionDone ? "info" : "error");
-        else say(failureText("save the request settings", error?.message ? error : { message: "no answer" }), "error");
+        if (left) saySettings(left, error?.actionDone ? "info" : "error");
+        else saySettings(failureText("save the request settings",
+          error?.message ? error : { message: "no answer" }), "error");
       }
     },
   });
@@ -279,6 +286,7 @@ export function installListenerRequests({
 
   function render(state, { announceFocus = true, settingsSaved = false } = {}) {
     lastState = state;
+    if (settingsForm) settingsForm.hidden = false;
     const json = JSON.stringify(state);
     if (json === lastJson) return;
     lastJson = json;
@@ -301,7 +309,11 @@ export function installListenerRequests({
     let state;
     try {
       state = await request("/api/requests", { headers: { Accept: "application/json" } });
-    } catch {
+    } catch (error) {
+      if (isEnabled() && mine === refreshGeneration && station === stationEpoch()
+        && isAuthenticatedRequestCurrent(epoch) && settingsVisible()) {
+        saySettings(failureText("load listener request settings", error), "error");
+      }
       return;
     }
     if (!isEnabled() || mine !== refreshGeneration || station !== stationEpoch() || !isAuthenticatedRequestCurrent(epoch)) return;
@@ -381,12 +393,19 @@ export function installListenerRequests({
 
   const showing = () => isEnabled() && card.open && !card.hidden && !doc.hidden && !panel?.hidden;
   onCardOpen(card, refresh);
+  onCardOpen(settingsPanel, refresh);
+  doc.getElementById("requests-open-settings")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    doc.getElementById("tab-settings")?.click();
+    doc.getElementById("stab-requests")?.click();
+  });
   setTimer(() => { if (showing()) void refresh(); }, POLL_MS);
   void refresh();
   // Switching stations (#70) or signing out: drop the other station's
   // requests at once; refresh the station only while authenticated.
   function clear() {
     settingsGeneration++;
+    clearAnnouncedStatus(settingsStatus);
     settingsSave.clear();
     settingsSpeechCurrent = () => false;
     pending.abort();
@@ -399,6 +418,7 @@ export function installListenerRequests({
     pendingTable.clear();
     recentTable.clear();
     card.hidden = true;
+    if (settingsForm) settingsForm.hidden = true;
     void refresh();
   }
   function setQueueDisabledReason(reason = "") {
