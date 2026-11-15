@@ -58,6 +58,11 @@ function cartLabel(number, assigned, today = "") {
   return parts.join(", ");
 }
 
+function cartCount(slots = []) {
+  const count = slots.filter(Boolean).length;
+  return count === 0 ? "No carts" : `${count} ${count === 1 ? "cart" : "carts"}`;
+}
+
 // `prepare` runs inside the click or key press, before the request: it
 // returns why this page cannot play the clip (browser playback only), or
 // null.  `playAudio(bytes, mode, duckDb)` plays a fetched clip through the
@@ -154,7 +159,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
 
   function openEditor(number) {
     loadEditor(number);
-    say(`Cart ${number} is empty. Choose its name and clip, then Save cart.`);
+    say(`Cart ${number} is empty.`);
     focusRevealed(name);
   }
 
@@ -242,7 +247,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     if (number < 1 || number > data.wall.pages.length) return;
     data.wall.active_page = number;
     render(true);
-    if (announce) say(`${page().name}, page ${number} of ${data.wall.pages.length}.`);
+    if (announce) say(cartCount(page().slots));
     try {
       await requestJson(`/api/carts/active-page/${number}`, { method: "PUT" });
     } catch (error) {
@@ -402,7 +407,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     const finish = selectionAnnouncer.start();
     const number = Number(pageSelect.value);
     if (!data || number === data.wall.active_page || number < 1 || number > data.wall.pages.length) return;
-    finish(`${data.wall.pages[number - 1].name}, page ${number} of ${data.wall.pages.length}.`);
+    finish(cartCount(data.wall.pages[number - 1].slots));
     void showPage(number, { announce: false });
   });
   slotSelect.addEventListener("change", () => loadEditor());

@@ -29,7 +29,7 @@ import { failureText, requestJson, withDisabled } from "./api-client.js";
 import { fmtTime } from "./dom-helpers.js";
 import { createCollectionTable } from "./collection-table.js";
 import { deleteCollectionItem } from "./collection-delete.js";
-import { createSelectionAnnouncer, makeSay } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
 import { defaultStorage, readStorage, removeStorage, writeStorage } from "./safe-storage.js";
 
@@ -308,12 +308,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   // The tracker's own region while its tab shows; the page-wide one when
   // the tab has been left, since a region inside a hidden panel says nothing.
   const announcementRegion = () => shown() ? status : (doc.getElementById("sr-status") || status);
-  const rawSay = makeSay(announcementRegion, { dwellMs: 5000 });
-  const selectionAnnouncer = createSelectionAnnouncer((...args) => {
-    if (root.isConnected && shown() && doc.visibilityState !== "hidden"
-      && !root.closest("details:not([open])")) rawSay(...args);
-  });
-  const say = (...args) => { selectionAnnouncer.cancel(); rawSay(...args); };
+  const say = makeSay(announcementRegion, { dwellMs: 5000 });
   const sayTimer = makeSay(announcementRegion, { dwellMs: 5000, mirror: false });
 
   function afterFocus() {
@@ -375,11 +370,11 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     microphoneSelect.value = selectedMicrophone.id;
   }
 
-  function microphoneNote(message) {
+  function microphoneNote(message, describe = true) {
     setText(microphoneStatus, message);
     if (microphoneStatus) microphoneStatus.hidden = !message;
     if (microphoneSelect) {
-      if (message) microphoneSelect.setAttribute("aria-describedby", "vt-microphone-status");
+      if (message && describe) microphoneSelect.setAttribute("aria-describedby", "vt-microphone-status");
       else microphoneSelect.removeAttribute("aria-describedby");
     }
   }
@@ -515,7 +510,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   async function confirmSongs() {
     const row = data?.targets?.find((item) => item.target_id === selectedTarget);
     if (confirming || !row || row.selection !== "predicted" || row.eligible === false) return;
-    selectionAnnouncer.cancel();
     const asked = generation;
     confirming = true; renderTargets(); clearError();
     try {
@@ -909,7 +903,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   // Listen back: a toggle, pressed while the take plays.
   async function listen() {
-    selectionAnnouncer.cancel();
     clearError();
     if (booking) {
       fail(listenButton, "Wait for booking to finish first.");
@@ -1046,7 +1039,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     recordButton.setAttribute("aria-pressed", "true");
     renderTimer();
     void Promise.resolve(focusGate).then(() => {
-      if (session === current) say(`Recording${replaced ? ", the earlier take discarded" : ""}. Press Record or Alt+R to stop.`);
+      if (session === current) say(`${replaced ? "The earlier take was discarded. " : ""}Recording.`);
     });
   }
 
@@ -1087,14 +1080,13 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       return;
     }
     showTake(blob, seconds, current.slot);
-    microphoneNote(current.microphone.replace(/^Recording from/, "Last recording used"));
+    microphoneNote(current.microphone.replace(/^Recording from/, "Last recording used"), false);
     renderTimer();
     renderPlacement();
-    say(`${current.note}Recording stopped at ${clock(seconds)}. Listen back, then Book voice track, or Record again to replace it.`);
+    say(`${current.note}Recording stopped at ${clock(seconds)}.`);
   }
 
   async function toggle() {
-    selectionAnnouncer.cancel();
     if (session) {
       stop();
       return;
@@ -1159,7 +1151,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   // ---- Booking ----
 
   async function book(button) {
-    selectionAnnouncer.cancel();
     clearError();
     if (testing || testStarting || starting) {
       fail(bookButton, "Stop microphone access before booking a voice track.");
@@ -1255,7 +1246,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   }
 
   function discard() {
-    selectionAnnouncer.cancel();
     clearError();
     if (session) {
       session.cancelled = true;
@@ -1379,16 +1369,13 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   recordButton.addEventListener("click", () => void toggle());
   microphoneSelect?.addEventListener("change", () => saveMicrophone(microphoneSelect.value));
-  microphoneRefresh?.addEventListener("click", () => { selectionAnnouncer.cancel(); void refreshMicrophones(); });
-  testButton?.addEventListener("click", () => { selectionAnnouncer.cancel(); void toggleMicrophoneTest(); });
+  microphoneRefresh?.addEventListener("click", () => void refreshMicrophones());
+  testButton?.addEventListener("click", () => void toggleMicrophoneTest());
   targetSelect?.addEventListener("change", () => {
-    const finish = selectionAnnouncer.start();
     selectedTarget = targetSelect.value;
     if (data) data = { ...data, slot: null, accepting: false };
     renderTargets(); renderSlot();
-    void refresh().then(() => {
-      finish(`${el("vt-selection").textContent}. ${el("vt-estimated-airtime").textContent}.`);
-    });
+    void refresh();
   });
   confirmButton?.addEventListener("click", () => void confirmSongs());
   listenButton.addEventListener("click", () => void listen());
@@ -1427,7 +1414,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     // drops either, so the page asks first.
     hasUnsavedWork: () => Boolean(session || take),
     clear() {
-      selectionAnnouncer.cancel();
       requestEpoch += 1;
       generation += 1;
       starting = false;

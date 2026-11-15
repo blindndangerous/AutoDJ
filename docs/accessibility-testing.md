@@ -44,16 +44,18 @@ This regression also runs as part of the visual audit.
 
 ## Selection-driven updates
 
-After a selection, `createSelectionAnnouncer` announces its successful result
-once, 500 ms after the result becomes available. A new selection cancels the
-previous selection's pending feedback and timer; only the latest choice
-may be announced. Check Browse Type, Folder and Sort; Cart page; Listener
-statistics period; Hour preview span; Voice tracks Song change; and
-Category/Clockwheel condition counts with slow replies and rapid changes. Keep
-focus on the native control. Explicit actions and errors retain their existing
-announcement paths, while passive refreshes stay quiet. Readable hints and
-descriptions remain available. Record NVDA/browser speech separately from DOM
-and browser checks; this timing does not establish that speech has completed.
+Use the shared 500 ms delay for new information beyond a native selection:
+Browse Type/Folder say only the track count, Cart page says the occupied cart
+count, and Hour preview and Category/Clockwheel conditions say their results.
+Sort, Voice tracks Song change and Listener statistics Show do not repeat the
+selected value. Rapid changes cancel obsolete feedback. Preserve focus and
+explicit-action results; passive refreshes stay quiet. Record actual NVDA speech
+separately from DOM timing checks.
+
+Broadcast recording progress stays readable, but neither the live regions nor
+the focused Record button's description should repeat its filename or size on
+state pushes. Confirm pressed/unpressed state, one start/stop result, and real
+error/recovery notifications.
 
 ## Confirmations with NVDA
 
@@ -461,8 +463,9 @@ stop; arrows immediately continue table navigation. An action that does not
 move focus restores this cell too. An action that opens an editor or
 confirmation moves focus straight from the menu, and cancelling returns to the
 Actions cell. Standalone menus return to their button. Tab closes and leaves the menu. Disabled actions remain present
-and reachable with `aria-disabled`. Their reason is linked with
+and reachable with `aria-disabled`. A useful reason is linked with
 `aria-describedby`, and activation announces it without performing the action.
+Obvious first/last-step movement boundaries use `aria-disabled` alone.
 
 A column that turns its row on or off, such as a schedule event's **Enabled**,
 holds a native checkbox built by the shared table's `toggle` column option.
@@ -611,10 +614,12 @@ station or authentication state is cleared. Save closes onto the saved row's
 Actions cell in a shared collection table; Cancel and Escape
 return to the opener, asking before discarding changed fields. A pending save
 prevents another submission or dismissal.
-Preserve caller-provided short help as the dialog description. Otherwise the
-shared editor supplies "Use Tab to move between fields and actions." An explicit
-description avoids NVDA deriving one from the form. Do not describe the dialog by its whole form or
-live status region. Fields retain their individual labels and error/help links.
+Keep useful caller-provided help as the dialog description. The existing shared
+fallback remains for editors that use it; Clockwheel steps explicitly opt out of
+redundant introductory speech (#787). Recheck that opening does not trigger
+whole-form reading in NVDA, the historical reason for that fallback. Never use
+the complete form or live status as a description. Field labels and validation
+associations remain.
 Opening assigns focus to the requested field once; do not focus another field,
 the form or the dialog first. Test the opening focus sequence separately from
 speech: a DOM focus assertion cannot establish how often NVDA speaks a title.
@@ -755,7 +760,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   saying "Sending" and then the result once, with focus staying on the button.
 - Stream mode, Settings, Stream, More formats and Listener statistics (#50), each a card closed
   by default (open each first, with Enter or Space on its heading): AAC quality and
-  Opus quality read with their help, a choice saved once it settles and said once ("Opus stream
+  Opus quality read by label and value, with help available through browsing; a choice saved once it settles and said once ("Opus stream
   on at 64 kbps."), the address list read as plain text with a named Copy button for each
   format; Listener statistics read by heading, the summary as one paragraph, both tables with
   their captions and native column headers (arrow moves add the column heading and
@@ -838,8 +843,8 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Queue & Search, browsing: results load on entry. Tab to Type, Folder, Sort, Search text and Search; one result grid with
   arrows, Home and End, and Enter or Space activating each action; the track count said once per
   explicit search and page, with focus staying on Previous or Next (or moving to the other when a page ends).
-  Type, Folder and Sort changes announce the resulting count once through the
-  shared delayed selection announcer, without interrupting native combo selection;
+  Type and Folder changes announce only the track count after the shared
+  500 ms delay. Sort stays quiet because it does not change the count;
   and Track info returning focus to its result. Under Settings > Voice liners, check Options, Play dates and Options, Delete.
   Saving or cancelling dates returns to the row's Actions cell. Confirmed deletion
   moves to a nearby row or the panel fallback and announces the destination.

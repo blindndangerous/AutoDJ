@@ -230,3 +230,25 @@ keep their existing announcements; passive refreshes stay quiet. See the
 [selection checks](../accessibility-testing.md#selection-driven-updates).
 This correction does not establish fresh NVDA evidence, and the timer does not
 measure when speech finishes.
+
+## Clarification 2026-11-15: additional information only (#787)
+
+The operator's speech review in [#787](https://github.com/blindndangerous/AutoDJ/issues/787)
+clarifies when selection feedback is useful. Only announce results that add
+information the native control did not speak:
+Browse Type/Folder announce only the track count; Sort stays quiet. Cart page
+announces occupied carts. Hour preview and condition counts keep delayed results.
+Voice tracks and Listener statistics do not repeat selection summaries.
+
+Recording progress remains readable but is not a live region or a description of
+the focused recording toggle. Start/stop results and real error/recovery notices
+remain announced. Brief ranges and consequences stay beside controls; detailed
+operational explanations belong in help. This supersedes the broader list of
+spoken selections in the earlier #785 correction, not its cancellation contract.
+
+Check all screens, not just Settings. Speak information the action adds, rather
+than repeating the selected option or the control that receives focus. Keep
+longer explanations in Help. Tests should protect labels, useful feedback and
+error handling without requiring unnecessary prose. When a screen-reader
+workaround adds speech, record the problem it solves and check that it still
+helps in actual use. Automated checks alone cannot judge that.

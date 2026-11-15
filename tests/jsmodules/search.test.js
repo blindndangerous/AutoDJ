@@ -268,7 +268,7 @@ describe("search result actions", () => {
 describe("library browsing", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it("loads when its view opens, delays sort feedback, and retains rows while cancelling late replies", async () => {
+  it("loads when its view opens, sorts quietly, and retains rows while cancelling late replies", async () => {
     const pending = [];
     const fetchImpl = vi.fn(() => new Promise((resolve) => pending.push(resolve)));
     vi.stubGlobal("fetch", fetchImpl);
@@ -291,7 +291,6 @@ describe("library browsing", () => {
     await vi.waitFor(() => expect(els.searchCount.textContent).toContain("1 track"));
     expect(els.searchCount.getAttribute("aria-live")).toBe("off");
     expect(els.queueAnnounce.textContent).toBe("");
-    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("1 track"));
     expect(document.activeElement).toBe(els.sortSelect);
     els.sortSelect.value = "artist";
     els.sortSelect.dispatchEvent(new Event("change"));
@@ -333,15 +332,17 @@ describe("library browsing", () => {
       await vi.advanceTimersByTimeAsync(499);
       expect(els.queueAnnounce.textContent).toBe("");
       await vi.advanceTimersByTimeAsync(2);
-      expect(els.queueAnnounce.textContent).toBe("No tracks found.");
+      expect(els.queueAnnounce.textContent).toBe("No tracks");
       expect(document.activeElement).toBe(els.folderSelect);
       change(els.sortSelect, "artist");
       pending[2](jsonResponse({ results: [{ path: "b", title: "B" }], total: 3 }));
       await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(501);
+      expect(els.queueAnnounce.textContent).toBe("No tracks");
       els.view.hidden = true;
       document.dispatchEvent(new CustomEvent("autodj:view"));
       await vi.advanceTimersByTimeAsync(600);
-      expect(els.queueAnnounce.textContent).not.toContain("3 tracks");
+      expect(els.queueAnnounce.textContent).toBe("No tracks");
     } finally {
       vi.useRealTimers();
       vi.unstubAllGlobals();
@@ -420,7 +421,7 @@ describe("library browsing", () => {
     els.searchInput.value = "song";
     els.searchInput.focus();
     els.searchInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    await vi.waitFor(() => expect(els.searchCount.textContent).toBe("2 tracks found; showing 1–2."));
+    await vi.waitFor(() => expect(els.searchCount.textContent).toBe("2 tracks"));
     expect(String(fetchMock.mock.calls[0][0])).toContain("q=song");
     vi.unstubAllGlobals();
   });

@@ -1843,11 +1843,6 @@ async function eachTarget(page, measure) {
       await visit(view);
       if (view === "track-info") await openTrackTags(page, visit);
       if (view === "library") {
-        await page.locator("#music-fade-drop").fill("0");
-        await page.locator("#music-fade-drop-save").click();
-        await page.locator("#music-fade-drop-error").waitFor({ state: "visible" });
-        await visit("library/music-fade-error");
-        await page.locator("#music-fade-drop").fill("10");
         await openAutoRescanError(page, visit);
         await openIntroRuleError(page, visit);
         await openDaypartErrors(page, visit);
@@ -1873,6 +1868,13 @@ async function eachTarget(page, measure) {
         await page.waitForTimeout(150);
         await openEveryCard(page);
         await visit(`settings/${id.replace(/^stab-/, "")}`);
+        if (id === "stab-server") {
+        await page.locator("#music-fade-drop").fill("0");
+        await page.locator("#music-fade-drop-save").click();
+        await page.locator("#music-fade-drop-error").waitFor({ state: "visible" });
+        await visit("settings/server/music-fade-error");
+        await page.locator("#music-fade-drop").fill("10");
+        }
         if (id === "stab-requests") await openRequestSettingsError(page, visit);
         if (id === "stab-picking") {
           await openRotationTest(page, visit);

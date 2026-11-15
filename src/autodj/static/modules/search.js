@@ -124,13 +124,13 @@ export function installSearch({
     if (results.length === 0) {
       const empty = document.createElement("span");
       empty.className = "no-results";
-      empty.textContent = browsing ? "No tracks found." : `No results for "${q}".`;
+      empty.textContent = browsing ? "No tracks" : `No results for "${q}".`;
       searchResults.replaceChildren(tableRow(searchResults.ownerDocument, [empty], { colspan: [5] }));
       tableNavigation.refresh();
       total = browsing ? Number(data.total || 0) : 0;
       offset = browsing ? Number(data.offset ?? pageOffset) : 0;
       if (browsing) {
-        count("No tracks found.");
+        count("No tracks");
         updatePages();
       } else setCount(`No results for "${q}".`);
       return;
@@ -166,7 +166,7 @@ export function installSearch({
     if (browsing) {
       total = Number(data.total ?? results.length);
       offset = Number(data.offset ?? pageOffset);
-      count(`${total} track${total === 1 ? "" : "s"} found; showing ${offset + 1}–${offset + results.length}.`);
+      count(`${total} track${total === 1 ? "" : "s"}`);
       updatePages();
       return;
     }
@@ -209,9 +209,10 @@ export function installSearch({
     } else if (!searchInput.value.trim()) clearBrowse();
   });
   if (browsing) {
-    for (const select of [folderSelect, kindSelect, sortSelect].filter(Boolean)) {
+    for (const select of [folderSelect, kindSelect].filter(Boolean)) {
       select.addEventListener("change", () => { offset = 0; void doSearch(0, { selection: true }); });
     }
+    sortSelect?.addEventListener("change", () => { offset = 0; void doSearch(0, { quiet: true }); });
     previousPage.addEventListener("click", () => changePage(-1));
     nextPage.addEventListener("click", () => changePage(1));
   }

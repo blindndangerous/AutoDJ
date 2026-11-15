@@ -690,6 +690,7 @@ it("keeps an unsaved recording when listening and confirms before replacing it",
     media: () => ({ getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) }),
     Recorder: () => Recorder });
   await controls.openShow(show); get("load").click(); await settle();
+  expect(get("record").hasAttribute("aria-describedby")).toBe(false);
   get("record").click(); await settle(); get("record").click(); await settle();
   expect(get("save-take").disabled).toBe(false);
   takeAction("listen").click(); await settle();

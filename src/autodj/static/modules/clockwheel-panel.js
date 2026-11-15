@@ -111,6 +111,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   let pendingStepCount = null;
   const stepEditor = createEditorDialog({
     form: el("clock-step-form"), heading: legend, dialog: stepDialog,
+    describe: false,
     cancel: cancelEdit, fallback: newStep, submit: addButton, save: saveStep,
     onCancel: () => {
       const index = editing;
@@ -210,9 +211,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
     columns: [{ key: "step", label: "Step", value: (step, index) => `${index + 1}. ${describe(step)}` }],
     actions: (step, index) => ROW_ACTIONS.map(([id, label]) => ({
       id, label, run: () => rowAction(id, clock.steps.indexOf(step)),
-      disabledReason: id === "move-up" && index === 0 ? "This is already the first step."
-        : id === "move-down" && index === clock.steps.length - 1 ? "This is already the last step."
-          : id === "delete" && editing !== null ? "Finish editing the step before deleting it." : "",
+      disabled: (id === "move-up" && index === 0) || (id === "move-down" && index === clock.steps.length - 1),
+      disabledReason: id === "delete" && editing !== null ? "Finish editing the step before deleting it." : "",
     })),
   });
 

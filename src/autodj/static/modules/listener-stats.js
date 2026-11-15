@@ -6,14 +6,15 @@
 //     tables, never live regions.  They change only when the person asks
 //     (opening Settings, Refresh statistics, Show, Days to keep), never on
 //     the once-a-second push, so reading a table is never disturbed.
-//   - Each of those actions says what it did once, in the settings status
-//     region; failures with the error tone.
+//   - Refresh says what it did once in the settings status region. Changing
+//     the displayed period is silent because the selected value is visible;
+//     failures keep the error tone.
 //   - Download keeps focus on its button.
 
 import { failureText, requestFile, requestJson } from "./api-client.js";
 import { fmtTime } from "./dom-helpers.js";
 import { saveFile } from "./history-export.js";
-import { createSelectionAnnouncer, makeSay } from "./live-region.js";
+import { makeSay } from "./live-region.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 
 const SPANS = { 7: "the last 7 days", 30: "the last 30 days", 90: "the last 90 days" };
@@ -121,12 +122,7 @@ export function installListenerStats({
   let loaded = false;
   let sequence = 0;
 
-  const rawSay = makeSay(settingsStatus, { dwellMs: 5000 });
-  const selectionAnnouncer = createSelectionAnnouncer((...args) => {
-    if (active && doc.visibilityState !== "hidden" && !keep.closest("[hidden]")
-      && !keep.closest("details:not([open])")) rawSay(...args);
-  });
-  const say = (...args) => { selectionAnnouncer.cancel(); rawSay(...args); };
+  const say = makeSay(settingsStatus, { dwellMs: 5000 });
 
   function render(stats) {
     summary.textContent = summaryText(stats, locale);
@@ -201,7 +197,6 @@ export function installListenerStats({
   }
 
   function reset() {
-    selectionAnnouncer.cancel();
     active = false;
     loaded = false;
     sequence += 1;
@@ -216,17 +211,12 @@ export function installListenerStats({
   }
 
   refreshButton.addEventListener("click", () => {
-    selectionAnnouncer.cancel();
     void refresh({ spoken: "Listener statistics updated." });
   });
   span.addEventListener("change", () => {
-    const finish = selectionAnnouncer.start();
-    void refresh().then((ok) => {
-      if (ok) finish(`Showing ${spanText(Number(span.value))}.`);
-    });
+    void refresh();
   });
   exportButton.addEventListener("click", async () => {
-    selectionAnnouncer.cancel();
     try {
       const response = await download("/api/stream/stats/export", ["text/csv"]);
       const blob = await response.blob();

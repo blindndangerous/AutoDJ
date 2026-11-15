@@ -11,7 +11,7 @@ import { confirmAction } from "./confirm-dialog.js";
 import { sendWithVoiceTrackConflict, voiceTrackConflict } from "./voice-track-conflict.js";
 
 const controllers = new WeakMap();
-const EMPTY_TEXT = "Queue is empty.  Search, then use Play next or Add to queue.";
+const EMPTY_TEXT = "Queue is empty, songs will be chosen automatically.";
 const queueKey = (queue) => JSON.stringify(queue.map((track) => [track.path, fmtTrack(track), track.bridge_to || ""]));
 const bridgeText = (track) => track.bridge_to ? `Bridge to ${String(track.bridge_to).trim()}` : "";
 const entryName = ({ track }) => `${fmtTrack(track)}${bridgeText(track) ? `, b${bridgeText(track).slice(1)}` : ""}`;
@@ -250,7 +250,7 @@ export function installQueueClear(els) {
       result = `Cleared the queue.  Removed ${count} ${plural}.`;
     };
     const confirmed = await confirmAction(doc, {
-      title: "Clear the queue?", message: `This removes all ${count} queued ${plural}.  AutoDJ keeps picking tracks on its own.`,
+      title: "Clear the queue?", message: `This removes ${count} queued ${plural}.  AutoDJ keeps picking tracks on its own.`,
       confirmLabel: "Clear queue",
       onConfirm: async () => {
         if (!isAuthenticatedRequestCurrent(epoch) || currentStation() !== station) return null;

@@ -2,8 +2,8 @@
 // the recordings folder is config-only and never reaches the page.
 //
 // The status and error lines are plain text, refreshed by every state push.
-// Results of a press, and a new or cleared recording error, are spoken once
-// through the status live region.
+// Results of a press and a new recording error are spoken once through the
+// status live region. Passive recording progress stays quiet.
 import { failureText, requestJson, withDisabled } from "./api-client.js";
 import { clearFieldError, showFieldError } from "./dom-helpers.js";
 import { makeSay } from "./live-region.js";

@@ -24,6 +24,20 @@ function table(actions) {
   return { grid, status, first: grid.body.querySelector('[aria-haspopup="menu"]') };
 }
 describe("row action menus", () => {
+  // ADR-0021-15
+  it("keeps obvious unavailable actions focusable without a redundant explanation", () => {
+    const run = vi.fn();
+    const { first, status } = table([{ id: "up", label: "Move up", disabled: true, run }]);
+    first.click();
+    press("Home");
+    const item = document.activeElement;
+    expect(item.getAttribute("aria-disabled")).toBe("true");
+    expect(item.hasAttribute("aria-describedby")).toBe(false);
+    press("Enter");
+    expect(run).not.toHaveBeenCalled();
+    expect(status.textContent).toBe("");
+  });
+
   it.each(["Escape", "Tab", "Enter"])("restores the Options gridcell after %s closes the menu", (key) => {
     const run = vi.fn();
     const { grid, first } = table([{ id: "run", label: "Run now", run }]);

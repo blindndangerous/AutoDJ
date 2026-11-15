@@ -502,10 +502,10 @@ NVDA speech or operator acceptance. ADR disposition: `update_existing_adr`.
 
 | ID | Constraint | Method | Evidence |
 | --- | --- | --- | --- |
-| `ADR-0021-01` | Shared tables retain keyed rows and focus during data updates. | automated | `tests/jsmodules/collection-table.test.js::preserves keyed rows and focus while updating data` |
+| `ADR-0021-01` | Shared tables retain keyed rows and focus during data updates. | automated | `tests/jsmodules/collection-table.test.js::preserves keyed rows and focus while updating data`, `tests/jsmodules/intro-rules-panel.test.js::restores table position across station changes, or falls back to Add for an empty list` |
 | `ADR-0021-02` | Newly created and empty collections contain one no-results row spanning every column, including before the first asynchronous load. | automated | `tests/jsmodules/collection-table.test.js::renders one empty row across all columns`, `tests/jsmodules/collection-table.test.js::starts with a spanning empty row before the first asynchronous load` |
 | `ADR-0021-03` | Removing a focused row selects a usable fallback and announces its destination through the shared status helper. | automated | `tests/jsmodules/collection-table.test.js::moves focus after removal and announces the new target`, `tests/jsmodules/collection-table.test.js::names a labelled fallback field when the last focused row disappears` |
-| `ADR-0021-04` | Menus implement the menu-button keys, retain disabled choices and explain disabled activation. | automated | `tests/jsmodules/row-actions-menu.test.js::supports menu keys and disabled reasons` |
+| `ADR-0021-04` | Menus implement the menu-button keys and retain disabled choices; explain unavailable actions when their reason is not already obvious. | automated | `tests/jsmodules/row-actions-menu.test.js::supports menu keys and disabled reasons` |
 | `ADR-0021-05` | Removal requires confirmation unless Undo is available. | automated | `tests/jsmodules/collection-delete.test.js::confirms removal unless undo is available` |
 | `ADR-0021-06` | Retired by #712: Schedule events no longer have a primary action column or a Next run column. | retired | Replaced by `ADR-0021-34` (one Actions column) and `ADR-0021-37` (Schedule columns). |
 | `ADR-0021-07` | Table/menu/dialog interaction and visual accessibility require browser and speech evidence. | manual | Follow docs/accessibility-testing.md Collection tables in both themes; record revision, browser, screen reader, NVDA's Document Formatting table headers setting, keyboard focus, speech method, axe results and remaining limits. Include one Tab stop, heading and row context on arrow moves, menu open by Enter/Space, Shift+F10, the Applications key and right-click, navigation/activation/close, disabled reasons, editor return, refresh/removal focus, clockwheel Undo and collection/menu button targets at least 24 CSS pixels wide and 44 CSS pixels high. #712 also requires an operator test. |
@@ -516,13 +516,13 @@ NVDA speech or operator acceptance. ADR disposition: `update_existing_adr`.
 | `ADR-0021-12` | The queue lists Track info first in each row's menu and confirms removal through the shared helper. | automated | `tests/jsmodules/queue.test.js::uses the shared queue table with Track info and confirmed removal` |
 | `ADR-0021-13` | Pending and recent listener requests share tables; unavailable approval stays focusable with its reason. | automated | `tests/jsmodules/listener-requests.test.js::uses shared pending and recent request tables with focusable unavailable approval` |
 | `ADR-0021-14` | Voice-track bookings keep the listing bound, confirm cancellation from their shared menu and retain readable failure context if the row disappears. | automated | `tests/jsmodules/voice-tracker.test.js::uses a bounded shared bookings table with confirmed cancellation`, `tests/jsmodules/voice-tracker.test.js::links a failed Cancel to the heading when refresh removes its booking` |
-| `ADR-0021-15` | Disabled row actions associate their current reason before activation; since #712 every row action is a menu item. | automated | `tests/jsmodules/row-actions-menu.test.js::describes a disabled choice before activation and updates or removes its reason` |
+| `ADR-0021-15` | Disabled row actions associate a useful reason before activation; obvious boundary actions may use only aria-disabled. Every row action remains a menu item. | automated | `tests/jsmodules/row-actions-menu.test.js::describes a disabled choice before activation and updates or removes its reason`; `tests/jsmodules/row-actions-menu.test.js::keeps obvious unavailable actions focusable without a redundant explanation` |
 | `ADR-0021-16` | Transferring button focus to its grid cell preserves pointer activation and keyboard cell scrolling. | automated | `tests/jsmodules/table-navigation.test.js::keeps a clicked button stationary while redirecting focus to its cell` |
 | `ADR-0021-17` | Retired by #712: data-cell names now add the column heading on a column change. | retired | Replaced by `ADR-0021-36`. |
 | `ADR-0021-18` | Closing Options with Escape and cancelling removal restore its gridcell and immediate table navigation. | automated | `tests/jsmodules/collection-table.test.js::resumes grid arrows from the Options cell after Escape`, `tests/jsmodules/collection-delete.test.js::returns cancelled removal to the owning gridcell without focusing its button` |
 | `ADR-0021-19` | Retired by #712: step targets and selection modes return to the step's sentence. | retired | Replaced by `ADR-0021-38`. |
 | `ADR-0021-20` | New clockwheel name has help for Create and PAL import and prefills the editable Create dialog. | automated | `tests/jsmodules/clockwheel-panel.test.js::labels the shared new name and uses it to prefill Create` |
-| `ADR-0021-21` | Editor descriptions provide short help instead of announcing the complete form. | automated | `tests/jsmodules/editor-dialog.test.js::describes editors with short help instead of their form contents` |
+| `ADR-0021-21` | Editor descriptions never reference the complete form. Editors may omit redundant help when explicitly requested. | automated | `tests/jsmodules/editor-dialog.test.js::describes editors with short help instead of their form contents`; `tests/jsmodules/editor-dialog.test.js::allows the clockwheel editor to omit redundant spoken help` |
 | `ADR-0021-22` | Loading a clockwheel preserves the operator's new-name draft, including an empty value. | automated | `tests/jsmodules/clockwheel-panel.test.js::preserves an empty or operator-entered new name when opening saved wheels` |
 | `ADR-0021-23` | Retired by #712: horizontal moves now add the column heading as well. | retired | Replaced by `ADR-0021-36`. |
 | `ADR-0021-24` | Action return focus resolves its owning cell without selecting a sibling native control. | automated | `tests/jsmodules/table-navigation.test.js::returns actions to their cell without selecting a sibling native control` |
@@ -546,3 +546,23 @@ NVDA speech or operator acceptance. ADR disposition: `update_existing_adr`.
 | `ADR-0021-42` | Every table is named by a native caption rather than `aria-label` or `aria-labelledby`, visually hidden only where a heading above says the same. | automated | `tests/jsmodules/collection-table.test.js::names each table by a native caption, hidden only when a heading says it` |
 | `ADR-0021-43` | While a row's menu is shown in its Actions cell, the cell is named by its Options button alone, never with the menu's name. | automated | `tests/jsmodules/collection-table.test.js::names the Actions cell by its Options button alone while its menu is open` |
 | `ADR-0021-44` | A toggle column holds a native checkbox named by its action and row; Space sends one request, keeps focus, stays enabled while busy (focused or not), ignores a second press and then shows the row's current server state; a row menu in the cell survives the checkbox coming or going. Schedule events use it for Enabled, with no Enable/Disable menu item, no checkbox on an ended event that is off, and a noted checkbox on an ended event still on. | automated | `tests/jsmodules/collection-table.test.js::turns a row on or off in place from a native checkbox cell with one request`, `tests/jsmodules/collection-table.test.js::shows the server's state once a toggle settles, after a reload or a failure`, `tests/jsmodules/collection-table.test.js::keeps a context menu open in a toggle cell when its checkbox comes or goes`, `tests/jsmodules/collection-table.test.js::keeps an unavailable checkbox focusable and says why instead of changing it`, `tests/jsmodules/scheduler-panel.test.js::turns an event off and on with Space on its Enabled checkbox, keeping focus there`, `tests/jsmodules/scheduler-panel.test.js::lets an ended event that is still enabled be turned off, and says it has ended` |
+
+## Amendment 2026-11-15: omit redundant action and editor descriptions (#787)
+
+The operator's [speech review](https://github.com/blindndangerous/AutoDJ/issues/787)
+changes how we describe Clockwheel controls. Move up on the first step and
+Move down on the last stay focusable and unavailable; they need no extra
+explanation. Other unavailable actions still explain restrictions that are
+not clear from the control.
+
+The Clockwheel step editor has no generic introduction. Its title, field labels,
+validation and return focus stay the same. The earlier Firefox/NVDA full-form report explains why the description
+was added; removing it needs a fresh speech check for whole-form reading. DOM and
+browser tests do not establish that speech outcome. Other editor defaults remain.
+
+For [#788](https://github.com/blindndangerous/AutoDJ/issues/788), when switching
+stations from the Intro Rules table, keep the row and column
+position in the incoming list. While it loads, the heading provides a temporary
+focus target without showing the previous station's rules. Use Add only when the
+new list is empty, and do not move focus if the operator has moved elsewhere.
+This transition needs no extra list-change or focus-destination announcement.

@@ -150,8 +150,8 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
   function activate(id) {
     const action = choices.find((item) => item.id === id);
     if (!action) return;
-    if (action.disabledReason) {
-      announceStatus(status, action.disabledReason, { force: true });
+    if (action.disabled || action.disabledReason) {
+      if (action.disabledReason) announceStatus(status, action.disabledReason, { force: true });
       return;
     }
     // An action that moves focus, such as opening an editor, takes it
@@ -184,7 +184,7 @@ export function createRowActionsMenu({ doc = document, name, actions = [], statu
       }
       if (item.textContent !== action.label) item.textContent = action.label;
       item.setAttribute("aria-label", action.label);
-      item.setAttribute("aria-disabled", String(Boolean(action.disabledReason)));
+      item.setAttribute("aria-disabled", String(Boolean(action.disabled || action.disabledReason)));
       if (action.disabledReason) {
         let reason = reasons.get(action.id);
         if (!reason) {

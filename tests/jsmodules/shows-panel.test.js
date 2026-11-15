@@ -522,6 +522,8 @@ describe("editing a list", () => {
     expect(songTitles()).toEqual(["Artist 1, Song 1", "Artist 3, Song 3"]);
     expect(document.activeElement).toBe(songOptions(1));
     await vi.waitFor(() => expect(status()).toContain("Removed Artist 2, Song 2."));
+    expect(status()).not.toMatch(/list changed/i);
+    expect(status()).not.toContain("Focus moved to");
     byId("shows-search").value = "nine";
     byId("shows-search-run").click();
     await vi.waitFor(() => expect(byId("shows-results").querySelectorAll('button[data-action="add"]')).toHaveLength(1));
@@ -580,6 +582,8 @@ describe("editing a list", () => {
     expect(document.activeElement).toBe(second.querySelector('td[data-action="options"]'));
     expect(second.querySelector('[data-action="up"]').getAttribute("aria-label")).toBe("Move up");
     await vi.waitFor(() => expect(status()).toContain("Removed Artist 3, Song 3."));
+    expect(status()).not.toMatch(/list changed/i);
+    expect(status()).not.toContain("Focus moved to");
     expect(left).toEqual([]);
   });
 

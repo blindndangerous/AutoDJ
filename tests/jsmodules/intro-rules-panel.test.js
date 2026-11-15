@@ -417,14 +417,49 @@ describe("intro rules list and form", () => {
     expect(document.activeElement).toBe(byId("intro-rules-add"));
   });
 
-  it("forgets one station's rules when another is chosen, and loads the next station's", async () => {
+  // ADR-0021-01
+  it("restores table position across station changes, or falls back to Add for an empty list", async () => {
     const server = await open();
+    const oldCell = items()[1].cells[1];
+    oldCell.focus();
     controls.clear();
     expect(items()).toEqual([]);
     expect(byId("intro-rules-list").querySelector(".no-results").colSpan).toBe(4);
-    server.rules = [copy(ROCK)];
+    expect(document.activeElement).toBe(byId("intro-rules-list-heading"));
+    expect(status()).toBe("");
+    server.rules = [copy(EIGHTIES), { ...copy(ROCK), id: "c".repeat(32), label: "Year Shoutsee" }];
     controls.refresh();
-    await vi.waitFor(() => expect(items()).toHaveLength(1));
+    await vi.waitFor(() => expect(items()).toHaveLength(2));
+    expect(items()[1].cells[0].textContent).toBe("Year Shoutsee");
+    expect(document.activeElement).toBe(items()[1].cells[1]);
+    expect(status()).toBe("");
+
+    items()[1].cells[1].focus();
+    controls.clear();
+    expect(document.activeElement).toBe(byId("intro-rules-list-heading"));
+    server.rules = [];
+    controls.refresh();
+    await vi.waitFor(() => expect(byId("intro-rules-list").querySelector(".no-results")).not.toBeNull());
+    expect(document.activeElement).toBe(byId("intro-rules-add"));
+    expect(status()).toBe("");
+  });
+
+  it("does not take focus back when the station response arrives after focus moved", async () => {
+    const server = await open();
+    items()[1].cells[1].focus();
+    controls.clear();
+    expect(document.activeElement).toBe(byId("intro-rules-list-heading"));
+
+    let resolve;
+    server.request.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const pending = controls.refresh();
+    await Promise.resolve();
+    byId("intro-rules-add").focus();
+    resolve({ rules: [copy(EIGHTIES), copy(ROCK)], problem: null, max_rules: 2000, ...copy(CHOICES) });
+    await pending;
+    expect(items()).toHaveLength(2);
+    expect(document.activeElement).toBe(byId("intro-rules-add"));
+    expect(status()).toBe("");
   });
 });
 

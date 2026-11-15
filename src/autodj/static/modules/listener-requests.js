@@ -68,7 +68,7 @@ export function parseThreshold(text) {
 
 export const THRESHOLD_ERROR = "Enter a roughness limit from 0 to 10, such as 2 or 1.5.";
 
-export const OFF_SUMMARY = "Listener requests are off for this station. Its request page says requests are closed.";
+export const OFF_SUMMARY = "Listener requests are off.";
 
 export function summaryText(state) {
   if (state.enabled === false) return OFF_SUMMARY;
@@ -85,13 +85,10 @@ export function summaryText(state) {
 // What a save says: whether it opened or closed the request page, or just "saved".
 export function savedText(before, after) {
   if (before?.enabled !== true && after.enabled === true) {
-    const mode = after.approval === "auto"
-      ? "Requests that keep the rules join the queue at once."
-      : "Each request waits for you.";
-    return `Listener requests are on. The request page is open. ${mode}`;
+    return "Listener requests are on.";
   }
   if (before?.enabled === true && after.enabled !== true) {
-    return "Listener requests are off. The request page now says requests are closed.";
+    return "Listener requests are off.";
   }
   return "Request settings saved.";
 }

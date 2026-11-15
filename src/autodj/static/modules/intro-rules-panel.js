@@ -93,6 +93,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   const section = el("intro-rules");
   const form = el("intro-rules-form");
   const list = el("intro-rules-list");
+  const listHeading = el("intro-rules-list-heading");
   const addButton = el("intro-rules-add");
   if (!panel || !section || !form || !list || !addButton) return NO_PANEL;
   const status = el("intro-rules-status");
@@ -126,6 +127,8 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   let conditionId = 0;
   let listSignature = "";
   let listFocusAnnouncementSuppressed = false;
+  let stationListFocus = null;
+  if (listHeading) listHeading.tabIndex = -1;
   // The control each shown error is linked to.
   const marked = new Map();
 
@@ -184,7 +187,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
       { id: "edit", label: "Edit", run: (button) => openForm(rule, button) },
       { id: "delete", label: "Delete", run: (button) => void remove(rule.id, button) },
     ],
-    fallback: addButton, status, emptyText: "No intro rules yet.",
+    fallback: () => stationListFocus ? listHeading : addButton, status, emptyText: "No intro rules yet.",
   });
 
   function renderList() {
@@ -205,6 +208,17 @@ export function installIntroRulesPanel({ document: doc = document, request = req
       problem.hidden = !data.problem;
     }
     renderList();
+    if (stationListFocus) {
+      const saved = stationListFocus;
+      stationListFocus = null;
+      if (doc.activeElement === listHeading) {
+        if (data.rules.length) {
+          const rows = collection.table.querySelectorAll("tbody tr[data-row-key]");
+          const row = rows[Math.min(saved.row, rows.length - 1)];
+          row?.cells[Math.min(saved.column, row.cells.length - 1)]?.focus();
+        } else addButton.focus();
+      }
+    }
   }
 
   // ---- The form --------------------------------------------------------
@@ -597,6 +611,11 @@ export function installIntroRulesPanel({ document: doc = document, request = req
 
   function clear() {
     generation += 1;
+    const cell = doc.activeElement?.closest?.("td");
+    const row = cell?.closest?.("tr[data-row-key]");
+    if (row && collection.table.contains(row)) {
+      stationListFocus = { row: [...row.parentElement.children].indexOf(row), column: [...row.cells].indexOf(cell) };
+    }
     data = blank();
     listSignature = "";
     listFocusAnnouncementSuppressed = true;

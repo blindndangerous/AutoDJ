@@ -629,8 +629,10 @@ describe("clockwheel editor", () => {
     expect([...byId("clock-slots").querySelectorAll('[role="gridcell"]')].filter((item) => item.tabIndex === 0)).toHaveLength(1);
     expect(rowButton(0, "move-up").getAttribute("aria-disabled")).toBe("true");
     expect(rowButton(0, "move-up").disabled).toBe(false);
+    const before = status();
+    expect(rowButton(0, "move-up").hasAttribute("aria-describedby")).toBe(false);
     rowButton(0, "move-up").click();
-    await vi.waitFor(() => expect(status()).toBe("This is already the first step."));
+    expect(status()).toBe(before);
   });
 
   it("reuses saved clockwheel cells and supports one-stop row navigation", async () => {

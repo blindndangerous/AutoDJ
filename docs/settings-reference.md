@@ -365,7 +365,18 @@ Station section: `stream` in `station.json`, except for listener credentials and
 - `relays`. Values: up to 8 relay definitions. Default: empty set. Pushes the stream to external servers. Stored in this station's private `relays.json`; fields follow below.
 - `aac_bitrate`. Values: 0, 64, 96, 128, 192, or 256 kbps. Default: 0. Adds an AAC stream; 0 turns it off. **AAC quality**.
 - `opus_bitrate`. Values: 0, 48, 64, 96, 128, or 192 kbps. Default: 0. Adds an Opus stream; 0 turns it off. **Opus quality**.
+AAC and Opus use separate encoders and addresses alongside MP3. All formats
+share the listener limit. AAC supports common phones, browsers and speakers;
+players that support its metadata receive song titles. Opus suits lower bitrates,
+but some older players and smart speakers cannot play it, and it carries no song
+titles. Changing AAC quality reconnects AAC listeners.
+
 - `stats_days`. Values: whole number from 0 to 3650. Default: 90. Keeps this many days of listener counts; 0 keeps none. **Days to keep statistics**.
+
+Listener statistics store aggregate counts, not addresses or player names. Days use
+the station timezone; a session belongs to the day it started. Reducing retention
+deletes older counts; 0 deletes all stored statistics. CSV exports contain one row
+per day, with totals and per-format peaks, sessions, listening hours and lengths.
 
 ### Recording
 
@@ -375,6 +386,12 @@ Station section: `recording` in `station.json`.
 - `split`. Values: `hour` (Every clock hour) or `show` (For each show). Default: `hour` (Every clock hour). Starts a new recording every clock hour or at show boundaries. **Start a new file**.
 - `retention_days`. Values: nonnegative whole number. Default: 0. Removes recordings after this many days; 0 keeps them. **Days to keep recordings**.
 - `free_space_mb`. Values: nonnegative whole number of MB. Default: 100. Stops recording when less space is free. **Minimum free space in MB**.
+
+Recordings contain the listener MP3 mix, including liners and processing. The
+recorder keeps the station playing without listeners. Retention removes older
+dated files about once an hour. Low disk space pauses recording and resumes it
+when space returns, while the stream continues. In **For each show** mode, manual
+Split, scheduled Start/Split recording and profile application start a new file.
 
 ### Now-playing feed
 
@@ -463,7 +480,7 @@ In **Settings**, **Song picking**, each Tracks value counts intervening songs an
 - Artist: 8 tracks, 0 minutes. Related artist: 8 tracks, 0 minutes, with **Use related artists** off.
 - Album: 0 tracks, 0 minutes. Track: 50 tracks, 0 minutes. Title: 0 tracks, 0 minutes.
 - Related track: 20 tracks, 0 minutes, with **Use related tracks** off. **Count versions as one song** is off.
-- **Prevent a song from playing in the same daypart**: 0 days; starts at 0, 6, 10, 15, and 19 hours. Days accepts 0 to 7; start hours accept 0 to 23.
+- **Prevent a song from playing in the same daypart**: 0 days; starts at 0, 6, 10, 15, and 19 hours. Days accepts 0 to 7; start hours accept 0 to 23. Each daypart runs until the next start, wrapping through midnight. The default starts divide overnight, morning drive, midday, afternoon drive and evening; all 24 hours prevent a repeat in the same hour on preceding days.
 - **Prevent a song from playing in the same quarter of the hour**: 0 plays; accepts 0 to 3.
 
 ### Relays
@@ -493,11 +510,11 @@ These values are saved for the selected station or browser rather than in the co
 - **Audio output device** in **Settings**, **Global**, **Browser preferences**: system default or an available browser output device; default system default. Sends browser playback to that device.
 - **Preview output device** in **Settings**, **Global**, **Browser preferences**: system default or an available browser output device; default system default. Sends Track info and Voice tracks previews to that device.
 - **Stereo Tool licence key** in **Settings**, **Global**, **Server**: valid key or blank; default blank. Unlocks licensed Stereo Tool features. **For this station only**: on or off; default off. When on, saves this station's key in its private `secrets.json`; otherwise it is shared by stations without their own key.
-- **Automatic rescan every** in **Library tools**: **Hours** 0 to 168 and **Minutes** 0 to 59; default 0 and 0 (off). Runs **Rescan** after the last scan ends; the shortest enabled interval is 5 minutes.
+- **Automatic rescan every** in **Library tools**: **Hours** 0 to 168 and **Minutes** 0 to 59; default 0 and 0 (off). Runs **Rescan** after the last scan ends; the shortest enabled interval is 5 minutes. Automatic scans do not override populated file tags.
 - **Add subfolders** for a registered music folder: on or off; default on. Includes nested folders in import. **Perform advanced analysis**: on or off; default on. Runs sound matching analysis for music in that folder.
 - **Find beats and song structure** in **Library tools**: on or off; default on. Finds beat grids and song sections during basic analysis.
 - **Longest song, in minutes** under **Advanced analysis length** in **Library tools**: 0 or a positive number; default 15. Longer songs get basic analysis only; 0 runs advanced analysis on every length.
-- **Music fade drop (dB)** under **Music fades** in **Library tools**: 1–30 dB; default 10. Sets the relative drop for new music Segue suggestions. Saved cues stay unchanged. See [cue rescans and fade detection](guides/operations/library.md#rescan-cue-points-in-track-info).
+- **Fade detection threshold (dB)** under **Automatic Segue detection** in **Settings**, **Global**, **Server**: 1–30 dB; default 10. Sets the relative drop for new music Segue suggestions. Saved cues stay unchanged. See [cue rescans and fade detection](guides/operations/library.md#rescan-cue-points-in-track-info).
 - **Display name** in **Settings**, **Station**, **Broadcasting**: printable name up to 80 characters; default blank. Shows the DJ name to listeners and in History while live.
 - **Time format** in **Settings**, **Global**, **Server**: 24 hour or 12 hour; default 24 hour. Changes time display for every station.
 - **Theme** in **Settings**, **Global**, **Browser preferences**: System, Light, or Dark; default System. Changes this browser's colors.

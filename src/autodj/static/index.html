@@ -539,7 +539,6 @@
       <button type="button" id="points-rescan">Rescan cue points</button>
       <section id="points-rescan-results" hidden>
         <h4 id="points-rescan-heading" tabindex="-1">Proposed cue points</h4>
-        <p>User and imported cues start unchecked.</p>
         <div id="points-rescan-comparison"></div>
         <button type="button" id="points-rescan-apply">Apply selected</button>
         <button type="button" id="points-rescan-discard">Discard</button>
@@ -631,7 +630,7 @@
          keys say where they land through #sr-status instead. -->
     <details class="card" id="landmarks-section" hidden>
       <summary><h3 id="landmarks-heading">Song structure</h3></summary>
-      <p class="setting-desc" id="landmarks-help">The intro, singing, drops, breakdowns and outro, from analysis, synced lyrics and cue points. The bracket keys move the preview to the previous or next one.</p>
+      <p class="setting-desc" id="landmarks-help">Song structure from analysis, lyrics and cue points. Use bracket keys to preview adjacent points.</p>
       <p id="landmarks-empty" hidden></p>
       <!-- role="list": list-style none drops the list role in Safari. -->
       <ol id="landmarks-list" class="landmark-list" role="list" aria-labelledby="landmarks-heading" hidden></ol>
@@ -649,10 +648,9 @@
     <!-- Off by default and remembered in this browser (#601).  A change
          is said once through #sr-status; focus stays on the checkbox. -->
     <div class="settings-check">
-      <input type="checkbox" id="hist-show-liners" aria-describedby="hist-show-liners-desc">
-      <label for="hist-show-liners">Show liners</label>
+      <input type="checkbox" id="hist-show-liners">
+      <label for="hist-show-liners">Show nonmusic items</label>
     </div>
-    <span class="setting-desc" id="hist-show-liners-desc">Also lists ads, matched intros, time checks and other non-music items.</span>
     <p id="history-empty">No playback history yet.</p>
     <div class="data-table-scroll">
     <table id="history-table" role="grid" hidden>
@@ -875,7 +873,7 @@
         Add an effect during crossfades. These effects are not used with saved segue points.
       </span>
       <span class="setting-desc" id="fx-https-note" hidden>
-        Some transition effects need HTTPS.  This page was opened over plain HTTP, so crossfades this browser plays skip gate stutter, bitcrusher, freeze and glitch: they play a plain crossfade, and random and rotate leave them out.
+        Over HTTP, this browser skips gate stutter, bitcrusher, freeze and glitch. Random and rotate omit them.
       </span>
       <div class="settings-row" data-show-when="transition-select!=none">
         <label for="tx-wet-mix">Transition effect level (percent)</label>
@@ -1127,7 +1125,7 @@
                inputmode="decimal">
       </div>
       <span class="setting-desc" id="pb-pick-temperature-desc" data-show-when="pb-pick-mode=similarity">
-        How evenly a pick spreads over those closest songs, from 0 to 10.  0 always takes the closest; higher numbers give the others more of a chance.  No effect while the number above is 1.  The default is 0.3.
+        0–10. 0 picks the closest song; higher values vary the choice. No effect when picking from one song.
       </span>
       <div class="settings-row">
         <label for="harmonic-mode">Harmonic mixing</label>
@@ -1210,7 +1208,7 @@
           <input type="checkbox" id="repeat-use-related-artists" aria-describedby="repeat-related-status">
           <label for="repeat-use-related-artists">Use related artists</label>
         </div>
-        <p class="setting-desc" id="repeat-related-desc">Also holds back the artists linked in related-artists.toml in the library folder to an artist that played within the limits below: <code id="repeat-related-default">index/libraries/main/related-artists.toml</code>. Edit that file, then save repeat settings to reload it.</p>
+        <details><summary>Related artists help</summary><p class="setting-desc" id="repeat-related-desc">Also holds back the artists linked in related-artists.toml in the library folder to an artist that played within the limits below: <code id="repeat-related-default">index/libraries/main/related-artists.toml</code>. Edit that file, then save repeat settings to reload it.</p></details>
         <!-- A problem found in the file at startup or on save; empty and
              hidden while there is none. -->
         <p class="setting-desc" id="repeat-related-status" hidden></p>
@@ -1275,7 +1273,7 @@
           <input type="checkbox" id="repeat-use-related-tracks" aria-describedby="repeat-related-tracks-status">
           <label for="repeat-use-related-tracks">Use related tracks</label>
         </div>
-        <p class="setting-desc" id="repeat-related-tracks-desc">Holds back tracks that sound alike, such as a song and one that samples it. Each group in related-tracks.toml in the library folder lists tracks as Artist - Title: <code id="repeat-related-tracks-default">index/libraries/main/related-tracks.toml</code>. Edit that file, then save repeat settings to reload it.</p>
+        <details><summary>Related tracks help</summary><p class="setting-desc" id="repeat-related-tracks-desc">Holds back tracks that sound alike, such as a song and one that samples it. Each group in related-tracks.toml in the library folder lists tracks as Artist - Title: <code id="repeat-related-tracks-default">index/libraries/main/related-tracks.toml</code>. Edit that file, then save repeat settings to reload it.</p></details>
         <!-- A problem found in the file at startup or on save; empty and
              hidden while there is none. -->
         <p class="setting-desc" id="repeat-related-tracks-status" hidden></p>
@@ -1292,7 +1290,7 @@
       </fieldset>
       <fieldset>
         <legend>Prevent a song from playing in the same daypart</legend>
-        <p class="setting-desc" id="repeat-daypart-desc">Holds back a song that played in the daypart the next song starts in, earlier today or on any of the days before. 0 days turns this off; up to 7.</p>
+        <p class="setting-desc" id="repeat-daypart-desc">0–7 days. 0 disables daypart protection.</p>
         <div class="settings-row">
           <label for="repeat-daypart-days">Days</label>
           <input type="number" id="repeat-daypart-days" min="0" max="7" step="1" value="0" inputmode="numeric">
@@ -1302,11 +1300,11 @@
           <input type="text" id="repeat-daypart-hours" value="0, 6, 10, 15, 19" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="repeat-daypart-hours-desc">
         </div>
         <p class="setting-desc" id="repeat-daypart-hours-desc">Hours 0–23, separated by commas, on the station clock.</p>
-        <p class="setting-desc">Each daypart lasts until the next start, and the last one runs past midnight to the first. 0, 6, 10, 15, 19 is overnight, morning drive, midday, afternoon drive and evening. List all 24 hours to keep a song out of the hour it played in the day before.</p>
+        <p class="setting-desc">Each daypart ends at the next start; the last continues through midnight.</p>
       </fieldset>
       <fieldset>
         <legend>Prevent a song from playing in the same quarter of the hour</legend>
-        <p class="setting-desc" id="repeat-hourpart-desc">Holds back a song when one of its last plays in the past week started in the same quarter of the hour as the next song. 0 turns this off; at 3, a song moves round all four quarters.</p>
+        <p class="setting-desc" id="repeat-hourpart-desc">0–3 recent plays. 0 disables quarter-hour protection.</p>
         <div class="settings-row">
           <label for="repeat-hourpart-plays">Plays</label>
           <input type="number" id="repeat-hourpart-plays" min="0" max="3" step="1" value="0" inputmode="numeric">
@@ -2113,10 +2111,10 @@
       <div class="settings-row"><label for="stream-station-genre">Genre</label><input id="stream-station-genre" maxlength="255" autocomplete="off"></div>
       <div class="settings-row"><label for="stream-station-description">Description</label><input id="stream-station-description" maxlength="255" autocomplete="off"></div>
       <div class="settings-row"><label for="stream-station-url">Website URL</label><input id="stream-station-url" type="url" maxlength="2048" autocomplete="url"></div>
-      <p class="setting-desc">Station metadata changes reconnect enabled relays after you save. Description is sent to Icecast; Shoutcast and direct listener streams do not support it.</p>
+      <p class="setting-desc">Saving station metadata reconnects enabled relays.</p>
       <div class="settings-row">
         <label for="stream-bitrate">Quality</label>
-        <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">
+        <select id="stream-bitrate">
           <option value="128">128 kbps</option>
           <option value="192">192 kbps</option>
           <option value="256">256 kbps</option>
@@ -2124,7 +2122,7 @@
         </select>
       </div>
       <span class="setting-desc" id="stream-bitrate-desc">
-        Higher sounds better and uses more network.  Changing it makes every speaker reconnect for a moment.
+        Changing quality disconnects all listeners for a few seconds.
       </span>
       <div class="settings-check">
         <input type="checkbox" id="stream-continuous">
@@ -2143,11 +2141,10 @@
       <fieldset id="recording-controls" hidden>
         <legend>Broadcast recording</legend>
         <p class="setting-desc" id="recording-desc">
-          Saves the MP3 that listeners hear, including liners and processing, as dated files in the recordings folder set in config.toml. Recording keeps the station playing without listeners.
+          Records the broadcast as MP3. Recording keeps the station playing without listeners.
         </p>
         <div class="settings-row">
-          <button type="button" id="recording-toggle" aria-pressed="false"
-                  aria-describedby="recording-status recording-error">Record broadcast</button>
+          <button type="button" id="recording-toggle" aria-pressed="false">Record broadcast</button>
           <button type="button" id="recording-split-now" aria-disabled="true">Split recording now</button>
         </div>
         <p class="stream-detail" id="recording-status"></p>
@@ -2161,23 +2158,23 @@
           </select>
         </div>
         <span class="setting-desc" id="recording-split-desc">
-          For each show starts a new file when you press Split recording now, when a scheduled Start recording or Split recording event runs, or when a profile is applied.
+          Split manually, on the hour, or at show boundaries.
         </span>
         <div class="settings-row">
           <label for="recording-retention-days">Days to keep recordings</label>
           <input type="number" id="recording-retention-days" min="0" step="1" value="0" aria-required="true"
-                 inputmode="numeric" aria-describedby="recording-retention-desc">
+                 inputmode="numeric">
         </div>
         <span class="setting-desc" id="recording-retention-desc">
-          Older dated recordings in the recordings folder are deleted about once an hour. 0 keeps them forever.
+          0 keeps recordings forever.
         </span>
         <div class="settings-row">
           <label for="recording-free-space-mb">Minimum free space in MB</label>
           <input type="number" id="recording-free-space-mb" min="0" step="1" value="100" aria-required="true"
-                 inputmode="numeric" aria-describedby="recording-free-space-desc">
+                 inputmode="numeric">
         </div>
         <span class="setting-desc" id="recording-free-space-desc">
-          Recording pauses when the recordings drive has less free space than this, and resumes when space returns. The stream keeps playing.
+          Pauses recording below this limit; streaming continues.
         </span>
       </fieldset>
       <!-- Relays, More formats, the now-playing feed and Listener statistics
@@ -2227,11 +2224,11 @@
       <summary><h4 id="stream-formats-heading">More formats</h4></summary>
       <fieldset id="stream-formats" aria-labelledby="stream-formats-heading">
         <p class="setting-desc" id="stream-formats-desc">
-          Serve the station in AAC or Opus too, each at its own address beside the MP3 one. Each format that is on runs its own encoder on this computer. Listeners on every format count toward the listener limit.
+          Add AAC or Opus streams. All formats share the listener limit.
         </p>
         <div class="settings-row">
           <label for="stream-aac-bitrate">AAC quality</label>
-          <select id="stream-aac-bitrate" aria-describedby="stream-aac-warning">
+          <select id="stream-aac-bitrate">
             <option value="0">Off</option>
             <option value="64">64 kbps</option>
             <option value="96">96 kbps</option>
@@ -2241,7 +2238,7 @@
           </select>
         </div>
         <span class="setting-desc" id="stream-aac-desc">
-          AAC sounds better than MP3 at the same bitrate and plays on most phones, browsers and smart speakers. Players that show song titles get them. <span id="stream-aac-warning">Changing it makes AAC listeners reconnect for a moment.</span>
+          <span id="stream-aac-warning">Changing quality briefly disconnects AAC listeners.</span>
         </span>
         <div class="settings-row">
           <label for="stream-opus-bitrate">Opus quality</label>
@@ -2255,7 +2252,7 @@
           </select>
         </div>
         <span class="setting-desc" id="stream-opus-desc">
-          Opus sounds good at low bitrates, which suits mobile data. Browsers and players such as VLC play it; some smart speakers and older players do not. Song titles are not sent in an Opus stream.
+          Some older players do not support Opus. Song titles are not sent.
         </span>
         <p class="stream-detail" id="stream-formats-intro">Addresses for each format that is on:</p>
         <ul class="stream-detail" id="stream-formats-list" aria-labelledby="stream-formats-intro"></ul>
@@ -2348,9 +2345,6 @@
            status region. -->
       <details class="card" id="listener-stats">
         <summary><h4 id="listener-stats-title">Listener statistics</h4></summary>
-        <p class="setting-desc" id="listener-stats-privacy">
-          Counts only: no address, player name or other detail of a listener is kept. Days are in the station's time zone, and a session counts on the day it began.
-        </p>
         <div class="settings-row">
           <label for="listener-stats-span">Show</label>
           <select id="listener-stats-span">
@@ -2393,18 +2387,14 @@
         <ul class="stream-detail" id="listener-stats-lengths" aria-labelledby="listener-stats-lengths-title" hidden></ul>
         <div class="settings-row">
           <label for="listener-stats-keep">Days to keep statistics</label>
-          <input type="number" id="listener-stats-keep" min="0" max="3650" step="1" value="90" aria-required="true"
-                 aria-describedby="listener-stats-keep-desc">
+          <input type="number" id="listener-stats-keep" min="0" max="3650" step="1" value="90" aria-required="true">
         </div>
         <span class="setting-desc" id="listener-stats-keep-desc">
-          From 0 to 3650; 90 unless changed. Older days are deleted. 0 keeps no statistics and deletes those kept.
+          0–3650 days. 0 keeps none.
         </span>
         <div class="settings-row">
-          <button type="button" id="listener-stats-export" aria-describedby="listener-stats-export-desc">Download statistics (CSV)</button>
+          <button type="button" id="listener-stats-export">Download statistics (CSV)</button>
         </div>
-        <span class="setting-desc" id="listener-stats-export-desc">
-          A spreadsheet file with one row per day kept: peaks, sessions, listening hours and session lengths, in total and for each format.
-        </span>
       </details>
     </fieldset>
     <form id="public-dmca-form">
@@ -2419,7 +2409,7 @@
     </form>
     <section id="spanel-live" data-settings-section>
       <h4>Live DJ</h4>
-    <p class="setting-desc" id="live-intro">A DJ can take over this station from BUTT, Mixxx or another Icecast source program. The music fades out when the DJ starts sending sound and comes back with a new song when they disconnect. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air and change these settings.</p>
+    <p class="setting-desc" id="live-intro">Connect with BUTT, Mixxx or another Icecast source. Music returns when the DJ disconnects. Without server sign-in, anyone with page access can broadcast and change settings.</p>
     <p class="stream-detail" id="live-unavailable" hidden></p>
     <div id="live-settings" hidden>
       <h5 id="live-connect-heading">Connect a DJ program</h5>
@@ -2491,7 +2481,6 @@
     <h3>Requests</h3>
     <section id="spanel-request-settings" data-settings-section>
       <h4 id="requests-settings-heading">Listener requests</h4>
-      <p class="setting-desc">Choose whether listeners can request songs and how requests fit the station's queue. <a href="#queue" id="requests-open-queue">Open Requests in Queue &amp; Search</a></p>
       <div id="requests-settings-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
       <form id="requests-settings" novalidate hidden>
         <div class="settings-check">
@@ -2687,6 +2676,16 @@
     <h3>Server</h3>
     <div id="secure-connections"></div>
     <p id="secure-connections-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></p>
+    <fieldset id="music-fade-drop-group">
+      <legend>Automatic Segue detection</legend>
+      <div class="settings-row">
+        <label for="music-fade-drop">Fade detection threshold (dB)</label>
+        <input type="number" id="music-fade-drop" min="1" max="30" step="1" value="10" inputmode="numeric">
+      </div>
+      <p class="setting-desc" id="music-fade-drop-help">Drop in volume used for new Segue suggestions.</p>
+      <p class="field-error" id="music-fade-drop-error" hidden></p>
+      <button type="button" id="music-fade-drop-save">Save</button>
+    </fieldset>
     <fieldset id="advanced-length-group">
       <legend>Similarity analysis</legend>
       <div class="settings-row">
@@ -3043,7 +3042,6 @@
     <select id="library-folder"><option value="all">All folders</option></select>
     <label for="library-sort">Sort</label>
     <select id="library-sort"><option value="title">Title</option><option value="artist">Artist</option><option value="recently_added">Most recently added</option><option value="most_played">Most played (30 days)</option></select>
-    <p class="setting-desc">Most played uses this station’s history over the past 30 days.</p>
     <label for="search-input">Search text (optional)</label>
     <div class="search-row"><input type="search" id="search-input" placeholder="Artist or title…" autocomplete="off"><button id="btn-search" type="button">Search</button></div>
     <div id="search-count" aria-live="polite" aria-atomic="true" role="status"></div>
@@ -3470,13 +3468,12 @@
         <summary><h3 id="ads-report-heading">Ad report</h3></summary>
         <form id="ads-report-form" novalidate>
           <p class="setting-desc" id="ads-report-desc">
-            What aired and when, late or on time, and what was missed, for the days you choose, both included.
-            Export saves every spot (for an affidavit) or the totals by advertiser and campaign as CSV.
+            Dates are inclusive. Export individual spots or advertiser and campaign totals as CSV.
           </p>
           <p id="ads-report-error" class="field-error" hidden></p>
           <div class="settings-row">
             <label for="ads-report-from">From</label>
-            <input type="date" id="ads-report-from" aria-required="true" aria-describedby="ads-report-desc">
+            <input type="date" id="ads-report-from" aria-required="true">
           </div>
           <div class="settings-row">
             <label for="ads-report-to">To</label>
@@ -3545,7 +3542,7 @@
 
       <section class="flow-form">
         <h3 id="source-folders-heading">Music folders and Voice liner folders</h3>
-        <p>Enter a folder path on the machine running AutoDJ. Liners get automatic Start, Segue and End suggestions without music analysis.</p>
+        <p>Use a folder on the machine running AutoDJ.</p>
         <label for="source-folder-path">Folder path</label>
         <input id="source-folder-path" type="text" autocomplete="off">
         <p id="source-folder-error" class="field-error" hidden></p>
@@ -3558,22 +3555,12 @@
           <p class="setting-desc" id="source-folder-analysis-help">Basic imports tags and cue suggestions; Audio adds beats, key and song structure.</p>
         </div>
         <button type="button" id="source-folder-add">Add folder</button>
-        <label><input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"> Override with ID3 tags</label>
-        <p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>
+        <label><input id="source-folder-override-tags" type="checkbox"> Override with ID3 tags</label>
+        <p id="source-folder-override-tags-help">Replaces existing file tags; keeps edited BPM, key and cue points.</p>
         <button type="button" id="source-folder-rescan">Rescan</button>
-        <fieldset id="music-fade-drop-group">
-          <legend>Automatic Segue detection</legend>
-          <div class="settings-row">
-            <label for="music-fade-drop">Fade detection threshold (dB)</label>
-            <input type="number" id="music-fade-drop" min="1" max="30" step="1" value="10" inputmode="numeric" aria-describedby="music-fade-drop-help">
-          </div>
-          <p class="setting-desc" id="music-fade-drop-help">How far a song's ending must drop before AutoDJ suggests a Segue. Applies to new cue suggestions.</p>
-          <p class="field-error" id="music-fade-drop-error" hidden></p>
-          <button type="button" id="music-fade-drop-save">Save</button>
-        </fieldset>
         <fieldset id="auto-rescan">
           <legend>Automatic rescan every</legend>
-          <p class="setting-desc">Time between scans, measured from the last scan's end. Minimum 5 minutes; 0 turns it off. File-tag override stays off.</p>
+          <p class="setting-desc">Minimum 5 minutes. 0 turns off automatic rescanning.</p>
           <div class="settings-row">
             <label for="auto-rescan-hours">Hours</label>
             <input type="number" id="auto-rescan-hours" min="0" max="168" step="1" value="0" inputmode="numeric">
@@ -3613,16 +3600,14 @@
           <button type="button" id="lib-run-index">Import and analyze</button>
         </div>
         <p class="setting-desc" id="lib-index-desc">
-          Import registered folders and analyze eligible songs. The limit applies only to
-          similarity analysis; 0 or blank means all.
+          0 or blank analyzes all eligible songs.
         </p>
 
-        <div class="settings-row"><button type="button" id="lib-run-enrich" aria-describedby="lib-enrich-desc">Enrich</button></div>
-        <p class="setting-desc" id="lib-enrich-desc">Refreshes title, artist, genre, BPM and key from beets.</p>
-        <div class="settings-row"><button type="button" id="lib-run-prune" aria-describedby="lib-prune-desc">Remove missing tracks</button></div>
-        <p class="setting-desc" id="lib-prune-desc">Review missing files before removing their library entries. Play history is kept.</p>
-        <div class="settings-row"><button type="button" id="lib-run-stats" aria-describedby="lib-stats-desc">Detailed stats</button></div>
-        <p class="setting-desc" id="lib-stats-desc">Shows the library report.</p>
+        <div class="settings-row"><button type="button" id="lib-run-enrich">Enrich</button></div>
+        <p class="setting-desc" id="lib-enrich-desc">Updates tags from beets.</p>
+        <div class="settings-row"><button type="button" id="lib-run-prune">Remove missing tracks</button></div>
+        <p class="setting-desc" id="lib-prune-desc">Review before removing. Play history is kept.</p>
+        <div class="settings-row"><button type="button" id="lib-run-stats">Detailed stats</button></div>
         <div class="settings-row"><button type="button" id="lib-run-stop">Stop running job</button></div>
       </div>
 
@@ -3799,9 +3784,9 @@
       <p id="clock-station-name-error" class="field-error" hidden></p>
       <h4>Restarts and saving</h4>
       <label for="clock-resync-minutes">Restart at these minutes past each hour</label>
-      <input id="clock-resync-minutes" type="text" inputmode="numeric" value="0" autocomplete="off" aria-describedby="clock-resync-help">
+      <input id="clock-resync-minutes" type="text" inputmode="numeric" value="0" autocomplete="off">
         <p id="clock-resync-error" class="field-error" hidden></p>
-      <p id="clock-resync-help">Comma separated, 0 to 59, such as 0, 30. Leave empty to restart only when the wheel wraps.</p>
+      <p id="clock-resync-help">Minutes 0–59, separated by commas. Blank restarts when the wheel wraps.</p>
       <p>The clockwheel goes back to step 1 at the song change nearest each minute.</p>
       <label for="clock-apply-timing">Apply saved changes</label>
       <select id="clock-apply-timing">
@@ -3921,8 +3906,8 @@
                 <select id="edition-placement"><option value="auto">Automatic</option><option value="talk_up">Talk up song</option><option value="standalone">Between songs</option></select>
               </div>
               <div class="settings-check"><input id="edition-allow-outro" type="checkbox"><label for="edition-allow-outro">Allow outgoing song overlap</label></div>
-              <p class="setting-desc" id="edition-record-help">Record short takes up to 3:00; import standalone segments up to 30:00. Other imported takes have a 5:00 limit. Recordings stay pending until reviewed and approved.</p>
-              <button type="button" id="edition-record" aria-pressed="false" aria-describedby="edition-elapsed edition-record-help">Record</button>
+              <p class="setting-desc" id="edition-record-help">Record up to 3:00. Import up to 30:00 for standalone segments or 5:00 for other takes. Takes need review and approval.</p>
+              <button type="button" id="edition-record" aria-pressed="false">Record</button>
               <span id="edition-elapsed" aria-live="off">0:00 / 3:00</span>
               <button type="button" id="edition-save-take" disabled>Save recording</button>
               <button type="button" id="edition-discard">Discard local recording</button>
@@ -4122,15 +4107,10 @@
 <!-- Save, Discard or Keep editing (library-folders.js).  Keep editing does
      what Escape does: it closes the dialog, keeps the edits and puts focus
      back on the control that opened it. -->
-<!-- New step and Edit open the step form as a modal dialog; Escape
-     or Cancel closes it and returns focus.  The short description is what
-     NVDA reads after the name: a dialog without one has all of its text
-     read instead, the help, the count and every label, as it opens. -->
-<dialog id="clock-step-dialog" aria-labelledby="clock-step-legend"
-        aria-describedby="clock-step-desc">
+<!-- New step and Edit open the step form; Escape or Cancel returns focus. -->
+<dialog id="clock-step-dialog" aria-labelledby="clock-step-legend">
 <fieldset id="clock-step-form" class="flow-form">
   <legend><h1 id="clock-step-legend">Add a step</h1></legend>
-  <p class="setting-desc" id="clock-step-desc">Choose what the step plays, how it chooses and when it plays.</p>
   <p id="clock-step-form-error" class="field-error" hidden></p>
   <label for="clock-step-type">Step type</label>
   <select id="clock-step-type">
@@ -4146,7 +4126,7 @@
     <p id="clock-step-conditions-label">Conditions</p>
     <div id="clock-step-conditions" role="group" aria-labelledby="clock-step-conditions-label"></div>
     <button type="button" id="clock-add-condition">Add condition</button>
-    <p class="setting-desc" id="clock-step-conditions-help">Choose Matches to use * for any text or ? for one character. Duration accepts seconds or MM:SS. Beets fields require a configured Beets library. Use Add category beside a music category condition to create one.</p>
+    <details><summary>Condition help</summary><p class="setting-desc" id="clock-step-conditions-help">Choose Matches to use * for any text or ? for one character. Duration accepts seconds or MM:SS. Beets fields require a configured Beets library. Use Add category beside a music category condition to create one.</p></details>
     <p class="setting-desc" id="clock-step-beets-notice" hidden></p>
     <p id="clock-step-match-count" aria-live="off">Matching track count appears while editing.</p>
   </div>

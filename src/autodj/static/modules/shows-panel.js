@@ -408,12 +408,12 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   // ---- The open list ---------------------------------------------------
   let repeated = new Map();
 
-  function renderSongs(focus = null) {
+  function renderSongs(focus = null, announceFocus = true) {
     const signature = JSON.stringify([songs, generating]);
     if (signature === songsSignature && !focus) return;
     songsSignature = signature;
     repeated = repeatedPlaces(songs);
-    songTable.update(songs, { announceFocus: !focus });
+    songTable.update(songs, { announceFocus: announceFocus && !focus });
     if (focus) (songTable.target(songKeys.get(songs[Number(focus.index)]), "options") || searchInput).focus();
   }
 
@@ -542,7 +542,6 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     if (refusedWhileGenerating() || !open || !songs.includes(gone)) return;
     const id = open.id, epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     let removed = false;
-    let destination = "Search for songs";
     await deleteCollectionItem(doc, {
       title: `Remove ${gone.title}?`, message: "This removes the song from this show's list. The library file is kept.",
       confirmLabel: "Remove song",
@@ -552,14 +551,13 @@ export function installShowsPanel({ document: doc = document, request = requestJ
         if (index < 0) return null;
         songs = songs.filter((song) => song !== gone);
         const next = Math.min(index, songs.length - 1);
-        renderSongs();
+        renderSongs(null, false);
         renderSummary();
         removed = true;
-        destination = next >= 0 ? `Options for ${songs[next].title}` : "Search for songs";
         return next >= 0 ? songTable.target(songKey(songs[next]), "options") : searchInput;
       },
     });
-    if (removed) void saveSongs(`Removed ${gone.title}. Focus moved to ${destination}.`);
+    if (removed) void saveSongs(`Removed ${gone.title}.`);
   }
 
   async function generate() {

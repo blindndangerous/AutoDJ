@@ -155,7 +155,7 @@ describe("listener statistics view", () => {
       .toContain("No listening recorded in the last 30 days.");
   });
 
-  it("keeps Refresh immediate and delays the selected period announcement", async () => {
+  it("keeps Refresh immediate and leaves period selection speech quiet", async () => {
     const { view, request } = setup();
     document.getElementById("listener-stats").open = true;
     view.apply({ stream_mode: true });
@@ -169,12 +169,12 @@ describe("listener statistics view", () => {
     span.dispatchEvent(new Event("change"));
     expect(status()).toBe(previousAnnouncement);
     await vi.advanceTimersByTimeAsync(501);
-    expect(status()).toBe("Showing the last 7 days.");
+    expect(status()).toBe(previousAnnouncement);
     expect(request).toHaveBeenLastCalledWith("/api/stream/stats?days=7");
     const keep = document.getElementById("listener-stats-keep");
     keep.value = "30";
     keep.dispatchEvent(new Event("change"));
-    expect(status()).toBe("Showing the last 7 days.");
+    expect(status()).toBe(previousAnnouncement);
     expect(request).toHaveBeenCalledTimes(3);
   });
 

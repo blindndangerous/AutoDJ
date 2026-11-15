@@ -34,6 +34,8 @@ function fakeServer() {
   }));
   pages[0].slots[2] = { name: "Station ID", source: "liner", clip: "rec-1", mode: "duck", duration: 7.4 };
   pages[1].slots[0] = { name: "Sweeper", source: "upload", clip: "sweep.wav", mode: "over", duration: 61 };
+  pages[1].slots[4] = { name: "Cart 5", source: "liner", clip: "news.wav", mode: "duck", duration: 8 };
+  pages[1].slots[8] = { name: "Cart 9", source: "liner", clip: "news.wav", mode: "duck", duration: 8 };
   const server = {
     wall: { schema_version: 1, active_page: 1, pages },
     liners: [{ id: "rec-1", name: "station-id.wav" }, { id: "news.wav", name: "news.wav" }],
@@ -265,12 +267,12 @@ describe("cart keys", () => {
     expect(byId("cart-page").value).toBe("2");
     expect(byId("cart-page-name").value).toBe("Page 2");
     await vi.waitFor(() => expect(server.wall.active_page).toBe(2));
-    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe("Page 2, page 2 of 4."));
+    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe("3 carts"));
     for (let i = 0; i < 4; i += 1) press(button, "PageDown");
     await vi.waitFor(() => expect(server.wall.active_page).toBe(4));
   });
 
-  it("announces the native page selection after a delay while keeping focus on the selector", async () => {
+  it("announces only the occupied cart count after a delay", async () => {
     const { server, controls } = await install();
     vi.useFakeTimers();
     const page = byId("cart-page");
@@ -284,14 +286,18 @@ describe("cart keys", () => {
     expect(server.calls.some((call) => call.url === "/api/carts/active-page/2")).toBe(true);
     expect(byId("cart-status").textContent).toBe("");
     await vi.advanceTimersByTimeAsync(501);
-    expect(byId("cart-status").textContent).toBe("Page 2, page 2 of 4.");
+    expect(byId("cart-status").textContent).toBe("3 carts");
     page.value = "3";
     page.dispatchEvent(new Event("change", { bubbles: true }));
     press(cart(1), "PageDown");
     await vi.advanceTimersByTimeAsync(1);
-    expect(byId("cart-status").textContent).toBe("Page 4, page 4 of 4.");
+    expect(byId("cart-status").textContent).toBe("No carts");
     await vi.advanceTimersByTimeAsync(501);
-    expect(byId("cart-status").textContent).toBe("Page 4, page 4 of 4.");
+    expect(byId("cart-status").textContent).toBe("No carts");
+    page.value = "1";
+    page.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(501);
+    expect(byId("cart-status").textContent).toBe("1 cart");
     page.value = "2";
     page.dispatchEvent(new Event("change", { bubbles: true }));
     controls.clear();
