@@ -36,6 +36,12 @@ with Firefox/NVDA as well as the automated form tests.
 Each dialog starts with an H1 title referenced by its `aria-labelledby`.
 Verify level-one heading navigation inside the dialog as well as its initial field focus.
 
+Guarded dialogs keep the background page in place while their backdrop is visible.
+Their overflowing contents remain scrollable, including when dialogs are stacked.
+`node tests/playwright/dialog_scroll_audit.mjs` checks wheel gestures, scroll
+boundaries, nested dismissal and focus return in Chromium, Firefox and WebKit.
+This regression also runs as part of the visual audit.
+
 ## Confirmations with NVDA
 
 The shared confirmation (Clear queue, Delete profile, Restart AutoDJ and the

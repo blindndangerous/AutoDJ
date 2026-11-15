@@ -2050,6 +2050,7 @@ dialog[aria-modal="true"] {
   inset: 0;
   max-height: calc(100vh - 2rem);
   overflow: auto;
+  overscroll-behavior: contain;
   z-index: 10001;
 }
 #dialog-backdrop {
@@ -2059,6 +2060,9 @@ dialog[aria-modal="true"] {
   background: rgba(0, 0, 0, 0.55);
 }
 #dialog-backdrop[hidden] { display: none; }
+/* A non-scrolling backdrop does not contain wheel gestures in every engine.
+   Keep the page in place until the last guarded dialog closes. */
+:root:has(#dialog-backdrop:not([hidden])) { overflow: hidden; }
 #hotkey-help-modal::backdrop,
 #confirm-dialog::backdrop,
 #device-rename-dialog::backdrop,
