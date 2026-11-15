@@ -268,7 +268,7 @@ describe("search result actions", () => {
 describe("library browsing", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it("loads when its view opens, sorts quietly, and clears late replies on leaving", async () => {
+  it("loads when its view opens, sorts quietly, and retains rows while cancelling late replies", async () => {
     const pending = [];
     const fetchImpl = vi.fn(() => new Promise((resolve) => pending.push(resolve)));
     vi.stubGlobal("fetch", fetchImpl);
@@ -297,8 +297,14 @@ describe("library browsing", () => {
     document.dispatchEvent(new CustomEvent("autodj:view"));
     pending[2](jsonResponse({ results: [{ path: "late.mp3", title: "Late" }], total: 1 }));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(els.searchResults.textContent).toBe("");
+    expect(els.searchResults.textContent).toContain("B");
+    expect(els.searchResults.textContent).not.toContain("Late");
     expect(els.searchCount.textContent).toBe("");
+    const row = els.searchResults.firstElementChild;
+    els.view.hidden = false;
+    document.dispatchEvent(new CustomEvent("autodj:view"));
+    expect(els.searchResults.firstElementChild).toBe(row);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
     vi.unstubAllGlobals();
   });
 

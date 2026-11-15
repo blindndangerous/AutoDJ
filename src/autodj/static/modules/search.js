@@ -203,8 +203,10 @@ export function installSearch({
   }
   if (browsing && view) {
     searchResults.ownerDocument.addEventListener("autodj:view", () => {
-      if (view.hidden) clearBrowse();
-      else void refresh();
+      // Track info keeps a return target in these rows. Cancel late replies
+      // when leaving, but retain completed results and their focus targets.
+      if (view.hidden) searchRequest?.abort();
+      else if (!searchResults.childElementCount) void refresh();
     });
     onStationChange(() => { clearBrowse(); queueMicrotask(() => void refresh()); });
   }
@@ -216,6 +218,9 @@ export function installSearch({
     const epoch = captureAuthenticatedRequestEpoch();
     const path = btn.dataset.path;
     if (btn.dataset.points === "true") {
+      // The editor loads asynchronously before switching views. A pending
+      // browse must not detach its opener while that request completes.
+      searchRequest?.abort();
       searchResults.dispatchEvent(new CustomEvent("autodj:edit-points", {
         bubbles: true,
         detail: { path, kind: btn.dataset.kind || "music", opener: btn },
