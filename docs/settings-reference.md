@@ -40,6 +40,7 @@ edits remain pending. Output-mode changes take effect after restarting the stati
 | Profiles | Profile management and activation; Profile to edit applies only to profile-aware controls |
 | Stations | Selected station's output, scheduling timezone, upload limit, log label, display, lyrics, keys and prefetch |
 | Broadcasting | Station stream formats, metadata, listener limits, retention, public player, DMCA mode, recording configuration and Live DJ talkover |
+| Requests | Station listener-request availability, approval and smooth-transition policy |
 | Schedule | Station schedule definitions and events |
 | Server | Shared analysis limits, time format, Stereo Tool installation and shared licence, browser access |
 | Analysis workers | Worker pairing, worker settings and machine tokens |
@@ -47,7 +48,7 @@ edits remain pending. Output-mode changes take effect after restarting the stati
 | Browser preferences | Browser display, keyboard and audio-device preferences |
 
 Settings keeps three heading-labeled tab groups visible: **Profile**
-(four tabs), **Station** (Stations, Profiles, Broadcasting and Schedule),
+(four tabs), **Station** (Stations, Profiles, Broadcasting, Requests and Schedule),
 and **Global** (Server, Analysis workers, Update and restart, and Browser preferences). Each
 tab opens its settings panel; arrow, Home and End navigation stays within its
 group. The **Profile to edit** selector follows all three groups and is hidden
@@ -384,7 +385,7 @@ Station section: `nowplaying` in `station.json`.
 
 ### Requests
 
-Station section: `requests` in `station.json`. **Take listener requests** and the other controls in **Listener requests**, **Request settings** save changes for the selected station.
+Station section: `requests` in `station.json`. **Settings**, **Station**, **Requests** contains **Take listener requests**, approval and smooth-transition controls. **Save request settings** saves changes for the selected station. Waiting requests and recent decisions remain in **Queue & Search**, with a **Request settings** link to this page.
 
 - `enabled`. Values: true or false. Default: false. Opens the public listener request page. **Take listener requests**.
 - `approval`. Values: `manual` (I approve each one) or `auto` (Automatic: a request that keeps the rules joins the queue at once). Default: `manual`. Requires an operator to approve requests or accepts eligible ones automatically. **Approval**.

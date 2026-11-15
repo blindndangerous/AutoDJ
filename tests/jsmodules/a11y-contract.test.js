@@ -2013,7 +2013,7 @@ describe("static accessibility contracts", () => {
     expect(stationTabs.hidden).toBe(false);
     expect(globalTabs.hidden).toBe(false);
     expect(profileTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
-    expect(stationTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
+    expect(stationTabs.querySelectorAll('[role="tab"]')).toHaveLength(5);
     expect(globalTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)
       ?.textContent.replace(/\s+/g, " ").trim();
@@ -2033,6 +2033,10 @@ describe("static accessibility contracts", () => {
     expect(panelHeading.nextElementSibling.id).toBe("public-page-form");
     expect(fieldset.previousElementSibling.id).toBe("public-page-form");
     expect(document.querySelector("#stab-stream").hidden).toBe(false);
+    expect(document.querySelector("#stab-requests").hidden).toBe(false);
+    expect(document.querySelector("#requests-settings").closest('[role="tabpanel"]').id)
+      .toBe("spanel-requests");
+    expect(document.querySelector("#requests-settings-status").getAttribute("aria-live")).toBe("polite");
     expect([...fieldset.querySelectorAll("h4")].map((heading) => heading.textContent.trim()))
       .toEqual(["Relays", "More formats", "Now-playing feed", "Listeners", "Bans",
         "Listener statistics"]);
@@ -3663,7 +3667,12 @@ describe("listener request contracts", () => {
     const start = htmlSource.indexOf('<form id="requests-settings"');
     const form = htmlSource.slice(start, htmlSource.indexOf("</form>", start));
     expect(form).not.toMatch(/aria-labelledby="requests-settings-heading"/);
-    expect(form).toMatch(/<h3 id="requests-settings-heading">/);
+    expect(form).not.toMatch(/<h3 id="requests-settings-heading">/);
+    expect(document.getElementById("requests-settings").closest('[role="tabpanel"]').id)
+      .toBe("spanel-requests");
+    expect(document.getElementById("requests-open-queue").getAttribute("href")).toBe("#queue");
+    expect(document.getElementById("requests-open-settings").getAttribute("href")).toBe("#settings");
+    expect(document.getElementById("requests-settings-status").getAttribute("aria-live")).toBe("polite");
     for (const id of ["requests-bridges", "requests-max-bridges", "requests-threshold",
       "requests-no-smooth-best", "requests-no-smooth-wait"]) {
       expect(form).toMatch(new RegExp(`<label for="${id}">[^<]+</label>`));
@@ -3677,7 +3686,7 @@ describe("listener request contracts", () => {
     expect(form).toMatch(/<button type="submit" id="requests-settings-save">Save request settings<\/button>/);
     expect(form).not.toMatch(/aria-live|role="status"/);
     // Field focus, descriptions and announcements are exercised in listener-requests.test.js.
-    expect(requestsScript).toMatch(/showFieldError\(threshold, message, thresholdError, status\)/);
+    expect(requestsScript).toMatch(/showFieldError\(threshold, message, thresholdError, settingsStatus\)/);
   });
 
   it("uses theme tokens for collection and request-setting colours", () => {

@@ -792,6 +792,11 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   - The results are read as a list of links named by their songs.
   - The confirmation is read with the song and the optional name field, with its hint.
   - Each answer page's title and first heading say what happened.
+- Settings, Station, Requests: use the Request settings link from Queue & Search,
+  verify the Requests tab and heading are selected, then change and save policy.
+  Save confirmation and Roughness limit validation must speak in Settings, with
+  focus retained on Save or moved to the invalid field. Switching stations must
+  discard stale replies. The return link opens Queue & Search.
 - Queue & Search, Listener requests: the card is read with its summary.
   - Waiting requests expose Song, Requested ("by <name> at <time>") and Fit columns and an
     Actions column whose Options for the song contains Approve, Play next and Turn down. Unavailable

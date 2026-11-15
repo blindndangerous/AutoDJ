@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { announceStatus } from "../../src/autodj/static/modules/live-region.js";
 
 import {
   ANNOUNCE_DELAY_MS,
@@ -13,18 +14,26 @@ import {
   summaryText,
 } from "../../src/autodj/static/modules/listener-requests.js";
 
-// The markup index.html carries in Queue & Search.
+// The markup index.html carries the queue actions and Settings form in separate views.
 function mount() {
   document.body.innerHTML = `
     <section id="panel-queue">
       <details class="card" id="requests-card" open hidden>
         <summary id="requests-heading"><h2>Listener requests</h2></summary>
         <p id="requests-summary">No requests waiting.</p>
+        <a id="requests-open-settings" href="#settings">Request settings</a>
         <div id="requests-status" role="status" aria-live="polite" aria-atomic="true"></div>
         <div id="requests-list" hidden></div>
         <h3 id="requests-recent-heading" hidden>Recent decisions</h3>
         <div id="requests-recent" hidden></div>
-        <form id="requests-settings" novalidate>
+      </details>
+    </section>
+    <section id="panel-settings">
+      <button id="tab-settings" type="button"></button>
+      <button id="stab-requests" type="button"></button>
+      <section id="spanel-requests">
+        <div id="requests-settings-status" role="status" aria-live="polite" aria-atomic="true"></div>
+        <form id="requests-settings" novalidate hidden>
           <input type="checkbox" id="requests-enabled" aria-describedby="requests-enabled-help">
           <input type="radio" name="requests-approval" id="requests-approval-manual" value="manual" checked>
           <input type="radio" name="requests-approval" id="requests-approval-auto" value="auto">
@@ -36,7 +45,7 @@ function mount() {
           <input type="radio" name="requests-no-smooth" id="requests-no-smooth-wait" value="wait">
           <button type="submit" id="requests-settings-save">Save request settings</button>
         </form>
-      </details>
+      </section>
     </section>
     <dialog id="confirm-dialog"><h1 id="confirm-title"></h1><p id="confirm-message"></p>
       <div><button id="confirm-cancel">Cancel</button><button id="confirm-accept"></button></div>
@@ -186,11 +195,75 @@ describe("listener requests card", () => {
     expect(requestRows()).toHaveLength(0);
   });
 
+  it("refreshes settings when its subtab opens", async () => {
+    const controls = install();
+    await flush();
+    expect(request).toHaveBeenCalledTimes(1);
+    const panel = byId("spanel-requests");
+    panel.open = true;
+    panel.dispatchEvent(new Event("toggle"));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    expect(byId("requests-enabled").checked).toBe(true);
+    expect(controls.refresh).toBeTypeOf("function");
+  });
+
+  it("opens Settings > Requests from the queue card", async () => {
+    install();
+    const visited = [];
+    byId("tab-settings").addEventListener("click", () => visited.push("settings"));
+    byId("stab-requests").addEventListener("click", () => visited.push("requests"));
+    const event = new window.MouseEvent("click", { bubbles: true, cancelable: true });
+    byId("requests-open-settings").dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(visited).toEqual(["settings", "requests"]);
+  });
+
   it("stays hidden when the station does not answer", async () => {
     request = vi.fn(async () => { throw new Error("401"); });
     install();
     await flush();
     expect(byId("requests-card").hidden).toBe(true);
+    expect(byId("requests-settings").hidden).toBe(true);
+    await vi.waitFor(() => expect(byId("requests-settings-status").textContent)
+      .toBe("Could not load listener request settings: 401"));
+  });
+
+  it("hides the previous station's settings until the replacement state loads", async () => {
+    const controls = install();
+    await flush();
+    expect(byId("requests-settings").hidden).toBe(false);
+    let finish;
+    request.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    controls.clear();
+    expect(byId("requests-settings").hidden).toBe(true);
+    finish({ ...STATE, enabled: false });
+    await flush();
+    expect(byId("requests-settings").hidden).toBe(false);
+    expect(byId("requests-enabled").checked).toBe(false);
+  });
+
+  it.each([false, true])("clears old station settings speech, including queued speech (%s)", async (pending) => {
+    const controls = install();
+    await flush();
+    const region = byId("requests-settings-status");
+    announceStatus(region, "Settings saved for the old station.", { force: pending });
+    controls.clear();
+    expect(region.textContent).toBe("");
+    await flush();
+    expect(region.textContent).toBe("");
+  });
+
+  it("does not announce a stale load failure after station context is cleared", async () => {
+    const controls = install();
+    await flush();
+    let reject;
+    request.mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+    void controls.refresh();
+    enabled = false;
+    controls.clear();
+    reject(new Error("old station failed"));
+    await flush();
+    expect(byId("requests-settings-status").textContent).toBe("");
   });
 
   it("turns requests on with automatic approval and says the page is open", async () => {
@@ -217,7 +290,7 @@ describe("listener requests card", () => {
     expect((({ enabled, approval }) => ({ enabled, approval }))(body))
       .toEqual({ enabled: true, approval: "auto" });
     answer({ ...STATE, approval: "auto", pending: [] });
-    await vi.waitFor(() => expect(byId("requests-status").textContent).toBe(
+    await vi.waitFor(() => expect(byId("requests-settings-status").textContent).toBe(
       "Listener requests are on. The request page is open. Requests that keep the rules join the queue at once.",
     ));
     expect(save.hasAttribute("aria-busy")).toBe(false);
@@ -233,7 +306,7 @@ describe("listener requests card", () => {
     byId("requests-settings").dispatchEvent(new Event("change"));
     request.mockResolvedValueOnce({ ...STATE, enabled: false, pending: [], recent: [] });
     byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(byId("requests-status").textContent).toBe(
+    await vi.waitFor(() => expect(byId("requests-settings-status").textContent).toBe(
       "Listener requests are off. The request page now says requests are closed.",
     ));
     expect(JSON.parse(request.mock.calls.at(-1)[1].body).enabled).toBe(false);
@@ -249,7 +322,7 @@ describe("listener requests card", () => {
     byId("requests-threshold").dispatchEvent(new Event("input", { bubbles: true }));
     request.mockRejectedValueOnce(new Error("Request failed (500)"));
     byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(byId("requests-status").textContent)
+    await vi.waitFor(() => expect(byId("requests-settings-status").textContent)
       .toBe("Could not save the request settings: Request failed (500)"));
     expect(byId("requests-settings-save").hasAttribute("aria-busy")).toBe(false);
     expect(byId("requests-threshold").value).toBe("3");
@@ -685,7 +758,7 @@ describe("smooth transitions (#49)", () => {
       enabled: true, approval: "manual",
       bridges_enabled: false, max_bridges: 2, bridge_cost_threshold: 3, no_smooth_spot: "best",
     });
-    await vi.waitFor(() => expect(byId("requests-status").textContent).toBe("Request settings saved."));
+    await vi.waitFor(() => expect(byId("requests-settings-status").textContent).toBe("Request settings saved."));
   });
 
   it("refuses a roughness limit out of range: marked, linked, shown and focused", async () => {

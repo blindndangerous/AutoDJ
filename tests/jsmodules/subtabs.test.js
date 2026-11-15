@@ -50,7 +50,7 @@ describe("Settings subtabs markup", () => {
     expect(outer.querySelectorAll('[role="tablist"]')).toHaveLength(3);
     for (const list of [profileList, stationList, globalList]) expect(list.hidden).toBe(false);
     expect(profileList.querySelectorAll('[role="tab"]')).toHaveLength(4);
-    expect(stationList.querySelectorAll('[role="tab"]')).toHaveLength(4);
+    expect(stationList.querySelectorAll('[role="tab"]')).toHaveLength(5);
     expect([...globalList.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Server", "Analysis workers", "Update and restart", "Browser preferences"]);
     expect(profileList.compareDocumentPosition(stationList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(stationList.compareDocumentPosition(globalList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -60,8 +60,10 @@ describe("Settings subtabs markup", () => {
     const tabs = [...outer.querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "Mixing", "Song picking", "Sound", "Announcements", "Stations",
-      "Profiles", "Broadcasting", "Schedule", "Server", "Analysis workers", "Update and restart", "Browser preferences",
+      "Profiles", "Broadcasting", "Requests", "Schedule", "Server", "Analysis workers", "Update and restart", "Browser preferences",
     ]);
+    expect(byId("spanel-requests").getAttribute("role")).toBe("tabpanel");
+    expect(byId("spanel-requests").getAttribute("aria-labelledby")).toBe("stab-requests");
     for (const tab of tabs) {
       expect(tab.hasAttribute("aria-controls")).toBe(false);
       const panel = byId(tab.dataset.panel);
@@ -179,6 +181,9 @@ describe("initSubtabs", () => {
     expect(byId("settings-profile").closest(".profile-target-row").hidden).toBe(true);
     press(document.activeElement, "End");
     expect(document.activeElement).toBe(byId("stab-schedule"));
+    press(document.activeElement, "ArrowLeft");
+    expect(document.activeElement).toBe(byId("stab-requests"));
+    expect(byId("spanel-requests").hidden).toBe(false);
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-stream"));
     press(document.activeElement, "ArrowLeft");
