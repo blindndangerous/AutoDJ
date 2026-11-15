@@ -4,7 +4,7 @@ The control page has named tabs, headings, lists, buttons, and status messages. 
 
 ## Move around the page
 
-Use **Collapse all cards**, just after the main tabs, to close the cards in the current tab. In Settings, it affects only the current Settings panel. The button appears when there are open cards to collapse. Press Enter or Space to collapse them; the button then hides and focus returns to the selected main tab. Card contents and unsaved edits are preserved. Open individual cards again with their headings.
+Use **Collapse all cards**, just after the main tabs, to close the cards in the current tab. In Settings, it affects only the current Settings panel. When all cards are closed, the same button becomes **Expand all cards**. Press Enter or Space to perform either action; focus stays on the button. Card contents and unsaved edits are preserved. The button is unavailable when the current panel has no cards.
 
 Use `Alt+1` through `Alt+9` to open, in order: **Now Playing**, **Queue & Search**, **Track info**, **History**, **Carts**, **Voice tracks**, **Ads**, **Library tools**, and **Settings**. These work even in text fields. Some tabs are hidden when their feature is unavailable.
 

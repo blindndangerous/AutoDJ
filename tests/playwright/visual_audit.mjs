@@ -3464,7 +3464,7 @@ async function selectedTabEntryProblems(page) {
 async function collapseCardsProblems(page) {
   await page.goto(`${BASE}/#now`, { waitUntil: "networkidle" });
   await page.locator("#panel-now").waitFor({ state: "visible" });
-  const button = page.getByRole("button", { name: "Collapse all cards", exact: true });
+  const button = page.locator("#collapse-all-cards");
   const problems = [];
   const openVisibleCards = () => page.locator('#panel-now details.card[open]')
     .evaluateAll((cards) => cards.filter((card) => !card.closest("[hidden]")).length);
@@ -3483,11 +3483,28 @@ async function collapseCardsProblems(page) {
     }
     if (await openVisibleCards()) problems.push(`${activation}: current cards stayed open`);
     if (await page.locator('section[data-view][hidden] details.card[open]').count() !== before) problems.push(`${activation}: changed another tab`);
-    if (await button.isVisible()) problems.push(`${activation}: button stayed visible with no open cards`);
-    if (!await page.locator('#tab-now').evaluate((node) => node === document.activeElement)) problems.push(`${activation}: focus did not return to the active tab`);
+    await expect(button).toHaveAccessibleName("Expand all cards");
+    await expect(button).toBeVisible();
+    await expect(button).toBeFocused();
+    if (activation === "click") await button.click();
+    else await page.keyboard.press(activation);
+    await expect(button).toHaveAccessibleName("Collapse all cards");
+    await expect(button).toBeFocused();
+    const closed = await page.locator('#panel-now details.card:not([open])')
+      .evaluateAll((cards) => cards.filter((card) => !card.closest("[hidden]")).length);
+    if (closed) problems.push(`${activation}: current cards stayed closed`);
+    if (await page.locator('section[data-view][hidden] details.card[open]').count() !== before) problems.push(`${activation}: expansion changed another tab`);
+    await button.click();
   }
+  // Native toggle events persist preferences asynchronously. Reload only after
+  // the last collapse has reached storage, rather than cancelling those events.
+  await expect.poll(() => page.locator('#panel-now details.card')
+    .evaluateAll((cards) => cards.filter((card) => !card.closest("[hidden]"))
+      .every((card) => localStorage.getItem(`autodj.card.${card.id}`) === "closed"))).toBe(true);
   await page.reload({ waitUntil: "networkidle" });
   if (await openVisibleCards()) problems.push("Collapsed preferences did not survive reload");
+  await expect(button).toHaveAccessibleName("Expand all cards");
+  await expect(button).toBeVisible();
   return problems;
 }
 

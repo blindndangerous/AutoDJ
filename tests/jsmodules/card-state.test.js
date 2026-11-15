@@ -38,7 +38,7 @@ function cards() {
 
 it("collapses only the current tab's cards, retaining contents, focus and preferences", async () => {
   document.body.innerHTML = `
-    <nav id="view-nav"><button role="tab" aria-selected="true" id="settings-tab">Settings</button><button role="tab" aria-selected="false" id="queue-tab">Queue</button><button id="collapse-all-cards" hidden>Collapse all cards</button></nav>
+    <nav id="view-nav"><button role="tab" aria-selected="true" id="settings-tab">Settings</button><button role="tab" aria-selected="false" id="queue-tab">Queue</button><button id="collapse-all-cards">Collapse all cards</button></nav>
     <section data-view="settings">
       <section role="tabpanel">
         <details class="card" id="outer" open><summary>Outer</summary>
@@ -60,18 +60,29 @@ it("collapses only the current tab's cards, retaining contents, focus and prefer
   input.value = "edited draft";
   input.focus();
   button.click();
-  expect(button.hidden).toBe(true);
-  expect(document.activeElement).toBe(document.getElementById("settings-tab"));
-  for (const id of ["outer", "nested", "closed", "unavailable"]) {
+  expect(button.textContent).toBe("Expand all cards");
+  expect(document.activeElement).toBe(button);
+  expect(button.hidden).toBe(false);
+  for (const id of ["outer", "nested", "closed"]) {
     const card = document.getElementById(id);
     expect(card.open).toBe(false);
     card.dispatchEvent(new Event("toggle"));
     expect(localStorage.getItem(`autodj.card.${id}`)).toBe("closed");
   }
-  for (const id of ["other-subtab", "other-tab", "other-disclosure"]) {
+  for (const id of ["other-subtab", "other-tab", "other-disclosure", "unavailable"]) {
     expect(document.getElementById(id).open).toBe(true);
   }
   expect(document.querySelector("input")).toBe(input);
+  expect(input.value).toBe("edited draft");
+  button.click();
+  expect(button.textContent).toBe("Collapse all cards");
+  expect(document.activeElement).toBe(button);
+  for (const id of ["outer", "nested", "closed"]) {
+    const card = document.getElementById(id);
+    expect(card.open).toBe(true);
+    card.dispatchEvent(new Event("toggle"));
+    expect(localStorage.getItem(`autodj.card.${id}`)).toBe("open");
+  }
   expect(input.value).toBe("edited draft");
   document.querySelector('[data-view="settings"]').hidden = true;
   document.querySelector('[data-view="queue"]').hidden = false;
@@ -81,45 +92,51 @@ it("collapses only the current tab's cards, retaining contents, focus and prefer
   document.getElementById("other-tab").open = true;
   document.getElementById("other-tab").dispatchEvent(new Event("toggle"));
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(button.hidden).toBe(false);
+  expect(button.textContent).toBe("Collapse all cards");
   button.click();
   expect(document.getElementById("other-tab").open).toBe(false);
-  expect(button.hidden).toBe(true);
+  expect(button.textContent).toBe("Expand all cards");
   expect(document.getElementById("other-subtab").open).toBe(true);
 });
 
-it("shows collapse only for open cards in the active visible tab as cards change", async () => {
+it("updates the action as cards and tabs change without hiding the button", async () => {
   document.body.innerHTML = `
-    <nav id="view-nav"><button role="tab" aria-selected="true">One</button><button role="tab" aria-selected="false">Two</button><button id="collapse-all-cards" hidden>Collapse all cards</button></nav>
+    <nav id="view-nav"><button role="tab" aria-selected="true">One</button><button role="tab" aria-selected="false">Two</button><button id="collapse-all-cards">Collapse all cards</button></nav>
     <main><section data-view="one"><details class="card" id="hidden-card" open hidden></details><details class="card" id="closed-card"></details>
       <section role="tabpanel" hidden><details class="card" open></details></section></section>
       <section data-view="two" hidden><details class="card" id="second-card" open></details></section></main>`;
   installCardState();
   const button = document.getElementById("collapse-all-cards");
-  expect(button.hidden).toBe(true);
+  expect(button.textContent).toBe("Expand all cards");
+  expect(button.getAttribute("aria-disabled")).toBe("false");
   const first = document.getElementById("closed-card");
   first.open = true;
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(button.hidden).toBe(false);
+  expect(button.textContent).toBe("Collapse all cards");
   first.remove();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(button.hidden).toBe(true);
+  expect(button.textContent).toBe("Expand all cards");
+  expect(button.getAttribute("aria-disabled")).toBe("true");
+  button.focus();
+  button.click();
+  expect(document.activeElement).toBe(button);
+  expect(document.getElementById("hidden-card").open).toBe(true);
   document.querySelector('[data-view="one"]').hidden = true;
   document.querySelector('[data-view="two"]').hidden = false;
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(button.hidden).toBe(false);
+  expect(button.textContent).toBe("Collapse all cards");
   document.getElementById("second-card").remove();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(button.hidden).toBe(true);
+  expect(button.textContent).toBe("Expand all cards");
   const added = document.createElement("details");
   added.className = "card";
   added.open = true;
   document.querySelector('[data-view="two"]').append(added);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(button.hidden).toBe(false);
+  expect(button.textContent).toBe("Collapse all cards");
   added.hidden = true;
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(button.hidden).toBe(true);
+  expect(button.textContent).toBe("Expand all cards");
 });
 
 it("places a named native Collapse all button before the card panels", () => {
@@ -130,6 +147,7 @@ it("places a named native Collapse all button before the card panels", () => {
   expect(button.type).toBe("button");
   expect(button.textContent.trim()).toBe("Collapse all cards");
   expect(button.hasAttribute("aria-label")).toBe(false);
+  expect(button.hidden).toBe(false);
   expect(button.closest("details")).toBeNull();
   expect(button.previousElementSibling.getAttribute("role")).toBe("tablist");
   expect(button.parentElement.id).toBe("view-nav");
