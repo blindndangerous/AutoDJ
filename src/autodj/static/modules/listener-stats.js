@@ -213,7 +213,9 @@ export function installListenerStats({
     void refresh({ spoken: "Listener statistics updated." });
   });
   span.addEventListener("change", () => {
-    void refresh({ spoken: `Showing ${spanText(Number(span.value))}.` });
+    // The selected option already names the period; the asynchronous result
+    // should update the tables without speaking over the combo's selection.
+    void refresh();
   });
   exportButton.addEventListener("click", async () => {
     try {

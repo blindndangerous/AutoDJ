@@ -424,7 +424,9 @@ export function installCategoriesPanel({ document: doc = document, request = req
           match.textContent = result.error
             ? `Count unavailable: ${result.error}`
             : `${countsText(result)}.`;
-          sayCount(match.textContent, result.error ? "error" : "info");
+          // Keep automatic successful counts browseable without interrupting
+          // the selection being edited. Explicit Check still announces them.
+          if (result.error) sayCount(match.textContent, "error");
         } catch (error) {
           if (countCurrent(item.epoch, item.mine)) {
             match.textContent = `Count unavailable: ${error.message}`;

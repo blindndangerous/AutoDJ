@@ -249,7 +249,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const confirmButton = el("vt-confirm");
   let selectedTarget = "";
   let confirming = false;
-  let selectionAnnouncement = null;
   const ending = el("vt-ending");
   const upcoming = el("vt-upcoming");
   const intro = el("vt-intro");
@@ -309,7 +308,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   // The tracker's own region while its tab shows; the page-wide one when
   // the tab has been left, since a region inside a hidden panel says nothing.
   const announcementRegion = () => {
-    clearTimeout(selectionAnnouncement);
     return shown() ? status : (doc.getElementById("sr-status") || status);
   };
   const say = makeSay(announcementRegion, { dwellMs: 5000 });
@@ -515,7 +513,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     const row = data?.targets?.find((item) => item.target_id === selectedTarget);
     if (confirming || !row || row.selection !== "predicted" || row.eligible === false) return;
     const asked = generation;
-    clearTimeout(selectionAnnouncement);
     confirming = true; renderTargets(); clearError();
     try {
       const reply = await sendWithVoiceTrackConflict(doc, (voice) => {
@@ -1377,17 +1374,10 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   microphoneRefresh?.addEventListener("click", () => void refreshMicrophones());
   testButton?.addEventListener("click", () => void toggleMicrophoneTest());
   targetSelect?.addEventListener("change", () => {
-    clearTimeout(selectionAnnouncement);
-    const asked = generation;
     selectedTarget = targetSelect.value;
     if (data) data = { ...data, slot: null, accepting: false };
     renderTargets(); renderSlot();
     void refresh();
-    selectionAnnouncement = setTimeout(() => {
-      if (asked === generation && root.isConnected && shown()) {
-        say(`${el("vt-selection").textContent}. ${el("vt-estimated-airtime").textContent}.`);
-      }
-    }, 500);
   });
   confirmButton?.addEventListener("click", () => void confirmSongs());
   listenButton.addEventListener("click", () => void listen());
@@ -1426,7 +1416,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     // drops either, so the page asks first.
     hasUnsavedWork: () => Boolean(session || take),
     clear() {
-      clearTimeout(selectionAnnouncement);
       requestEpoch += 1;
       generation += 1;
       starting = false;

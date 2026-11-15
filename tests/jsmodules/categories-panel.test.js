@@ -240,7 +240,7 @@ describe("categories form", () => {
     expect(changed).toHaveBeenCalledTimes(1);
   });
 
-  it("announces a settled background count once without announcing edits", async () => {
+  it("keeps a settled background count visible without announcing edits or results", async () => {
     const server = await open();
     byId("categories-add").click();
     byId("categories-name").value = "Rock gold";
@@ -248,9 +248,26 @@ describe("categories form", () => {
     byId("categories-query").value = "genre:rock";
     byId("categories-query").dispatchEvent(new Event("input", { bubbles: true }));
     expect(status()).toBe("");
-    await vi.waitFor(() => expect(status()).toBe(
+    await vi.waitFor(() => expect(byId("categories-match").textContent).toBe(
       "1 song; 1 uses the release year because the first-release year is missing."), { timeout: 1500 });
+    expect(status()).toBe("");
     expect(server.calls.filter((call) => call.url === "/api/categories/check")).toHaveLength(1);
+  });
+
+  it("announces an automatic background count failure", async () => {
+    const server = await open();
+    const request = server.request.getMockImplementation();
+    server.request.mockImplementation(async (url, options) => {
+      if (url === "/api/categories/check") throw new Error("Count service unavailable");
+      return request(url, options);
+    });
+    byId("categories-add").click();
+    byId("categories-name").value = "Rock gold";
+    byId("categories-name").dispatchEvent(new Event("input", { bubbles: true }));
+    byId("categories-query").value = "genre:rock";
+    byId("categories-query").dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(status()).toBe("Count unavailable: Count service unavailable"), { timeout: 1500 });
+    expect(byId("categories-match").textContent).toBe("Count unavailable: Count service unavailable");
   });
 
   it("edits a playlist category with the playlist choice, and Cancel goes back to its Edit cell", async () => {

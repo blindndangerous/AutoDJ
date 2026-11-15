@@ -1360,7 +1360,7 @@ it("marks lost bookings unknown after a run change and preserves cancellation fo
 
 
 // ADR-0004-28: accessible status and confirmation guidance.
-it("describes selection and debounces arrow browsing announcements while refresh stays quiet", async () => {
+it("describes selection without delayed arrow browsing announcements and keeps refresh quiet", async () => {
   const { server, controls } = tracker();
   const first = futureRow();
   const second = futureRow("d".repeat(32), { selection: "confirmed" });
@@ -1377,12 +1377,13 @@ it("describes selection and debounces arrow browsing announcements while refresh
   await flush();
   expect(spoken).toEqual([]);
   await new Promise((resolve) => setTimeout(resolve, 600));
-  expect(spoken).toHaveLength(1);
-  expect(spoken[0]).toContain("Selection: Confirmed");
-  expect(spoken[0]).toContain("Estimated airtime:");
+  expect(spoken).toEqual([]);
+  expect(byId("vt-selection").textContent).toContain("Selection: Confirmed");
+  expect(byId("vt-estimated-airtime").textContent).toContain("Estimated airtime:");
+  expect(select.value).toBe(second.target_id);
   await controls.refresh();
   await new Promise((resolve) => setTimeout(resolve, 600));
-  expect(spoken).toHaveLength(1);
+  expect(spoken).toEqual([]);
   observer.disconnect(); controls.clear();
 });
 

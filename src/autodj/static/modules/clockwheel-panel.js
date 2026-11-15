@@ -757,7 +757,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
             ? `Count unavailable: ${result.error}`
             : result.tracks === null ? "Preset changes do not select tracks."
               : `${Number(result.tracks).toLocaleString("en-US")} ${Number(result.tracks) === 1 ? "track" : "tracks"}`;
-          if (result.error || result.tracks !== null) makeSay(() => stepEditor.region(status), { force: false })(output.textContent, result.error ? "error" : "info");
+          if (result.error) makeSay(() => stepEditor.region(status), { force: false })(output.textContent, "error");
         } catch (error) {
           if (stepCountCurrent(item.epoch, item.mine)) {
             output.textContent = `Count unavailable: ${error.message}`;

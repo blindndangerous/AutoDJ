@@ -13,9 +13,10 @@ import { onCardOpen } from "./card-state.js";
 // soon after the song changes; each refresh changes only the cells whose
 // text changed, in place, so the reading position and focus stay put.  If
 // those refreshes start failing, the failure is said once (not again until
-// one succeeds).  Refresh preview, and choosing another span under Show,
-// say the new summary once through #hour-preview-status, and Shift+H
-// (speakSummary) says it from anywhere through the page's spoken status.
+// one succeeds). Refresh preview says the new summary once through
+// #hour-preview-status; changing Show updates the preview quietly because
+// the native select already speaks its value. Shift+H (speakSummary) says
+// the summary from anywhere through the page's spoken status.
 // Times and lengths use the same numeric text for everyone. Fixed or
 // predicted is a word in the Status column of every row, not a colour.
 //
@@ -299,7 +300,7 @@ export function installHourPreview({
   // Ask on the user's behalf and say the outcome once, even when it is the
   // same as before.  Only the newest ask is said: one overtaken by a later
   // one (another span chosen meanwhile) says nothing.
-  async function askAndSay(lead, { force = false, words = spokenSummary } = {}) {
+  async function askAndSay(lead, { force = false, announce = true } = {}) {
     let view;
     try {
       view = await load({ force });
@@ -310,9 +311,11 @@ export function installHourPreview({
     }
     if (view) {
       quietError = null;
-      fillingAsk = view.filling ? latestUser : null;
-      announceStatus(status, `${lead} ${words(view)}`.trim(),
-        { force: true, dwellMs: 8000, mirror: false });
+      fillingAsk = announce && view.filling ? latestUser : null;
+      if (announce) {
+        announceStatus(status, `${lead} ${spokenSummary(view)}`.trim(),
+          { force: true, dwellMs: 8000, mirror: false });
+      }
     }
     if (card.open) schedule();
     return view;
@@ -323,12 +326,11 @@ export function installHourPreview({
     return askAndSay("Hour preview updated.", { force: true });
   }
 
-  // Show: a new span says only its counts, once it has loaded.
+  // Show: load the selected span without speaking over its native option.
   function spanChanged() {
-    return askAndSay("", {
-      words: (view) => (view.reason
-        || (view.counts_text ? `${view.counts_text}${fillingNote(view)}` : spokenSummary(view))),
-    });
+    // A selection supersedes earlier asks and their pending completion speech.
+    fillingAsk = null;
+    return askAndSay("", { announce: false });
   }
 
   // Shift+H: a recent preview, or a fresh one, said through the page's
