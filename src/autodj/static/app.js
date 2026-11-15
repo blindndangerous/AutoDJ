@@ -374,6 +374,9 @@ function clearStationViews({ keepSettings = false } = {}) {
   liveDesk?.clear();
   resetTrackCaches();
   historyRequest?.abort();
+  historySelection.cancel();
+  clearTimeout(historyFilterTimer);
+  historyFilterTimer = null;
   _histPlayingPath = null;
   resetLyricState();
   renderLyricsList(_lyricEls);
@@ -2978,18 +2981,25 @@ const _libEls = {
 // ----------------------------------------------------------------
 import { formatPlayedAt, updateHistoryDateHeadings } from "./modules/history-format.js";
 import { installHistoryExport } from "./modules/history-export.js";
+import { createSelectionAnnouncer } from "./modules/live-region.js";
 import {
-  historyAnchor, historyKindLabel, historyQuery, linersMessage, readShowLiners,
+  applyHistoryFilterOnEnter, historyKindLabel, historyQuery, historyResultsMessage, readShowLiners,
   setHistoryTypeColumn, writeShowLiners,
 } from "./modules/history-view.js";
 import { defaultStorage } from "./modules/safe-storage.js";
 
 let _histPage = 1;
-// Show liners (#601): off unless this browser chose it.
+// Keep the prior preference key/value for browsers upgrading from #601.
 let _histShowLiners = readShowLiners(defaultStorage());
 const historyNavigation = installTableNavigation(document.getElementById("history-tbody"));
 // The history request in flight: a newer one aborts it.
 let historyRequest = null;
+let historyFilterTimer = null;
+const historySelection = createSelectionAnnouncer((message, request) => {
+  if (request.signal.aborted || !historyViewShown() || document.visibilityState === "hidden") return;
+  announceStatus(document.getElementById("sr-status"), message,
+    { dwellMs: 3000, force: true, mirror: false });
+});
 // Page 1's newest played_at; null when
 // page 1 is not on screen, so a track change rebuilds instead of adding.
 let _histNewestAt = null;
@@ -2998,7 +3008,7 @@ let _histPlayingPath = null;
 
 // A live DJ session (#48) is a row too: kind "live", the DJ as the artist,
 // no file and so no Track info, and "On the air" until it ends.  With
-// liners shown (#601) a Type column says what each row is; a liner file
+// nonmusic items shown a Type column says what each row is; a liner file
 // opens in Track info, and other non-music items have none.
 function historyRowHtml(it, withType = false) {
   const historyId = it.event_id || `${it.played_at}:${it.path || ""}`;
@@ -3026,6 +3036,51 @@ function historyRowHtml(it, withType = false) {
   row.dataset.playedAt = it.played_at;
   row.dataset.kind = kind;
   return row;
+}
+
+function historyFilters() {
+  return {
+    from: document.getElementById("hist-export-from")?.value || "",
+    to: document.getElementById("hist-export-to")?.value || "",
+    q: document.getElementById("hist-filter-q")?.value || "",
+    nonmusic: Boolean(document.getElementById("hist-show-liners")?.checked),
+  };
+}
+
+function applyHistoryFilters({ announce = "filters", focusInvalid = false } = {}) {
+  if (historyFilterTimer !== null) {
+    clearTimeout(historyFilterTimer);
+    historyFilterTimer = null;
+  }
+  _histPage = 1;
+  const { from, to } = historyFilters();
+  const fromInput = document.getElementById("hist-export-from");
+  const toInput = document.getElementById("hist-export-to");
+  let invalid = null;
+  if (!from || !to) invalid = { input: from ? toInput : fromInput, message: "Choose both a From date and a To date." };
+  else if (from > to) invalid = { input: fromInput, message: "The From date is after the To date." };
+  if (invalid) {
+    historyRequest?.abort();
+    historySelection.cancel();
+    announceStatus(document.getElementById("sr-status"), invalid.message,
+      { dwellMs: 6000, force: true, tone: "error" });
+    if (focusInvalid) {
+      invalid.input.focus();
+    }
+    return;
+  }
+  void fetchHistory(1, { announce });
+}
+
+function scheduleHistoryTextFilter() {
+  historyRequest?.abort();
+  historySelection.cancel();
+  if (historyFilterTimer !== null) clearTimeout(historyFilterTimer);
+  historyFilterTimer = setTimeout(() => {
+    historyFilterTimer = null;
+    applyHistoryFilters();
+  }, 300);
+  _histPage = 1;
 }
 
 function showHistoryPaging(data) {
@@ -3064,15 +3119,34 @@ function focusRemainingHistoryRow(tbody, index, message, column = null) {
 }
 
 // announce: "page" says where paging landed; "refresh" confirms a
-// Refresh press even when nothing changed; "liners" says what Show liners
-// now shows.  anchor: the event_id of a row whose page the server finds.
+// Refresh press; "filters" says the result count after a selection change.
 async function fetchHistory(page, { announce = false, anchor = null } = {}) {
+  if (historyFilterTimer !== null) {
+    clearTimeout(historyFilterTimer);
+    historyFilterTimer = null;
+  }
+  const filters = historyFilters();
+  if (!filters.from || !filters.to || filters.from > filters.to) {
+    if (announce) {
+      const input = !filters.from ? document.getElementById("hist-export-from")
+        : filters.from > filters.to ? document.getElementById("hist-export-from")
+          : document.getElementById("hist-export-to");
+      announceStatus(document.getElementById("sr-status"), !filters.from || !filters.to
+        ? "Choose both a From date and a To date." : "The From date is after the To date.",
+      { dwellMs: 6000, force: true, tone: "error" });
+      input?.focus();
+    }
+    historySelection.cancel();
+    return;
+  }
   _histPage = page;
+  historySelection.cancel();
+  const finishSelection = announce === "filters" ? historySelection.start() : null;
   historyRequest?.abort();
   const request = historyRequest = new AbortController();
-  const liners = _histShowLiners;
+  const nonmusic = filters.nonmusic;
   try {
-    const data = await requestJson(`/api/history?${historyQuery({ page, showLiners: liners, anchor })}`, {
+    const data = await requestJson(`/api/history?${historyQuery({ page, ...filters, anchor })}`, {
       signal: request.signal,
     });
     if (request.signal.aborted) return;
@@ -3093,29 +3167,30 @@ async function fetchHistory(page, { announce = false, anchor = null } = {}) {
       ? [...focusedCell.parentElement.children].indexOf(focusedCell) : null;
     const focusedId = focusedRow?.dataset.historyId;
     let focusLost = false;
-    setHistoryTypeColumn(table, liners);
+    setHistoryTypeColumn(table, nonmusic);
     if (!data.total) {
       tbody.replaceChildren();
       historyNavigation.refresh();
       table.setAttribute("hidden", "");
       pag.setAttribute("hidden", "");
-      empty.textContent = "No playback history yet.";
+      empty.textContent = "No plays match these filters.";
       empty.removeAttribute("hidden");
       if (focusedIndex >= 0) {
         focusRemainingHistoryRow(tbody, focusedIndex,
           "That play is no longer on this History page.", focusedColumn);
         focusLost = true;
       }
-      if ((announce === "refresh" || announce === "liners") && !focusLost) {
+      if (announce === "refresh" && !focusLost) {
         announceStatus(document.getElementById("sr-status"),
-          announce === "liners" ? linersMessage(liners, data) : "History refreshed.  No tracks played yet.",
+          "History refreshed.  No plays match these filters.",
           { dwellMs: 3000, force: true, mirror: false });
       }
+      if (finishSelection && !focusLost) finishSelection(historyResultsMessage(data), request);
       return;
     }
     empty.setAttribute("hidden", "");
     table.removeAttribute("hidden");
-    tbody.replaceChildren(...data.items.map((it) => historyRowHtml(it, liners)));
+    tbody.replaceChildren(...data.items.map((it) => historyRowHtml(it, nonmusic)));
     updateHistoryDateHeadings(tbody);
     historyNavigation.refresh();
     if (focusedId) {
@@ -3139,14 +3214,16 @@ async function fetchHistory(page, { announce = false, anchor = null } = {}) {
     pag.removeAttribute("hidden");
     // Prev / Next / Go leave focus where it was, so say where they landed.
     // The page label is already on screen, hence no visible mirror.
-    if (announce && !focusLost) {
-      const message = announce === "refresh" ? `History refreshed.  ${pageText}.`
-        : announce === "liners" ? linersMessage(liners, data) : pageText;
+    if (finishSelection && !focusLost) {
+      finishSelection(historyResultsMessage(data), request);
+    } else if (announce && !focusLost && announce !== "filters") {
+      const message = announce === "refresh" ? `History refreshed.  ${pageText}.` : pageText;
       announceStatus(document.getElementById("sr-status"), message,
         { dwellMs: 3000, force: true, mirror: false });
     }
   } catch (err) {
     if (request.signal.aborted) return;
+    historySelection.cancel();
     _histNewestAt = null;
     const tbody = document.getElementById("history-tbody");
     const table = document.getElementById("history-table");
@@ -3187,6 +3264,9 @@ function historyViewShown() {
 // already there are left alone, so a screen reader reading the table
 // keeps its place, and nothing is said: the table is not a live region.
 async function addNewHistoryRows() {
+  if (historyFilterTimer !== null) return;
+  const filters = historyFilters();
+  if (!filters.from || !filters.to || filters.from > filters.to) return;
   if (_histNewestAt === null) {
     await fetchHistory(1);
     return;
@@ -3194,19 +3274,29 @@ async function addNewHistoryRows() {
   const newestShown = _histNewestAt;
   historyRequest?.abort();
   const request = historyRequest = new AbortController();
-  const liners = _histShowLiners;
+  const nonmusic = filters.nonmusic;
   let data;
   try {
-    data = await requestJson(`/api/history?${historyQuery({ page: 1, showLiners: liners })}`,
+    data = await requestJson(`/api/history?${historyQuery({ page: 1, ...filters })}`,
       { signal: request.signal });
   } catch (_) {
     return;  // The next track change or Refresh tries again.
   }
   if (request.signal.aborted || _histPage !== 1 || _histNewestAt !== newestShown
-    || liners !== _histShowLiners) return;
-  const fresh = data.items.filter((it) => it.played_at > newestShown);
-  if (!fresh.length) return;
+    || JSON.stringify(filters) !== JSON.stringify(historyFilters())) return;
   const tbody = document.getElementById("history-tbody");
+  const newestShownTime = Date.parse(newestShown);
+  const seenIds = new Set([...tbody.querySelectorAll("tr[data-played-at]")]
+    .map((row) => row.dataset.historyId));
+  const fresh = data.items.filter((it) => {
+    const playedAt = Date.parse(it.played_at);
+    if (!Number.isFinite(playedAt) || playedAt < newestShownTime) return false;
+    const id = it.event_id || `${it.played_at}:${it.path || ""}`;
+    if (seenIds.has(id)) return false;
+    seenIds.add(id);
+    return true;
+  });
+  if (!fresh.length) return;
   const active = tbody.contains(document.activeElement) ? document.activeElement : null;
   const focusedCell = active?.matches("td[role=gridcell], td[role=rowheader]") ? active : null;
   const focusedButton = active?.closest(".history-info") || null;
@@ -3215,7 +3305,7 @@ async function addNewHistoryRows() {
   const focusedColumn = focusedCell
     ? [...focusedCell.parentElement.children].indexOf(focusedCell) : null;
   const focusedElement = focusedCell || focusedButton;
-  tbody.prepend(...fresh.map((it) => historyRowHtml(it, liners)));
+  tbody.prepend(...fresh.map((it) => historyRowHtml(it, nonmusic)));
   for (const row of [...tbody.querySelectorAll("tr[data-played-at]")].slice(50)) row.remove();
   updateHistoryDateHeadings(tbody);
   historyNavigation.refresh();
@@ -3235,6 +3325,7 @@ function noteTrackForHistory(s) {
   const was = _histPlayingPath;
   _histPlayingPath = key;
   if (was === null || key === null || !historyViewShown() || _histPage !== 1) return;
+  if (historyFilterTimer !== null) return;
   const liveChanged = !was.endsWith(`\u0000${liveSince}`);
   if (liveChanged) void fetchHistory(1);
   else void addNewHistoryRows();
@@ -3244,6 +3335,7 @@ function noteTrackForHistory(s) {
   document.addEventListener("click", (event) => {
     const button = event.target.closest?.(".history-info");
     if (!button || !document.getElementById("history-tbody").contains(button)) return;
+    historySelection.cancel();
     if (!button.dataset.path) {
       announceStatus(document.getElementById("sr-status"),
         "Track info is unavailable because this history entry has no saved recording path.",
@@ -3254,20 +3346,34 @@ function noteTrackForHistory(s) {
       detail: { path: button.dataset.path, kind: button.dataset.kind || "music", opener: button },
     }));
   });
-  // Show liners keeps focus and its place: the page asked for is the one
-  // holding the first row shown now, and the result is said once.
+  // Show nonmusic items follows the existing browser preference and applies
+  // to both the table and export.
   const showLiners = document.getElementById("hist-show-liners");
   if (showLiners) {
     showLiners.checked = _histShowLiners;
     showLiners.addEventListener("change", () => {
       _histShowLiners = showLiners.checked;
       writeShowLiners(defaultStorage(), _histShowLiners);
-      const anchor = historyAnchor(document.getElementById("history-tbody"));
-      void fetchHistory(_histPage, { announce: "liners", anchor });
+      applyHistoryFilters();
     });
+  }
+  const historyQ = document.getElementById("hist-filter-q");
+  historyQ?.addEventListener("input", scheduleHistoryTextFilter);
+  historyQ?.addEventListener("keydown", (event) => applyHistoryFilterOnEnter(event, applyHistoryFilters));
+  for (const input of [
+    document.getElementById("hist-export-from"), document.getElementById("hist-export-to"),
+  ]) {
+    input?.addEventListener("change", () => applyHistoryFilters());
+    input?.addEventListener("keydown", (event) => applyHistoryFilterOnEnter(
+      event, () => applyHistoryFilters({ focusInvalid: true }),
+    ));
   }
   const stepPage = (button, delta) => {
     if (button.getAttribute("aria-disabled") === "true") return;
+    if (historyFilterTimer !== null) {
+      applyHistoryFilters();
+      return;
+    }
     void fetchHistory(_histPage + delta, { announce: true });
   };
   const prev = document.getElementById("hist-prev");
@@ -3275,9 +3381,17 @@ function noteTrackForHistory(s) {
   prev.addEventListener("click", () => stepPage(prev, -1));
   next.addEventListener("click", () => stepPage(next, 1));
   document.getElementById("hist-refresh").addEventListener("click", () => {
+    if (historyFilterTimer !== null) {
+      applyHistoryFilters({ announce: "refresh" });
+      return;
+    }
     void fetchHistory(_histPage, { announce: "refresh" });
   });
   document.getElementById("hist-go").addEventListener("click", () => {
+    if (historyFilterTimer !== null) {
+      applyHistoryFilters();
+      return;
+    }
     const v = parseInt(document.getElementById("hist-goto").value, 10);
     if (v > 0) void fetchHistory(v, { announce: true });
   });
@@ -3285,17 +3399,26 @@ function noteTrackForHistory(s) {
     // Leave IME candidate confirmation to the input method.
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter") {
+      if (historyFilterTimer !== null) {
+        e.preventDefault();
+        applyHistoryFilters();
+        return;
+      }
       const v = parseInt(e.target.value, 10);
       if (v > 0) void fetchHistory(v, { announce: true });
     }
   });
-  installHistoryExport({
-    announce: makeSay(document.getElementById("sr-status"), { dwellMs: 3000, errorDwellMs: 6000 }),
-  });
+  const sayHistoryExport = makeSay(document.getElementById("sr-status"), { dwellMs: 3000, errorDwellMs: 6000 });
+  installHistoryExport({ announce: (...args) => { historySelection.cancel(); sayHistoryExport(...args); } });
 }
 
 window.addEventListener("hashchange", (event) => {
   if (event.newURL && new URL(event.newURL).hash !== location.hash) return;
+  if (!historyViewShown()) {
+    historySelection.cancel();
+    if (historyFilterTimer !== null) clearTimeout(historyFilterTimer);
+    historyFilterTimer = null;
+  }
   if (historyViewShown() && !isReturningToView("history")) void fetchHistory(1);
 });
 

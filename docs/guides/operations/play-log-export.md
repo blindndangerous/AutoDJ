@@ -6,20 +6,20 @@ Read what played in History, export a date range from History or the CLI, review
 
 ## Read History
 
-Open **History** to see the station's latest plays, newest first, 50 to a page: songs, liner files
-played as tracks and live DJ sets, with the time each started, its title, artist and length.
-**Previous page**, **Next page** and **Go to page** move through up to 500 of them, and
-**Refresh history** loads the page again.
+Open **History** to see plays for the selected station, newest first, 50 to a
+page. The date range starts at the beginning of this month and ends today.
+Change **From**, **To**, **Text filter** or **Show nonmusic items** to update the list.
+Dates include both days and use the server's time zone. Each word in Text filter must
+match the historical title, artist or album; matching ignores case.
 
-Check **Show liners** to also list what aired over or between the songs: liners mixed into a
-handoff, ads, matched intros, time checks, carts, voice tracks, announcer breaks and a show's
-speech segments. A **Type** column then says what each row is, such as Song, Liner, Ad or Matched
-intro. History stays near the same place: it shows the page that holds the first row you had on
-screen, or the song before it when that row is now hidden. Focus stays on the checkbox, and
-AutoDJ says once how many items the list now holds and which page you are on. The choice is
-remembered in this browser only and is off until you check it. These items are logged only in
-stream and server audio modes, as they air; see
-[what the play log holds](../../reference/operations/play-log.md).
+The same filters apply to the display and export. **Previous page**, **Next page**
+and **Go to page** move through all matching plays, including those older than
+the recent-history window. **Refresh history** reloads the current page.
+
+With **Show nonmusic items** off, the list contains songs. Check it to include
+liners, ads, live DJ sets, matched intros, time checks, carts, voice tracks and
+other aired items. A **Type** column identifies them. This choice is remembered
+in the browser. See [what the play log holds](../../reference/operations/play-log.md).
 
 ## Play log export
 
@@ -40,13 +40,14 @@ that says `no` for the songs SoundExchange may not be able to match. Dates are i
 play log: `--station NAME` exports another station's plays, and without it you get the default
 station's, which are all the plays logged before AutoDJ ran more than one station.
 
-In the web page, open History, go to "Export play log", choose the dates and the format, and press
-Export. With the Play log (CSV) format, check **Include liners** to add the liners, matched intros,
-time checks and other non-music items that aired; ads are in the CSV either way. The checkbox is
-hidden while "SoundExchange Report of Use" is chosen, because that report lists sound recordings
-only, so liners never belong in it. AutoDJ says "Exporting play log" and the Export button is
-unavailable until the file is ready. Then the browser saves the file and AutoDJ says how many plays it holds, with the same
-warnings as the summary, or why it failed.
+In the web page, choose a **Format** below the History results and press **Export**.
+The file contains all matches for the current filters, not just the displayed
+page. Play log (CSV) can include nonmusic items. SoundExchange reports contain
+songs only, so uncheck **Show nonmusic items** before exporting that format.
+The service name and transmission category appear when SoundExchange is selected.
+
+The Export button stays unavailable while the file is prepared. AutoDJ reports
+the number of exported plays, missing reporting fields, or an error.
 
 ## Reporting for webcasting licenses
 

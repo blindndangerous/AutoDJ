@@ -4,6 +4,10 @@ Look up CSV columns, spreadsheet escaping, omitted plays and the meaning and lim
 
 [Operations index](../../operations.md) · [Settings reference](../../settings-reference.md)
 
+In the History page, **Show nonmusic items** controls both the list and CSV
+export. Off includes songs only; on includes aired nonmusic items. The CLI
+and older API calls retain their existing export options.
+
 The CSV has one row per play, in this column order:
 
 - `start` and `end`: local time with its UTC offset, for example `2026-09-01T14:03:00+02:00`.
@@ -18,7 +22,7 @@ The CSV has one row per play, in this column order:
   shows up in `--missing`. Label comes from `LABEL`, `ORGANIZATION` or `PUBLISHER` (FLAC and Ogg), `TPUB` or
   `TXXX:LABEL` (MP3), or the iTunes `LABEL` atom (M4A).
 - `kind`: `song`, `liner`, `ad` for an aired ad spot, or `live` for a live DJ's set (see "Live DJs and talkover"),
-  which has no path and is never in a SoundExchange report. With **Include liners** checked, the
+  which has no path and is never in a SoundExchange report. With **Show nonmusic items** checked, the
   export also has `matched_intro`, `time_check`, `cart`, `voice_track`, and the announcer breaks
   `dj`, `news`, `weather`, `music_news` and `speech`. Their `duration_played` is their own length.
 - `path`: the file's path inside its music or liner folder, with `/` between folders.
@@ -36,9 +40,8 @@ What the play log holds and leaves out:
 - By default the log holds the songs, liner files and live sets the mixer starts. A file played
   from a liner folder is marked `liner`. In stream and server audio modes, AutoDJ also logs the
   liners mixed over a handoff, matched intros, time checks, carts, voice tracks, breaks and a
-  show's speech segments as they air. They are in the export only with **Include liners** checked, and never in a SoundExchange
-  report, the repeat rules or a song's `duration_played`. History lists them when **Show
-  liners** is checked; this browser remembers the choice. Liners that the browser plays in
+  show's speech segments as they air. They are in the export only with **Show nonmusic items** checked, and never in a SoundExchange
+  report, the repeat rules or a song's `duration_played`. History lists them when **Show nonmusic items** is checked; this browser remembers the choice. Liners that the browser plays in
   browser playback mode are not logged.
 - An AutoDJ from before History could show liners reads the liners and other non-music items
   logged since as songs: it lists them in History, the play log and SoundExchange reports, and

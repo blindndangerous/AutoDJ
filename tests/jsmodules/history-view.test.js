@@ -1,10 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  applyHistoryFilterOnEnter,
   SHOW_LINERS_KEY,
-  historyAnchor,
   historyKindLabel,
   historyQuery,
-  linersMessage,
+  historyResultsMessage,
   readShowLiners,
   setHistoryTypeColumn,
   writeShowLiners,
@@ -35,7 +35,7 @@ function mountTable() {
   return document.getElementById("history-table");
 }
 
-describe("History's Show liners choice", () => {
+describe("History filters", () => {
   it("is off until chosen and is remembered in this browser", () => {
     const storage = memoryStorage();
     expect(readShowLiners(storage)).toBe(false);
@@ -56,22 +56,32 @@ describe("History's Show liners choice", () => {
     expect(readShowLiners(null)).toBe(false);
   });
 
-  it("asks for liners and the anchor only when there are any", () => {
-    expect(historyQuery({ page: 2, showLiners: false })).toBe("page=2&per_page=50");
-    expect(historyQuery({ page: 1, showLiners: true, anchor: "abc" }))
-      .toBe("page=1&per_page=50&liners=true&anchor=abc");
-    expect(historyQuery({ page: 3, showLiners: false, anchor: null })).toBe("page=3&per_page=50");
+  it("sends the same range, text and nonmusic values with every page", () => {
+    expect(historyQuery({
+      page: 2, from: "2026-09-01", to: "2026-09-17", q: "  artist title  ", nonmusic: false,
+    })).toBe("from=2026-09-01&to=2026-09-17&q=artist+title&nonmusic=false&page=2&per_page=50");
+    expect(historyQuery({
+      page: 1, from: "2026-09-01", to: "2026-09-17", nonmusic: true, anchor: "abc",
+    })).toBe("from=2026-09-01&to=2026-09-17&nonmusic=true&page=1&per_page=50&anchor=abc");
   });
 
-  it("anchors on the first row shown", () => {
-    const table = mountTable();
-    const tbody = table.querySelector("tbody");
-    expect(historyAnchor(tbody)).toBeNull();
-    tbody.innerHTML = `
-      <tr class="history-date"><td colspan="5"><h3>1 Sept 2026</h3></td></tr>
-      <tr data-played-at="x" data-history-id="liner-9" data-kind="liner"><td>a</td></tr>
-      <tr data-played-at="y" data-history-id="song-8" data-kind="song"><td>b</td></tr>`;
-    expect(historyAnchor(tbody)).toBe("liner-9");
+  it("summarizes the filtered result count", () => {
+    expect(historyResultsMessage({ total: 12, page: 1, pages: 3 })).toBe("12 plays.");
+    expect(historyResultsMessage({ total: 1, page: 1, pages: 1 })).toBe("1 play.");
+    expect(historyResultsMessage({ total: 0 })).toBe("No plays match these filters.");
+  });
+
+  it("applies filters on Enter without submitting the export form or accepting IME Enter", () => {
+    const apply = vi.fn();
+    const enter = new KeyboardEvent("keydown", { key: "Enter", cancelable: true });
+    expect(applyHistoryFilterOnEnter(enter, apply)).toBe(true);
+    expect(enter.defaultPrevented).toBe(true);
+    expect(apply).toHaveBeenCalledOnce();
+
+    const ime = new KeyboardEvent("keydown", { key: "Enter", isComposing: true, cancelable: true });
+    expect(applyHistoryFilterOnEnter(ime, apply)).toBe(false);
+    expect(ime.defaultPrevented).toBe(false);
+    expect(apply).toHaveBeenCalledOnce();
   });
 
   it("names every kind of item in words", () => {
@@ -106,12 +116,4 @@ describe("History's Show liners choice", () => {
     expect(table.classList.contains("has-type")).toBe(false);
   });
 
-  it("says once what the view now shows, in numbers", () => {
-    expect(linersMessage(true, { total: 120, page: 3, pages: 3 }))
-      .toBe("Liners shown.  120 items, page 3 of 3.");
-    expect(linersMessage(false, { total: 1, page: 1, pages: 1 }))
-      .toBe("Liners hidden.  1 item, page 1 of 1.");
-    expect(linersMessage(true, { total: 0, page: 1, pages: 1 }))
-      .toBe("Liners shown.  No items.");
-  });
 });

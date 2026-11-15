@@ -6,6 +6,8 @@ import json
 import math
 import sqlite3
 import threading
+from bisect import bisect_right
+from collections.abc import Iterable
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +16,7 @@ from typing import Any
 from autodj.catalog import DEFAULT_STATION, LibraryCatalog, _path
 from autodj.history_kinds import INSERT_KINDS, STANDALONE_KINDS
 from autodj.sqlite_utils import readonly_uri
+from autodj.text_search import matches_search_text, search_tokens
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS station_plays (
@@ -176,6 +179,52 @@ class StationStore:
             result.append(item)
         return result
 
+    def filtered_history(
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        nonmusic: bool,
+        query: str = "",
+    ) -> list[dict]:
+        """Raw history rows in a date range, with optional nonmusic and text filters.
+
+        Unlike :meth:`play_log`, this does not calculate report durations or
+        read catalog tags. It returns the saved metadata needed for the History
+        table and filtering, including stable event IDs, in airing order.
+        """
+        if end <= start:
+            raise ValueError("The end of the range must be after its start.")
+        from autodj.catalog import history_start
+
+        tokens = search_tokens(query)
+
+        def in_range(value: object) -> int:
+            moment = history_start(value)
+            return int(moment is not None and start <= moment < end)
+
+        def matches(title: object, artist: object, album: object) -> int:
+            text = " ".join(str(value or "") for value in (title, artist, album))
+            return int(matches_search_text(tokens, text))
+
+        # Use a separate readonly snapshot so a long range scan does not hold
+        # the writer lock used by playback callbacks. Predicates run in SQLite
+        # so Python only receives matching history rows, not the whole table.
+        with closing(sqlite3.connect(readonly_uri(self.path), uri=True, timeout=30)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN")
+            db.create_function("history_in_range", 1, in_range)
+            db.create_function("history_matches_text", 3, matches)
+            kind_clause = (
+                "" if nonmusic else " AND kind='song' AND COALESCE(track_kind,'') IN ('','music')"
+            )
+            rows = db.execute(
+                "SELECT event_id,path,title,artist,duration,played_at,kind,ended_at,album,track_kind "
+                "FROM play_history WHERE interrupted=0 AND history_in_range(played_at)"
+                " AND history_matches_text(title,artist,album)" + kind_clause + " ORDER BY rowid"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def recent_plays(self, limit: int) -> list[dict]:
         _check_limit(limit)
         with self._lock:
@@ -194,6 +243,8 @@ class StationStore:
         end: datetime | None = None,
         *,
         include_inserts: bool = False,
+        pending_rows: Iterable[dict] = (),
+        excluded_event_ids: Iterable[str] = (),
     ) -> list[dict]:
         """Completed plays in insertion order, optionally within a report range.
 
@@ -208,6 +259,8 @@ class StationStore:
         if start is not None and end is not None and end <= start:
             raise ValueError("The end of the range must be after its start.")
         # Fixed SQL fragments; the kinds and range test are parameters.
+        pending = [dict(row) for row in pending_rows]
+        excluded = set(excluded_event_ids)
         following = ""
         params: list[str] = []
         where = "" if include_inserts else " AND h.kind IN (SELECT value FROM json_each(?))"
@@ -234,13 +287,94 @@ class StationStore:
             if start is not None and end is not None:
                 db.create_function("in_report_range", 1, in_range)
             rows = db.execute(
-                "SELECT h.played_at,h.duration,h.title,h.artist,h.path,h.album,"  # nosec B608 - fixed SQL fragments only
+                "SELECT h.event_id,h.played_at,h.duration,h.title,h.artist,h.path,h.album,"  # nosec B608 - fixed SQL fragments only
                 "CASE WHEN h.kind!='song' THEN h.kind ELSE COALESCE(NULLIF(h.track_kind,''),h.kind) END AS kind,"
                 "h.performances,h.ended_at" + following + " FROM play_history h "
                 "WHERE h.interrupted=0" + where + " ORDER BY h.rowid",
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+            durable_boundaries = (
+                db.execute(
+                    "SELECT event_id,played_at,kind,track_kind FROM play_history WHERE interrupted=0 "
+                    "AND kind IN (SELECT value FROM json_each(?)) ORDER BY rowid",
+                    (_BOUNDARY_KINDS,),
+                ).fetchall()
+                if pending or excluded
+                else ()
+            )
+        result = [dict(row) for row in rows]
+        if not pending and not excluded:
+            return result
+
+        from autodj.catalog import history_start
+
+        by_id = {row.get("event_id"): row for row in result if row.get("event_id")}
+        unique_pending = []
+        for row in pending:
+            event_id = row.get("event_id")
+            if not event_id or event_id in excluded:
+                continue
+            if row.get("kind") == "song" and row.get("track_kind") == "liner":
+                row["kind"] = "liner"
+            existing = by_id.get(event_id)
+            if existing is not None:
+                existing.update(row)
+            else:
+                by_id[event_id] = row
+                unique_pending.append(row)
+
+        boundary_pairs = []
+        for boundary in durable_boundaries:
+            event_id, text, kind, track_kind = boundary
+            effective_kind = "liner" if kind == "song" and track_kind == "liner" else kind
+            moment = history_start(text)
+            if (
+                event_id not in excluded
+                and effective_kind in {"song", "live", *STANDALONE_KINDS}
+                and moment is not None
+            ):
+                boundary_pairs.append((moment, text))
+        for row in unique_pending:
+            if row.get("kind") not in {"song", "live", *STANDALONE_KINDS}:
+                continue
+            moment = history_start(row.get("played_at"))
+            if moment is not None:
+                boundary_pairs.append((moment, row.get("played_at")))
+        boundary_pairs.sort(key=lambda pair: pair[0])
+        boundary_times = [pair[0] for pair in boundary_pairs]
+        for row in result:
+            started = history_start(row.get("played_at"))
+            effective_kind = row.get("kind")
+            if effective_kind not in {"live", *INSERT_KINDS}:
+                effective_kind = "song"
+            if effective_kind not in {"song", "live", *STANDALONE_KINDS} or started is None:
+                continue
+            place = bisect_right(boundary_times, started)
+            if place < len(boundary_pairs):
+                row["following_at"] = boundary_pairs[place][1]
+            else:
+                row["following_at"] = None
+
+        if start is not None and end is not None:
+            unique_pending = [
+                row
+                for row in unique_pending
+                if (moment := history_start(row.get("played_at"))) is not None
+                and start <= moment < end
+            ]
+        if not include_inserts:
+            unique_pending = [row for row in unique_pending if row.get("kind") not in INSERT_KINDS]
+
+        for row in unique_pending:
+            started = history_start(row.get("played_at"))
+            if started is None:
+                continue
+            place = bisect_right(boundary_times, started)
+            following_moment = boundary_times[place] if place < len(boundary_times) else None
+            if following_moment is not None:
+                row["following_at"] = following_moment.isoformat()
+            result.append(row)
+        return result
 
     def play_counts(self, start: datetime, end: datetime) -> dict[str, int]:
         """Count this station's non-interrupted aired audio within a range."""

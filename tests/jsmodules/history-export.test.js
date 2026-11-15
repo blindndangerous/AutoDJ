@@ -6,20 +6,19 @@ import {
   localDate,
 } from "../../src/autodj/static/modules/history-export.js";
 import { requestFile } from "../../src/autodj/static/modules/api-client.js";
+import { selectStation } from "../../src/autodj/static/modules/stations.js";
 
 function mount() {
   document.body.innerHTML = `
+    <label for="hist-export-from">From</label><input type="date" id="hist-export-from">
+    <label for="hist-export-to">To</label><input type="date" id="hist-export-to">
+    <label for="hist-filter-q">Text filter</label><input type="search" id="hist-filter-q">
+    <input type="checkbox" id="hist-show-liners"><label for="hist-show-liners">Show nonmusic items</label>
     <form id="hist-export" novalidate>
-      <label for="hist-export-from">From</label><input type="date" id="hist-export-from">
-      <label for="hist-export-to">To</label><input type="date" id="hist-export-to">
       <label for="hist-export-format">Format</label>
       <select id="hist-export-format">
         <option value="csv">Play log</option><option value="soundexchange">SoundExchange</option>
       </select>
-      <div id="hist-export-csv">
-        <input type="checkbox" id="hist-export-liners">
-        <label for="hist-export-liners">Include liners</label>
-      </div>
       <fieldset id="hist-export-soundexchange" hidden>
         <label for="hist-export-service">Name of service</label><input id="hist-export-service">
         <label for="hist-export-category">Category</label>
@@ -49,7 +48,10 @@ describe("history export control", () => {
     save = vi.fn();
     request = vi.fn();
   });
-  afterEach(() => { vi.unstubAllGlobals(); });
+  afterEach(() => {
+    selectStation("default");
+    vi.unstubAllGlobals();
+  });
 
   let storage;
   const install = () => installHistoryExport({
@@ -88,7 +90,7 @@ describe("history export control", () => {
     submit();
     await settle();
     expect(request).toHaveBeenCalledWith(
-      "/api/history/export?from=2026-09-01&to=2026-09-17", ["text/csv", "text/plain"],
+      "/api/history/export?from=2026-09-01&to=2026-09-17&nonmusic=false", ["text/csv", "text/plain"],
     );
     expect(save).toHaveBeenCalledTimes(1);
     const [, blob, name] = save.mock.calls[0];
@@ -111,7 +113,7 @@ describe("history export control", () => {
     expect(button.disabled).toBe(false);
     expect(button.getAttribute("aria-busy")).toBe("true");
     expect(document.activeElement).toBe(button);
-    expect(form.getAttribute("aria-busy")).toBe("true");
+    expect(form.hasAttribute("aria-busy")).toBe(false);
     expect(announce.mock.calls).toEqual([["Exporting play log", "info"]]);
     finish(csvResponse("start\r\n", { "X-Play-Count": "1" }));
     await settle();
@@ -119,6 +121,55 @@ describe("history export control", () => {
     expect(form.hasAttribute("aria-busy")).toBe(false);
     expect(document.activeElement).toBe(button);
     expect(announce).toHaveBeenCalledTimes(2);
+  });
+
+  it("snapshots shared filters while leaving them editable during export", async () => {
+    let finish;
+    request.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    install();
+    document.getElementById("hist-export-from").value = "2026-09-03";
+    document.getElementById("hist-filter-q").value = "artist";
+    document.getElementById("hist-show-liners").checked = true;
+    submit();
+    expect(request).toHaveBeenCalledWith(
+      "/api/history/export?from=2026-09-03&to=2026-09-17&q=artist&nonmusic=true",
+      ["text/csv", "text/plain"],
+    );
+    const from = document.getElementById("hist-export-from");
+    const q = document.getElementById("hist-filter-q");
+    expect(from.disabled).toBe(false);
+    expect(q.disabled).toBe(false);
+    from.value = "2026-09-04";
+    q.value = "another artist";
+    finish(csvResponse("start\r\n", { "X-Play-Count": "1" }));
+    await settle();
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["resolves", "rejects"])("drops an export body that %s after switching stations", async (outcome) => {
+    let finishBlob;
+    let blobStarted;
+    const bodyStarted = new Promise((resolve) => { blobStarted = resolve; });
+    request.mockResolvedValue({
+      headers: new globalThis.Headers({
+        "Content-Disposition": 'attachment; filename="autodj-plays.csv"',
+        "X-Play-Count": "1",
+      }),
+      blob: () => new Promise((resolve, reject) => {
+        finishBlob = outcome === "resolves" ? resolve : reject;
+        blobStarted();
+      }),
+    });
+    install();
+    submit();
+    await bodyStarted;
+    selectStation("nightowl");
+    finishBlob(outcome === "resolves" ? new globalThis.Blob(["old station"]) : new Error("old station offline"));
+    await settle();
+    expect(save).not.toHaveBeenCalled();
+    expect(announce).toHaveBeenCalledTimes(1); // Only the initial progress notice.
+    expect(document.getElementById("hist-export-button").getAttribute("aria-busy")).toBeNull();
+    selectStation("default");
   });
 
   it("leaves focus alone when it was not on the button", async () => {
@@ -195,20 +246,22 @@ describe("history export control", () => {
     // The fields follow the format choice in reading order; nothing is said
     // while the choice is still being made (#601).
     expect(announce).not.toHaveBeenCalled();
-    // Liners are never part of a Report of Use, so the choice is not sent.
-    document.getElementById("hist-export-liners").checked = true;
+    // A Report of Use cannot include nonmusic items.
+    const nonmusic = document.getElementById("hist-show-liners");
+    nonmusic.checked = true;
     submit();
     expect(announce).toHaveBeenLastCalledWith(
-      "Enter the name of the service for the SoundExchange report.", "error",
+      "Turn off Show nonmusic items for a SoundExchange report.", "error",
     );
-    expect(document.activeElement).toBe(service);
+    expect(document.activeElement).toBe(nonmusic);
     expect(request).not.toHaveBeenCalled();
+    nonmusic.checked = false;
     service.value = " My Station ";
     document.getElementById("hist-export-category").value = "B";
     submit();
     await settle();
     expect(request).toHaveBeenCalledWith(
-      "/api/history/export?from=2026-09-01&to=2026-09-17&format=soundexchange&service=My+Station&category=B",
+      "/api/history/export?from=2026-09-01&to=2026-09-17&nonmusic=false&format=soundexchange&service=My+Station&category=B",
       ["text/csv", "text/plain"],
     );
     expect(save.mock.calls[0][2]).toBe("MyStation20260901-20260917.txt");
@@ -218,16 +271,15 @@ describe("history export control", () => {
     expect(document.getElementById("hist-export-service").value).toBe("My Station");
   });
 
-  it("asks for liners and other non-music items when chosen", async () => {
+  it("exports the shared text and nonmusic filters", async () => {
     request.mockResolvedValue(csvResponse("start\r\n", { "X-Play-Count": "5" }));
     install();
-    const liners = document.getElementById("hist-export-liners");
-    expect(liners.checked).toBe(false);
-    liners.checked = true;
+    document.getElementById("hist-filter-q").value = "  artist title  ";
+    document.getElementById("hist-show-liners").checked = true;
     submit();
     await settle();
     expect(request).toHaveBeenCalledWith(
-      "/api/history/export?from=2026-09-01&to=2026-09-17&liners=true", ["text/csv", "text/plain"],
+      "/api/history/export?from=2026-09-01&to=2026-09-17&q=artist+title&nonmusic=true", ["text/csv", "text/plain"],
     );
     expect(announce).toHaveBeenLastCalledWith("Play log saved: 5 plays.", "info");
   });
@@ -275,7 +327,7 @@ describe("export wording", () => {
 
   it("says when the range had no plays", () => {
     expect(exportMessage("0", "0")).toBe(
-      "Play log saved.  No plays in those dates, so the file is empty apart from any column names.",
+      "Play log saved.  No plays matched those filters, so the file is empty apart from any column names.",
     );
     expect(exportMessage("2", "1", "SoundExchange report")).toBe(
       "SoundExchange report saved: 2 plays.  1 song lacks ISRC, label, listener count or other reporting fields.",
@@ -297,14 +349,10 @@ describe("export wording", () => {
     installHistoryExport({ document, request: vi.fn(), save: vi.fn(), announce, storage: null });
     const format = document.getElementById("hist-export-format");
     const fields = document.getElementById("hist-export-soundexchange");
-    const csvOptions = document.getElementById("hist-export-csv");
-    expect(csvOptions.hidden).toBe(false);
     for (const value of ["soundexchange", "csv", "soundexchange"]) {
       format.value = value;
       format.dispatchEvent(new Event("change"));
       expect(fields.hidden).toBe(value !== "soundexchange");
-      // Include liners is for the CSV only.
-      expect(csvOptions.hidden).toBe(value === "soundexchange");
     }
     expect(announce).not.toHaveBeenCalled();
   });

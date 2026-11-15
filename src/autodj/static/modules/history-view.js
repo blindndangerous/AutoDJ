@@ -1,9 +1,5 @@
-// History tab: the "Show liners" choice (#601).  Off, History lists the
-// songs and live DJ sets; on, everything that aired, with a Type column:
-// liners, ads, matched intros, time checks and the rest.  The choice is
-// remembered in this browser only.  On a change the page asks for the page
-// holding the first row shown (the anchor), so the listener stays near the
-// same place, and says once how many items the view now has.
+// History tab: shared filters, page queries and the optional Type column.
+// The nonmusic choice remains remembered in this browser for continuity.
 
 import { readStorage, writeStorage } from "./safe-storage.js";
 
@@ -41,17 +37,29 @@ export function historyKindLabel(kind) {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-export function historyQuery({ page, showLiners, anchor = null }) {
-  const query = new URLSearchParams({ page: String(page), per_page: String(PER_PAGE) });
-  if (showLiners) query.set("liners", "true");
+export function historyQuery({ page, from, to, q = "", nonmusic = false, anchor = null }) {
+  const query = new URLSearchParams();
+  if (from) query.set("from", from);
+  if (to) query.set("to", to);
+  if (q.trim()) query.set("q", q.trim());
+  query.set("nonmusic", String(Boolean(nonmusic)));
+  query.set("page", String(page));
+  query.set("per_page", String(PER_PAGE));
   if (anchor) query.set("anchor", anchor);
   return query.toString();
 }
 
-// The first row on the page.  The server finds it, or the next older row the
-// other view shows, so hiding liners lands on the song before a top liner.
-export function historyAnchor(tbody) {
-  return tbody?.querySelector("tr[data-history-id]")?.dataset.historyId || null;
+export function historyResultsMessage(data) {
+  const total = Number(data?.total) || 0;
+  if (!total) return "No plays match these filters.";
+  return `${total} ${total === 1 ? "play" : "plays"}.`;
+}
+
+export function applyHistoryFilterOnEnter(event, apply) {
+  if (event.isComposing || event.keyCode === 229 || event.key !== "Enter") return false;
+  event.preventDefault();
+  apply();
+  return true;
 }
 
 // The Type column sits after Duration, so the time and duration columns keep
@@ -81,11 +89,4 @@ export function setHistoryTypeColumn(table, shown) {
     added.className = "hist-type";
     table.querySelector("col.hist-duration")?.after(added);
   }
-}
-
-export function linersMessage(showLiners, data) {
-  const start = showLiners ? "Liners shown." : "Liners hidden.";
-  const total = Number(data?.total) || 0;
-  if (!total) return `${start}  No items.`;
-  return `${start}  ${total} ${total === 1 ? "item" : "items"}, page ${data.page} of ${data.pages}.`;
 }
