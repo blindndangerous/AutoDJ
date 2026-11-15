@@ -215,13 +215,13 @@ class StationStore:
             db.execute("BEGIN")
             db.create_function("history_in_range", 1, in_range)
             db.create_function("history_matches_text", 3, matches)
-            kind_clause = (
-                "" if nonmusic else " AND kind='song' AND COALESCE(track_kind,'') IN ('','music')"
-            )
             rows = db.execute(
                 "SELECT event_id,path,title,artist,duration,played_at,kind,ended_at,album,track_kind "
                 "FROM play_history WHERE interrupted=0 AND history_in_range(played_at)"
-                " AND history_matches_text(title,artist,album)" + kind_clause + " ORDER BY rowid"
+                " AND history_matches_text(title,artist,album)"
+                " AND (? OR (kind='song' AND COALESCE(track_kind,'') IN ('','music')))"
+                " ORDER BY rowid",
+                (nonmusic,),
             ).fetchall()
         return [dict(row) for row in rows]
 
