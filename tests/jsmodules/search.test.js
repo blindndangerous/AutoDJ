@@ -333,6 +333,24 @@ describe("library browsing", () => {
     vi.unstubAllGlobals();
   });
 
+  it.each([
+    ["composition", { isComposing: true }],
+    ["legacy IME key code", { keyCode: 229 }],
+  ])("leaves Enter for %s without searching", async (_label, composition) => {
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({ results: [] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const els = setupBrowser();
+    els.searchInput.value = "song";
+    const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...composition });
+    els.searchInput.dispatchEvent(event);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+    els.searchInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    vi.unstubAllGlobals();
+  });
+
   it("selects Search text when focus arrives by keyboard or returns, not on a click", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     const els = setup();

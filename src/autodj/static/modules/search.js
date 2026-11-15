@@ -168,6 +168,8 @@ export function installSearch({
 
   if (btnSearch) btnSearch.addEventListener("click", () => doSearch());
   searchInput.addEventListener("keydown", (e) => {
+    // Enter can confirm an IME candidate instead of requesting a search.
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter") doSearch();
   });
   // Collapse results when input is cleared.

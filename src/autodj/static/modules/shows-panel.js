@@ -696,6 +696,8 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   el("shows-generate")?.addEventListener("click", () => void generate());
   el("shows-search-run")?.addEventListener("click", () => void search());
   searchInput.addEventListener("keydown", (event) => {
+    // Leave IME candidate confirmation to the input method.
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === "Enter") { event.preventDefault(); void search(); }
   });
   selectOnFocus(searchInput);
