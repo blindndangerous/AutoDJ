@@ -3463,12 +3463,15 @@ async function selectedTabEntryProblems(page) {
 async function collapseCardsProblems(page) {
   await page.goto(`${BASE}/#now`, { waitUntil: "networkidle" });
   await page.locator("#panel-now").waitFor({ state: "visible" });
-  const button = page.getByRole("button", { name: "Collapse all cards in the current tab", exact: true });
+  const button = page.getByRole("button", { name: "Collapse all cards", exact: true });
   const problems = [];
+  const openVisibleCards = () => page.locator('#panel-now details.card[open]')
+    .evaluateAll((cards) => cards.filter((card) => !card.closest("[hidden]")).length);
   for (const activation of ["click", "Enter", "Space"]) {
     await page.evaluate(() => {
       document.querySelectorAll("details.card").forEach((card) => { card.open = true; });
     });
+    await expect(button).toBeVisible();
     const before = await page.locator('section[data-view][hidden] details.card[open]').count();
     if (activation === "click") await button.click();
     else {
@@ -3477,12 +3480,13 @@ async function collapseCardsProblems(page) {
       if (!await button.evaluate((node) => node === document.activeElement)) problems.push("Tab did not reach Collapse all");
       await page.keyboard.press(activation);
     }
-    if (await page.locator('#panel-now details.card[open]').count()) problems.push(`${activation}: current cards stayed open`);
+    if (await openVisibleCards()) problems.push(`${activation}: current cards stayed open`);
     if (await page.locator('section[data-view][hidden] details.card[open]').count() !== before) problems.push(`${activation}: changed another tab`);
-    if (!await button.evaluate((node) => node === document.activeElement)) problems.push(`${activation}: lost button focus`);
+    if (await button.isVisible()) problems.push(`${activation}: button stayed visible with no open cards`);
+    if (!await page.locator('#tab-now').evaluate((node) => node === document.activeElement)) problems.push(`${activation}: focus did not return to the active tab`);
   }
   await page.reload({ waitUntil: "networkidle" });
-  if (await page.locator('#panel-now details.card[open]').count()) problems.push("Collapsed preferences did not survive reload");
+  if (await openVisibleCards()) problems.push("Collapsed preferences did not survive reload");
   return problems;
 }
 
