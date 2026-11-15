@@ -240,10 +240,22 @@ jobs:
 
   browser:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    name: Browser assertions (Chromium, Firefox)
+    name: ${{ matrix.name }}
     # Start after the frontend suite without waiting for the Python suites.
     needs: [frontend]
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Browser assertions (Chromium, Firefox)
+            runner: ubuntu-latest
+            webkit: false
+            artifact: playwright-audit-reports
+          - name: Browser assertions (WebKit)
+            runner: ubuntu-24.04
+            webkit: true
+            artifact: playwright-webkit-audit-reports
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -258,18 +270,24 @@ jobs:
           node-version: "26.13.1"
           cache: npm
       - run: uv sync --frozen --all-extras
+        if: ${{ !matrix.webkit }}
+      # The empty-library visual audit does not need the music-model stack.
+      - run: uv sync --frozen
+        if: matrix.webkit
       - run: npm ci --ignore-scripts
       # Playwright's missing system packages come from GitHub's cache after the
       # first run, so a slow Ubuntu mirror cannot use up the job's time.
       - name: List missing browser packages
+        if: ${{ !matrix.webkit }}
         id: browser-packages
         shell: bash
         run: |
           set -uo pipefail
-          report=$(npx --no-install playwright install-deps --dry-run chromium firefox webkit 2>&1) || true
+          report=$(npx --no-install playwright install-deps --dry-run chromium firefox 2>&1) || true
           packages=$(printf '%s\n' "$report" | sed -n 's/^  \([a-z0-9][a-z0-9.+-]*\)$/\1/p' | tr '\n' ' ')
           printf 'packages=%s\n' "$packages" >>"$GITHUB_OUTPUT"
       - name: Install browser packages (cached)
+        if: ${{ !matrix.webkit }}
         uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
         timeout-minutes: 15
         with:
@@ -277,8 +295,14 @@ jobs:
           version: v1
           execute_install_scripts: true
           empty_packages_behavior: ignore
-      - run: npx --no-install playwright install chromium firefox webkit
+      - run: npx --no-install playwright install chromium firefox
+        if: ${{ !matrix.webkit }}
+      # Use Playwright's supported Ubuntu target and fail on installation errors.
+      - name: Install WebKit and system dependencies
+        if: matrix.webkit
+        run: npx --no-install playwright install --with-deps webkit
       - name: Check rendered documentation
+        if: ${{ !matrix.webkit }}
         shell: bash
         env:
           AUTODJ_BROWSERS: chromium,firefox
@@ -317,11 +341,13 @@ jobs:
           cat "$RUNNER_TEMP/autodj.log"
           exit 1
       - name: Run Chromium and Firefox assertions
+        if: ${{ !matrix.webkit }}
         run: npm run audit:ci
         env:
           AUTODJ_BROWSERS: chromium,firefox
           AUTODJ_URL: http://127.0.0.1:8080
       - name: Run WebKit visual assertions
+        if: matrix.webkit
         run: npm run audit:visual
         env:
           AUTODJ_BROWSERS: webkit
@@ -344,7 +370,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: playwright-audit-reports
+          name: ${{ matrix.artifact }}
           path: |
             *_audit*.json
             ${{ runner.temp }}/autodj.log
