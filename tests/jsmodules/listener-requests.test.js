@@ -109,11 +109,11 @@ describe("listener request words", () => {
 
   it("says whether a save opened or closed the request page", () => {
     expect(savedText({ enabled: false }, { enabled: true, approval: "manual" }))
-      .toBe("Listener requests are on. The request page is open. Each request waits for you.");
+      .toBe("Listener requests are on.");
     expect(savedText({ enabled: false }, { enabled: true, approval: "auto" }))
-      .toBe("Listener requests are on. The request page is open. Requests that keep the rules join the queue at once.");
+      .toBe("Listener requests are on.");
     expect(savedText({ enabled: true }, { enabled: false }))
-      .toBe("Listener requests are off. The request page now says requests are closed.");
+      .toBe("Listener requests are off.");
     expect(savedText({ enabled: true }, { enabled: true })).toBe("Request settings saved.");
   });
 });
@@ -291,7 +291,7 @@ describe("listener requests card", () => {
       .toEqual({ enabled: true, approval: "auto" });
     answer({ ...STATE, approval: "auto", pending: [] });
     await vi.waitFor(() => expect(byId("requests-settings-status").textContent).toBe(
-      "Listener requests are on. The request page is open. Requests that keep the rules join the queue at once.",
+      "Listener requests are on.",
     ));
     expect(save.hasAttribute("aria-busy")).toBe(false);
     expect(save.classList.contains("is-pending")).toBe(false);
@@ -307,7 +307,7 @@ describe("listener requests card", () => {
     request.mockResolvedValueOnce({ ...STATE, enabled: false, pending: [], recent: [] });
     byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(byId("requests-settings-status").textContent).toBe(
-      "Listener requests are off. The request page now says requests are closed.",
+      "Listener requests are off.",
     ));
     expect(JSON.parse(request.mock.calls.at(-1)[1].body).enabled).toBe(false);
     expect(byId("requests-summary").textContent).toBe(OFF_SUMMARY);

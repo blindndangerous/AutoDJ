@@ -2120,9 +2120,8 @@ describe("app request behavior", () => {
       const box = document.querySelector("#hist-show-liners");
       const label = document.querySelector('label[for="hist-show-liners"]');
       expect(box.type).toBe("checkbox");
-      expect(label.textContent).toBe("Show liners");
-      expect(document.getElementById(box.getAttribute("aria-describedby")).textContent)
-        .toMatch(/^Also lists ads, matched intros/);
+      expect(label.textContent).toBe("Show nonmusic items");
+      expect(box.hasAttribute("aria-describedby")).toBe(false);
       expect(box.checked).toBe(false);
       await vi.waitFor(() => expect(historyCalls()).toHaveLength(1));
       expect(params(historyCalls()[0]).get("liners")).toBeNull();
@@ -2446,13 +2445,14 @@ describe("app request behavior", () => {
       await vi.waitFor(() => expect(document.querySelector("#panel-queue").hidden).toBe(false));
       const count = document.querySelector("#search-count");
       document.querySelector("#btn-search").click();
-      await vi.waitFor(() => expect(count.textContent).toBe("150 tracks found; showing 1–1."));
+      await vi.waitFor(() => expect(count.textContent).toBe("150 tracks"));
       const next = document.querySelector("#library-browse-next");
       const previous = document.querySelector("#library-browse-previous");
       expect(next.disabled).toBe(false);
       next.focus();
       next.click();
-      await vi.waitFor(() => expect(count.textContent).toBe("150 tracks found; showing 101–101."));
+      await vi.waitFor(() => expect(next.disabled).toBe(true));
+      expect(count.textContent).toBe("150 tracks");
       expect(next.disabled).toBe(true);
       expect(document.activeElement).toBe(previous);
     } finally {

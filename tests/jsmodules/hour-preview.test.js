@@ -318,7 +318,7 @@ describe("hour preview card", () => {
     }
   });
 
-  it("refreshes the chosen span quietly while keeping the result visible", async () => {
+  it("announces the chosen span after a short delay while keeping the result visible", async () => {
     vi.useFakeTimers();
     try {
       const counts = "3 fixed items, 9 predicted, through 14:10.";
@@ -331,12 +331,18 @@ describe("hour preview card", () => {
       expect(request).toHaveBeenLastCalledWith("/api/hour-preview?minutes=120");
       expect(byId("hour-preview-status").textContent).toBe("");
       expect(byId("hour-preview-summary").textContent).toBe(counts);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(byId("hour-preview-status").textContent).toBe("");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(byId("hour-preview-status").textContent).toBe("");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(byId("hour-preview-status").textContent).toBe(counts);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("only the newest span is rendered when one overtakes another, without speaking either", async () => {
+  it("only announces the newest span when one overtakes another", async () => {
     vi.useFakeTimers();
     try {
       let release;
@@ -356,6 +362,9 @@ describe("hour preview card", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(byId("hour-preview-status").textContent).toBe("");
       expect(byId("hour-preview-summary").textContent).toBe("Three hours.");
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(byId("hour-preview-status").textContent).toContain("Three hours.");
     } finally {
       vi.useRealTimers();
     }
@@ -392,6 +401,56 @@ describe("hour preview card", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(byId("hour-preview-summary").textContent).toBe("Filled.");
       expect(status.textContent).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not revive selected-span completion speech after closing and reopening", async () => {
+    vi.useFakeTimers();
+    try {
+      let release;
+      const pending = new Promise((resolve) => { release = resolve; });
+      const { timers } = harness([view(), pending, view({ summary: "Reopened preview." })]);
+      await open();
+      byId("hour-preview-span").value = "120";
+      byId("hour-preview-span").dispatchEvent(new Event("change"));
+      const card = byId("hour-preview-card");
+      card.open = false;
+      card.dispatchEvent(new Event("toggle"));
+      release(view({ filling: "Still working out the rest of the preview." }));
+      await settle();
+      await open();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(byId("hour-preview-summary").textContent).toBe("Reopened preview.");
+      expect(byId("hour-preview-status").textContent).toBe("");
+      expect(timers.filter((timer) => !timer.cleared)).not.toHaveLength(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("announces when a selected span finishes filling", async () => {
+    vi.useFakeTimers();
+    try {
+      const filling = "Still working out the rest of the preview.";
+      const { timers } = harness([
+        view(),
+        view({ minutes: 120, filling }),
+        view({ minutes: 120, summary: "Filled span." }),
+      ]);
+      await open();
+      const span = byId("hour-preview-span");
+      span.value = "120";
+      span.dispatchEvent(new Event("change"));
+      await settle();
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(byId("hour-preview-status").textContent).toContain(filling);
+
+      await timers.filter((timer) => !timer.cleared).at(-1).fn();
+      await settle();
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(byId("hour-preview-status").textContent).toBe("Hour preview finished. Filled span.");
     } finally {
       vi.useRealTimers();
     }

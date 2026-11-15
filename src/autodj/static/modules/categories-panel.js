@@ -14,7 +14,7 @@ import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, reques
 import { focusAfterDialog, clearFieldError, sentences, showFieldError, applyServerFieldError } from "./dom-helpers.js";
 import { createCollectionTable } from "./collection-table.js";
 import { deleteCollectionItem } from "./collection-delete.js";
-import { makeSay } from "./live-region.js";
+import { createSelectionAnnouncer, makeSay } from "./live-region.js";
 import { showBeetsPaths } from "./beets-paths.js";
 import { createConditionRow, readConditionRows, renumberConditionRows } from "./condition-editor.js";
 import { describeConditions } from "./clockwheel-step.js";
@@ -95,7 +95,11 @@ export function installCategoriesPanel({ document: doc = document, request = req
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
   const countCurrent = (epoch, mine) => editor.dialog.open && !suspended && countGeneration === mine && isAuthenticatedRequestCurrent(epoch);
   const say = makeSay(() => editor.region(status));
-  const sayCount = makeSay(() => editor.region(status), { force: false });
+  const sayCount = makeSay(() => editor.region(status), { force: true });
+  let countAnnouncement = null;
+  const countAnnouncer = createSelectionAnnouncer((...args) => {
+    if (countAnnouncement && countCurrent(countAnnouncement.epoch, countAnnouncement.mine)) sayCount(...args);
+  });
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const source = () => el("categories-source-filters")?.checked ? "filters" : el("categories-source-m3u")?.checked ? "m3u" : "query";
   const byId = (id) => data.categories.find((category) => category.id === id);
@@ -320,6 +324,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   function openForm(category, from) {
+    countAnnouncer.cancel();
     creation = null;
     countGeneration += 1;
     editing = category ? category.id : null;
@@ -363,6 +368,8 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   function closeForm() {
+    countAnnouncer.cancel();
+    countAnnouncement = null;
     creation = null;
     countGeneration += 1;
     if (countTimer !== null) clearTimeout(countTimer);
@@ -374,6 +381,8 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   async function check() {
+    countAnnouncer.cancel();
+    countAnnouncement = null;
     countGeneration += 1;
     clearErrors();
     let value;
@@ -393,9 +402,11 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   function scheduleCount() {
+    const finish = countAnnouncer.start();
+    const mine = ++countGeneration;
+    countAnnouncement = { epoch: captureAuthenticatedRequestEpoch(), mine };
     if (source() === "query" && !el("categories-query").value.trim()) return;
     if (countTimer !== null) clearTimeout(countTimer);
-    const mine = ++countGeneration;
     countTimer = setTimeout(async () => {
       countTimer = null;
       const epoch = captureAuthenticatedRequestEpoch();
@@ -404,7 +415,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
       catch { if (countCurrent(epoch, mine)) match.textContent = "Complete the selection to check matching tracks."; return; }
       if (!countCurrent(epoch, mine)) return;
       if (!value.name) { match.textContent = "Enter a name to check matching tracks."; return; }
-      pendingCount = { epoch, mine, value };
+      pendingCount = { epoch, mine, value, finish };
       void drainCounts();
     }, 450);
   }
@@ -424,13 +435,11 @@ export function installCategoriesPanel({ document: doc = document, request = req
           match.textContent = result.error
             ? `Count unavailable: ${result.error}`
             : `${countsText(result)}.`;
-          // Keep automatic successful counts browseable without interrupting
-          // the selection being edited. Explicit Check still announces them.
-          if (result.error) sayCount(match.textContent, "error");
+          item.finish(match.textContent, result.error ? "error" : "info");
         } catch (error) {
           if (countCurrent(item.epoch, item.mine)) {
             match.textContent = `Count unavailable: ${error.message}`;
-            sayCount(match.textContent, "error");
+            item.finish(match.textContent, "error");
           }
         }
       }
@@ -439,6 +448,8 @@ export function installCategoriesPanel({ document: doc = document, request = req
 
   async function save(event, active) {
     event?.preventDefault();
+    countAnnouncer.cancel();
+    countAnnouncement = null;
     if (creation && !creation.isCurrent()) { closeForm(); return; }
     clearErrors();
     let value;
@@ -477,6 +488,8 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   async function remove(id) {
+    countAnnouncer.cancel();
+    countAnnouncement = null;
     if (!byId(id)) return;
     // The clockwheels that use it are looked up again first: one saved
     // since the last refresh would be left out of the warning.  The list's

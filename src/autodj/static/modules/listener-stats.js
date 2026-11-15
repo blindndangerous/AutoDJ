@@ -6,8 +6,9 @@
 //     tables, never live regions.  They change only when the person asks
 //     (opening Settings, Refresh statistics, Show, Days to keep), never on
 //     the once-a-second push, so reading a table is never disturbed.
-//   - Each of those actions says what it did once, in the settings status
-//     region; failures with the error tone.
+//   - Refresh says what it did once in the settings status region. Changing
+//     the displayed period is silent because the selected value is visible;
+//     failures keep the error tone.
 //   - Download keeps focus on its button.
 
 import { failureText, requestFile, requestJson } from "./api-client.js";
@@ -213,8 +214,6 @@ export function installListenerStats({
     void refresh({ spoken: "Listener statistics updated." });
   });
   span.addEventListener("change", () => {
-    // The selected option already names the period; the asynchronous result
-    // should update the tables without speaking over the combo's selection.
     void refresh();
   });
   exportButton.addEventListener("click", async () => {

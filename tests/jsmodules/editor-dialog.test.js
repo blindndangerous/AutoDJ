@@ -76,13 +76,14 @@ describe("the dialog's name", () => {
     editor.close();
   });
 
-  it("preserves the clockwheel step editor's explicit short description", () => {
+  // ADR-0021-21
+  it("allows the clockwheel editor to omit redundant spoken help", () => {
     installIndexMarkup();
     const dialog = byId("clock-step-dialog");
     const editor = createEditorDialog({ dialog, form: byId("clock-step-form"), heading: byId("clock-step-legend"),
-      cancel: byId("clock-cancel-edit"), save: vi.fn() });
-    expect(editor.dialog.getAttribute("aria-describedby")).toBe("clock-step-desc");
-    expect(byId("clock-step-desc").textContent).toBe("Choose what the step plays, how it chooses and when it plays.");
+      cancel: byId("clock-cancel-edit"), save: vi.fn(), describe: false });
+    expect(editor.dialog.hasAttribute("aria-describedby")).toBe(false);
+    expect(byId("clock-step-desc")).toBeNull();
   });
 
   it("is not given again to a group around the form, as Add category's legend was", () => {

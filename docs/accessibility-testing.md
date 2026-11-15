@@ -44,15 +44,18 @@ This regression also runs as part of the visual audit.
 
 ## Selection-driven updates
 
-Native combo options already announce the selected value. Successful automatic
-refreshes and matching counts must update their visible text without adding a
-live-region announcement over that value. Check Cart page, Listener statistics
-period, Hour preview span, Voice tracks Song change, and Category/Clockwheel
-conditions with arrow keys, including slow replies and rapid changes. Keep focus
-on the control and ignore superseded results. Readable hints and descriptions
-remain available; errors and explicit Refresh, Check, Confirm songs, Page Up/Down
-and Shift+H results still announce. Record NVDA/browser speech separately from
-DOM and browser checks.
+Use the shared 500 ms delay for new information beyond a native selection:
+Browse Type/Folder say only the track count, Cart page says the occupied cart
+count, and Hour preview and Category/Clockwheel conditions say their results.
+Sort, Voice tracks Song change and Listener statistics Show do not repeat the
+selected value. Rapid changes cancel obsolete feedback. Preserve focus and
+explicit-action results; passive refreshes stay quiet. Record actual NVDA speech
+separately from DOM timing checks.
+
+Broadcast recording progress stays readable, but neither the live regions nor
+the focused Record button's description should repeat its filename or size on
+state pushes. Confirm pressed/unpressed state, one start/stop result, and real
+error/recovery notifications.
 
 ## Confirmations with NVDA
 
@@ -460,8 +463,9 @@ stop; arrows immediately continue table navigation. An action that does not
 move focus restores this cell too. An action that opens an editor or
 confirmation moves focus straight from the menu, and cancelling returns to the
 Actions cell. Standalone menus return to their button. Tab closes and leaves the menu. Disabled actions remain present
-and reachable with `aria-disabled`. Their reason is linked with
+and reachable with `aria-disabled`. A useful reason is linked with
 `aria-describedby`, and activation announces it without performing the action.
+Obvious first/last-step movement boundaries use `aria-disabled` alone.
 
 A column that turns its row on or off, such as a schedule event's **Enabled**,
 holds a native checkbox built by the shared table's `toggle` column option.
@@ -610,10 +614,12 @@ station or authentication state is cleared. Save closes onto the saved row's
 Actions cell in a shared collection table; Cancel and Escape
 return to the opener, asking before discarding changed fields. A pending save
 prevents another submission or dismissal.
-Preserve caller-provided short help as the dialog description. Otherwise the
-shared editor supplies "Use Tab to move between fields and actions." An explicit
-description avoids NVDA deriving one from the form. Do not describe the dialog by its whole form or
-live status region. Fields retain their individual labels and error/help links.
+Keep useful caller-provided help as the dialog description. The existing shared
+fallback remains for editors that use it; Clockwheel steps explicitly opt out of
+redundant introductory speech (#787). Recheck that opening does not trigger
+whole-form reading in NVDA, the historical reason for that fallback. Never use
+the complete form or live status as a description. Field labels and validation
+associations remain.
 Opening assigns focus to the requested field once; do not focus another field,
 the form or the dialog first. Test the opening focus sequence separately from
 speech: a DOM focus assertion cannot establish how often NVDA speaks a title.
@@ -754,7 +760,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   saying "Sending" and then the result once, with focus staying on the button.
 - Stream mode, Settings, Stream, More formats and Listener statistics (#50), each a card closed
   by default (open each first, with Enter or Space on its heading): AAC quality and
-  Opus quality read with their help, a choice saved once it settles and said once ("Opus stream
+  Opus quality read by label and value, with help available through browsing; a choice saved once it settles and said once ("Opus stream
   on at 64 kbps."), the address list read as plain text with a named Copy button for each
   format; Listener statistics read by heading, the summary as one paragraph, both tables with
   their captions and native column headers (arrow moves add the column heading and
@@ -837,8 +843,8 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Queue & Search, browsing: results load on entry. Tab to Type, Folder, Sort, Search text and Search; one result grid with
   arrows, Home and End, and Enter or Space activating each action; the track count said once per
   explicit search and page, with focus staying on Previous or Next (or moving to the other when a page ends).
-  Type, Folder and Sort changes update the count quietly through the shared
-  `writeQuietly` helper, without interrupting native combo selection;
+  Type and Folder changes announce only the track count after the shared
+  500 ms delay. Sort stays quiet because it does not change the count;
   and Track info returning focus to its result. Under Settings > Voice liners, check Options, Play dates and Options, Delete.
   Saving or cancelling dates returns to the row's Actions cell. Confirmed deletion
   moves to a nearby row or the panel fallback and announces the destination.
@@ -913,8 +919,9 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   word-expanded alternatives, Fixed or Predicted said in the
   Status column; Refresh preview saying the summary once with focus staying on it; nothing said
   by the 30-second refresh or a song change, with the reading position kept; and Shift+H saying
-  the summary from another tab; a new span under Show updating quietly; a failed
-  automatic refresh said once, not on every retry; and, on a server slow enough that the preview
+  the summary from another tab; the selected span's result announced once, with
+  passive filling and refreshes staying quiet; a failed automatic refresh said
+  once, not on every retry; and, on a server slow enough that the preview
   fills in (or with `BUDGET_SECONDS` lowered in a development checkout), Refresh preview ending with "Still
   working out the rest of the preview", the new rows joining without speech or a moved reading
   position, and "Hour preview finished" said once.

@@ -24,7 +24,7 @@ function mount() {
       <input id="source-folder-path"><select id="source-folder-kind"><option value="music">Music</option><option value="liner">Liner</option></select>
       <input id="source-folder-recursive" type="checkbox" checked><select id="source-folder-analysis"><option value="basic">Basic</option><option value="audio" selected>Audio</option></select>
       <p id="source-folder-analysis-help"></p>
-      <input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"><p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p><button id="source-folder-add"></button><button id="source-folder-rescan"></button>
+      <input id="source-folder-override-tags" type="checkbox"><p id="source-folder-override-tags-help">Replaces existing file tags; keeps edited BPM, key and cue points.</p><button id="source-folder-add"></button><button id="source-folder-rescan"></button>
       <p id="source-folders-status" role="status" aria-live="polite" aria-atomic="true"></p><p id="source-folders-progress"></p><table id="source-folders-table"><caption>Registered music and voice liner folders</caption><tbody id="source-folders"></tbody></table>
     </section>
     <button id="edit-current-points"></button><section id="points-editor" hidden>
@@ -113,10 +113,10 @@ describe("clock folder and points controls", () => {
     await vi.waitFor(() => expect(document.getElementById("source-folders-status").textContent).toBe("Rescan started; populated file tags will be refreshed."));
   });
 
-  it("associates the embedded-tag override with its help in the page markup", () => {
+  it("keeps embedded-tag override help beside the checkbox", () => {
     const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
-    expect(html).toContain('id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"');
-    expect(html).toContain('id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>');
+    expect(html).toContain('id="source-folder-override-tags" type="checkbox"');
+    expect(html).toContain('id="source-folder-override-tags-help">Replaces existing file tags; keeps edited BPM, key and cue points.</p>');
   });
 
   // ADR-0012-08: capability changes preserve the saved choice.
@@ -181,6 +181,28 @@ describe("clock folder and points controls", () => {
     document.querySelector("#spanel-server [data-settings-save]").click();
     await vi.waitFor(() => expect(document.querySelector("#spanel-server .settings-save-status").textContent)
       .toContain("Server unavailable"));
+  });
+
+  it("loads and saves the shared fade threshold in Settings without opening Library tools", async () => {
+    const page = document.createElement("template");
+    page.innerHTML = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
+    const settings = page.content.querySelector("#panel-settings").cloneNode(true);
+    settings.hidden = false;
+    settings.querySelector("#spanel-server").hidden = false;
+    document.body.append(settings);
+    document.body.insertAdjacentHTML("beforeend", '<p id="sr-status" role="status"></p>');
+    const request = vi.fn(async (url, options) => {
+      if (url === "/api/library/music-fade") return options ? JSON.parse(options.body) : { drop_db: 14 };
+      return { folders: [] };
+    });
+    installLibraryFolders({ document, request });
+    await vi.waitFor(() => expect(document.getElementById("music-fade-drop").value).toBe("14"));
+    expect(document.getElementById("panel-library").hidden).toBe(true);
+    expect(settings.querySelector("#spanel-server #music-fade-drop")).not.toBeNull();
+    document.getElementById("music-fade-drop").value = "18";
+    document.getElementById("music-fade-drop-save").click();
+    await vi.waitFor(() => expect(document.getElementById("sr-status").textContent).toContain("18 dB"));
+    expect(request).toHaveBeenCalledWith("/api/library/music-fade", expect.objectContaining({ method: "PUT", body: '{"drop_db":18}' }));
   });
 
   it("reconciles existing folder choices as similarity availability changes without losing focus", async () => {

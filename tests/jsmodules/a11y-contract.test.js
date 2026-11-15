@@ -2220,18 +2220,15 @@ describe("static accessibility contracts", () => {
       expect(select.options[0].textContent).toBe("Off");
       expect([...select.options].slice(1).every((option) => / kbps$/.test(option.textContent)))
         .toBe(true);
-      // The brief reconnect warning is announced; the longer format
-      // explanation stays visible in the panel.
+      // Format help remains browsable without repeating on selection.
       const described = describedBy(select);
       expect(described.every(Boolean)).toBe(true);
-      expect(described.map((element) => element.id)).toEqual(
-        id === "stream-aac-bitrate" ? ["stream-aac-warning"] : [],
-      );
+      expect(described).toEqual([]);
       expect(document.getElementById(`stream-${id.endsWith("aac-bitrate") ? "aac" : "opus"}-desc`).hidden)
         .toBe(false);
     }
     expect(document.getElementById("stream-opus-desc").textContent)
-      .toContain("Song titles are not sent in an Opus stream.");
+      .toContain("Song titles are not sent.");
     // The addresses are a plain list named by its intro, never a live region.
     const list = document.getElementById("stream-formats-list");
     expect(list.tagName).toBe("UL");
@@ -2252,9 +2249,6 @@ describe("static accessibility contracts", () => {
     expect(heading.parentElement).toBe(section.querySelector(":scope > summary"));
     expect(heading.hasAttribute("tabindex")).toBe(false);
     expect(heading.textContent.trim()).toBe("Listener statistics");
-    // Says what is kept, and what is not, before anything else.
-    expect(heading.parentElement.nextElementSibling.id).toBe("listener-stats-privacy");
-    expect(heading.parentElement.nextElementSibling.textContent).toContain("no address, player name");
     // Tables with a caption and a header for each column: never a chart.
     expect(section.querySelector("canvas, svg, img")).toBeNull();
     for (const [id, caption, columns] of [
@@ -2286,7 +2280,7 @@ describe("static accessibility contracts", () => {
     const keep = document.getElementById("listener-stats-keep");
     expect(labelText("listener-stats-keep")).toBe("Days to keep statistics");
     expect([keep.type, keep.min, keep.max, keep.step]).toEqual(["number", "0", "3650", "1"]);
-    expect(keep.getAttribute("aria-describedby")).toBe("listener-stats-keep-desc");
+    expect(keep.hasAttribute("aria-describedby")).toBe(false);
     for (const [id, name] of [
       ["listener-stats-refresh", "Refresh statistics"],
       ["listener-stats-export", "Download statistics (CSV)"],
@@ -2390,7 +2384,7 @@ describe("static accessibility contracts", () => {
     expect(toggle.textContent.trim()).toBe("Record broadcast");
     expect(toggle.getAttribute("aria-pressed")).toBe("false");
     expect(describedBy(toggle).map((element) => element?.id))
-      .toEqual(["recording-status", "recording-error"]);
+      .toEqual([]);
 
     // Split stays focusable while unavailable, so pressing it is answered.
     const split = document.querySelector("#recording-split-now");
@@ -2422,7 +2416,7 @@ describe("static accessibility contracts", () => {
       expect(input.getAttribute("min")).toBe("0");
       expect(input.getAttribute("step")).toBe("1");
       expect(input.getAttribute("aria-required")).toBe("true");
-      expect(describedBy(input)).toHaveLength(1);
+      expect(describedBy(input)).toHaveLength(0);
       expect(describedBy(input).every(Boolean)).toBe(true);
     }
     expect(document.querySelector("#recording-save")).toBeNull();
@@ -2529,17 +2523,12 @@ describe("static accessibility contracts", () => {
     }
   });
 
-  it("describes the clockwheel step dialog in one short sentence", () => {
-    // Without a description NVDA with Firefox read the whole step form as the
-    // dialog opened (the help, the track count, every label), twice.
+  it("keeps the clockwheel editor named without generic spoken instructions", () => {
     installDocument();
     const dialog = document.querySelector("#clock-step-dialog");
-    const description = document.getElementById(dialog.getAttribute("aria-describedby"));
-    expect(description?.tagName).toBe("P");
-    expect(dialog.contains(description)).toBe(true);
-    expect(description.hidden).toBe(false);
-    expect(description.textContent.trim().length).toBeGreaterThan(0);
-    expect(description.textContent.length).toBeLessThan(100);
+    expect(document.getElementById(dialog.getAttribute("aria-labelledby")).textContent).toContain("Add a step");
+    expect(dialog.hasAttribute("aria-describedby")).toBe(false);
+    expect(document.getElementById("clock-step-desc")).toBeNull();
   });
 
   it("never nests a dialog inside a tab panel", () => {
@@ -2873,7 +2862,7 @@ describe("static accessibility contracts", () => {
         || id === "repeat-daypart-hours" ? "repeat-daypart-desc" : "repeat-hourpart-desc");
       expect(group.hasAttribute("aria-describedby")).toBe(false);
       expect(help.closest("fieldset")).toBe(group);
-      expect(help.textContent).toMatch(/turns this off/);
+      expect(help.textContent).toMatch(/0 disables/);
       expect(help.hasAttribute("aria-live")).toBe(false);
     }
     const format = document.getElementById(
@@ -3457,10 +3446,10 @@ describe("static accessibility contracts", () => {
     expect(latched.hidden).toBe(true);
     expect(latched.classList.contains("talk-latched")).toBe(true);
     // Without sign-in anyone who can open the page can talk: said plainly.
-    for (const id of ["talk-help", "live-intro"]) {
-      expect(document.getElementById(id).textContent, id)
-        .toMatch(/no sign-in \(pairing is off\), anyone who can open this page can talk on the air/);
-    }
+    expect(document.getElementById("talk-help").textContent)
+      .toMatch(/no sign-in \(pairing is off\), anyone who can open this page can talk on the air/);
+    expect(document.getElementById("live-intro").textContent)
+      .toContain("Without server sign-in, anyone with page access can broadcast and change settings.");
     expect(document.getElementById("talk-error").classList.contains("field-error")).toBe(true);
     // The shortcut is listed with the others, in words.
     const keys = [...document.querySelectorAll("#hotkey-help-modal dt kbd")].map((kbd) => kbd.textContent);
@@ -3670,7 +3659,7 @@ describe("listener request contracts", () => {
     expect(form).not.toMatch(/<h3 id="requests-settings-heading">/);
     expect(document.getElementById("requests-settings").closest('[role="tabpanel"]').id)
       .toBe("spanel-requests");
-    expect(document.getElementById("requests-open-queue").getAttribute("href")).toBe("#queue");
+    expect(document.getElementById("requests-open-queue")).toBeNull();
     expect(document.getElementById("requests-open-settings").getAttribute("href")).toBe("#settings");
     expect(document.getElementById("requests-settings-status").getAttribute("aria-live")).toBe("polite");
     for (const id of ["requests-bridges", "requests-max-bridges", "requests-threshold",

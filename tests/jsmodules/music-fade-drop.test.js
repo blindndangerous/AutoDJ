@@ -17,12 +17,12 @@ describe("music fade drop setting", () => {
   beforeEach(mount);
   afterEach(() => vi.useRealTimers());
 
-  it("uses a labelled whole-number field with concise linked help", () => {
+  it("uses a labelled whole-number field with browsable help", () => {
     const input = field("music-fade-drop");
     expect(document.querySelector('label[for="music-fade-drop"]').textContent).toBe("Fade detection threshold (dB)");
     expect([input.type, input.min, input.max, input.step, input.value]).toEqual(["number", "1", "30", "1", "10"]);
-    expect(input.getAttribute("aria-describedby")).toBe("music-fade-drop-help");
-    expect(field("music-fade-drop-help").textContent).toContain("AutoDJ suggests a Segue");
+    expect(input.getAttribute("aria-describedby")).toBeNull();
+    expect(field("music-fade-drop-help").textContent).toContain("new Segue suggestions");
   });
 
   it("accepts only whole numbers from 1 through 30", () => {
@@ -55,12 +55,12 @@ describe("music fade drop setting", () => {
     expect(request).not.toHaveBeenCalled();
     expect(field("music-fade-drop-error").hidden).toBe(false);
     expect(input.getAttribute("aria-invalid")).toBe("true");
-    expect(input.getAttribute("aria-describedby")).toBe("music-fade-drop-error music-fade-drop-help");
+    expect(input.getAttribute("aria-describedby")).toBe("music-fade-drop-error");
     expect(document.activeElement).toBe(input);
     input.value = "10";
     input.dispatchEvent(new Event("input"));
     expect(field("music-fade-drop-error").hidden).toBe(true);
-    expect(input.getAttribute("aria-describedby")).toBe("music-fade-drop-help");
+    expect(input.getAttribute("aria-describedby")).toBeNull();
   });
 
   it("clears auth-scoped values and ignores a late load", async () => {

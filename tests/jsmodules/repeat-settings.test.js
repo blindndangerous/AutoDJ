@@ -203,12 +203,12 @@ describe("Repeats markup", () => {
     expect(daypart.hasAttribute("aria-describedby")).toBe(false);
     expect(groupNote.hidden).toBe(false);
     expect(groupNote.closest("fieldset")).toBe(daypart);
-    expect(groupNote.textContent).toContain("0 days turns this off");
+    expect(groupNote.textContent).toContain("0 disables");
     const [hoursNote] = describedBy(els.daypartHours);
     expect(hoursNote.textContent).toContain("separated by commas");
     expect(hoursNote.textContent).toContain("Hours 0–23");
     expect(hoursNote.textContent).not.toContain("morning drive");
-    expect(hoursNote.nextElementSibling.textContent).toContain("morning drive");
+    expect(hoursNote.nextElementSibling.textContent).toContain("through midnight");
 
     const hourpart = els.hourpartPlays.closest("fieldset");
     expect(hourpart).not.toBe(daypart);
@@ -219,8 +219,8 @@ describe("Repeats markup", () => {
     expect(hourpart.hasAttribute("aria-describedby")).toBe(false);
     expect(playsNote.hidden).toBe(false);
     expect(playsNote.closest("fieldset")).toBe(hourpart);
-    expect(playsNote.textContent).toContain("quarter of the hour");
-    expect(playsNote.textContent).toContain("0 turns this off");
+    expect(playsNote.textContent).toContain("quarter-hour");
+    expect(playsNote.textContent).toContain("0 disables");
   });
 
   it("keeps Count versions as one song help visible without describing the checkbox", () => {

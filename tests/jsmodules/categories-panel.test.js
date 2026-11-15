@@ -240,21 +240,28 @@ describe("categories form", () => {
     expect(changed).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a settled background count visible without announcing edits or results", async () => {
+  it("announces the latest automatic count after the selection settles", async () => {
+    vi.useFakeTimers();
+    try {
     const server = await open();
     byId("categories-add").click();
     byId("categories-name").value = "Rock gold";
     byId("categories-name").dispatchEvent(new Event("input", { bubbles: true }));
     byId("categories-query").value = "genre:rock";
     byId("categories-query").dispatchEvent(new Event("input", { bubbles: true }));
-    expect(status()).toBe("");
     await vi.waitFor(() => expect(byId("categories-match").textContent).toBe(
       "1 song; 1 uses the release year because the first-release year is missing."), { timeout: 1500 });
     expect(status()).toBe("");
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(status()).toBe("1 song; 1 uses the release year because the first-release year is missing.");
     expect(server.calls.filter((call) => call.url === "/api/categories/check")).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
   });
 
   it("announces an automatic background count failure", async () => {
+    vi.useFakeTimers();
+    try {
     const server = await open();
     const request = server.request.getMockImplementation();
     server.request.mockImplementation(async (url, options) => {
@@ -266,8 +273,37 @@ describe("categories form", () => {
     byId("categories-name").dispatchEvent(new Event("input", { bubbles: true }));
     byId("categories-query").value = "genre:rock";
     byId("categories-query").dispatchEvent(new Event("input", { bubbles: true }));
-    await vi.waitFor(() => expect(status()).toBe("Count unavailable: Count service unavailable"), { timeout: 1500 });
+    await vi.waitFor(() => expect(byId("categories-match").textContent).toBe("Count unavailable: Count service unavailable"), { timeout: 1500 });
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(status()).toBe("Count unavailable: Count service unavailable");
     expect(byId("categories-match").textContent).toBe("Count unavailable: Count service unavailable");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("drops a pending count announcement when the selection changes again", async () => {
+    vi.useFakeTimers();
+    try {
+      await open();
+      byId("categories-add").click();
+      byId("categories-name").value = "First choice";
+      byId("categories-name").dispatchEvent(new Event("input", { bubbles: true }));
+      byId("categories-query").value = "genre:rock";
+      byId("categories-query").dispatchEvent(new Event("input", { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(450);
+      expect(byId("categories-match").textContent).toContain("1 song");
+      byId("categories-name").value = "Latest choice";
+      byId("categories-name").dispatchEvent(new Event("input", { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(450);
+      expect(byId("categories-match").textContent).toContain("1 song");
+      await vi.advanceTimersByTimeAsync(50);
+      expect(status()).toBe("");
+      await vi.advanceTimersByTimeAsync(449);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(status()).toBe("");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(status()).toBe("1 song; 1 uses the release year because the first-release year is missing.");
+    } finally { vi.useRealTimers(); }
   });
 
   it("edits a playlist category with the playlist choice, and Cancel goes back to its Edit cell", async () => {

@@ -8,7 +8,7 @@
 import { fmtTrack, selectOnFocus } from "./dom-helpers.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
-import { makeSay, announceStatus, writeQuietly, writeLive, showVisibleStatus } from "./live-region.js";
+import { makeSay, announceStatus, writeQuietly, writeLive, showVisibleStatus, createSelectionAnnouncer } from "./live-region.js";
 import { currentStation, onStationChange } from "./stations.js";
 import { sendWithDmcaConfirm } from "./dmca-ui.js";
 import { failureText,
@@ -27,6 +27,7 @@ const SEARCH_RESULT_LIMIT = 100;
 // why nothing plays.
 export function installSearch({
   searchInput, btnSearch, searchResults, searchCount, queueAnnounce,
+  searchStatus = queueAnnounce,
   folderSelect, kindSelect, sortSelect, previousPage, nextPage,
   isEnabled = () => true,
   playNow = async (request) => { await request(); return true; },
@@ -40,6 +41,13 @@ export function installSearch({
   let offset = 0;
   let total = 0;
   const tableNavigation = installTableNavigation(searchResults);
+  const selectionSpeech = createSelectionAnnouncer((message, request, epoch, station) => {
+    if (request.signal.aborted || searchRequest !== request || !isEnabled()
+      || !isAuthenticatedRequestCurrent(epoch) || station !== currentStation()
+      || view?.hidden || searchResults.closest("details")?.open === false
+      || searchResults.ownerDocument.hidden || !searchResults.isConnected) return;
+    announceStatus(searchStatus, message, { mirror: false, force: true, dwellMs: 3000 });
+  });
 
   // Announced once and shown once: announceStatus writes the region and
   // copies the same string into the visible #status-toast, so a failed
@@ -58,6 +66,7 @@ export function installSearch({
   }
 
   function clearBrowse() {
+    selectionSpeech.cancel();
     searchRequest?.abort();
     searchResults.replaceChildren();
     setCount("");
@@ -65,7 +74,9 @@ export function installSearch({
     if (nextPage) nextPage.disabled = true;
   }
 
-  async function doSearch(pageOffset = 0, { quiet = false } = {}) {
+  async function doSearch(pageOffset = 0, { quiet = false, selection = false } = {}) {
+    const selected = selection ? selectionSpeech.start() : null;
+    if (!selection) selectionSpeech.cancel();
     if (!isEnabled()) return;
     const q = searchInput.value.trim();
     if (!q && !browsing) {
@@ -76,7 +87,13 @@ export function installSearch({
     const request = searchRequest = new AbortController();
     const epoch = captureAuthenticatedRequestEpoch();
     const station = currentStation();
-    const count = (message) => quiet ? writeQuietly(searchCount, message) : writeLive(searchCount, message);
+    const count = (message) => {
+      if (selection) {
+        writeQuietly(searchCount, message);
+        selected(message, request, epoch, station);
+      } else if (quiet) writeQuietly(searchCount, message);
+      else writeLive(searchCount, message);
+    };
     setCount("");
     let data;
     try {
@@ -107,13 +124,13 @@ export function installSearch({
     if (results.length === 0) {
       const empty = document.createElement("span");
       empty.className = "no-results";
-      empty.textContent = browsing ? "No tracks found." : `No results for "${q}".`;
+      empty.textContent = browsing ? "No tracks" : `No results for "${q}".`;
       searchResults.replaceChildren(tableRow(searchResults.ownerDocument, [empty], { colspan: [5] }));
       tableNavigation.refresh();
       total = browsing ? Number(data.total || 0) : 0;
       offset = browsing ? Number(data.offset ?? pageOffset) : 0;
       if (browsing) {
-        count("No tracks found.");
+        count("No tracks");
         updatePages();
       } else setCount(`No results for "${q}".`);
       return;
@@ -149,7 +166,7 @@ export function installSearch({
     if (browsing) {
       total = Number(data.total ?? results.length);
       offset = Number(data.offset ?? pageOffset);
-      count(`${total} track${total === 1 ? "" : "s"} found; showing ${offset + 1}–${offset + results.length}.`);
+      count(`${total} track${total === 1 ? "" : "s"}`);
       updatePages();
       return;
     }
@@ -192,14 +209,19 @@ export function installSearch({
     } else if (!searchInput.value.trim()) clearBrowse();
   });
   if (browsing) {
-    for (const select of [folderSelect, kindSelect, sortSelect].filter(Boolean)) {
-      select.addEventListener("change", () => { offset = 0; void doSearch(0, { quiet: true }); });
+    for (const select of [folderSelect, kindSelect].filter(Boolean)) {
+      select.addEventListener("change", () => { offset = 0; void doSearch(0, { selection: true }); });
     }
+    sortSelect?.addEventListener("change", () => { offset = 0; void doSearch(0, { quiet: true }); });
     previousPage.addEventListener("click", () => changePage(-1));
     nextPage.addEventListener("click", () => changePage(1));
   }
 
   const view = searchResults.closest("section[data-view]");
+  const browseCard = searchResults.closest("details");
+  browseCard?.addEventListener("toggle", () => {
+    if (!browseCard.open) selectionSpeech.cancel();
+  });
   function refresh() {
     if (browsing && view && !view.hidden && isEnabled()) return doSearch(0, { quiet: true });
   }
@@ -207,7 +229,7 @@ export function installSearch({
     searchResults.ownerDocument.addEventListener("autodj:view", () => {
       // Track info keeps a return target in these rows. Cancel late replies
       // when leaving, but retain completed results and their focus targets.
-      if (view.hidden) searchRequest?.abort();
+      if (view.hidden) { selectionSpeech.cancel(); searchRequest?.abort(); }
       else if (!searchResults.childElementCount) void refresh();
     });
     onStationChange(() => { clearBrowse(); queueMicrotask(() => void refresh()); });
@@ -217,6 +239,7 @@ export function installSearch({
   searchResults.ownerDocument.addEventListener("click", async (e) => {
     const btn = e.target.closest?.(".result-btn");
     if (!btn || !searchResults.contains(btn)) return;
+    selectionSpeech.cancel();
     const epoch = captureAuthenticatedRequestEpoch();
     const path = btn.dataset.path;
     if (btn.dataset.points === "true") {

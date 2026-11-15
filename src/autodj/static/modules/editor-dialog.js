@@ -14,15 +14,15 @@ const editorStatuses = new WeakMap();
 // from assistive technology.  An editor opens with show() and aria-modal,
 // not showModal(), so NVDA keeps its place on the page (#631, see
 // dialog-guard.js); editors and the dialogs opened from them stack.
-export function createEditorDialog({ form, heading, cancel, fallback, save, onCancel, dialog: existingDialog, submit, pendingText = "Saving…" }) {
+export function createEditorDialog({ form, heading, cancel, fallback, save, onCancel, dialog: existingDialog, submit, pendingText = "Saving…", describe = true }) {
   const doc = form.ownerDocument;
   const dialog = existingDialog || doc.createElement("dialog");
   if (!dialog.id) dialog.id = `${form.id}-dialog`;
   dialog.classList.add("editor-dialog");
   dialog.setAttribute("aria-labelledby", heading.id);
-  // Without explicit help, NVDA synthesizes a description from the entire
-  // form. Keep caller-provided short help, such as the clockwheel step's.
-  if (!dialog.getAttribute("aria-describedby")) {
+  // Existing editors use short help to avoid the reported whole-form speech.
+  // A caller can explicitly omit redundant introductory speech (#787).
+  if (describe && !dialog.getAttribute("aria-describedby")) {
     const help = doc.createElement("p");
     help.id = `${dialog.id}-help`;
     help.hidden = true;

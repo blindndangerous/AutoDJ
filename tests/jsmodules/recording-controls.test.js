@@ -70,7 +70,7 @@ describe("recording controls", () => {
     floor.value = "-2";
     expect(groups[0].validate()).toBe(false);
     expect(days.getAttribute("aria-describedby").split(" ")).toEqual(["recording-settings-error", "retention-help"]);
-    expect(floor.getAttribute("aria-describedby")).toBe("recording-settings-error recording-free-space-desc");
+    expect(floor.getAttribute("aria-describedby")).toBe("recording-settings-error");
     expect(document.activeElement).toBe(days);
     days.value = "0";
     floor.value = "100";
@@ -116,7 +116,24 @@ describe("recording controls", () => {
     expect(byId("recording-status").textContent).toBe("Recording, waiting for audio.");
   });
 
-  it("speaks a new error once and says when recording resumes", async () => {
+  it("keeps passive recording progress visible without making it a description or live announcement", async () => {
+    const controls = setup();
+    const status = byId("recording-status");
+    const toggle = byId("recording-toggle");
+    const describedBy = (toggle.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+    expect(describedBy).not.toContain("recording-status");
+    expect(status.hasAttribute("aria-live")).toBe(false);
+    expect(status.getAttribute("role")).not.toBe("status");
+
+    controls.apply({ ...STOPPED, running: true, file: FILE, bytes: 100 });
+    expect(status.textContent).toBe(`Recording to ${FILE}, 0.0 MB so far.`);
+    controls.apply({ ...STOPPED, running: true, file: FILE, bytes: 700_000 });
+    expect(status.textContent).toBe(`Recording to ${FILE}, 0.7 MB so far.`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(byId("sr-status").textContent).toBe("");
+  });
+
+  it("speaks a new recording error once and announces recovery", async () => {
     const controls = setup();
     const running = { ...STOPPED, running: true, file: FILE, bytes: 10 };
     controls.apply(running);

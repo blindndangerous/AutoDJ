@@ -128,7 +128,7 @@ Intro and Outro describe vocal timing, which can differ from the acoustic ending
 Overlap preferences, play dates, tags and history stay unchanged. If the audio
 file or saved cues change before applying, rescan again to get current suggestions.
 
-**Library tools > Music fade drop (dB)** controls the relative drop required for
+**Settings > Global > Server > Automatic Segue detection** controls the relative drop required for
 a music Segue suggestion, from 1 to 30 dB (default 10). A smaller drop can hand
 off earlier; a larger drop waits for a quieter fade. The detector compares the
 ending with the preceding audio, requires at least five seconds of quieter

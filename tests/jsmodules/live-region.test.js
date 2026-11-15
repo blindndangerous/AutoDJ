@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as liveRegion from "../../src/autodj/static/modules/live-region.js";
 import {
+  createSelectionAnnouncer,
   announceStatus,
   clearAnnouncedStatus,
   clearLiveRegionLater,
@@ -13,6 +14,43 @@ import {
   writeLive,
   writeQuietly,
 } from "../../src/autodj/static/modules/live-region.js";
+
+describe("selection announcements", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  // ADR-0011-14
+  it("waits 500 ms and replaces pending selection feedback", () => {
+    const say = vi.fn();
+    const selection = createSelectionAnnouncer(say);
+    selection.start()("First");
+    vi.advanceTimersByTime(499);
+    expect(say).not.toHaveBeenCalled();
+    selection.start()("Second", "info");
+    vi.advanceTimersByTime(499);
+    expect(say).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(say.mock.calls).toEqual([["Second", "info"]]);
+  });
+
+  // ADR-0011-14
+  it("rejects obsolete asynchronous results and cancels queued speech", () => {
+    const say = vi.fn();
+    const selection = createSelectionAnnouncer(say);
+    const oldResult = selection.start();
+    const newResult = selection.start();
+    newResult("Current");
+    oldResult("Stale");
+    vi.advanceTimersByTime(500);
+    expect(say.mock.calls).toEqual([["Current"]]);
+    const cancelled = selection.start();
+    cancelled("Pending");
+    selection.cancel();
+    cancelled("Late");
+    vi.advanceTimersByTime(1000);
+    expect(say).toHaveBeenCalledTimes(1);
+  });
+});
 
 // ADR-0011-11
 it("creates one string-tone announcer with dynamic regions and preserved repeat timing", () => {

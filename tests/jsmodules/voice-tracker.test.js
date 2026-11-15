@@ -233,6 +233,7 @@ function altR(target = document.activeElement || document.body) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   document.body.replaceChildren();
 });
@@ -506,7 +507,7 @@ describe("voice tracker", () => {
     });
     expect(record.getAttribute("aria-pressed")).toBe("true");
     expect(document.activeElement).toBe(record);
-    await vi.waitFor(() => expect(status()).toBe("Recording. Press Record or Alt+R to stop."));
+    await vi.waitFor(() => expect(status()).toBe("Recording."));
     expect(byId("vt-status").getAttribute("aria-live")).toBe("polite");
     await advance(2);
     expect(byId("vt-timer").textContent).toBe("Recording 0:02 of 10:00.");
@@ -518,7 +519,9 @@ describe("voice tracker", () => {
     expect(document.activeElement).toBe(record);
     expect(byId("vt-playback").getAttribute("src")).toBe("blob:take");
     expect(byId("vt-timer").textContent).toBe("Recorded 0:02, not booked yet.");
-    await vi.waitFor(() => expect(status()).toMatch(/^Recording stopped at 0:02\. Listen back/));
+    await vi.waitFor(() => expect(status()).toBe("Recording stopped at 0:02."));
+    await press("vt-record");
+    await vi.waitFor(() => expect(status()).toBe("The earlier take was discarded. Recording."));
   });
 
   it("remembers an exact microphone across recordings and clears it for System default", async () => {
@@ -534,6 +537,7 @@ describe("voice tracker", () => {
     expect(byId("vt-microphone-status").textContent).toBe("Recording from Studio mic.");
     await press("vt-record");
     expect(byId("vt-microphone-status").textContent).toBe("Last recording used Studio mic.");
+    expect(byId("vt-microphone").hasAttribute("aria-describedby")).toBe(false);
     await press("vt-record");
     await press("vt-record");
     await press("vt-record");
@@ -565,6 +569,7 @@ describe("voice tracker", () => {
     expect(mic.getUserMedia).toHaveBeenCalledTimes(1);
     expect(mic.getUserMedia).toHaveBeenCalledWith({ audio: expect.objectContaining({ deviceId: { exact: "mic-1" } }) });
     expect(byId("vt-microphone-status").textContent).toMatch(/Could not use Studio mic/);
+    expect(byId("vt-microphone").getAttribute("aria-describedby")).toBe("vt-microphone-status");
   });
 
   it("restores the saved microphone selection after a page reload", async () => {
@@ -590,6 +595,7 @@ describe("voice tracker", () => {
     mic.addEventListener.mock.calls.find(([type]) => type === "devicechange")[1]();
     await flush();
     expect(byId("vt-microphone-status").textContent).toMatch(/not connected/);
+    expect(byId("vt-microphone").getAttribute("aria-describedby")).toBe("vt-microphone-status");
     expect([...byId("vt-microphone").options].at(-1).textContent).toBe("Studio mic (not connected)");
   });
 
@@ -1359,8 +1365,8 @@ it("marks lost bookings unknown after a run change and preserves cancellation fo
 });
 
 
-// ADR-0004-28: accessible status and confirmation guidance.
-it("describes selection without delayed arrow browsing announcements and keeps refresh quiet", async () => {
+// ADR-0004-28: passive selection changes leave speech to the selected controls.
+it("keeps song selection speech quiet while updating the visible selection", async () => {
   const { server, controls } = tracker();
   const first = futureRow();
   const second = futureRow("d".repeat(32), { selection: "confirmed" });
@@ -1375,7 +1381,6 @@ it("describes selection without delayed arrow browsing announcements and keeps r
   await flush();
   select.value = second.target_id; select.dispatchEvent(new Event("change"));
   await flush();
-  expect(spoken).toEqual([]);
   await new Promise((resolve) => setTimeout(resolve, 600));
   expect(spoken).toEqual([]);
   expect(byId("vt-selection").textContent).toContain("Selection: Confirmed");

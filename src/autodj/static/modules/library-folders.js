@@ -361,14 +361,16 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const searching = !suspended && !!searchPanel && !searchPanel.closest("[hidden]") && !doc.hidden;
     const showSettings = !suspended && !!settingsPanel && !settingsPanel.closest("[hidden]") && !doc.hidden;
     if (searching && !searchShown && !visible()) void refresh();
-    if (showSettings && !settingsShown) void advancedLength?.load();
+    if (showSettings && !settingsShown) {
+      void advancedLength?.load();
+      void musicFadeDrop?.load();
+    }
     searchShown = searching;
     settingsShown = showSettings;
     if (visible() && timer == null) {
       void refresh();
       void autoRescan?.load();
       void advancedLength?.load();
-      void musicFadeDrop?.load();
       timer = setInterval(refresh, 3000);
     } else if (!visible() && timer != null) {
       clearInterval(timer);
@@ -464,7 +466,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   const musicFadeDrop = installMusicFadeDrop({
     document: doc,
     request,
-    say: announceAction,
+    say: makeSay(doc.getElementById("sr-status"), { dwellMs: 4000, errorDwellMs: 6000 }),
     isCurrent: () => !suspended,
   });
   doc.getElementById("source-folder-rescan").addEventListener("click", async () => {

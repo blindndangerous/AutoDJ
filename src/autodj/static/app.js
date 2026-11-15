@@ -2938,6 +2938,7 @@ librarySearchControls = installSearch({
   searchResults,
   searchCount,
   queueAnnounce,
+  searchStatus: document.getElementById("search-status"),
   folderSelect: libraryBrowseFolder,
   kindSelect: libraryKind,
   sortSelect: document.getElementById("library-sort"),

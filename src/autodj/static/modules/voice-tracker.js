@@ -307,9 +307,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const shown = () => !panel.hidden;
   // The tracker's own region while its tab shows; the page-wide one when
   // the tab has been left, since a region inside a hidden panel says nothing.
-  const announcementRegion = () => {
-    return shown() ? status : (doc.getElementById("sr-status") || status);
-  };
+  const announcementRegion = () => shown() ? status : (doc.getElementById("sr-status") || status);
   const say = makeSay(announcementRegion, { dwellMs: 5000 });
   const sayTimer = makeSay(announcementRegion, { dwellMs: 5000, mirror: false });
 
@@ -372,11 +370,11 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     microphoneSelect.value = selectedMicrophone.id;
   }
 
-  function microphoneNote(message) {
+  function microphoneNote(message, describe = true) {
     setText(microphoneStatus, message);
     if (microphoneStatus) microphoneStatus.hidden = !message;
     if (microphoneSelect) {
-      if (message) microphoneSelect.setAttribute("aria-describedby", "vt-microphone-status");
+      if (message && describe) microphoneSelect.setAttribute("aria-describedby", "vt-microphone-status");
       else microphoneSelect.removeAttribute("aria-describedby");
     }
   }
@@ -1041,7 +1039,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     recordButton.setAttribute("aria-pressed", "true");
     renderTimer();
     void Promise.resolve(focusGate).then(() => {
-      if (session === current) say(`Recording${replaced ? ", the earlier take discarded" : ""}. Press Record or Alt+R to stop.`);
+      if (session === current) say(`${replaced ? "The earlier take was discarded. " : ""}Recording.`);
     });
   }
 
@@ -1082,10 +1080,10 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       return;
     }
     showTake(blob, seconds, current.slot);
-    microphoneNote(current.microphone.replace(/^Recording from/, "Last recording used"));
+    microphoneNote(current.microphone.replace(/^Recording from/, "Last recording used"), false);
     renderTimer();
     renderPlacement();
-    say(`${current.note}Recording stopped at ${clock(seconds)}. Listen back, then Book voice track, or Record again to replace it.`);
+    say(`${current.note}Recording stopped at ${clock(seconds)}.`);
   }
 
   async function toggle() {

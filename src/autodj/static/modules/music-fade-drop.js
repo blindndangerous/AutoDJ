@@ -1,5 +1,5 @@
 import { failureText } from "./api-client.js";
-// Shared music fade threshold in Library tools.
+// Shared music fade threshold in Settings > Global > Server.
 import { clearFieldError, showFieldError, applyServerFieldError } from "./dom-helpers.js";
 import { createSettingsSave } from "./standalone-settings.js";
 
