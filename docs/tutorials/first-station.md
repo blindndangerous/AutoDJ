@@ -60,7 +60,13 @@ failures, use [music troubleshooting](../guides/troubleshooting.md#music-and-the
 ## Hear a song you choose
 
 1. Open **Queue & Search**.
-2. Leave **Search text (optional)** empty and press **Search** to browse songs.
+2. Songs load automatically. Leave **Search text (optional)** empty to browse them.
+   **Sort**, after **Folder**, offers **Title** (the default), **Artist**,
+   **Most recently added**, and **Most played (30 days)**. Changing a combo
+   updates the list immediately. Most played counts completed plays in this
+   station's recorded history over the past 30 days. Existing tracks use their
+   stored file modification dates as approximate addition dates during migration;
+   new tracks use their actual import dates. Tracks without a stored date sort last.
 3. Find a song you recognize. Use its **Add to queue** button.
 4. Confirm that its title appears in the queue.
 5. Find a different song in the search results and press its **Play now** button.

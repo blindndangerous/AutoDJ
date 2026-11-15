@@ -57,6 +57,56 @@ def test_catalog_open_skips_orphan_purge_when_no_orphans(tmp_path: Path) -> None
         assert catalog._db().execute("SELECT 1 FROM catalog_vectors").fetchone() is None
 
 
+def test_added_at_is_set_on_first_insert_and_preserved_by_updates(tmp_path: Path) -> None:
+    song = tmp_path / "song.wav"
+    song.write_bytes(b"audio")
+    os.utime(song, (1000, 1000))
+    with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        with patch.object(catalog_module.time, "time", return_value=2000):
+            catalog.put_entry(entry(song))
+        first = (
+            catalog._db()
+            .execute("SELECT added_at FROM catalog_entries WHERE path=?", (normalize_path(song),))
+            .fetchone()[0]
+        )
+        assert first == 2000
+        catalog.put_entry(entry(song, title="Retagged"))
+        again = (
+            catalog._db()
+            .execute("SELECT added_at FROM catalog_entries WHERE path=?", (normalize_path(song),))
+            .fetchone()[0]
+        )
+        assert again == first
+
+
+@pytest.mark.parametrize(
+    ("mtime_ns", "embedded_at", "expected"),
+    [
+        (1700000000123456789, 1600000000, 1700000000.1234567),
+        (0, 1600000000.5, 1600000000.5),
+        (0, 0, 0),
+    ],
+)
+def test_added_at_migration_copies_mtime_once(
+    tmp_path: Path, mtime_ns, embedded_at, expected
+) -> None:
+    db = tmp_path / "catalog.db"
+    with closing(sqlite3.connect(db)) as conn:
+        conn.executescript(_SCHEMA.replace("added_at REAL NOT NULL DEFAULT 0,", ""))
+        song = tmp_path / "legacy.wav"
+        song.write_bytes(b"legacy")
+        conn.execute(
+            "INSERT INTO catalog_entries (id,path,kind,title,mtime_ns,embedded_at) VALUES (?,?,?,?,?,?)",
+            ("legacy", normalize_path(song), "music", "Legacy", mtime_ns, embedded_at),
+        )
+        conn.commit()
+    with LibraryCatalog(db) as catalog:
+        assert catalog.added_at_times()[normalize_path(song)] == pytest.approx(expected)
+        catalog.put_entry(entry(song, title="Rescanned"))
+    with LibraryCatalog(db) as catalog:
+        assert catalog.added_at_times()[normalize_path(song)] == pytest.approx(expected)
+
+
 def test_remove_entries_rejects_stale_preview_versions(tmp_path: Path) -> None:
     first = tmp_path / "first.wav"
     second = tmp_path / "second.wav"

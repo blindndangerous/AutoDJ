@@ -8,7 +8,8 @@
 import { fmtTrack, selectOnFocus } from "./dom-helpers.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
-import { makeSay, announceStatus } from "./live-region.js";
+import { makeSay, announceStatus, writeQuietly, writeLive, showVisibleStatus } from "./live-region.js";
+import { currentStation, onStationChange } from "./stations.js";
 import { sendWithDmcaConfirm } from "./dmca-ui.js";
 import { failureText,
   captureAuthenticatedRequestEpoch,
@@ -26,7 +27,8 @@ const SEARCH_RESULT_LIMIT = 100;
 // why nothing plays.
 export function installSearch({
   searchInput, btnSearch, searchResults, searchCount, queueAnnounce,
-  folderSelect, kindSelect, previousPage, nextPage,
+  folderSelect, kindSelect, sortSelect, previousPage, nextPage,
+  isEnabled = () => true,
   playNow = async (request) => { await request(); return true; },
 }) {
   if (!searchInput || !searchResults) return;
@@ -63,7 +65,8 @@ export function installSearch({
     if (nextPage) nextPage.disabled = true;
   }
 
-  async function doSearch(pageOffset = 0) {
+  async function doSearch(pageOffset = 0, { quiet = false } = {}) {
+    if (!isEnabled()) return;
     const q = searchInput.value.trim();
     if (!q && !browsing) {
       clearBrowse();
@@ -71,25 +74,34 @@ export function installSearch({
     }
     searchRequest?.abort();
     const request = searchRequest = new AbortController();
+    const epoch = captureAuthenticatedRequestEpoch();
+    const station = currentStation();
+    const count = (message) => quiet ? writeQuietly(searchCount, message) : writeLive(searchCount, message);
+    setCount("");
     let data;
     try {
       let url;
       if (browsing) {
         const params = new URLSearchParams({ kind: kindSelect.value, offset: String(pageOffset), limit: "100" });
+        if (sortSelect) params.set("sort", sortSelect.value);
+        if (sortSelect?.value === "most_played") params.set("station", station);
         if (q) params.set("q", q);
         if (folderSelect.value.startsWith("folder:")) params.set("source_id", folderSelect.value.slice("folder:".length));
         url = `/api/library/tracks?${params}`;
       } else url = `/api/search?q=${encodeURIComponent(q)}`;
       data = await withDisabled(btnSearch, () => requestJson(url, { signal: request.signal }));
     } catch (errorValue) {
-      if (request.signal.aborted) return;
+      if (request.signal.aborted || !isAuthenticatedRequestCurrent(epoch) || station !== currentStation()) return;
       if (browsing && searchRequest !== request) return;
-      setCount(failureText("search", errorValue),
-        { mirror: true, tone: "error" });
+      const message = failureText("search", errorValue);
+      if (browsing) {
+        writeLive(searchCount, message);
+        showVisibleStatus(message, searchResults.ownerDocument, { tone: "error" });
+      } else setCount(message, { mirror: true, tone: "error" });
       if (!browsing) searchInput.focus();
       return;
     }
-    if (request.signal.aborted || searchRequest !== request) return;
+    if (request.signal.aborted || searchRequest !== request || !isAuthenticatedRequestCurrent(epoch) || station !== currentStation()) return;
     const results = data.results || [];
 
     if (results.length === 0) {
@@ -101,7 +113,7 @@ export function installSearch({
       total = browsing ? Number(data.total || 0) : 0;
       offset = browsing ? Number(data.offset ?? pageOffset) : 0;
       if (browsing) {
-        setCount("No tracks found.");
+        count("No tracks found.");
         updatePages();
       } else setCount(`No results for "${q}".`);
       return;
@@ -137,7 +149,7 @@ export function installSearch({
     if (browsing) {
       total = Number(data.total ?? results.length);
       offset = Number(data.offset ?? pageOffset);
-      setCount(`${total} track${total === 1 ? "" : "s"} found; showing ${offset + 1}–${offset + results.length}.`);
+      count(`${total} track${total === 1 ? "" : "s"} found; showing ${offset + 1}–${offset + results.length}.`);
       updatePages();
       return;
     }
@@ -178,10 +190,23 @@ export function installSearch({
     } else if (!searchInput.value.trim()) clearBrowse();
   });
   if (browsing) {
-    folderSelect.addEventListener("change", () => { offset = 0; void doSearch(); });
-    kindSelect.addEventListener("change", () => { offset = 0; void doSearch(); });
+    for (const select of [folderSelect, kindSelect, sortSelect].filter(Boolean)) {
+      select.addEventListener("change", () => { offset = 0; void doSearch(0, { quiet: true }); });
+    }
     previousPage.addEventListener("click", () => changePage(-1));
     nextPage.addEventListener("click", () => changePage(1));
+  }
+
+  const view = searchResults.closest("section[data-view]");
+  function refresh() {
+    if (browsing && view && !view.hidden && isEnabled()) return doSearch(0, { quiet: true });
+  }
+  if (browsing && view) {
+    searchResults.ownerDocument.addEventListener("autodj:view", () => {
+      if (view.hidden) clearBrowse();
+      else void refresh();
+    });
+    onStationChange(() => { clearBrowse(); queueMicrotask(() => void refresh()); });
   }
 
   // Play-now / queue-add buttons via event delegation.
@@ -245,4 +270,5 @@ export function installSearch({
       announce(`${failed} ${errorValue.message}`, "error");
     }
   });
+  return { refresh, clear: clearBrowse };
 }

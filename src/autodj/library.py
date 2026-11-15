@@ -548,10 +548,14 @@ class LibraryManager:
         q: str = "",
         offset: int = 0,
         limit: int = 100,
+        sort: str = "title",
+        play_counts: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """List playable tracks, optionally of one registered source, from memory."""
         if kind not in {"music", "liner"}:
             raise ValueError("kind must be 'music' or 'liner'")
+        if sort not in {"title", "artist", "recently_added", "most_played"}:
+            raise ValueError("sort must be 'title', 'artist', 'recently_added', or 'most_played'")
         roots = None
         if source_id is not None:
             source = next((row for row in self.catalog.sources() if row["id"] == source_id), None)
@@ -567,6 +571,29 @@ class LibraryManager:
             if (roots is None or _covered_by(entry.path, roots))
             and all(token in text for token in tokens)
         ]
+        added_at = self.catalog.added_at_times() if sort == "recently_added" else {}
+        counts = play_counts or {}
+
+        def key(entry: IndexEntry) -> tuple[Any, ...]:
+            if sort == "title":
+                return (entry.title.casefold(), entry.artist.casefold(), entry.path.casefold())
+            if sort == "artist":
+                return (entry.artist.casefold(), entry.title.casefold(), entry.path.casefold())
+            if sort == "recently_added":
+                return (
+                    -added_at.get(entry.path, 0),
+                    entry.title.casefold(),
+                    entry.artist.casefold(),
+                    entry.path.casefold(),
+                )
+            return (
+                -counts.get(entry.path, 0),
+                entry.title.casefold(),
+                entry.artist.casefold(),
+                entry.path.casefold(),
+            )
+
+        matches.sort(key=key)
         return {
             "results": [
                 {

@@ -800,9 +800,11 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   Search and History action cells retain cell focus; returning from Track info
   leaves arrow navigation working. An action in a cell that also has an input
   returns to the cell, while an explicitly targeted input retains native focus.
-- Queue & Search, browsing: Tab to Type, Folder, Search text and Search; one result grid with
+- Queue & Search, browsing: results load on entry. Tab to Type, Folder, Sort, Search text and Search; one result grid with
   arrows, Home and End, and Enter or Space activating each action; the track count said once per
-  search and page, with focus staying on Previous or Next (or moving to the other when a page ends);
+  explicit search and page, with focus staying on Previous or Next (or moving to the other when a page ends).
+  Type, Folder and Sort changes update the count quietly through the shared
+  `writeQuietly` helper, without interrupting native combo selection;
   and Track info returning focus to its result. Under Settings > Voice liners, check Options, Play dates and Options, Delete.
   Saving or cancelling dates returns to the row's Actions cell. Confirmed deletion
   moves to a nearby row or the panel fallback and announces the destination.

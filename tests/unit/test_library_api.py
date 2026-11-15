@@ -3,6 +3,7 @@
 import asyncio
 import dataclasses
 import os
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import call as mock_call
@@ -413,6 +414,53 @@ def test_track_browse_empty_query_paginates_stably(library_api):
     assert page["offset"] == 1 and page["limit"] == 1
     assert [track["title"] for track in page["results"]] == ["Mango"]
     assert page["results"][0]["display_name"] == "Artist — Mango"
+
+
+def test_track_browse_sorts_globally_and_most_played_uses_station_history(library_api):
+    manager, call, _app = library_api
+    paths = {}
+    for title, artist in (("Zulu", "Beta"), ("Alpha", "Zeta"), ("Mango", "Alpha")):
+        path = manager.cfg.library.music_dir / f"{title}.flac"
+        path.touch()
+        manager.catalog.put_entry(dataclasses.replace(make_entry(path, title=title), artist=artist))
+        paths[title] = os.path.normcase(str(path))
+    manager.catalog._db().execute(
+        "UPDATE catalog_entries SET added_at=CASE title WHEN 'Zulu' THEN 10 "
+        "WHEN 'Alpha' THEN 30 ELSE 20 END"
+    )
+    manager.catalog._db().commit()
+    manager.refresh()
+
+    assert [
+        row["title"] for row in call("GET", "/api/library/tracks", sort="title", limit=2)["results"]
+    ] == ["Alpha", "Mango"]
+    assert [
+        row["title"] for row in call("GET", "/api/library/tracks", sort="artist")["results"]
+    ] == ["Mango", "Zulu", "Alpha"]
+    assert [
+        row["title"] for row in call("GET", "/api/library/tracks", sort="recently_added")["results"]
+    ] == ["Alpha", "Mango", "Zulu"]
+
+    ledger = manager.station_ledger("default")
+    now = datetime.now(UTC).isoformat()
+    ledger.store.write_history(
+        [
+            {
+                "event_id": f"play-{n}",
+                "path": paths[title],
+                "title": title,
+                "artist": "Artist",
+                "duration": 180,
+                "played_at": now,
+                "kind": "song",
+            }
+            for n, title in enumerate(("Zulu", "Zulu", "Mango"))
+        ],
+        [],
+    )
+    assert [
+        row["title"] for row in call("GET", "/api/library/tracks", sort="most_played")["results"]
+    ] == ["Zulu", "Mango", "Alpha"]
 
 
 def test_track_browse_source_respects_recursive_and_kind(library_api, tmp_path):

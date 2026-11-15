@@ -26,7 +26,7 @@ function setup() {
   return els;
 }
 
-function setupBrowser() {
+function setupBrowser({ view = false, isEnabled = () => true } = {}) {
   document.body.innerHTML = `
     <select id="kind"><option value="music">Music</option><option value="liner">Voice liners</option></select>
     <select id="folder"><option value="all">All folders</option><option value="folder:9">N:/voice</option></select>
@@ -38,7 +38,19 @@ function setupBrowser() {
     queueAnnounce: document.querySelector("#announce"), folderSelect: document.querySelector("#folder"), kindSelect: document.querySelector("#kind"),
     previousPage: document.querySelector("#previous"), nextPage: document.querySelector("#next"),
   };
-  installSearch(els);
+  if (view) {
+    const section = document.createElement("section");
+    section.dataset.view = "queue";
+    section.hidden = true;
+    section.append(...document.body.children);
+    document.body.append(section);
+    const sort = document.createElement("select");
+    sort.innerHTML = '<option value="title">Title</option><option value="artist">Artist</option><option value="recently_added">Most recently added</option><option value="most_played">Most played (30 days)</option>';
+    section.prepend(sort);
+    els.sortSelect = sort;
+    els.view = section;
+  }
+  els.controls = installSearch({ ...els, isEnabled });
   return els;
 }
 
@@ -255,6 +267,40 @@ describe("search result actions", () => {
 
 describe("library browsing", () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  it("loads when its view opens, sorts quietly, and clears late replies on leaving", async () => {
+    const pending = [];
+    const fetchImpl = vi.fn(() => new Promise((resolve) => pending.push(resolve)));
+    vi.stubGlobal("fetch", fetchImpl);
+    let enabled = false;
+    const els = setupBrowser({ view: true, isEnabled: () => enabled });
+    els.view.hidden = false;
+    document.dispatchEvent(new CustomEvent("autodj:view"));
+    expect(fetchImpl).not.toHaveBeenCalled();
+    enabled = true;
+    void els.controls.refresh();
+    expect(fetchImpl.mock.calls[0][0]).toContain("sort=title");
+    pending[0](jsonResponse({ results: [{ path: "a.mp3", title: "A" }], total: 101, offset: 0 }));
+    await vi.waitFor(() => expect(els.searchResults.textContent).toContain("A"));
+    els.sortSelect.value = "most_played";
+    els.sortSelect.focus();
+    els.sortSelect.dispatchEvent(new Event("change"));
+    expect(fetchImpl.mock.calls[1][0]).toContain("sort=most_played&station=");
+    expect(fetchImpl.mock.calls[1][0]).toContain("offset=0");
+    pending[1](jsonResponse({ results: [{ path: "b.mp3", title: "B" }], total: 1, offset: 0 }));
+    await vi.waitFor(() => expect(els.searchCount.textContent).toContain("1 track"));
+    expect(els.searchCount.getAttribute("aria-live")).toBe("off");
+    expect(document.activeElement).toBe(els.sortSelect);
+    els.sortSelect.value = "artist";
+    els.sortSelect.dispatchEvent(new Event("change"));
+    els.view.hidden = true;
+    document.dispatchEvent(new CustomEvent("autodj:view"));
+    pending[2](jsonResponse({ results: [{ path: "late.mp3", title: "Late" }], total: 1 }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(els.searchResults.textContent).toBe("");
+    expect(els.searchCount.textContent).toBe("");
+    vi.unstubAllGlobals();
+  });
 
   it("browses blank queries by kind, carries liner kind to Edit points, and pages by 100", async () => {
     const fetchImpl = vi.fn((url) => {
