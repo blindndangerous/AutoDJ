@@ -96,6 +96,40 @@ it("clears stale error descriptions even after the invalid marker was removed", 
   expect(form.querySelector("#problem").textContent).toBe("");
 });
 
+describe("shared form validation", () => {
+  it("keeps required validation quiet until submit, then focuses the first invalid field and clears it after correction", async () => {
+    const { validateFormFields } = await import("../../src/autodj/static/modules/dom-helpers.js");
+    document.body.innerHTML = '<form><input id="first" type="number" aria-required="true"><input id="second" type="number" aria-required="true"><p id="error" class="field-error" hidden></p><p id="status" role="status"></p></form>';
+    const form = document.querySelector("form"), first = document.getElementById("first"), second = document.getElementById("second");
+    const error = document.getElementById("error"), status = document.getElementById("status");
+    expect(first.getAttribute("aria-invalid")).toBeNull();
+    expect(error.hidden).toBe(true);
+    expect(validateFormFields(form, error, status)).toBe(false);
+    expect(document.activeElement).toBe(first);
+    expect(error.textContent).toBe("Enter a value for this field.");
+    expect(first.getAttribute("aria-invalid")).toBe("true");
+    expect(second.hasAttribute("aria-invalid")).toBe(false);
+    first.value = "0";
+    second.value = "2";
+    expect(validateFormFields(form, error, status)).toBe(true);
+    expect(error.hidden).toBe(true);
+    expect(error.textContent).toBe("");
+    expect(first.hasAttribute("aria-invalid")).toBe(false);
+  });
+
+  it("uses native format, range, step, and pattern validity while skipping disabled and readonly controls", async () => {
+    const { fieldValidationMessage } = await import("../../src/autodj/static/modules/dom-helpers.js");
+    document.body.innerHTML = '<form><input id="range" type="number" min="1" max="5" value="6"><input id="step" type="number" min="0" step="2" value="3"><input id="email" type="email" value="bad"><input id="pattern" pattern="[A-Z]{2}" value="abc"><input id="disabled" aria-required="true" disabled><input id="readonly" aria-required="true" readonly value=""></form>';
+    for (const id of ["range", "step", "email", "pattern"]) {
+      expect(fieldValidationMessage(document.getElementById(id))).toBeTruthy();
+    }
+    expect(fieldValidationMessage(document.getElementById("disabled"))).toBe("");
+    expect(fieldValidationMessage(document.getElementById("readonly"))).toBe("");
+    const optional = document.createElement("input");
+    expect(fieldValidationMessage(optional)).toBe("");
+  });
+});
+
 describe("sentences", () => {
   it("joins only the set facts, one sentence each", () => {
     expect(sentences("From Music, target 60 minutes", "", false, null, "Played by Morning.", 0)).toBe("From Music, target 60 minutes. Played by Morning.");

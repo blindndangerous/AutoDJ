@@ -205,6 +205,20 @@ it("rejects invalid timing with focus and announces server TTS failure once", as
   expect(spoken.filter((s) => s.includes("Configure default TTS"))).toHaveLength(1);
 });
 
+it("does not generate with an empty required numeric field, then generates after correction", async () => {
+  const { request } = harness();
+  get("source").value = "forecast";
+  get("head").value = "";
+  get("form").dispatchEvent(new Event("submit", { cancelable: true })); await settle();
+  expect(document.activeElement).toBe(get("head"));
+  expect(get("head").getAttribute("aria-invalid")).toBe("true");
+  expect(get("error").textContent).toBe("Enter a value for this field.");
+  expect(request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+  get("head").value = "10";
+  get("form").dispatchEvent(new Event("submit", { cancelable: true })); await settle();
+  expect(request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(true);
+});
+
 // ADR-0014-05
 it("clears audio and drops delayed replies when station context changes", async () => {
   let resolve;

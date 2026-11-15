@@ -15,12 +15,12 @@ import { AuthenticationRequiredError } from
 function installDialogMarkup() {
   document.body.innerHTML = `<dialog id="auth-dialog"
       aria-labelledby="auth-title" aria-describedby="auth-reason auth-help">
-    <form id="auth-form" method="dialog">
+    <form id="auth-form" method="dialog" novalidate>
       <h2 id="auth-title">Pair this browser</h2>
       <p id="auth-reason" hidden></p>
       <p id="auth-help">Enter the pairing code shown by the server.</p>
       <label for="auth-token">Pairing code</label>
-      <input id="auth-token" name="code" required>
+      <input id="auth-token" name="code" aria-required="true">
       <label for="auth-device-name">Device name</label>
       <input id="auth-device-name" name="device_name">
       <p id="auth-error" class="field-error" hidden></p>
@@ -57,6 +57,29 @@ function response({ ok, status, json, retryAfter } = {}) {
 }
 
 describe("initAuthDialog", () => {
+  it("validates blank and malformed pairing codes on submit before pairing", async () => {
+    const els = installDialogMarkup();
+    els.token.pattern = "[0-9]{8}";
+    const fetchImpl = vi.fn().mockResolvedValue(response({ ok: true, status: 200 }));
+    const onSuccess = vi.fn();
+    const auth = initAuthDialog({ document, fetchImpl, onSuccess });
+    auth.show();
+    expect(els.token.validity.valueMissing).toBe(false);
+    expect(els.token.hasAttribute("aria-invalid")).toBe(false);
+    for (const value of ["", "123", "abcdefgh"]) {
+      els.token.value = value;
+      await auth.submit();
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(els.token);
+      expect(els.token.getAttribute("aria-invalid")).toBe("true");
+      expect(els.error.hidden).toBe(false);
+    }
+    els.token.value = "12345678";
+    await auth.submit();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(onSuccess).toHaveBeenCalledOnce();
+  });
+
   it("associates pairing refusals with the code field without replacing its help", async () => {
     const els = installDialogMarkup();
     els.token.setAttribute("aria-describedby", "auth-help");
@@ -949,7 +972,9 @@ describe("pairing dialog markup", () => {
     );
     expect(label?.textContent.trim()).toBe("Pairing code");
     expect(input?.type).toBe("text");
-    expect(input?.required).toBe(true);
+    expect(input?.required).toBe(false);
+    expect(input?.getAttribute("aria-required")).toBe("true");
+    expect(form?.noValidate).toBe(true);
     expect(input?.autocomplete).toBe("one-time-code");
     expect(input?.inputMode).toBe("numeric");
     expect(input?.maxLength).toBe(8);

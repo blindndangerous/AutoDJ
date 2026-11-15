@@ -5,7 +5,7 @@ import {
 } from "./api-client.js";
 import { closeDialog, openDialog } from "./dialog-guard.js";
 import { makeSay } from "./live-region.js";
-import { clearFieldError, showFieldError } from "./dom-helpers.js";
+import { clearFieldError, showFieldError, fieldValidationMessage } from "./dom-helpers.js";
 
 let latestAuthState = {};
 
@@ -90,10 +90,11 @@ export function initAuthDialog({
 
   async function performSubmit() {
     clearError();
+    const invalid = fieldValidationMessage(token);
     let candidate = token.value;
     token.value = "";
-    if (!candidate) {
-      await announceError("Enter the 8-digit pairing code.");
+    if (!candidate || invalid) {
+      await announceError(!candidate ? "Enter the 8-digit pairing code." : invalid);
       return false;
     }
 

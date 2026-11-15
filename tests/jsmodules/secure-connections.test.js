@@ -123,6 +123,116 @@ describe("secure connections", () => {
     expect(document.activeElement).toBe(panel.querySelector("#sc-add"));
   });
 
+
+  it("validates the certificate name on Next without native missing-value state", async () => {
+    const { panel } = mount();
+    const request = vi.fn(async (path, options = {}) => {
+      if (path === "/api/server/certificates" && options.method === "POST") return { id: "new" };
+      return inventory([]);
+    });
+    installSecureConnections({ panel, request });
+    await vi.waitFor(() => expect(panel.querySelector("#sc-add")).toBeTruthy());
+    panel.querySelector("#sc-add").click();
+    const dialog = document.querySelector(".secure-connection-dialog");
+    const name = dialog.querySelector("#sc-name");
+    name.value = "";
+    expect(name.hasAttribute("required")).toBe(false);
+    expect(name.validity.valueMissing).toBe(false);
+    dialog.querySelector("#sc-next").click();
+    expect(document.activeElement).toBe(name);
+    expect(name.getAttribute("aria-invalid")).toBe("true");
+    expect(request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+    name.value = "AutoDJ certificate";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    dialog.querySelector("#sc-next").click();
+    await vi.waitFor(() => expect(request.mock.calls.some(([path, options]) => path === "/api/server/certificates" && options?.method === "POST")).toBe(true));
+  });
+
+  it("validates import fields and ACME consent when Next is pressed", async () => {
+    const { panel } = mount();
+    const termsUrl = "https://letsencrypt.org/documents/LE-SA-v1.5-February-24-2025.pdf";
+    const request = vi.fn(async (path) => {
+      if (path === "/api/server/certificates/import") return { id: "imported" };
+      if (path.endsWith("/acme/preflight")) return {
+        id: "operation", phase: "ready", name: "AutoDJ certificate", domain: "radio.example",
+        environment: "staging", terms_url: termsUrl, confirmed: false,
+      };
+      if (path.endsWith("/acme/operation/issue")) return {
+        id: "operation", phase: "queued", name: "AutoDJ certificate", domain: "radio.example",
+        environment: "staging", terms_url: termsUrl, confirmed: false,
+      };
+      return inventory([], { acme_available: true });
+    });
+    installSecureConnections({ panel, request });
+    await vi.waitFor(() => expect(panel.querySelector("#sc-add")).toBeTruthy());
+    panel.querySelector("#sc-add").click();
+    let dialog = document.querySelector(".secure-connection-dialog");
+    const method = dialog.querySelector("#sc-method");
+    method.value = "import";
+    method.dispatchEvent(new Event("change", { bubbles: true }));
+    const certificate = dialog.querySelector("#sc-cert");
+    expect(certificate.getAttribute("aria-required")).toBe("true");
+    expect(dialog.querySelector("#sc-key").getAttribute("aria-required")).toBe("true");
+    expect(certificate.hasAttribute("required")).toBe(false);
+    expect(certificate.validity.valueMissing).toBe(false);
+    dialog.querySelector("#sc-next").click();
+    expect(document.activeElement).toBe(certificate);
+    expect(certificate.getAttribute("aria-invalid")).toBe("true");
+    expect(request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+    certificate.value = "certificate";
+    certificate.dispatchEvent(new Event("input", { bubbles: true }));
+    dialog.querySelector("#sc-key").value = "private key";
+    dialog.querySelector("#sc-next").click();
+    await vi.waitFor(() => expect(request.mock.calls.some(([path, options]) => path === "/api/server/certificates/import" && options?.method === "POST")).toBe(true));
+    await vi.waitFor(() => expect(dialog.querySelector("#sc-cancel").getAttribute("aria-disabled")).toBe("false"));
+    dialog.querySelector("#sc-cancel").click();
+
+    panel.querySelector("#sc-add").click();
+    dialog = document.querySelector(".secure-connection-dialog");
+    dialog.querySelector("#sc-method").value = "acme";
+    dialog.querySelector("#sc-method").dispatchEvent(new Event("change", { bubbles: true }));
+    const domain = dialog.querySelector("#sc-domain");
+    const zone = dialog.querySelector("#sc-zone");
+    const token = dialog.querySelector("#sc-token");
+    for (const field of [domain, zone, token]) {
+      expect(field.hasAttribute("required")).toBe(false);
+      expect(field.validity.valueMissing).toBe(false);
+    }
+    dialog.querySelector("#sc-next").click();
+    expect(document.activeElement).toBe(domain);
+    expect(domain.getAttribute("aria-invalid")).toBe("true");
+    domain.value = "radio.example";
+    domain.dispatchEvent(new Event("input", { bubbles: true }));
+    dialog.querySelector("#sc-next").click();
+    expect(document.activeElement).toBe(zone);
+    expect(zone.getAttribute("aria-invalid")).toBe("true");
+    zone.value = "0123456789abcdef0123456789abcdef";
+    zone.dispatchEvent(new Event("input", { bubbles: true }));
+    dialog.querySelector("#sc-next").click();
+    expect(document.activeElement).toBe(token);
+    expect(token.getAttribute("aria-invalid")).toBe("true");
+    token.value = "secret";
+    token.dispatchEvent(new Event("input", { bubbles: true }));
+    dialog.querySelector("#sc-next").click();
+    await vi.waitFor(() => expect(dialog.querySelector("#sc-terms")).toBeTruthy());
+    const terms = dialog.querySelector("#sc-terms");
+    expect(terms.hasAttribute("required")).toBe(false);
+    expect(terms.validity.valueMissing).toBe(false);
+    dialog.querySelector("#sc-next").click();
+    expect(document.activeElement).toBe(terms);
+    expect(terms.getAttribute("aria-invalid")).toBe("true");
+    expect(request.mock.calls.some(([path]) => path.endsWith("/acme/operation/issue"))).toBe(false);
+    terms.click();
+    const host = dialog.querySelector("#sc-host-confirm");
+    expect(host.validity.valueMissing).toBe(false);
+    dialog.querySelector("#sc-next").click();
+    expect(document.activeElement).toBe(host);
+    expect(host.getAttribute("aria-invalid")).toBe("true");
+    host.click();
+    dialog.querySelector("#sc-next").click();
+    await vi.waitFor(() => expect(request.mock.calls.some(([path]) => path.endsWith("/acme/operation/issue"))).toBe(true));
+  });
+
   it("does not repeat a create request while the first save is pending", async () => {
     const { panel } = mount();
     let resolveSave;

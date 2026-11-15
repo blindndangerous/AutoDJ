@@ -1,5 +1,6 @@
 // Speech production only: previews use native browser audio and never the mix bus.
 import { isStaleStationReply, requestJson, withDisabled } from "./api-client.js";
+import { clearFieldError, validateFormFields } from "./dom-helpers.js";
 import { makeSay } from "./live-region.js";
 import { onCardOpen } from "./card-state.js";
 import { stationApi } from "./stations.js";
@@ -35,10 +36,21 @@ export function installSpeechStudio(root = document.getElementById("speech-studi
     catch (error) { if (!isStaleStationReply(error)) say(error.message, "error"); }
   }
   function bind(id, event, work) {
-    get(id).addEventListener(event, (e) => {
+    const control = get(id);
+    control.addEventListener(event, (e) => {
       e.preventDefault();
+      if (event === "submit") {
+        const error = get(id.replace("-form", "-error"));
+        if (!validateFormFields(control, error, say)) return;
+      }
       void act(e.submitter || e.currentTarget, work);
     });
+    if (event === "submit") {
+      const error = get(id.replace("-form", "-error"));
+      control.addEventListener("input", ({ target }) => {
+        if (target.getAttribute("aria-invalid") === "true") clearFieldError(target, error);
+      });
+    }
   }
   function button(text, work) {
     const control = node("button", text);
@@ -93,7 +105,7 @@ export function installSpeechStudio(root = document.getElementById("speech-studi
     row.model = field(wrapper, "Model"); row.model.maxLength = 256;
     row.speed = field(wrapper, "Speed"); row.speed.type = "number"; row.speed.step = "0.05"; row.speed.min = "0.25"; row.speed.max = "4";
     row.instructions = field(wrapper, "Delivery instructions", "textarea"); row.instructions.maxLength = 4096;
-    const presetName = field(wrapper, "Preset name"); presetName.maxLength = 64; presetName.pattern = "[a-z0-9][a-z0-9-]{0,63}";
+    const presetName = field(wrapper, "Preset name"); presetName.maxLength = 64; presetName.pattern = "[a-z0-9][a-z0-9\\-]{0,63}";
     wrapper.append(button("Save voice preset", async () => {
       await send(`/presets/${encodeURIComponent(presetName.value)}`, candidate(row), "PUT");
       say("Voice preset saved. The station voice has not changed."); await refresh();
