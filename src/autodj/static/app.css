@@ -155,8 +155,10 @@
     }
     .skip-link:focus { top: 0; }
 
-    /* Focus ring — never removed */
-    :focus-visible {
+    /* Linux WebKit focuses native date/time segments without marking the
+       outer input :focus-visible. Keep the shared ring around that control. */
+    :focus-visible,
+    :where(input[type="date"], input[type="time"], input[type="datetime-local"]):focus-within {
       outline: 2px solid var(--accent);
       outline-offset: 3px;
     }
@@ -1967,7 +1969,8 @@
         background: Highlight;
         border-color: CanvasText;
       }
-      :focus-visible {
+      :focus-visible,
+      :where(input[type="date"], input[type="time"], input[type="datetime-local"]):focus-within {
         outline: 2px solid Highlight;
         outline-color: Highlight;
       }
