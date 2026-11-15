@@ -36,9 +36,9 @@ function cards() {
   return [...document.querySelectorAll("details")];
 }
 
-it("collapses only the current tab's cards, retaining contents, focus and preferences", () => {
+it("collapses only the current tab's cards, retaining contents, focus and preferences", async () => {
   document.body.innerHTML = `
-    <button id="collapse-all-cards" type="button">Collapse all</button>
+    <nav id="view-nav"><button role="tab" aria-selected="true" id="settings-tab">Settings</button><button role="tab" aria-selected="false" id="queue-tab">Queue</button><button id="collapse-all-cards" hidden>Collapse all cards</button></nav>
     <section data-view="settings">
       <section role="tabpanel">
         <details class="card" id="outer" open><summary>Outer</summary>
@@ -60,7 +60,8 @@ it("collapses only the current tab's cards, retaining contents, focus and prefer
   input.value = "edited draft";
   input.focus();
   button.click();
-  button.click();
+  expect(button.hidden).toBe(true);
+  expect(document.activeElement).toBe(document.getElementById("settings-tab"));
   for (const id of ["outer", "nested", "closed", "unavailable"]) {
     const card = document.getElementById(id);
     expect(card.open).toBe(false);
@@ -72,12 +73,53 @@ it("collapses only the current tab's cards, retaining contents, focus and prefer
   }
   expect(document.querySelector("input")).toBe(input);
   expect(input.value).toBe("edited draft");
-  expect(document.activeElement).toBe(button);
   document.querySelector('[data-view="settings"]').hidden = true;
   document.querySelector('[data-view="queue"]').hidden = false;
+  document.getElementById("queue-tab").setAttribute("aria-selected", "true");
+  document.getElementById("settings-tab").setAttribute("aria-selected", "false");
+  document.getElementById("other-tab").open = false;
+  document.getElementById("other-tab").open = true;
+  document.getElementById("other-tab").dispatchEvent(new Event("toggle"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(button.hidden).toBe(false);
   button.click();
   expect(document.getElementById("other-tab").open).toBe(false);
+  expect(button.hidden).toBe(true);
   expect(document.getElementById("other-subtab").open).toBe(true);
+});
+
+it("shows collapse only for open cards in the active visible tab as cards change", async () => {
+  document.body.innerHTML = `
+    <nav id="view-nav"><button role="tab" aria-selected="true">One</button><button role="tab" aria-selected="false">Two</button><button id="collapse-all-cards" hidden>Collapse all cards</button></nav>
+    <main><section data-view="one"><details class="card" id="hidden-card" open hidden></details><details class="card" id="closed-card"></details>
+      <section role="tabpanel" hidden><details class="card" open></details></section></section>
+      <section data-view="two" hidden><details class="card" id="second-card" open></details></section></main>`;
+  installCardState();
+  const button = document.getElementById("collapse-all-cards");
+  expect(button.hidden).toBe(true);
+  const first = document.getElementById("closed-card");
+  first.open = true;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(button.hidden).toBe(false);
+  first.remove();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(button.hidden).toBe(true);
+  document.querySelector('[data-view="one"]').hidden = true;
+  document.querySelector('[data-view="two"]').hidden = false;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(button.hidden).toBe(false);
+  document.getElementById("second-card").remove();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(button.hidden).toBe(true);
+  const added = document.createElement("details");
+  added.className = "card";
+  added.open = true;
+  document.querySelector('[data-view="two"]').append(added);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(button.hidden).toBe(false);
+  added.hidden = true;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(button.hidden).toBe(true);
 });
 
 it("places a named native Collapse all button before the card panels", () => {
@@ -86,7 +128,8 @@ it("places a named native Collapse all button before the card panels", () => {
   const button = template.content.getElementById("collapse-all-cards");
   expect(button.tagName).toBe("BUTTON");
   expect(button.type).toBe("button");
-  expect(button.getAttribute("aria-label")).toBe("Collapse all cards in the current tab");
+  expect(button.textContent.trim()).toBe("Collapse all cards");
+  expect(button.hasAttribute("aria-label")).toBe(false);
   expect(button.closest("details")).toBeNull();
   expect(button.previousElementSibling.getAttribute("role")).toBe("tablist");
   expect(button.parentElement.id).toBe("view-nav");
