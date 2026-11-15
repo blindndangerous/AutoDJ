@@ -2485,6 +2485,14 @@ describe("static accessibility contracts", () => {
     }
   });
 
+  it("keeps HTML input patterns valid with browser Unicode-set semantics", () => {
+    installDocument();
+    for (const input of document.querySelectorAll("input[pattern]")) {
+      // HTML patterns use the v flag; an invalid pattern is silently ignored.
+      expect(() => new RegExp(input.pattern, "v"), input.id).not.toThrow();
+    }
+  });
+
   it("keeps groups from starting invalid with an empty required field", () => {
     // Firefox calls an empty required field, and every fieldset around it,
     // "invalid entry" before anything is typed: "Stream grouping invalid

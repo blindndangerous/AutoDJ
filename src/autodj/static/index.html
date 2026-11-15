@@ -1504,7 +1504,7 @@
         <ul id="speech-connections" aria-label="Configured speech connections"></ul>
         <form id="speech-provider-form" novalidate>
           <p id="speech-provider-error" class="field-error" hidden></p>
-          <div class="settings-row"><label for="speech-provider-id">Connection ID</label><input id="speech-provider-id" aria-required="true" pattern="[a-z0-9][a-z0-9-]{0,63}" maxlength="64"></div>
+          <div class="settings-row"><label for="speech-provider-id">Connection ID</label><input id="speech-provider-id" aria-required="true" pattern="[a-z0-9][a-z0-9\-]{0,63}" maxlength="64"></div>
           <div class="settings-row"><label for="speech-provider-name">Connection name</label><input id="speech-provider-name" maxlength="100" aria-required="true"></div>
           <div class="settings-row"><label for="speech-provider-engine">Engine</label><select id="speech-provider-engine"><option value="openai">OpenAI</option><option value="speechify">Speechify</option><option value="fish">Fish</option><option value="chatterbox">Chatterbox</option><option value="gpt-sovits">GPT-SoVITS</option></select></div>
           <div class="settings-row"><label for="speech-provider-url">Speech endpoint URL</label><input id="speech-provider-url" type="url" aria-required="true"></div>

@@ -105,7 +105,7 @@ export function installSpeechStudio(root = document.getElementById("speech-studi
     row.model = field(wrapper, "Model"); row.model.maxLength = 256;
     row.speed = field(wrapper, "Speed"); row.speed.type = "number"; row.speed.step = "0.05"; row.speed.min = "0.25"; row.speed.max = "4";
     row.instructions = field(wrapper, "Delivery instructions", "textarea"); row.instructions.maxLength = 4096;
-    const presetName = field(wrapper, "Preset name"); presetName.maxLength = 64; presetName.pattern = "[a-z0-9][a-z0-9-]{0,63}";
+    const presetName = field(wrapper, "Preset name"); presetName.maxLength = 64; presetName.pattern = "[a-z0-9][a-z0-9\\-]{0,63}";
     wrapper.append(button("Save voice preset", async () => {
       await send(`/presets/${encodeURIComponent(presetName.value)}`, candidate(row), "PUT");
       say("Voice preset saved. The station voice has not changed."); await refresh();

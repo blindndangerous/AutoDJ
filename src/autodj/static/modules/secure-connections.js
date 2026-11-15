@@ -3,7 +3,7 @@ import { confirmAction } from "./confirm-dialog.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { openDialog, closeDialog } from "./dialog-guard.js";
 import { makeSay, clearAnnouncedStatus } from "./live-region.js";
-import { clearFieldError, clearFormErrors, showFieldError } from "./dom-helpers.js";
+import { clearFieldError, clearFormErrors, showFieldError, fieldValidationMessage } from "./dom-helpers.js";
 import { onCardOpen } from "./card-state.js";
 import { approximateDurationText } from "./time-format.js";
 
@@ -120,9 +120,9 @@ export function installSecureConnections({ panel = document.getElementById("secu
     void updates.restartForHttps(destination.href);
   }
   function acmeForm() {
-    return `<label for="sc-domain">Domain</label><input id="sc-domain" required maxlength="253" autocomplete="off" spellcheck="false" aria-describedby="sc-domain-help" value="${esc(wizard.draft?.domain || "")}"><p id="sc-domain-help" class="setting-desc">One public DNS name; no IP addresses or wildcards.</p>`
-      + `<label for="sc-zone">Cloudflare zone ID</label><input id="sc-zone" required pattern="[0-9a-f]{32}" maxlength="32" autocomplete="off" spellcheck="false" aria-describedby="sc-zone-help" value="${esc(wizard.draft?.zone_id || "")}"><p id="sc-zone-help" class="setting-desc">32 lowercase hexadecimal characters from the Cloudflare zone overview.</p>`
-      + '<label for="sc-token">Cloudflare API token</label><input id="sc-token" type="password" required maxlength="1024" autocomplete="new-password" aria-describedby="sc-token-help"><p id="sc-token-help" class="setting-desc">Use a token limited to this zone, with DNS Edit and Zone Read permissions.</p>'
+    return `<label for="sc-domain">Domain</label><input id="sc-domain" aria-required="true" maxlength="253" autocomplete="off" spellcheck="false" aria-describedby="sc-domain-help" value="${esc(wizard.draft?.domain || "")}"><p id="sc-domain-help" class="setting-desc">One public DNS name; no IP addresses or wildcards.</p>`
+      + `<label for="sc-zone">Cloudflare zone ID</label><input id="sc-zone" aria-required="true" pattern="[0-9a-f]{32}" maxlength="32" autocomplete="off" spellcheck="false" aria-describedby="sc-zone-help" value="${esc(wizard.draft?.zone_id || "")}"><p id="sc-zone-help" class="setting-desc">32 lowercase hexadecimal characters from the Cloudflare zone overview.</p>`
+      + '<label for="sc-token">Cloudflare API token</label><input id="sc-token" type="password" aria-required="true" maxlength="1024" autocomplete="new-password" aria-describedby="sc-token-help"><p id="sc-token-help" class="setting-desc">Use a token limited to this zone, with DNS Edit and Zone Read permissions.</p>'
       + `<label for="sc-environment">Certificate service</label><select id="sc-environment"><option value="staging">${STAGING}</option><option value="production"${wizard.draft?.environment === "production" ? " selected" : ""}>Let's Encrypt production certificate</option></select>`
       + `<p id="sc-ct-warning" class="setting-desc"${wizard.draft?.environment === "production" ? "" : " hidden"}>Production certificate names are published in public Certificate Transparency logs.</p>`;
   }
@@ -160,8 +160,8 @@ export function installSecureConnections({ panel = document.getElementById("secu
       + (operation.addresses ? `<p>Addresses observed by this host: ${operation.addresses.length ? operation.addresses.map(esc).join(", ") : "None"}.</p>` : "")
       + (operation.environment === "production" ? '<p id="sc-ct-warning">Production certificate names are published in public Certificate Transparency logs.</p>' : "")
       + (operation.next_attempt && operation.phase === "error" ? `<p>Next attempt no earlier than ${esc(new Date(operation.next_attempt * 1000).toLocaleString())}.</p>` : "")
-      + (canIssue ? `<p><a href="${esc(terms)}">Read the current Let's Encrypt terms</a></p><label for="sc-terms"><input id="sc-terms" type="checkbox" required> I accept these terms</label>`
-        + (!operation.confirmed ? `<p>The observed addresses could not all be matched to this host. NAT or container networking may explain this.</p><label for="sc-host-confirm"><input id="sc-host-confirm" type="checkbox" required> I have checked that devices on my network reach this host at ${esc(operation.domain)}</label>` : "") : "")
+      + (canIssue ? `<p><a href="${esc(terms)}">Read the current Let's Encrypt terms</a></p><label for="sc-terms"><input id="sc-terms" type="checkbox" aria-required="true"> I accept these terms</label>`
+        + (!operation.confirmed ? `<p>The observed addresses could not all be matched to this host. NAT or container networking may explain this.</p><label for="sc-host-confirm"><input id="sc-host-confirm" type="checkbox" aria-required="true"> I have checked that devices on my network reach this host at ${esc(operation.domain)}</label>` : "") : "")
       + (operation.cleanup_pending || operation.cleanup_released ? `<p>Remove the TXT record at <code>${esc(operation.cleanup_name || `_acme-challenge.${operation.domain}`)}</code> manually if automatic cleanup is stopped. Only remove AutoDJ's record${operation.cleanup_record_ids?.length ? ` IDs: ${operation.cleanup_record_ids.map(esc).join(", ")}` : "; check its value in Cloudflare before deleting"}.</p>` : "")
       + (operation.cleanup_note ? `<p>${esc(operation.cleanup_note)}</p>` : "")
       + (operation.renewal_note ? `<p>${esc(operation.renewal_note)}</p>` : "")
@@ -179,7 +179,7 @@ export function installSecureConnections({ panel = document.getElementById("secu
     }, { once: true });
   }
   function validateField(field, message) {
-    if (field.checkValidity()) return true;
+    if (!fieldValidationMessage(field, { requiredMessage: message, invalidMessage: message })) return true;
     fieldError(field, message);
     return false;
   }
@@ -306,12 +306,13 @@ export function installSecureConnections({ panel = document.getElementById("secu
     const cert = selected();
     if (wizard.kind === "add" && !wizard.id) {
       if (wizard.operation) return acmeOperation();
+      const importRequired = wizard.method === "import" ? ' aria-required="true"' : "";
       return '<p>Create a certificate for this host. Save the public copy for your recording device.</p>'
         + `<label for="sc-method">Certificate source</label><select id="sc-method"><option value="create"${wizard.method === "create" ? " selected" : ""}>Create a self-signed certificate</option><option value="import"${wizard.method === "import" ? " selected" : ""}>Import a certificate</option>${inventory.acme_available ? `<option value="acme"${wizard.method === "acme" ? " selected" : ""}>Get a certificate from Let’s Encrypt</option>` : ""}</select>`
-        + `<label for="sc-name">Certificate name</label><input id="sc-name" maxlength="120" required value="${esc(wizard.draft?.name || "AutoDJ certificate")}">`
+        + `<label for="sc-name">Certificate name</label><input id="sc-name" maxlength="120" aria-required="true" value="${esc(wizard.draft?.name || "AutoDJ certificate")}">`
         + (wizard.method === "acme" ? acmeForm() + (wizard.cleanupNote ? `<p>${esc(wizard.cleanupNote)}</p>` : "") :
         `<label for="sc-hosts">Host names and addresses</label><input id="sc-hosts" aria-describedby="sc-hosts-help" value="${esc((inventory.hosts || []).join(", "))}"><p id="sc-hosts-help" class="setting-desc">Separate addresses with commas.</p>`
-        + `<details${wizard.method === "import" ? " open" : ""}><summary>Import a certificate</summary><label for="sc-cert">Certificate (PEM)</label><textarea id="sc-cert" rows="4" autocomplete="off" spellcheck="false"></textarea><label for="sc-key">Private key (PEM)</label><textarea id="sc-key" rows="4" autocomplete="off" spellcheck="false"></textarea></details>`);
+        + `<details${wizard.method === "import" ? " open" : ""}><summary>Import a certificate</summary><label for="sc-cert">Certificate (PEM)</label><textarea id="sc-cert"${importRequired} rows="4" autocomplete="off" spellcheck="false"></textarea><label for="sc-key">Private key (PEM)</label><textarea id="sc-key"${importRequired} rows="4" autocomplete="off" spellcheck="false"></textarea></details>`);
     }
     if (!cert) return `<p>Start on the computer or server running AutoDJ.</p><ol><li>On the host, open <code>http://127.0.0.1:${esc(win.location.port || "8080")}</code>.</li><li>Go to <strong>Settings → Server → Secure connections (HTTPS)</strong>.</li><li>Create the certificate and save the public copy.</li></ol><details><summary>Using a NAS or a server without a browser?</summary><p>Set up AutoDJ’s certificate through a trusted terminal or admin connection. Use that connection to copy the public certificate to your recording device.</p><a href="https://github.com/blindndangerous/AutoDJ/blob/master/docs/guides/operations/network.md#https-on-your-home-network">Host setup guide</a></details>`;
     let text = `<p><strong>${esc(cert.name)}</strong></p>`;
@@ -381,11 +382,10 @@ export function installSecureConnections({ panel = document.getElementById("secu
       wizard.step = 3;
     } else if (wizard.kind === "add" && !wizard.id) {
       const name = content.querySelector("#sc-name");
-      if (!name.reportValidity()) return;
+      if (!validateField(name, "Enter a certificate name.")) return;
       if (wizard.method === "import") {
         for (const [id, message] of [["sc-cert", "Enter the certificate in PEM format."], ["sc-key", "Enter the matching private key in PEM format."]]) {
           const field = content.querySelector(`#${id}`);
-          field.required = true;
           if (!validateField(field, message)) return;
         }
       }
