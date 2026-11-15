@@ -35,6 +35,65 @@ beforeEach(async () => {
 });
 
 describe("Settings drafts", () => {
+  it("does not treat an untouched incomplete setting as an unsaved edit", () => {
+    input.setAttribute("aria-required", "true");
+    input.value = "";
+    register(null);
+    expect(drafts.settingsHaveChanges()).toBe(false);
+  });
+
+  it("preserves a newer blank edit when the reply to a saved zero arrives", async () => {
+    register();
+    input.setAttribute("aria-required", "true");
+    drafts.applySettingsDrafts(snapshot("one", 5));
+    let finish;
+    mocks.request.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    edit(0);
+    const saving = drafts.saveSettingsPanel(panel);
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    finish({ revision: "two", applied: ["playback"], settings: snapshot("two", 0) });
+    expect(await saving).toBe(true);
+    expect(input.value).toBe("");
+    expect(drafts.settingsHaveChanges()).toBe(true);
+    expect(await drafts.saveSettingsPanel(panel)).toBe(false);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("refuses an empty required number before saving, focuses it, and accepts zero after correction", async () => {
+    register();
+    input.setAttribute("aria-required", "true");
+    drafts.applySettingsDrafts(snapshot("one", 5));
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    mocks.request.mockResolvedValue({ revision: "two", applied: ["playback"], settings: snapshot("two", 0) });
+    expect(await drafts.saveSettingsPanel(panel)).toBe(false);
+    expect(mocks.request).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(input);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(panel.querySelector(".field-error").textContent).toBe("Enter a value for this field.");
+    edit(0);
+    expect(await drafts.saveSettingsPanel(panel)).toBe(true);
+    expect(JSON.parse(mocks.request.mock.calls[0][1].body).changes).toEqual({ playback: { music_speed_percent: 0 } });
+  });
+
+  it("keeps a cleared required zero dirty until it is corrected or discarded", async () => {
+    register();
+    input.setAttribute("aria-required", "true");
+    drafts.applySettingsDrafts(snapshot());
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(drafts.settingsHaveChanges()).toBe(true);
+    expect(await drafts.saveSettingsPanel(panel)).toBe(false);
+    expect(mocks.request).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(input);
+    edit(0);
+    expect(drafts.settingsHaveChanges()).toBe(false);
+    expect(input.hasAttribute("aria-invalid")).toBe(false);
+    expect(await drafts.saveSettingsPanel(panel)).toBe(true);
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
+
   it("saves and discards music duck in Sound independently of automatic liners", async () => {
     const html = readFileSync("src/autodj/static/index.html", "utf8");
     const fragment = html.slice(html.indexOf('<div class="card" role="tabpanel" id="spanel-sound"'),

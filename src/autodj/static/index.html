@@ -20,14 +20,14 @@
      first pairing. -->
 <dialog id="auth-dialog"
         aria-labelledby="auth-title" aria-describedby="auth-reason auth-help">
-  <form id="auth-form" method="dialog">
+  <form id="auth-form" method="dialog" novalidate>
     <h1 id="auth-title">Pair this browser</h1>
     <p id="auth-reason" hidden></p>
     <p id="auth-help">Enter the 8-digit pairing code shown by the AutoDJ server. You only need to do this once on this browser.</p>
     <label for="auth-token">Pairing code</label>
     <input id="auth-token" name="code" type="text"
            autocomplete="one-time-code" inputmode="numeric"
-           pattern="[0-9]{8}" maxlength="8" required>
+           pattern="[0-9]{8}" maxlength="8" aria-required="true">
     <label for="auth-device-name">Device name <span class="visually-hidden">(optional)</span></label>
     <input id="auth-device-name" name="device_name" type="text"
            autocomplete="off" maxlength="64" placeholder="Kitchen tablet">
@@ -444,7 +444,7 @@
 
         <div class="settings-row tag-field">
           <label for="tag-title">Title</label>
-          <input type="text" id="tag-title" data-tag="title" autocomplete="off" required>
+          <input type="text" id="tag-title" data-tag="title" autocomplete="off" aria-required="true">
           <p id="tag-title-error" class="field-error" hidden></p>
         </div>
         <div class="settings-row tag-field">
@@ -693,9 +693,9 @@
     <form id="hist-export" aria-labelledby="hist-export-heading" novalidate>
       <p id="hist-export-help">Saves the tracks played between two dates.</p>
       <label for="hist-export-from">From</label>
-      <input type="date" id="hist-export-from" required aria-describedby="hist-export-help">
+      <input type="date" id="hist-export-from" aria-required="true" aria-describedby="hist-export-help">
       <label for="hist-export-to">To</label>
-      <input type="date" id="hist-export-to" required>
+      <input type="date" id="hist-export-to" aria-required="true">
       <label for="hist-export-format">Format</label>
       <select id="hist-export-format">
         <option value="csv">Play log (CSV)</option>
@@ -1502,19 +1502,21 @@
       <p id="speech-status" role="status" aria-live="polite" aria-atomic="true"></p>
       <details><summary>Speech connections for all stations</summary>
         <ul id="speech-connections" aria-label="Configured speech connections"></ul>
-        <form id="speech-provider-form">
-          <div class="settings-row"><label for="speech-provider-id">Connection ID</label><input id="speech-provider-id" required pattern="[a-z0-9][a-z0-9-]{0,63}" maxlength="64"></div>
-          <div class="settings-row"><label for="speech-provider-name">Connection name</label><input id="speech-provider-name" maxlength="100" required></div>
+        <form id="speech-provider-form" novalidate>
+          <p id="speech-provider-error" class="field-error" hidden></p>
+          <div class="settings-row"><label for="speech-provider-id">Connection ID</label><input id="speech-provider-id" aria-required="true" pattern="[a-z0-9][a-z0-9-]{0,63}" maxlength="64"></div>
+          <div class="settings-row"><label for="speech-provider-name">Connection name</label><input id="speech-provider-name" maxlength="100" aria-required="true"></div>
           <div class="settings-row"><label for="speech-provider-engine">Engine</label><select id="speech-provider-engine"><option value="openai">OpenAI</option><option value="speechify">Speechify</option><option value="fish">Fish</option><option value="chatterbox">Chatterbox</option><option value="gpt-sovits">GPT-SoVITS</option></select></div>
-          <div class="settings-row"><label for="speech-provider-url">Speech endpoint URL</label><input id="speech-provider-url" type="url" required></div>
+          <div class="settings-row"><label for="speech-provider-url">Speech endpoint URL</label><input id="speech-provider-url" type="url" aria-required="true"></div>
           <div class="settings-row"><label for="speech-provider-key">API key</label><input id="speech-provider-key" type="password" autocomplete="new-password"></div>
           <p>Leave the key blank to keep a saved key. Saved keys are never displayed.</p>
           <div class="settings-check"><input id="speech-provider-local" type="checkbox"><label for="speech-provider-local">Allow trusted local network access and HTTP</label></div>
           <button type="submit">Save connection</button>
         </form>
       </details>
-      <form id="speech-compare-form">
-        <div class="settings-row"><label for="speech-text">Script</label><textarea id="speech-text" required maxlength="5000" rows="4"></textarea></div>
+      <form id="speech-compare-form" novalidate>
+        <p id="speech-compare-error" class="field-error" hidden></p>
+        <div class="settings-row"><label for="speech-text">Script</label><textarea id="speech-text" aria-required="true" maxlength="5000" rows="4"></textarea></div>
         <div class="settings-row"><label for="speech-preset">Voice preset</label><select id="speech-preset"></select><button type="button" id="speech-load-preset">Load preset</button><button type="button" id="speech-default">Use as station voice</button></div>
         <p id="speech-default-name"></p>
         <div id="speech-candidates"></div>
@@ -2162,7 +2164,7 @@
         </span>
         <div class="settings-row">
           <label for="recording-retention-days">Days to keep recordings</label>
-          <input type="number" id="recording-retention-days" min="0" step="1" value="0" required
+          <input type="number" id="recording-retention-days" min="0" step="1" value="0" aria-required="true"
                  inputmode="numeric" aria-describedby="recording-retention-desc">
         </div>
         <span class="setting-desc" id="recording-retention-desc">
@@ -2170,7 +2172,7 @@
         </span>
         <div class="settings-row">
           <label for="recording-free-space-mb">Minimum free space in MB</label>
-          <input type="number" id="recording-free-space-mb" min="0" step="1" value="100" required
+          <input type="number" id="recording-free-space-mb" min="0" step="1" value="100" aria-required="true"
                  inputmode="numeric" aria-describedby="recording-free-space-desc">
         </div>
         <span class="setting-desc" id="recording-free-space-desc">
@@ -2390,7 +2392,7 @@
         <ul class="stream-detail" id="listener-stats-lengths" aria-labelledby="listener-stats-lengths-title" hidden></ul>
         <div class="settings-row">
           <label for="listener-stats-keep">Days to keep statistics</label>
-          <input type="number" id="listener-stats-keep" min="0" max="3650" step="1" value="90" required
+          <input type="number" id="listener-stats-keep" min="0" max="3650" step="1" value="90" aria-required="true"
                  aria-describedby="listener-stats-keep-desc">
         </div>
         <span class="setting-desc" id="listener-stats-keep-desc">
@@ -2470,12 +2472,12 @@
         <p class="setting-desc">For the Talk button on Now Playing: how far the music ducks while you talk, and how fast it comes back after.</p>
         <div class="settings-row">
           <label for="live-return-seconds">Return time (seconds)</label>
-          <input type="number" id="live-return-seconds" min="0.1" max="10" step="0.1" required aria-describedby="live-return-desc">
+          <input type="number" id="live-return-seconds" min="0.1" max="10" step="0.1" aria-required="true" aria-describedby="live-return-desc">
         </div>
         <span class="setting-desc" id="live-return-desc">How long the music takes to come back up after you stop talking, from 0.1 to 10 seconds.</span>
         <div class="settings-row">
           <label for="live-duck-db">Duck amount (dB)</label>
-          <input type="number" id="live-duck-db" min="0" max="30" step="1" required aria-describedby="live-duck-desc">
+          <input type="number" id="live-duck-db" min="0" max="30" step="1" aria-required="true" aria-describedby="live-duck-desc">
         </div>
         <span class="setting-desc" id="live-duck-desc">How far below its normal level the music plays while you talk, from 0 to 30 decibels.</span>
         <p class="field-error" id="live-talkover-error" hidden></p>
@@ -3295,11 +3297,13 @@
             </span>
             <div class="settings-row">
               <label for="ads-spot-title">Spot title</label>
-              <input type="text" id="ads-spot-title" maxlength="100" autocomplete="off" required>
+              <!-- Custom submit validation marks errors only after Save;
+                   native required exposes blank fields as invalid in Firefox. -->
+              <input type="text" id="ads-spot-title" maxlength="100" autocomplete="off" aria-required="true">
             </div>
             <div class="settings-row">
               <label for="ads-spot-advertiser">Advertiser</label>
-              <input type="text" id="ads-spot-advertiser" maxlength="100" autocomplete="off" required>
+              <input type="text" id="ads-spot-advertiser" maxlength="100" autocomplete="off" aria-required="true">
             </div>
             <div class="settings-row">
               <label for="ads-spot-campaign">Campaign</label>
@@ -3357,7 +3361,7 @@
             <p id="ads-break-error" class="field-error" hidden></p>
             <div class="settings-row">
               <label for="ads-break-name">Break name</label>
-              <input type="text" id="ads-break-name" maxlength="100" autocomplete="off" required>
+              <input type="text" id="ads-break-name" maxlength="100" autocomplete="off" aria-required="true">
             </div>
             <div class="settings-row">
               <label for="ads-break-minutes">Minutes past the hour</label>
@@ -3461,11 +3465,11 @@
           <p id="ads-report-error" class="field-error" hidden></p>
           <div class="settings-row">
             <label for="ads-report-from">From</label>
-            <input type="date" id="ads-report-from" required aria-describedby="ads-report-desc">
+            <input type="date" id="ads-report-from" aria-required="true" aria-describedby="ads-report-desc">
           </div>
           <div class="settings-row">
             <label for="ads-report-to">To</label>
-            <input type="date" id="ads-report-to" required>
+            <input type="date" id="ads-report-to" aria-required="true">
           </div>
           <button type="submit" id="ads-report-show">Show report</button>
           <div class="settings-row">
@@ -4067,15 +4071,15 @@
       <div class="settings-row" id="review-show-row"><label for="review-show">Show</label><select id="review-show"></select></div>
       <div class="settings-row"><label for="review-start">Intended start</label><input id="review-start" type="datetime-local" aria-describedby="review-start-hint"></div>
       <p class="setting-desc" id="review-start-hint">Optional browser-local time; automatic content uses station time. Blank starts now.</p>
-      <div class="settings-row"><label for="review-minutes">Programme minutes</label><input id="review-minutes" type="number" min="1" max="60" step="1" value="60" required></div>
+      <div class="settings-row"><label for="review-minutes">Programme minutes</label><input id="review-minutes" type="number" min="1" max="60" step="1" value="60" aria-required="true"></div>
       <div class="settings-row"><label for="review-selection-start">Range start (seconds)</label><input id="review-selection-start" type="number" min="0" step="any" aria-describedby="review-range-hint"></div>
       <div class="settings-row"><label for="review-selection-end">Range end (seconds)</label><input id="review-selection-end" type="number" min="0" step="any" aria-describedby="review-range-hint"></div>
       <p class="setting-desc" id="review-range-hint">Leave both blank for the full programme; boundaries expand to preserve complete clips and joins.</p>
       <details><summary>Review timing</summary>
-        <div class="settings-row"><label for="review-head">Opening (seconds)</label><input id="review-head" type="number" min="0.001" max="3600" step="any" value="10" required></div>
-        <div class="settings-row"><label for="review-tail">Ending (seconds)</label><input id="review-tail" type="number" min="0.001" max="3600" step="any" value="10" required></div>
-        <div class="settings-row"><label for="review-threshold">Long clip (seconds)</label><input id="review-threshold" type="number" min="0.001" max="86400" step="any" value="300" required></div>
-        <div class="settings-row"><label for="review-tone">Skip tone (seconds)</label><input id="review-tone" type="number" min="0.001" max="10" step="any" value="0.25" required></div>
+        <div class="settings-row"><label for="review-head">Opening (seconds)</label><input id="review-head" type="number" min="0.001" max="3600" step="any" value="10" aria-required="true"></div>
+        <div class="settings-row"><label for="review-tail">Ending (seconds)</label><input id="review-tail" type="number" min="0.001" max="3600" step="any" value="10" aria-required="true"></div>
+        <div class="settings-row"><label for="review-threshold">Long clip (seconds)</label><input id="review-threshold" type="number" min="0.001" max="86400" step="any" value="300" aria-required="true"></div>
+        <div class="settings-row"><label for="review-tone">Skip tone (seconds)</label><input id="review-tone" type="number" min="0.001" max="10" step="any" value="0.25" aria-required="true"></div>
       </details>
       <button type="submit" id="review-generate">Generate review</button>
       <button type="button" id="review-cancel" hidden>Cancel generation</button>

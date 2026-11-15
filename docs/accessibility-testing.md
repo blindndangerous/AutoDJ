@@ -22,6 +22,17 @@ is pending; the detailed interaction and release-sampling rules remain here.
 
 AutoDJ uses automated checks and requires a screen-reader sample before release to catch accessibility regressions. The results apply only to the paths that the checks exercise. They do not certify the whole application.
 
+Required fields in the control UI use `aria-required="true"`; forms validate on
+Save or Submit so untouched blank fields are announced as required rather than
+invalid. `fieldValidationMessage` in `modules/dom-helpers.js` checks required
+values and preserves browser checks for type, pattern, range and step constraints.
+`validateFormFields` uses the existing field-error helpers to associate the first
+error and focus its control. Settings drafts and programme review use the same
+value checks; domain rules such as date ordering remain in their forms. Verify
+that blank required values prevent submission, valid zero values remain usable,
+and correcting a field clears its error. Check initial entry and failed submission
+with Firefox/NVDA as well as the automated form tests.
+
 Each dialog starts with an H1 title referenced by its `aria-labelledby`.
 Verify level-one heading navigation inside the dialog as well as its initial field focus.
 

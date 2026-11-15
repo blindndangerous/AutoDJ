@@ -4,7 +4,7 @@ import { currentStation, stationName } from "./stations.js";
 import { makeSay } from "./live-region.js";
 import { onCardOpen } from "./card-state.js";
 import { chooseAction } from "./confirm-dialog.js";
-import { clearFieldError, showFieldError, applyServerFieldError } from "./dom-helpers.js";
+import { clearFieldError, showFieldError, applyServerFieldError, fieldValidationMessage } from "./dom-helpers.js";
 
 const editors = new WeakMap();
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -22,8 +22,15 @@ function editorFor(doc) {
   return editor;
 }
 
+function invalidEdits(part) {
+  return [...part.invalidEdited].some((control) => fieldValidationMessage(control));
+}
+
 function dirty(part) {
-  return part.baseline !== null && !equal(part.read(), part.baseline);
+  // Number("") is zero, but clearing a required zero is still an invalid
+  // edit. Keep it as a draft so Save can report it instead of doing nothing.
+  return part.baseline !== null && (invalidEdits(part)
+    || !equal(part.read(), part.baseline));
 }
 
 function dirtyPanel(panel) {
@@ -87,12 +94,14 @@ function accept(part, value) {
   // save changes that were not there.
   if (dirty(part) && Object.entries(part.read()).every(([key, item]) => equal(value[key], item))) {
     part.baseline = clone(part.read());
+    if (!invalidEdits(part)) part.invalidEdited.clear();
     return;
   }
   if (!dirty(part)) {
     const unchanged = part.baseline !== null && Object.entries(part.baseline).every(([key, item]) => equal(value[key], item));
     if (!unchanged) part.write(value);
     part.baseline = clone(part.read());
+    part.invalidEdited.clear();
   }
 }
 
@@ -175,7 +184,10 @@ export function registerSettingsGroup(spec) {
     for (const type of ["input", "change"]) element.addEventListener(type, (event) => {
       if ((event.target.getAttribute?.("aria-describedby") || "").split(/\s+/).includes(panel.error.id)) clearFieldError(event.target, panel.error);
       for (const part of panel.parts) {
-        if (part.baseline === null && controls(part).includes(event.target)) part.baseline = clone(part.initial);
+        if (!controls(part).includes(event.target)) continue;
+        if (part.baseline === null) part.baseline = clone(part.initial);
+        if (fieldValidationMessage(event.target)) part.invalidEdited.add(event.target);
+        else part.invalidEdited.delete(event.target);
       }
       refresh(panel);
     });
@@ -183,7 +195,7 @@ export function registerSettingsGroup(spec) {
       onCardOpen(element, () => loadSettingsDrafts(doc));
     }
   }
-  const part = { ...spec, baseline: null, latest: null, initial: clone(spec.read()), echoUntil: 0 };
+  const part = { ...spec, baseline: null, latest: null, initial: clone(spec.read()), echoUntil: 0, invalidEdited: new Set() };
   panel.parts.push(part);
   if (part.group) accept(part, editor.values[part.group]);
   else {
@@ -227,6 +239,7 @@ export function discardSettingsPanel(element) {
     part.echoUntil = 0;
     part.write(part.latest);
     part.baseline = clone(part.read());
+    part.invalidEdited.clear();
     for (const control of controls(part)) clearFieldError(control, panel.error);
   }
   refresh(panel);
@@ -251,8 +264,9 @@ export async function saveSettingsPanel(element) {
       }
       if (part.validate?.() === false) return false;
       for (const control of controls(part)) {
-        if (control.disabled || !control.checkValidity || control.checkValidity()) continue;
-        showFieldError(control, control.validationMessage, panel.error, panel.status);
+        const message = fieldValidationMessage(control);
+        if (!message) continue;
+        showFieldError(control, message, panel.error, panel.status);
         return false;
       }
       const value = clone(part.read());
@@ -297,12 +311,13 @@ export async function saveSettingsPanel(element) {
         if (part.group && !result.applied.includes(part.group)) continue;
         if (!part.group && await part.commit(value) === false) throw new Error("Settings could not be applied.");
         if (!current()) return false;
-        const unchanged = equal(part.read(), value);
+        const unchanged = !invalidEdits(part) && equal(part.read(), value);
         part.latest = clone(part.group ? editor.values[part.group] : value);
         part.baseline = value;
         if (unchanged) {
           part.write(part.latest);
           part.baseline = clone(part.read());
+          part.invalidEdited.clear();
         }
         // shortcut: legacy pushes have no revision; hold old echoes for five seconds.
         if (part.group) part.echoUntil = Date.now() + 5000;
@@ -392,7 +407,10 @@ export function resetSettingsDrafts(doc = document) {
   for (const panel of editor.panels.values()) {
     panel.busyController?.abort();
     panel.saving = false;
-    for (const part of panel.parts) if (part.group) { part.baseline = null; part.latest = null; part.echoUntil = 0; }
+    for (const part of panel.parts) if (part.group) {
+      part.baseline = null; part.latest = null; part.echoUntil = 0;
+      part.invalidEdited.clear();
+    }
     refresh(panel);
   }
 }

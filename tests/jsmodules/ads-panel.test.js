@@ -277,6 +277,12 @@ describe("the Ads tab", () => {
     await start();
     byId("ads-spot-add").click();
     expect(document.activeElement).toBe(byId("ads-spot-file"));
+    for (const id of ["ads-spot-title", "ads-spot-advertiser"]) {
+      const field = byId(id);
+      expect(field.value).toBe("");
+      expect(field.validity.valueMissing).toBe(false);
+      expect(field.hasAttribute("aria-invalid")).toBe(false);
+    }
     byId("ads-spot-form").requestSubmit();
     const error = byId("ads-spot-error");
     expect(error.hidden).toBe(false);
@@ -293,6 +299,12 @@ describe("the Ads tab", () => {
     Object.defineProperty(file, "files", { value: [new File(["x"], "spot.wav")], configurable: true });
     file.dispatchEvent(new Event("input", { bubbles: true }));
     expect(file.hasAttribute("aria-invalid")).toBe(false);
+    byId("ads-spot-form").requestSubmit();
+    expect(document.activeElement).toBe(byId("ads-spot-title"));
+    expect(byId("ads-spot-title").getAttribute("aria-invalid")).toBe("true");
+    expect(error.textContent).toBe("Enter a title for the spot");
+    expect(server.calls.some((call) => call.method === "POST")).toBe(false);
+    await flush();
     byId("ads-spot-title").value = "Fall sale";
     byId("ads-spot-form").requestSubmit();
     expect(document.activeElement).toBe(byId("ads-spot-advertiser"));
@@ -386,6 +398,14 @@ describe("the Ads tab", () => {
     byId("ads-break-add").click();
     expect(document.activeElement).toBe(byId("ads-break-name"));
     expect(byId("ads-break-minutes").value).toBe("15, 45");
+    expect(byId("ads-break-name").validity.valueMissing).toBe(false);
+    expect(byId("ads-break-name").hasAttribute("aria-invalid")).toBe(false);
+    byId("ads-break-form").requestSubmit();
+    expect(document.activeElement).toBe(byId("ads-break-name"));
+    expect(byId("ads-break-name").getAttribute("aria-invalid")).toBe("true");
+    expect(byId("ads-break-error").textContent).toBe("Enter a name for the break");
+    expect(server.calls.some((call) => call.method === "POST")).toBe(false);
+    await flush();
     byId("ads-break-name").value = "Quarter past";
     byId("ads-break-minutes").value = "15, 75";
     byId("ads-break-form").requestSubmit();

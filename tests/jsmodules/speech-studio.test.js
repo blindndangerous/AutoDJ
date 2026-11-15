@@ -4,6 +4,79 @@ import { installSpeechStudio } from "../../src/autodj/static/modules/speech-stud
 
 describe("speech studio", () => {
   afterEach(() => vi.unstubAllGlobals());
+  it("validates provider fields on save and clears the error as they are corrected", async () => {
+    installIndexMarkup();
+    const request = vi.fn(async (url) => url.endsWith("providers")
+      ? { connections: [] }
+      : { batches: {}, saved: {}, presets: {}, sets: {} });
+    const controls = installSpeechStudio(document.getElementById("speech-studio"), { request });
+    await controls.refresh();
+    const form = document.getElementById("speech-provider-form");
+    const id = document.getElementById("speech-provider-id");
+    const name = document.getElementById("speech-provider-name");
+    const url = document.getElementById("speech-provider-url");
+    const error = document.getElementById("speech-provider-error");
+    const submit = () => form.dispatchEvent(new Event("submit", { cancelable: true }));
+
+    id.value = "studio-voice";
+    url.value = "https://speech.example/api";
+    submit();
+    expect(request.mock.calls.some(([path, options]) => path.includes("/providers/") && options?.method === "PUT")).toBe(false);
+    expect(document.activeElement).toBe(name);
+    expect(name.getAttribute("aria-invalid")).toBe("true");
+    expect(error.hidden).toBe(false);
+
+    name.value = "Studio voice";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    id.value = "Invalid ID";
+    id.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(error.hidden).toBe(true);
+    submit();
+    expect(document.activeElement).toBe(id);
+    expect(id.getAttribute("aria-invalid")).toBe("true");
+    expect(request.mock.calls.some(([path, options]) => path.includes("/providers/") && options?.method === "PUT")).toBe(false);
+
+    id.value = "studio-voice";
+    url.value = "not a URL";
+    url.dispatchEvent(new Event("input", { bubbles: true }));
+    submit();
+    expect(document.activeElement).toBe(url);
+    expect(url.getAttribute("aria-invalid")).toBe("true");
+    expect(request.mock.calls.some(([path, options]) => path.includes("/providers/") && options?.method === "PUT")).toBe(false);
+
+    url.value = "https://speech.example/api";
+    url.dispatchEvent(new Event("input", { bubbles: true }));
+    submit();
+    await vi.waitFor(() => expect(request.mock.calls.some(([path, options]) => path.includes("/providers/studio-voice") && options?.method === "PUT")).toBe(true));
+    controls.pause();
+  });
+
+  it("validates a blank comparison script before generation and accepts it once corrected", async () => {
+    installIndexMarkup();
+    const request = vi.fn(async (url) => url.endsWith("providers")
+      ? { connections: [] }
+      : { batches: {}, saved: {}, presets: {}, sets: {} });
+    const controls = installSpeechStudio(document.getElementById("speech-studio"), { request });
+    await controls.refresh();
+    const form = document.getElementById("speech-compare-form");
+    const script = document.getElementById("speech-text");
+    const error = document.getElementById("speech-compare-error");
+    const submit = () => form.dispatchEvent(new Event("submit", { cancelable: true }));
+
+    submit();
+    expect(request.mock.calls.some(([path]) => path.endsWith("/batches"))).toBe(false);
+    expect(document.activeElement).toBe(script);
+    expect(script.getAttribute("aria-invalid")).toBe("true");
+    expect(error.hidden).toBe(false);
+
+    script.value = "Station identification";
+    script.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(error.hidden).toBe(true);
+    submit();
+    await vi.waitFor(() => expect(request.mock.calls.some(([path]) => path.endsWith("/batches"))).toBe(true));
+    controls.pause();
+  });
+
   it("offers only this station's configured command with fixed controls", async () => {
     installIndexMarkup();
     let available = true;

@@ -138,6 +138,38 @@ export function focusRevealed(control, options) {
   control.focus(options);
 }
 
+// Validate on submission without making an untouched required field natively
+// invalid. Browser validity still owns formats, ranges, steps and bad input.
+export function fieldValidationMessage(control, {
+  requiredMessage = "Enter a value for this field.", invalidMessage,
+} = {}) {
+  if (!control || control.disabled || control.willValidate === false) return "";
+  const invalid = () => invalidMessage || control.validationMessage || "Check this value.";
+  if (control.validity?.badInput) return invalid();
+  if (control.getAttribute("aria-required") === "true") {
+    let missing = !String(control.value ?? "").trim();
+    if (control.type === "checkbox" || (control.type === "radio" && !control.name)) missing = !control.checked;
+    else if (control.type === "radio" && control.name) {
+      const peers = control.form?.elements || control.ownerDocument.querySelectorAll("input");
+      missing = ![...peers].some((item) => item.type === "radio" && item.name === control.name
+        && item.form === control.form && item.checked);
+    } else if (control.multiple && control.tagName === "SELECT") missing = !control.selectedOptions.length;
+    if (missing) return requiredMessage;
+  }
+  return control.validity?.valid === false ? invalid() : "";
+}
+
+export function validateFormFields(form, error, status) {
+  clearFormErrors(form, error);
+  for (const control of form.elements) {
+    const message = fieldValidationMessage(control);
+    if (!message) continue;
+    showFieldError(control, message, error, status);
+    return false;
+  }
+  return true;
+}
+
 // Keep field errors associated with their control without dropping its help.
 export function clearFieldError(control, error) {
   if (Array.isArray(control)) {

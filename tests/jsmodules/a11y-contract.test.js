@@ -2417,7 +2417,7 @@ describe("static accessibility contracts", () => {
       expect(input.getAttribute("type")).toBe("number");
       expect(input.getAttribute("min")).toBe("0");
       expect(input.getAttribute("step")).toBe("1");
-      expect(input.hasAttribute("required")).toBe(true);
+      expect(input.getAttribute("aria-required")).toBe("true");
       expect(describedBy(input)).toHaveLength(1);
       expect(describedBy(input).every(Boolean)).toBe(true);
     }
@@ -2491,7 +2491,11 @@ describe("static accessibility contracts", () => {
     // entry", "New station grouping invalid entry".  These forms check their
     // own fields, so the fields are aria-required instead.
     installDocument();
-    for (const id of ["stream-settings", "station-create-form", "categories-form", "shows-form", "schedule-form"]) {
+    expect([...document.querySelectorAll("input[required], textarea[required], select[required]")]
+      .map((control) => control.id)).toEqual([]);
+    for (const id of ["stream-settings", "station-create-form", "categories-form", "shows-form", "schedule-form",
+      "ads-spot-form", "ads-break-form", "auth-form", "tags-form", "hist-export",
+      "speech-provider-form", "speech-compare-form", "live-dj-form", "ads-report-form", "review-form"]) {
       const group = document.getElementById(id);
       const empty = [...group.querySelectorAll("input[required], textarea[required], select[required]")]
         .filter((control) => !control.value);
@@ -2503,7 +2507,12 @@ describe("static accessibility contracts", () => {
     }
     for (const id of ["stream-relay-name", "stream-relay-host", "listener-ban-address",
       "station-create-name", "station-create-slug", "categories-name", "shows-name",
-      "schedule-name", "schedule-date", "schedule-time", "schedule-interval"]) {
+      "schedule-name", "schedule-date", "schedule-time", "schedule-interval",
+      "ads-spot-title", "ads-spot-advertiser", "ads-break-name", "auth-token", "tag-title",
+      "hist-export-from", "hist-export-to", "speech-provider-id", "speech-provider-name",
+      "speech-provider-url", "speech-text", "recording-retention-days", "recording-free-space-mb",
+      "listener-stats-keep", "live-return-seconds", "live-duck-db", "ads-report-from", "ads-report-to",
+      "review-minutes", "review-head", "review-tail", "review-threshold", "review-tone"]) {
       expect(document.getElementById(id).getAttribute("aria-required"), id).toBe("true");
     }
   });
@@ -2993,9 +3002,9 @@ describe("static accessibility contracts", () => {
       expect(described).not.toContain(error.id);
       for (const id of described) expect(document.getElementById(id).textContent).toMatch(/^\s*Optional\./);
     }
-    // Title is the one required field, and says so natively.
-    expect(document.getElementById("tag-title").hasAttribute("required")).toBe(true);
-    expect(fields.filter(([name]) => document.getElementById(`tag-${name}`).hasAttribute("required"))).toHaveLength(1);
+    // Title is announced as required; Save owns the invalid state.
+    expect(document.getElementById("tag-title").getAttribute("aria-required")).toBe("true");
+    expect(fields.filter(([name]) => document.getElementById(`tag-${name}`).getAttribute("aria-required") === "true")).toHaveLength(1);
     const beets = document.getElementById("tags-beets");
     expect(beets.getAttribute("type")).toBe("checkbox");
     expect(beets.closest("label").textContent.trim()).toBe("Also update the beets library");

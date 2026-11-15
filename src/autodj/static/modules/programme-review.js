@@ -4,7 +4,7 @@ import {
 } from "./api-client.js";
 import { onCardOpen } from "./card-state.js";
 import { makeSay } from "./live-region.js";
-import { clearFormErrors, showFieldError } from "./dom-helpers.js";
+import { clearFormErrors, showFieldError, fieldValidationMessage } from "./dom-helpers.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { stationApi, stationEpoch } from "./stations.js";
 
@@ -209,7 +209,10 @@ export function installProgrammeReview({
   function body() {
     clearFormErrors(form, get("error"));
     for (const input of form.querySelectorAll("input")) {
-      if (!input.checkValidity()) return invalid(input, `${doc.querySelector(`label[for="${input.id}"]`).textContent} is outside its supported range.`);
+      const message = fieldValidationMessage(input, {
+        invalidMessage: `${doc.querySelector(`label[for="${input.id}"]`).textContent} is outside its supported range.`,
+      });
+      if (message) return invalid(input, message);
     }
     const left = get("selection-start").value === "" ? null : Number(get("selection-start").value);
     const right = get("selection-end").value === "" ? null : Number(get("selection-end").value);
