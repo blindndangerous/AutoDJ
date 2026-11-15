@@ -233,6 +233,7 @@ function altR(target = document.activeElement || document.body) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   document.body.replaceChildren();
 });
@@ -1360,7 +1361,7 @@ it("marks lost bookings unknown after a run change and preserves cancellation fo
 
 
 // ADR-0004-28: accessible status and confirmation guidance.
-it("describes selection without delayed arrow browsing announcements and keeps refresh quiet", async () => {
+it("delays song selection speech and speaks only the latest rapid selection", async () => {
   const { server, controls } = tracker();
   const first = futureRow();
   const second = futureRow("d".repeat(32), { selection: "confirmed" });
@@ -1375,15 +1376,14 @@ it("describes selection without delayed arrow browsing announcements and keeps r
   await flush();
   select.value = second.target_id; select.dispatchEvent(new Event("change"));
   await flush();
-  expect(spoken).toEqual([]);
   await new Promise((resolve) => setTimeout(resolve, 600));
-  expect(spoken).toEqual([]);
+  expect(spoken.at(-1)).toContain("Selection: Confirmed. Estimated airtime:");
   expect(byId("vt-selection").textContent).toContain("Selection: Confirmed");
   expect(byId("vt-estimated-airtime").textContent).toContain("Estimated airtime:");
   expect(select.value).toBe(second.target_id);
   await controls.refresh();
   await new Promise((resolve) => setTimeout(resolve, 600));
-  expect(spoken).toEqual([]);
+  expect(spoken.at(-1)).toContain("Selection: Confirmed. Estimated airtime:");
   observer.disconnect(); controls.clear();
 });
 

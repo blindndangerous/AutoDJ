@@ -100,7 +100,7 @@ async function install(hooks = {}) {
   return { server, controls };
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("cart wall markup", () => {
   it("is a Carts main tab right after History, with a panel heading and no aria-controls", () => {
@@ -270,17 +270,32 @@ describe("cart keys", () => {
     await vi.waitFor(() => expect(server.wall.active_page).toBe(4));
   });
 
-  it("changes the native page selection quietly while keeping focus on the selector", async () => {
-    const { server } = await install();
+  it("announces the native page selection after a delay while keeping focus on the selector", async () => {
+    const { server, controls } = await install();
+    vi.useFakeTimers();
     const page = byId("cart-page");
     page.focus();
     page.value = "2";
     page.dispatchEvent(new Event("change", { bubbles: true }));
 
-    await vi.waitFor(() => expect(server.wall.active_page).toBe(2));
+    expect(server.wall.active_page).toBe(2);
     expect(document.activeElement).toBe(page);
     expect(page.value).toBe("2");
     expect(server.calls.some((call) => call.url === "/api/carts/active-page/2")).toBe(true);
+    expect(byId("cart-status").textContent).toBe("");
+    await vi.advanceTimersByTimeAsync(501);
+    expect(byId("cart-status").textContent).toBe("Page 2, page 2 of 4.");
+    page.value = "3";
+    page.dispatchEvent(new Event("change", { bubbles: true }));
+    press(cart(1), "PageDown");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(byId("cart-status").textContent).toBe("Page 4, page 4 of 4.");
+    await vi.advanceTimersByTimeAsync(501);
+    expect(byId("cart-status").textContent).toBe("Page 4, page 4 of 4.");
+    page.value = "2";
+    page.dispatchEvent(new Event("change", { bubbles: true }));
+    controls.clear();
+    await vi.advanceTimersByTimeAsync(501);
     expect(byId("cart-status").textContent).toBe("");
   });
 

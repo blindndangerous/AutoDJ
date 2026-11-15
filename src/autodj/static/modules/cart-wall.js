@@ -23,7 +23,7 @@ import { failureText, requestBinary, requestJson, withDisabled } from "./api-cli
 import { confirmAction } from "./confirm-dialog.js";
 import { applyServerFieldError, clearFieldError, showFieldError, focusRevealed, srSpeak, stationDay } from "./dom-helpers.js";
 import { shortcutsEnabled } from "./hotkeys.js";
-import { makeSay } from "./live-region.js";
+import { createSelectionAnnouncer, makeSay } from "./live-region.js";
 
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "="];
 const SLOTS = KEYS.length;
@@ -91,7 +91,12 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   let playEpoch = 0;
   const held = new Set();
 
-  const say = makeSay(status, { dwellMs: 5000 });
+  const rawSay = makeSay(status, { dwellMs: 5000 });
+  const selectionAnnouncer = createSelectionAnnouncer((...args) => {
+    if (root.isConnected && !root.closest("[hidden]") && !root.closest("details:not([open])")
+      && root.ownerDocument.visibilityState !== "hidden") rawSay(...args);
+  });
+  const say = (...args) => { selectionAnnouncer.cancel(); rawSay(...args); };
   const page = () => data?.wall.pages[data.wall.active_page - 1];
   const editing = () => Number(slotSelect.value) || 1;
 
@@ -205,6 +210,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   }
 
   async function play(number) {
+    selectionAnnouncer.cancel();
     const assigned = page()?.slots[number - 1];
     if (!assigned) {
       say(`Cart ${number} is empty.`);
@@ -231,6 +237,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   }
 
   async function showPage(number, { announce = true } = {}) {
+    if (announce) selectionAnnouncer.cancel();
     if (!data || number === data.wall.active_page) return;
     if (number < 1 || number > data.wall.pages.length) return;
     data.wall.active_page = number;
@@ -249,6 +256,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   }
 
   async function save(button) {
+    selectionAnnouncer.cancel();
     clearEditError();
     if (!name.value.trim()) { invalid(name, "Enter a cart name."); return; }
     if (!clip.value) { invalid(clip, "Choose a clip, or upload one first."); return; }
@@ -283,6 +291,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   }
 
   async function clearSlot(button) {
+    selectionAnnouncer.cancel();
     const number = editing();
     await withDisabled(button, async () => {
       try {
@@ -296,6 +305,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   }
 
   async function rename(button) {
+    selectionAnnouncer.cancel();
     if (!pageName.value.trim()) { invalid(pageName, "Enter a page name."); return; }
     await withDisabled(button, async () => {
       try {
@@ -313,6 +323,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   }
 
   async function upload(button) {
+    selectionAnnouncer.cancel();
     const chosen = file.files?.[0];
     if (!chosen) { invalid(file, "Choose an audio file first."); return; }
     const form = new FormData();
@@ -333,6 +344,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   }
 
   async function removeUpload() {
+    selectionAnnouncer.cancel();
     const chosen = clip.value;
     if (source.value !== "upload" || !chosen) return;
     let result = null;
@@ -357,6 +369,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   }
 
   async function stop() {
+    selectionAnnouncer.cancel();
     playEpoch += 1;
     stopAudio();
     try {
@@ -385,7 +398,13 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   });
   root.addEventListener("keyup", () => held.clear());
   root.addEventListener("focusout", () => held.clear());
-  pageSelect.addEventListener("change", () => void showPage(Number(pageSelect.value), { announce: false }));
+  pageSelect.addEventListener("change", () => {
+    const finish = selectionAnnouncer.start();
+    const number = Number(pageSelect.value);
+    if (!data || number === data.wall.active_page || number < 1 || number > data.wall.pages.length) return;
+    finish(`${data.wall.pages[number - 1].name}, page ${number} of ${data.wall.pages.length}.`);
+    void showPage(number, { announce: false });
+  });
   slotSelect.addEventListener("change", () => loadEditor());
   source.addEventListener("change", () => fillClips(""));
   clip.addEventListener("change", () => {
@@ -406,6 +425,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   return {
     refresh: () => refresh(false),
     clear() {
+      selectionAnnouncer.cancel();
       requestEpoch += 1;
       playEpoch += 1;
       data = null;

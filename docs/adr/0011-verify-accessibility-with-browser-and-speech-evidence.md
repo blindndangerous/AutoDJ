@@ -87,6 +87,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0011-11` | Shared announcers preserve repeat timing, dynamic regions and string tones; an old dwell timer cannot clear a newer persistent announcement. | automated | `tests/jsmodules/live-region.test.js::creates one string-tone announcer with dynamic regions and preserved repeat timing`, `tests/jsmodules/live-region.test.js::does not let an old dwell clear a newer persistent announcement` |
 | `ADR-0011-12` | Shared busy presentation survives overlapping owners and stops delayed speech on release. | automated | `tests/jsmodules/api-client.test.js::keeps busy state until the last owner ends and cancels delayed pending speech` |
 | `ADR-0011-13` | Card refresh wiring responds only to its own toggle and supports disposal. | automated | `tests/jsmodules/card-state.test.js::refreshes only its own open toggle and disposes the close listener` |
+| `ADR-0011-14` | Selection feedback waits 500 ms after its result is available; newer selections and cancellation invalidate older queued messages and late replies. | automated | `tests/jsmodules/live-region.test.js::waits 500 ms and replaces pending selection feedback`; `tests/jsmodules/live-region.test.js::rejects obsolete asynchronous results and cancels queued speech` |
 
 ## Amendment 2026-10-27: dialog focus never rests on the page body
 
@@ -207,15 +208,25 @@ announcement or dwell. `onCardOpen` prevents nested toggles from triggering unre
 These helpers do not establish fresh screen-reader evidence or change this ADR's
 Proposed status.
 
-## Amendment 2026-11-15: quiet selection-driven hints
+## Superseded amendment 2026-11-15: quiet selection-driven hints
 
-Following the Browse fix and the requested app-wide audit in
-[#780](https://github.com/blindndangerous/AutoDJ/issues/780), automatic successful
-combo refreshes and matching counts stay readable without a second live-region
-announcement. The native control announces its option. This applies to Cart page,
-Listener statistics period, Hour preview span, Voice tracks Song change, and
-Category/Clockwheel conditions. Explicit actions and errors keep their existing
-announcement paths. A selection change also invalidates delayed results from a
-previous choice. See the [selection checks](../accessibility-testing.md#selection-driven-updates).
-This changes the earlier delayed-selection/count speech behavior; it does not
-establish new screen-reader evidence.
+Following the Browse fix and requested app-wide audit in
+[#780](https://github.com/blindndangerous/AutoDJ/issues/780), this amendment
+incorrectly silenced successful selection results. That was not the intended
+feedback behavior. Its selection scope and preserved explicit-action/error
+paths remain useful history, but its quiet-result decision is superseded by the
+correction below. No new screen-reader evidence was established.
+
+## Correction 2026-11-15: delay selection result feedback (#785)
+
+Issue [#785](https://github.com/blindndangerous/AutoDJ/issues/785) corrects the
+quiet-result decision above. Use the shared `createSelectionAnnouncer` to
+announce a successful result once, 500 ms after that result becomes available.
+Each new selection invalidates pending feedback and timers for the previous choice;
+only the latest choice may speak. Apply this to Browse Type, Folder and Sort;
+Cart page; Listener statistics period; Hour preview span; Voice tracks Song
+change; and Categories/Clockwheel condition counts. Explicit actions and errors
+keep their existing announcements; passive refreshes stay quiet. See the
+[selection checks](../accessibility-testing.md#selection-driven-updates).
+This correction does not establish fresh NVDA evidence, and the timer does not
+measure when speech finishes.

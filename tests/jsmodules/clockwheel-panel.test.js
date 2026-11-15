@@ -261,8 +261,11 @@ describe("clockwheel editor", () => {
     }
   });
 
-  it("shows a debounced matching track count without interrupting the selected option", async () => {
+  it("delays the debounced matching track count without interrupting the selected option", async () => {
+    vi.useFakeTimers();
+    try {
     const server = await open(fakeServer());
+    byId("clock-new-step").click();
     const row = byId("clock-step-conditions").firstElementChild;
     row.querySelector("select").value = "genre";
     row.querySelector("select").dispatchEvent(new Event("change", { bubbles: true }));
@@ -270,20 +273,31 @@ describe("clockwheel editor", () => {
     row.querySelectorAll("select")[3].dispatchEvent(new Event("change", { bubbles: true }));
     await vi.waitFor(() => expect(byId("clock-step-match-count").textContent).toBe("12 tracks"));
     expect(status()).not.toContain("12 tracks");
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(status()).toContain("12 tracks");
     const call = server.calls.find((item) => item.url === "/api/library/clock/check");
     expect(call.body.step.conditions).toEqual([{ field: "genre", operator: "is", value: "Rock" }]);
+    } finally { vi.useRealTimers(); }
   });
 
   it("still announces a failed automatic matching count", async () => {
+    vi.useFakeTimers();
+    try {
     const server = await open(fakeServer());
+    byId("clock-new-step").click();
     server.fail = new Error("Library unavailable");
     const row = byId("clock-step-conditions").firstElementChild;
     row.querySelector("select").value = "genre";
     row.querySelector("select").dispatchEvent(new Event("change", { bubbles: true }));
     row.querySelectorAll("select")[3].value = "Rock";
     row.querySelectorAll("select")[3].dispatchEvent(new Event("change", { bubbles: true }));
-    await vi.waitFor(() => expect(status()).toContain("Count unavailable: Library unavailable"));
+    await vi.waitFor(() => expect(byId("clock-step-match-count").textContent).toContain("Count unavailable: Library unavailable"));
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(status()).toContain("Count unavailable: Library unavailable");
     expect(byId("clock-step-match-count").textContent).toBe("Count unavailable: Library unavailable");
+    } finally { vi.useRealTimers(); }
   });
 
   it("offers exact negative text matching for library and Beets fields", async () => {
@@ -301,6 +315,7 @@ describe("clockwheel editor", () => {
 
   it("recounts Match any changes and never steals focus for an incomplete count", async () => {
     const server = await open(fakeServer());
+    byId("clock-new-step").click();
     const first = byId("clock-step-conditions").firstElementChild;
     first.querySelector("select").value = "genre";
     first.querySelector("select").dispatchEvent(new Event("change", { bubbles: true }));

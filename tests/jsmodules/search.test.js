@@ -268,7 +268,7 @@ describe("search result actions", () => {
 describe("library browsing", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it("loads when its view opens, sorts quietly, and retains rows while cancelling late replies", async () => {
+  it("loads when its view opens, delays sort feedback, and retains rows while cancelling late replies", async () => {
     const pending = [];
     const fetchImpl = vi.fn(() => new Promise((resolve) => pending.push(resolve)));
     vi.stubGlobal("fetch", fetchImpl);
@@ -290,6 +290,8 @@ describe("library browsing", () => {
     pending[1](jsonResponse({ results: [{ path: "b.mp3", title: "B" }], total: 1, offset: 0 }));
     await vi.waitFor(() => expect(els.searchCount.textContent).toContain("1 track"));
     expect(els.searchCount.getAttribute("aria-live")).toBe("off");
+    expect(els.queueAnnounce.textContent).toBe("");
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("1 track"));
     expect(document.activeElement).toBe(els.sortSelect);
     els.sortSelect.value = "artist";
     els.sortSelect.dispatchEvent(new Event("change"));
@@ -306,6 +308,44 @@ describe("library browsing", () => {
     expect(els.searchResults.firstElementChild).toBe(row);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     vi.unstubAllGlobals();
+  });
+
+  it("delays only the latest Browse selection and cancels speech when leaving", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = [];
+      vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => pending.push(resolve))));
+      const els = setupBrowser({ view: true });
+      els.view.hidden = false;
+      const change = (control, value) => {
+        control.value = value;
+        control.focus();
+        control.dispatchEvent(new Event("change"));
+      };
+      change(els.kindSelect, "liner");
+      pending[0](jsonResponse({ results: [{ path: "a", title: "A" }], total: 12 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(els.searchCount.textContent).toContain("12 tracks");
+      await vi.advanceTimersByTimeAsync(499);
+      expect(els.queueAnnounce.textContent).toBe("");
+      change(els.folderSelect, "folder:9");
+      pending[1](jsonResponse({ results: [], total: 0 }));
+      await vi.advanceTimersByTimeAsync(499);
+      expect(els.queueAnnounce.textContent).toBe("");
+      await vi.advanceTimersByTimeAsync(2);
+      expect(els.queueAnnounce.textContent).toBe("No tracks found.");
+      expect(document.activeElement).toBe(els.folderSelect);
+      change(els.sortSelect, "artist");
+      pending[2](jsonResponse({ results: [{ path: "b", title: "B" }], total: 3 }));
+      await vi.advanceTimersByTimeAsync(0);
+      els.view.hidden = true;
+      document.dispatchEvent(new CustomEvent("autodj:view"));
+      await vi.advanceTimersByTimeAsync(600);
+      expect(els.queueAnnounce.textContent).not.toContain("3 tracks");
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("browses blank queries by kind, carries liner kind to Edit points, and pages by 100", async () => {

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   dayText,
@@ -97,6 +97,7 @@ describe("listener statistics text", () => {
 });
 
 describe("listener statistics view", () => {
+  afterEach(() => vi.useRealTimers());
   beforeEach(() => vi.clearAllMocks());
 
   it("loads once in stream mode and fills headed tables and a list", async () => {
@@ -154,23 +155,26 @@ describe("listener statistics view", () => {
       .toContain("No listening recorded in the last 30 days.");
   });
 
-  it("keeps Refresh and Show immediate and stages Days to keep", async () => {
+  it("keeps Refresh immediate and delays the selected period announcement", async () => {
     const { view, request } = setup();
+    document.getElementById("listener-stats").open = true;
     view.apply({ stream_mode: true });
     await tick();
     document.getElementById("listener-stats-refresh").click();
     await vi.waitFor(() => expect(status()).toBe("Listener statistics updated."));
     const previousAnnouncement = status();
     const span = document.getElementById("listener-stats-span");
+    vi.useFakeTimers();
     span.value = "7";
     span.dispatchEvent(new Event("change"));
-    await tick();
     expect(status()).toBe(previousAnnouncement);
+    await vi.advanceTimersByTimeAsync(501);
+    expect(status()).toBe("Showing the last 7 days.");
     expect(request).toHaveBeenLastCalledWith("/api/stream/stats?days=7");
     const keep = document.getElementById("listener-stats-keep");
     keep.value = "30";
     keep.dispatchEvent(new Event("change"));
-    expect(status()).toBe(previousAnnouncement);
+    expect(status()).toBe("Showing the last 7 days.");
     expect(request).toHaveBeenCalledTimes(3);
   });
 

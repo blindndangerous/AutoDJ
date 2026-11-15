@@ -19,7 +19,7 @@ import { failureText, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCu
 import { confirmAction } from "./confirm-dialog.js";
 import { createEditorDialog } from "./editor-dialog.js";
 import { clearFieldError, clearFormErrors, showFieldError } from "./dom-helpers.js";
-import { makeSay } from "./live-region.js";
+import { createSelectionAnnouncer, makeSay } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
 import { createConditionRow, readConditionRows, renumberConditionRows, updateConditionCategories } from "./condition-editor.js";
 import { describeConditions, describeStep } from "./clockwheel-step.js";
@@ -122,8 +122,14 @@ export function installClockwheelPanel({ document: doc = document, request = req
   });
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
-  const stepCountCurrent = (epoch, mine) => !suspended && stepCountGeneration === mine && isAuthenticatedRequestCurrent(epoch);
+  const stepCountCurrent = (epoch, mine) => stepDialog.open && !suspended && stepCountGeneration === mine && isAuthenticatedRequestCurrent(epoch);
   const say = makeSay(() => stepEditor.region(status), {});
+  let stepCountAnnouncement = null;
+  const stepCountAnnouncer = createSelectionAnnouncer((...args) => {
+    if (stepCountAnnouncement && stepCountCurrent(stepCountAnnouncement.epoch, stepCountAnnouncement.mine)) {
+      makeSay(() => stepEditor.region(status), { force: true })(...args);
+    }
+  });
   const clockUrl = (name) => `/api/library/clock/${encodeURIComponent(name)}`;
   // A track step's file, inside the library folder chosen above it.
   const stepPath = el("clock-step-path");
@@ -618,6 +624,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function resetForm() {
+    stepCountAnnouncer.cancel();
+    stepCountAnnouncement = null;
     clearStepError();
     stepCountGeneration += 1;
     if (stepCountTimer !== null) clearTimeout(stepCountTimer);
@@ -722,8 +730,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function scheduleStepCount() {
+    const finish = stepCountAnnouncer.start();
     if (stepCountTimer !== null) clearTimeout(stepCountTimer);
     const mine = ++stepCountGeneration;
+    stepCountAnnouncement = { epoch: captureAuthenticatedRequestEpoch(), mine };
     const output = el("clock-step-match-count");
     if (typeSelect.value === "settings" || typeSelect.value === "ad_break") {
       if (output) output.textContent = typeSelect.value === "settings" ? "Preset changes do not select tracks." : "Ad breaks do not select tracks.";
@@ -736,7 +746,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       let step;
       try { step = formStep(false); }
       catch { if (stepCountCurrent(epoch, mine) && output) output.textContent = "Complete the step conditions to check matching tracks."; return; }
-      pendingStepCount = { epoch, mine, step };
+      pendingStepCount = { epoch, mine, step, finish };
       void drainStepCounts();
     }, 450);
   }
@@ -757,11 +767,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
             ? `Count unavailable: ${result.error}`
             : result.tracks === null ? "Preset changes do not select tracks."
               : `${Number(result.tracks).toLocaleString("en-US")} ${Number(result.tracks) === 1 ? "track" : "tracks"}`;
-          if (result.error) makeSay(() => stepEditor.region(status), { force: false })(output.textContent, "error");
+          if (result.error || result.tracks !== null) item.finish(output.textContent, result.error ? "error" : "info");
         } catch (error) {
           if (stepCountCurrent(item.epoch, item.mine)) {
             output.textContent = `Count unavailable: ${error.message}`;
-            makeSay(() => stepEditor.region(status), { force: false })(output.textContent, "error");
+            item.finish(output.textContent, "error");
           }
         }
       }
@@ -821,6 +831,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
     clearFormErrors(el("clock-step-form"), stepError);
   }
   function saveStep() {
+    stepCountAnnouncer.cancel();
+    stepCountAnnouncement = null;
     clearStepError();
     if (!clock) { say("Open or create a clockwheel first.", "error"); return; }
     let step;

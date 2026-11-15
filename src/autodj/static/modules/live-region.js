@@ -138,6 +138,31 @@ export function writeLive(region, text) {
   _pending.set(region, { timer, text });
 }
 
+// Give native selection speech a head start. Start at the user interaction,
+// before awaiting a result, so an older reply cannot replace the latest choice.
+// The result waits another 500 ms once available; this is not a speech-finished
+// signal (browsers do not expose one). Explicit actions should cancel it.
+export function createSelectionAnnouncer(say) {
+  let generation = 0;
+  let timer;
+  function cancel() {
+    generation++;
+    clearTimeout(timer);
+  }
+  function start() {
+    cancel();
+    const current = generation;
+    return (...args) => {
+      if (current !== generation) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (current === generation) say(...args);
+      }, 500);
+    };
+  }
+  return { start, cancel };
+}
+
 // A press whose request is still out after PENDING_SAY_MS says *text*
 // ("Saving…") through *say*, once, so the press is heard: NVDA, JAWS and
 // VoiceOver do not say aria-busy on the focused control (#384).  A result

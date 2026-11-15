@@ -359,10 +359,11 @@ was made, so slow drift still adds up. A seek, a skip or a pause moves it furthe
 is made again, as before. The other inputs are compared exactly, as before. Contract
 `ADR-0009-03` records the tolerance.
 
-## Amendment 2026-11-15: Hour preview span changes stay quiet
+## Amendment 2026-11-15: delayed Hour preview span result
 
-The [ADR 11 selection announcement amendment](0011-verify-accessibility-with-browser-and-speech-evidence.md#amendment-2026-11-15-quiet-selection-driven-hints)
-supersedes the earlier instruction to speak counts and filling completion after
-a span selection. Span changes refresh the visible preview quietly and cancel
-pending speech for an earlier span. Refresh preview and Shift+H still announce;
-errors remain spoken. Preview calculation and filling contracts are unchanged.
+The [ADR 11 correction](0011-verify-accessibility-with-browser-and-speech-evidence.md#correction-2026-11-15-delay-selection-result-feedback-785)
+clarifies that choosing a span announces its successful result once, 500 ms
+after it becomes available, through `createSelectionAnnouncer`. A later span
+cancels earlier pending work and speech timers; passive refreshes remain quiet.
+Refresh preview and Shift+H still announce, and errors retain their existing
+announcement path. Preview calculation and filling contracts are unchanged.

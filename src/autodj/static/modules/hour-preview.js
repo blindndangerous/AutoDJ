@@ -14,8 +14,8 @@ import { onCardOpen } from "./card-state.js";
 // text changed, in place, so the reading position and focus stay put.  If
 // those refreshes start failing, the failure is said once (not again until
 // one succeeds). Refresh preview says the new summary once through
-// #hour-preview-status; changing Show updates the preview quietly because
-// the native select already speaks its value. Shift+H (speakSummary) says
+// #hour-preview-status; changing Show announces its counts after a short
+// pause because the native select already speaks its value. Shift+H (speakSummary) says
 // the summary from anywhere through the page's spoken status.
 // Times and lengths use the same numeric text for everyone. Fixed or
 // predicted is a word in the Status column of every row, not a colour.
@@ -27,7 +27,7 @@ import { onCardOpen } from "./card-state.js";
 // preview someone asked for finishes, that is said once.
 import { requestJson } from "./api-client.js";
 import { srSpeak } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+import { announceStatus, createSelectionAnnouncer } from "./live-region.js";
 import { installTableNavigation } from "./table-navigation.js";
 
 const ENDPOINT = "/api/hour-preview";
@@ -185,6 +185,11 @@ export function installHourPreview({
   let quietError = null;
   // The user's ask whose preview is still filling: its end is said once.
   let fillingAsk = null;
+  let selectionFinish = null;
+
+  const selectionAnnouncer = createSelectionAnnouncer((text, tone = "info") => {
+    if (card.open && showing()) announceStatus(status, text, { force: true, dwellMs: 8000, mirror: false, tone });
+  });
 
   const showing = () => card.open && !(nowPanel && nowPanel.hidden)
     && doc.visibilityState !== "hidden";
@@ -260,7 +265,8 @@ export function installHourPreview({
         if (fillingAsk !== null && !view.filling) {
           // The preview someone asked for has finished filling in: say so once.
           if (fillingAsk === latestUser) {
-            announceStatus(status, `Hour preview finished. ${view.stopped || spokenSummary(view)}`,
+            if (selectionFinish) selectionFinish(`Hour preview finished. ${view.stopped || spokenSummary(view)}`);
+            else announceStatus(status, `Hour preview finished. ${view.stopped || spokenSummary(view)}`,
               { force: true, dwellMs: 8000, mirror: false });
           }
           fillingAsk = null;
@@ -290,6 +296,9 @@ export function installHourPreview({
   }
 
   function stop() {
+    latestUser++;
+    selectionAnnouncer.cancel();
+    selectionFinish = null;
     if (timer !== null) clearTimer(timer);
     if (songTimer !== null) clearTimer(songTimer);
     timer = null;
@@ -300,22 +309,25 @@ export function installHourPreview({
   // Ask on the user's behalf and say the outcome once, even when it is the
   // same as before.  Only the newest ask is said: one overtaken by a later
   // one (another span chosen meanwhile) says nothing.
-  async function askAndSay(lead, { force = false, announce = true } = {}) {
+  async function askAndSay(lead, { force = false, announce = true, delayedFinish = null } = {}) {
     let view;
     try {
       view = await load({ force });
     } catch (error) {
-      announceStatus(status, `The hour preview could not be loaded: ${error.message}`,
-        { force: true, dwellMs: 8000, tone: "error" });
+      const text = `The hour preview could not be loaded: ${error.message}`;
+      if (delayedFinish) delayedFinish(text, "error");
+      else announceStatus(status, text, { force: true, dwellMs: 8000, tone: "error" });
       return null;
     }
     if (view) {
       quietError = null;
-      fillingAsk = announce && view.filling ? latestUser : null;
+      fillingAsk = (announce || delayedFinish) && view.filling ? latestUser : null;
       if (announce) {
         announceStatus(status, `${lead} ${spokenSummary(view)}`.trim(),
           { force: true, dwellMs: 8000, mirror: false });
       }
+      if (delayedFinish) delayedFinish(view.reason || (view.counts_text
+        ? `${view.counts_text}${fillingNote(view)}` : spokenSummary(view)), view.reason ? "error" : "info");
     }
     if (card.open) schedule();
     return view;
@@ -323,19 +335,24 @@ export function installHourPreview({
 
   // Refresh preview: the new summary is said once.
   function refresh() {
+    selectionAnnouncer.cancel();
+    selectionFinish = null;
     return askAndSay("Hour preview updated.", { force: true });
   }
 
   // Show: load the selected span without speaking over its native option.
   function spanChanged() {
-    // A selection supersedes earlier asks and their pending completion speech.
     fillingAsk = null;
-    return askAndSay("", { announce: false });
+    selectionFinish = selectionAnnouncer.start();
+    return askAndSay("", { announce: false, delayedFinish: selectionFinish });
   }
 
   // Shift+H: a recent preview, or a fresh one, said through the page's
   // spoken status.
   async function speakSummary() {
+    selectionAnnouncer.cancel();
+    selectionFinish = null;
+    fillingAsk = null;
     if (lastView && now() - lastAt < FRESH_MS) {
       speak(spokenSummary(lastView));
       return;

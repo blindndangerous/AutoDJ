@@ -44,15 +44,16 @@ This regression also runs as part of the visual audit.
 
 ## Selection-driven updates
 
-Native combo options already announce the selected value. Successful automatic
-refreshes and matching counts must update their visible text without adding a
-live-region announcement over that value. Check Cart page, Listener statistics
-period, Hour preview span, Voice tracks Song change, and Category/Clockwheel
-conditions with arrow keys, including slow replies and rapid changes. Keep focus
-on the control and ignore superseded results. Readable hints and descriptions
-remain available; errors and explicit Refresh, Check, Confirm songs, Page Up/Down
-and Shift+H results still announce. Record NVDA/browser speech separately from
-DOM and browser checks.
+After a selection, `createSelectionAnnouncer` announces its successful result
+once, 500 ms after the result becomes available. A new selection cancels the
+previous selection's pending feedback and timer; only the latest choice
+may be announced. Check Browse Type, Folder and Sort; Cart page; Listener
+statistics period; Hour preview span; Voice tracks Song change; and
+Category/Clockwheel condition counts with slow replies and rapid changes. Keep
+focus on the native control. Explicit actions and errors retain their existing
+announcement paths, while passive refreshes stay quiet. Readable hints and
+descriptions remain available. Record NVDA/browser speech separately from DOM
+and browser checks; this timing does not establish that speech has completed.
 
 ## Confirmations with NVDA
 
@@ -837,8 +838,8 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Queue & Search, browsing: results load on entry. Tab to Type, Folder, Sort, Search text and Search; one result grid with
   arrows, Home and End, and Enter or Space activating each action; the track count said once per
   explicit search and page, with focus staying on Previous or Next (or moving to the other when a page ends).
-  Type, Folder and Sort changes update the count quietly through the shared
-  `writeQuietly` helper, without interrupting native combo selection;
+  Type, Folder and Sort changes announce the resulting count once through the
+  shared delayed selection announcer, without interrupting native combo selection;
   and Track info returning focus to its result. Under Settings > Voice liners, check Options, Play dates and Options, Delete.
   Saving or cancelling dates returns to the row's Actions cell. Confirmed deletion
   moves to a nearby row or the panel fallback and announces the destination.
@@ -913,8 +914,9 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   word-expanded alternatives, Fixed or Predicted said in the
   Status column; Refresh preview saying the summary once with focus staying on it; nothing said
   by the 30-second refresh or a song change, with the reading position kept; and Shift+H saying
-  the summary from another tab; a new span under Show updating quietly; a failed
-  automatic refresh said once, not on every retry; and, on a server slow enough that the preview
+  the summary from another tab; the selected span's result announced once, with
+  passive filling and refreshes staying quiet; a failed automatic refresh said
+  once, not on every retry; and, on a server slow enough that the preview
   fills in (or with `BUDGET_SECONDS` lowered in a development checkout), Refresh preview ending with "Still
   working out the rest of the preview", the new rows joining without speech or a moved reading
   position, and "Hour preview finished" said once.
