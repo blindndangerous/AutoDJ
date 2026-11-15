@@ -206,3 +206,16 @@ including `writeLive` and `writeQuietly`, takes it over from an older pending
 announcement or dwell. `onCardOpen` prevents nested toggles from triggering unrelated refreshes.
 These helpers do not establish fresh screen-reader evidence or change this ADR's
 Proposed status.
+
+## Amendment 2026-11-15: quiet selection-driven hints
+
+Following the Browse fix and the requested app-wide audit in
+[#780](https://github.com/blindndangerous/AutoDJ/issues/780), automatic successful
+combo refreshes and matching counts stay readable without a second live-region
+announcement. The native control announces its option. This applies to Cart page,
+Listener statistics period, Hour preview span, Voice tracks Song change, and
+Category/Clockwheel conditions. Explicit actions and errors keep their existing
+announcement paths. A selection change also invalidates delayed results from a
+previous choice. See the [selection checks](../accessibility-testing.md#selection-driven-updates).
+This changes the earlier delayed-selection/count speech behavior; it does not
+establish new screen-reader evidence.

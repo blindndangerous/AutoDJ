@@ -270,6 +270,20 @@ describe("cart keys", () => {
     await vi.waitFor(() => expect(server.wall.active_page).toBe(4));
   });
 
+  it("changes the native page selection quietly while keeping focus on the selector", async () => {
+    const { server } = await install();
+    const page = byId("cart-page");
+    page.focus();
+    page.value = "2";
+    page.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await vi.waitFor(() => expect(server.wall.active_page).toBe(2));
+    expect(document.activeElement).toBe(page);
+    expect(page.value).toBe("2");
+    expect(server.calls.some((call) => call.url === "/api/carts/active-page/2")).toBe(true);
+    expect(byId("cart-status").textContent).toBe("");
+  });
+
   it("are off when the keyboard shortcuts are turned off", async () => {
     // Node's own localStorage shadows happy-dom's, so a plain one stands in.
     vi.stubGlobal("localStorage", { getItem: (key) => (key === "autodj.keyboardShortcuts" ? "off" : null) });

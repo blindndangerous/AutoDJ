@@ -42,6 +42,18 @@ Their overflowing contents remain scrollable, including when dialogs are stacked
 boundaries, nested dismissal and focus return in Chromium, Firefox and WebKit.
 This regression also runs as part of the visual audit.
 
+## Selection-driven updates
+
+Native combo options already announce the selected value. Successful automatic
+refreshes and matching counts must update their visible text without adding a
+live-region announcement over that value. Check Cart page, Listener statistics
+period, Hour preview span, Voice tracks Song change, and Category/Clockwheel
+conditions with arrow keys, including slow replies and rapid changes. Keep focus
+on the control and ignore superseded results. Readable hints and descriptions
+remain available; errors and explicit Refresh, Check, Confirm songs, Page Up/Down
+and Shift+H results still announce. Record NVDA/browser speech separately from
+DOM and browser checks.
+
 ## Confirmations with NVDA
 
 The shared confirmation (Clear queue, Delete profile, Restart AutoDJ and the
@@ -896,7 +908,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   word-expanded alternatives, Fixed or Predicted said in the
   Status column; Refresh preview saying the summary once with focus staying on it; nothing said
   by the 30-second refresh or a song change, with the reading position kept; and Shift+H saying
-  the summary from another tab; a new span under Show said once with its summary; a failed
+  the summary from another tab; a new span under Show updating quietly; a failed
   automatic refresh said once, not on every retry; and, on a server slow enough that the preview
   fills in (or with `BUDGET_SECONDS` lowered in a development checkout), Refresh preview ending with "Still
   working out the rest of the preview", the new rows joining without speech or a moved reading

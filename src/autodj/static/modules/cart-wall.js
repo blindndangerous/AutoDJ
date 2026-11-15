@@ -230,12 +230,12 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     }
   }
 
-  async function showPage(number) {
+  async function showPage(number, { announce = true } = {}) {
     if (!data || number === data.wall.active_page) return;
     if (number < 1 || number > data.wall.pages.length) return;
     data.wall.active_page = number;
     render(true);
-    say(`${page().name}, page ${number} of ${data.wall.pages.length}.`);
+    if (announce) say(`${page().name}, page ${number} of ${data.wall.pages.length}.`);
     try {
       await requestJson(`/api/carts/active-page/${number}`, { method: "PUT" });
     } catch (error) {
@@ -385,7 +385,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   });
   root.addEventListener("keyup", () => held.clear());
   root.addEventListener("focusout", () => held.clear());
-  pageSelect.addEventListener("change", () => void showPage(Number(pageSelect.value)));
+  pageSelect.addEventListener("change", () => void showPage(Number(pageSelect.value), { announce: false }));
   slotSelect.addEventListener("change", () => loadEditor());
   source.addEventListener("change", () => fillClips(""));
   clip.addEventListener("change", () => {

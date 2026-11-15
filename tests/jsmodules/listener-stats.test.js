@@ -160,15 +160,17 @@ describe("listener statistics view", () => {
     await tick();
     document.getElementById("listener-stats-refresh").click();
     await vi.waitFor(() => expect(status()).toBe("Listener statistics updated."));
+    const previousAnnouncement = status();
     const span = document.getElementById("listener-stats-span");
     span.value = "7";
     span.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(status()).toBe("Showing the last 7 days."));
+    await tick();
+    expect(status()).toBe(previousAnnouncement);
     expect(request).toHaveBeenLastCalledWith("/api/stream/stats?days=7");
     const keep = document.getElementById("listener-stats-keep");
     keep.value = "30";
     keep.dispatchEvent(new Event("change"));
-    expect(status()).toBe("Showing the last 7 days.");
+    expect(status()).toBe(previousAnnouncement);
     expect(request).toHaveBeenCalledTimes(3);
   });
 

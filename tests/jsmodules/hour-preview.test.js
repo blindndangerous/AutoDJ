@@ -318,7 +318,7 @@ describe("hour preview card", () => {
     }
   });
 
-  it("asks for the chosen span and says only its counts once", async () => {
+  it("refreshes the chosen span quietly while keeping the result visible", async () => {
     vi.useFakeTimers();
     try {
       const counts = "3 fixed items, 9 predicted, through 14:10.";
@@ -328,16 +328,15 @@ describe("hour preview card", () => {
       span.value = "120";
       span.dispatchEvent(new Event("change"));
       await settle();
-      await vi.advanceTimersByTimeAsync(1);
       expect(request).toHaveBeenLastCalledWith("/api/hour-preview?minutes=120");
-      expect(byId("hour-preview-status").textContent).toBe(counts);
+      expect(byId("hour-preview-status").textContent).toBe("");
       expect(byId("hour-preview-summary").textContent).toBe(counts);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("only the newest span is said when one overtakes another", async () => {
+  it("only the newest span is rendered when one overtakes another, without speaking either", async () => {
     vi.useFakeTimers();
     try {
       let release;
@@ -355,8 +354,44 @@ describe("hour preview card", () => {
       release(view({ summary: "Two hours." }));
       await settle();
       await vi.advanceTimersByTimeAsync(1);
-      expect(byId("hour-preview-status").textContent).toBe("Three hours.");
+      expect(byId("hour-preview-status").textContent).toBe("");
       expect(byId("hour-preview-summary").textContent).toBe("Three hours.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ADR-0009-13
+  it("cancels a filling preview's delayed completion speech when the span changes", async () => {
+    vi.useFakeTimers();
+    try {
+      const filling = "Still working out the rest of the preview.";
+      const { timers } = harness([
+        view(),
+        view({ filling }),
+        view({ minutes: 120, summary: "Two hours." }),
+        view({ summary: "Filled." }),
+      ]);
+      await open();
+      byId("hour-preview-refresh").click();
+      await settle();
+      await vi.advanceTimersByTimeAsync(1);
+      const status = byId("hour-preview-status");
+      expect(status.textContent).toContain("Hour preview updated.");
+      status.textContent = "";
+
+      const span = byId("hour-preview-span");
+      span.value = "120";
+      span.dispatchEvent(new Event("change"));
+      await settle();
+      expect(byId("hour-preview-summary").textContent).toBe("Two hours.");
+      expect(status.textContent).toBe("");
+
+      await timers.filter((timer) => !timer.cleared).at(-1).fn();
+      await settle();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(byId("hour-preview-summary").textContent).toBe("Filled.");
+      expect(status.textContent).toBe("");
     } finally {
       vi.useRealTimers();
     }
