@@ -3120,14 +3120,29 @@ async function stationSwitcherProblems(page) {
     if (violations.length) problems.push(`${station.slug}: ${JSON.stringify(violations)}`);
   }
   if (stations.length) {
-    await button.focus();
-    await page.keyboard.press("Enter");
-    await page.keyboard.press("Home");
-    await page.keyboard.press("Enter");
-    const home = stations[0].name === "AutoDJ" ? "AutoDJ" : `AutoDJ: ${stations[0].name}`;
-    await page.waitForFunction((text) => document.getElementById("page-heading").textContent === text,
-      home, { timeout: 10000 })
-      .catch(() => problems.push("could not switch back to the default station"));
+    const pending = new Set();
+    const started = (request) => pending.add(request);
+    const finished = (request) => pending.delete(request);
+    page.on("request", started);
+    page.on("requestfinished", finished);
+    page.on("requestfailed", finished);
+    try {
+      await button.focus();
+      await page.keyboard.press("Enter");
+      await page.keyboard.press("Home");
+      await page.keyboard.press("Enter");
+      const home = stations[0].name === "AutoDJ" ? "AutoDJ" : `AutoDJ: ${stations[0].name}`;
+      await page.waitForFunction((text) => document.getElementById("page-heading").textContent === text,
+        home, { timeout: 10000 })
+        .catch(() => problems.push("could not switch back to the default station"));
+      // The heading changes before the station's requests finish. The page's
+      // initial networkidle load state has already fired and cannot cover them.
+      await expect.poll(() => pending.size, { message: "Station switch requests finish" }).toBe(0);
+    } finally {
+      page.off("request", started);
+      page.off("requestfinished", finished);
+      page.off("requestfailed", finished);
+    }
   }
   return problems;
 }
@@ -3360,8 +3375,14 @@ async function auditStatusPages(browser, out) {
     }
     const page = await newPage(context);
     try {
-      for (const { path } of pages) {
+      for (const { path, kind } of pages) {
         await page.goto(`${BASE}${path}`, { waitUntil: "networkidle", timeout: 20000 });
+        if (kind === "status") {
+          // Exercise long names even on a fresh, single-station server.
+          await page.locator("#status-station").evaluate((heading) => {
+            heading.textContent = "StationWithAVeryLongUnbrokenNameForReflow";
+          });
+        }
         const overflow = await horizontalOverflow(page);
         if (overflow) out.statusPage[`${label} ${path}`] = [JSON.stringify(overflow)];
       }
@@ -3373,15 +3394,21 @@ async function auditStatusPages(browser, out) {
 
 async function selectedTabEntryProblems(page) {
   const problems = [];
+  // Always cover the header stop that appears with multiple stations.
+  await standInForStations(page);
   const expectFocus = async (id, context) => {
     const active = await page.evaluate(() => document.activeElement.id);
     if (active !== id) problems.push(`${context}: focused ${active}, expected ${id}`);
   };
   for (const view of ["library", "settings"]) {
-    await page.goto(`${BASE}/#${view}`);
+    await page.goto(`${BASE}/#${view}`, { waitUntil: "networkidle" });
     await page.locator(`#tab-${view}[aria-selected="true"]`).waitFor();
     await page.locator(".skip-link").focus();
     await page.keyboard.press("Tab");
+    if (await page.locator("#station-switcher").isVisible()) {
+      await expectFocus("station-button", `${view}: station switcher entry`);
+      await page.keyboard.press("Tab");
+    }
     await expectFocus(`tab-${view}`, `${view}: native Tab entry`);
     await page.locator(".skip-link").focus();
     // NVDA's browse buffer can focus a negative-tabindex object directly.
@@ -3435,6 +3462,7 @@ async function selectedTabEntryProblems(page) {
 
 async function collapseCardsProblems(page) {
   await page.goto(`${BASE}/#now`, { waitUntil: "networkidle" });
+  await page.locator("#panel-now").waitFor({ state: "visible" });
   const button = page.getByRole("button", { name: "Collapse all cards in the current tab", exact: true });
   const problems = [];
   for (const activation of ["click", "Enter", "Space"]) {

@@ -266,7 +266,7 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          report=$(npx --no-install playwright install-deps --dry-run chromium firefox 2>&1) || true
+          report=$(npx --no-install playwright install-deps --dry-run chromium firefox webkit 2>&1) || true
           packages=$(printf '%s\n' "$report" | sed -n 's/^  \([a-z0-9][a-z0-9.+-]*\)$/\1/p' | tr '\n' ' ')
           printf 'packages=%s\n' "$packages" >>"$GITHUB_OUTPUT"
       - name: Install browser packages (cached)
@@ -277,7 +277,7 @@ jobs:
           version: v1
           execute_install_scripts: true
           empty_packages_behavior: ignore
-      - run: npx --no-install playwright install chromium firefox
+      - run: npx --no-install playwright install chromium firefox webkit
       - name: Check rendered documentation
         shell: bash
         env:
@@ -321,6 +321,12 @@ jobs:
         env:
           AUTODJ_BROWSERS: chromium,firefox
           AUTODJ_URL: http://127.0.0.1:8080
+      - name: Run WebKit visual assertions
+        run: npm run audit:visual
+        env:
+          AUTODJ_BROWSERS: webkit
+          AUTODJ_URL: http://127.0.0.1:8080
+          AUTODJ_VISUAL_REPORT: visual_audit_webkit.json
       - name: Stop empty-library server
         if: always()
         shell: bash
