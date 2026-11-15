@@ -168,6 +168,7 @@ import { fileURLToPath } from "node:url";
 
 import { expect } from "@playwright/test";
 import { runAudit } from "./audit_helpers.mjs";
+import { auditDialogScroll } from "./dialog_scroll_audit.mjs";
 
 const BASE = process.env.AUTODJ_URL || "http://localhost:8080";
 const SHOTS = process.env.AUTODJ_SCREENSHOTS || "";
@@ -3508,6 +3509,7 @@ export async function audit(name, launcher) {
     }
     await auditStatusPages(browser, out);
     console.log(`${name}: layout, focus and behavior checks`);
+    await auditDialogScroll(browser);
 
     const wide = await browser.newContext({ viewport: { width: 1280, height: 800 },
       reducedMotion: "reduce", colorScheme: "light", bypassCSP: true });
