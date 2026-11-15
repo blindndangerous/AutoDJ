@@ -268,6 +268,61 @@ def test_track_info_uses_selected_station_play_history(
     )
 
 
+def test_most_played_library_sort_uses_selected_station_history(rig: Any) -> None:
+    client, library, _cfg, song, _closes = rig
+    one = make_entry(Path(song.path).with_name("sort-one.flac"), title="One")
+    two = make_entry(Path(song.path).with_name("sort-two.flac"), title="Two")
+    for entry in (song, one, two):
+        Path(entry.path).touch()
+        library.catalog.put_entry(entry)
+    library.refresh()
+    now = datetime.now(UTC).isoformat()
+
+    def remember(ledger, pairs, prefix):
+        ledger.store.write_history(
+            [
+                {
+                    "event_id": f"{prefix}-{n}",
+                    "path": path,
+                    "title": title,
+                    "artist": "Artist",
+                    "duration": 180,
+                    "played_at": now,
+                    "kind": "song",
+                }
+                for n, (path, title) in enumerate(pairs)
+            ],
+            [],
+        )
+
+    remember(
+        library.station_ledger("default"),
+        [(one.path, "One"), (two.path, "Two"), (two.path, "Two")],
+        "default",
+    )
+    remember(
+        library.station_ledger("nightowl"),
+        [(two.path, "Two"), (one.path, "One"), (one.path, "One")],
+        "nightowl",
+    )
+
+    def titles(station):
+        response = client.get(
+            "/api/library/tracks", params={"sort": "most_played", "station": station}
+        )
+        assert response.status_code == 200, response.text
+        return [row["title"] for row in response.json()["results"]]
+
+    assert titles("default")[:2] == ["Two", "One"]
+    assert titles("nightowl")[:2] == ["One", "Two"]
+    assert (
+        client.get(
+            "/api/library/tracks", params={"sort": "most_played", "station": "missing"}
+        ).status_code
+        == 404
+    )
+
+
 def test_create_station_registers_stopped_and_persists(rig: Any) -> None:
     client, library, cfg, _song, _closes = rig
     response = client.post(

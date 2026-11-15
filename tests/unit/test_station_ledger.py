@@ -39,6 +39,36 @@ def _key(path: Path) -> str:
     return os.path.normcase(os.path.abspath(path))
 
 
+def test_station_play_counts_include_recent_recorded_audio_only(tmp_path: Path) -> None:
+    default = StationStore(tmp_path / "default" / "station.db", DEFAULT_SLUG)
+    other = StationStore(tmp_path / "nightowl" / "station.db", "nightowl")
+    start, end = T0, T0 + timedelta(days=30)
+    song_a, liner, old, cut = (
+        tmp_path / name for name in ("a.flac", "liner.flac", "old.flac", "cut.flac")
+    )
+    rows = [
+        _row("song-a", song_a, "A"),
+        _row("song-a-repeat", song_a, "A"),
+        _row("liner", liner, "Liner"),
+        _row("old", old, "Old", minutes=-31 * 24 * 60),
+        _row("cut", cut, "Cut"),
+    ]
+    rows[2]["kind"] = "liner"
+    rows[3]["kind"] = "song"
+    default.write_history(rows, ["cut"])
+    other.write_history([_row("other", song_a, "A")], [])
+
+    assert default.play_counts(start, end) == {
+        _key(song_a): 2,
+        _key(liner): 1,
+    }
+    assert other.play_counts(start, end) == {
+        _key(song_a): 1,
+    }
+    default.close()
+    other.close()
+
+
 def _ledger(catalog: LibraryCatalog, station: str = DEFAULT_SLUG, entry_for_path=None):
     store = StationStore(catalog.path.parent / "stations" / station / "station.db", station)
     migrate_legacy(catalog, store)

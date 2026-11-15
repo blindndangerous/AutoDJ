@@ -314,6 +314,7 @@ const liveSettings = installLiveSettings({
 const auth = initAuthDialog({ document });
 let authExpiryHandled = false;
 let libraryFoldersControls = null;
+let librarySearchControls = null;
 let clockwheelPanelControls = null;
 let categoriesPanelControls = null;
 let introRulesControls = null;
@@ -465,6 +466,7 @@ function clearProtectedSessionData() {
   accessControls?.clear();
   if (_accessEls.status) _accessEls.status.textContent = "";
   searchInput.value = "";
+  librarySearchControls?.clear();
   searchInput.dispatchEvent(new Event("input"));
   registeredLibraryFolders = [];
   libraryKind.value = "music";
@@ -1694,6 +1696,7 @@ function connectWS({ quiet = false, switching = false } = {}) {
         reconnect: () => {
           if (authExpiryHandled || generation !== reconnectGeneration) return;
           authenticatedActivityActive = true;
+          void librarySearchControls?.refresh();
           libraryFoldersControls?.resume();
           clockwheelPanelControls?.resume();
           categoriesPanelControls?.resume();
@@ -2929,7 +2932,7 @@ libraryKind.addEventListener("change", () => {
   libraryBrowseFolder.value = "all";
   updateLibraryFolderOptions();
 });
-installSearch({
+librarySearchControls = installSearch({
   searchInput,
   btnSearch,
   searchResults,
@@ -2937,6 +2940,8 @@ installSearch({
   queueAnnounce,
   folderSelect: libraryBrowseFolder,
   kindSelect: libraryKind,
+  sortSelect: document.getElementById("library-sort"),
+  isEnabled: authenticatedInteractionEnabled,
   previousPage: document.getElementById("library-browse-previous"),
   nextPage: document.getElementById("library-browse-next"),
   playNow: playNowHere,
@@ -3428,6 +3433,7 @@ function startAuthenticatedApp(initialState) {
   authenticatedAppStarted = true;
   authExpiryHandled = false;
   authenticatedActivityActive = true;
+  void librarySearchControls?.refresh();
   libraryFoldersControls?.resume();
   clockwheelPanelControls?.resume();
   categoriesPanelControls?.resume();

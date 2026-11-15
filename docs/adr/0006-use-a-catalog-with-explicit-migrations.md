@@ -36,6 +36,22 @@ that catalog; FAISS files from older releases are migration inputs.
   version, expected dimensions, finiteness, normalization, and claimed file identity.
   A branch name alone is not a compatible-weight identity.
 
+## Amendment 2026-11-14: library browse addition order
+
+[Issue #771](https://github.com/blindndangerous/AutoDJ/issues/771) adds a
+catalog-owned `added_at` timestamp for Browse sorting. It records first insertion
+and survives metadata updates and rescans. Per the operator's migration requirement,
+existing records use their stored file modification time as a one-time approximation:
+`mtime_ns` in seconds, falling back to the older `embedded_at` mtime stamp.
+Records with neither retain zero and sort last with Title as a tie-breaker.
+New imports always use actual insertion time; subsequent rescans and restarts
+do not replace the migrated value. This additive schema update does not
+change the record's Proposed status or the playable-catalog boundary.
+
+Most played reads completed plays from the selected station's store over the
+past 30 days. It does not use the catalog's legacy play-history table or change
+station ownership, history retention, or broadcast selection rules.
+
 ## Alternatives for review
 
 - Catalog plus derived in-memory FAISS: playable unanalysed tracks and one

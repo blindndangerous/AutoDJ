@@ -54,6 +54,7 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Literal, cast
 
@@ -2297,10 +2298,22 @@ def create_app(
         source_id: str | None = None,
         offset: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        sort: Literal["title", "artist", "recently_added", "most_played"] = "title",
+        station: str = DEFAULT_SLUG,
     ) -> dict:
         library = _catalog_library()
+        play_counts = None
+        if sort == "most_played":
+            station = library_station(station)
+            end = datetime.now(UTC)
+            start = end - timedelta(days=30)
+            play_counts = await asyncio.to_thread(
+                library.station_ledger(station).store.play_counts, start, end
+            )
         try:
-            return await asyncio.to_thread(library.browse_tracks, kind, source_id, q, offset, limit)
+            return await asyncio.to_thread(
+                library.browse_tracks, kind, source_id, q, offset, limit, sort, play_counts
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Folder not registered") from exc
         except ValueError as exc:

@@ -242,6 +242,24 @@ class StationStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def play_counts(self, start: datetime, end: datetime) -> dict[str, int]:
+        """Count this station's non-interrupted aired audio within a range."""
+        if end <= start:
+            raise ValueError("The end of the range must be after the start.")
+        from autodj.catalog import history_start
+
+        def in_range(value: object) -> int:
+            moment = history_start(value)
+            return int(moment is not None and start <= moment < end)
+
+        with closing(sqlite3.connect(readonly_uri(self.path), uri=True, timeout=30)) as db:
+            db.create_function("in_report_range", 1, in_range)
+            rows = db.execute(
+                "SELECT path,COUNT(*) FROM play_history WHERE interrupted=0 "
+                "AND path IS NOT NULL AND in_report_range(played_at) GROUP BY path"
+            ).fetchall()
+        return {row[0]: int(row[1]) for row in rows}
+
     def close(self) -> None:
         db = getattr(self, "_db", None)
         if db is not None and not getattr(self, "_closed", True):

@@ -7,6 +7,7 @@ import math
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager
@@ -124,6 +125,7 @@ _SCHEMA = """
         tempo_confidence REAL NOT NULL DEFAULT 0,
         embedded_at REAL NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0,
         fingerprint TEXT NOT NULL DEFAULT '', mtime_ns INTEGER NOT NULL DEFAULT 0,
+        added_at REAL NOT NULL DEFAULT 0,
         points TEXT NOT NULL DEFAULT '{}',
         point_sources TEXT NOT NULL DEFAULT '{}',
         intro_lift_db REAL,
@@ -503,6 +505,17 @@ class LibraryCatalog:
             if "mtime_ns" not in entries:
                 db.execute(
                     "ALTER TABLE catalog_entries ADD COLUMN mtime_ns INTEGER NOT NULL DEFAULT 0"
+                )
+            if "added_at" not in entries:
+                # One-time approximation for existing tracks only. Prefer the
+                # stored precise mtime; embedded_at is the older mtime stamp.
+                db.execute(
+                    "ALTER TABLE catalog_entries ADD COLUMN added_at REAL NOT NULL DEFAULT 0"
+                )
+                db.execute(
+                    "UPDATE catalog_entries SET added_at=CASE "
+                    "WHEN mtime_ns>0 THEN mtime_ns/1000000000.0 "
+                    "WHEN embedded_at>0 THEN embedded_at ELSE 0 END"
                 )
             have = {row[1] for row in db.execute("PRAGMA table_info(play_history)")}
             if "performances" not in have:
@@ -1167,8 +1180,8 @@ class LibraryCatalog:
                 self._db().execute("UPDATE catalog_entries SET allow_outro=0 WHERE path=?", (path,))
         else:
             self._db().execute(
-                f"INSERT INTO catalog_entries (id,path,kind,mtime_ns,{cols}) VALUES (?,?,?,?,{placeholders})",  # nosec B608 -- constant field names; values are bound
-                (record_id, path, kind, mtime_ns, *values),
+                f"INSERT INTO catalog_entries (id,path,kind,mtime_ns,added_at,{cols}) VALUES (?,?,?,?,?,{placeholders})",  # nosec B608 -- constant field names; values are bound
+                (record_id, path, kind, mtime_ns, time.time(), *values),
             )
         if preserve_edits and row:
             from autodj.scan_analysis import normalize_basic_points
@@ -1456,6 +1469,14 @@ class LibraryCatalog:
             if row is None:
                 return None
             return self._record(row)
+
+    def added_at_times(self) -> dict[str, float]:
+        """Return addition times, including migrated mtime approximations."""
+        with self._lock:
+            return {
+                row[0]: float(row[1] or 0)
+                for row in self._db().execute("SELECT path,added_at FROM catalog_entries")
+            }
 
     @staticmethod
     def _record(row: sqlite3.Row) -> dict:
