@@ -250,6 +250,10 @@ export function knownStations() {
   return known.slice();
 }
 
+export function availableStations() {
+  return known.filter((item) => !item.archived);
+}
+
 export function stationEntry(slug = current) {
   return known.find((item) => item.slug === slug) || null;
 }
@@ -368,7 +372,7 @@ export function installStationSwitcher({ wrap, button, list, onChoose }) {
   // button has its own click listener: one on the list made NVDA call the
   // list "clickable".
   function render() {
-    const stations = knownStations();
+    const stations = availableStations();
     wrap.hidden = stations.length < 2;
     // The button's name comes from its text, "Station: <name>", so what
     // is seen is what is heard (WCAG 2.5.3).

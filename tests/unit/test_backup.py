@@ -59,6 +59,85 @@ def test_schedule_is_backed_up_and_restored(tmp_path: Path) -> None:
     assert json.loads(schedule.read_text(encoding="utf-8"))["schema_version"] == 1
 
 
+def test_station_archive_marker_and_retained_audio_round_trip(tmp_path: Path) -> None:
+    """ADR-0005-07 and ADR-0010-10: restore keeps archive state and retained audio."""
+    cfg = _config(tmp_path)
+    default = cfg.index.stations_dir / "default"
+    default.mkdir(parents=True, exist_ok=True)
+    marker = default / "lifecycle.json"
+    marker.write_text('{"version":1,"archived":true}', encoding="utf-8")
+    operation_root = cfg.index.index_dir / "retained-station-audio" / f"nightowl-{'a' * 32}"
+    operation_root.mkdir(parents=True)
+    (operation_root / "announcements").mkdir()
+    (operation_root / "announcements" / "welcome.wav").write_bytes(b"spoken")
+    (operation_root / "ads").mkdir()
+    (operation_root / "ads" / "ad.wav").write_bytes(b"spot")
+    (operation_root / "retention.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "operation": "a" * 32,
+                "station_id": "nightowl",
+                "station_name": "Night Owl",
+                "deleted_at": "2026-11-15T00:00:00+00:00",
+                "original_station_directory": str(cfg.index.stations_dir / "nightowl"),
+                "retained_paths": [
+                    f"{operation_root.name}/ads",
+                    f"{operation_root.name}/announcements",
+                ],
+                "recovery": "Restore the station files from a matching backup first.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    external = tmp_path / "recordings"
+    external.mkdir()
+    (external / "broadcast.wav").write_bytes(b"external")
+    cfg.recording.folder = external
+
+    archive = create_backup(cfg, tmp_path / "station-lifecycle.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        members = set(backup.namelist())
+        assert "index/lifecycle.json" in members
+        assert f"retained-station-audio/{operation_root.name}/announcements/welcome.wav" in members
+        assert f"retained-station-audio/{operation_root.name}/retention.json" in members
+        assert not any("broadcast.wav" in name for name in members)
+
+    marker.unlink()
+    operation_root.rename(tmp_path / "retained-saved")
+    restore_backup(cfg, archive, force=True)
+    assert json.loads(marker.read_text(encoding="utf-8"))["archived"] is True
+    assert (operation_root / "announcements" / "welcome.wav").read_bytes() == b"spoken"
+
+
+def test_backup_refuses_unknown_retained_station_audio_children(tmp_path: Path) -> None:
+    """ADR-0010-10: unknown retained folders are not silently omitted from backup."""
+    cfg = _config(tmp_path)
+    operation_root = cfg.index.index_dir / "retained-station-audio" / f"nightowl-{'b' * 32}"
+    operation_root.mkdir(parents=True)
+    (operation_root / "unknown-audio").mkdir()
+    (operation_root / "retention.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "operation": "b" * 32,
+                "station_id": "nightowl",
+                "station_name": "Night Owl",
+                "deleted_at": "2026-11-15T00:00:00+00:00",
+                "original_station_directory": str(cfg.index.stations_dir / "nightowl"),
+                "retained_paths": [f"{operation_root.name}/unknown-audio"],
+                "recovery": "Restore the station files from a matching backup first.",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BackupError, match="unknown retained station audio folder"):
+        create_backup(cfg, tmp_path / "unknown-retained.zip", force=False)
+
+    assert (operation_root / "unknown-audio").is_dir()
+
+
 @pytest.mark.parametrize("write_fails", [False, True])
 def test_snapshot_never_writes_live_dj_secrets(tmp_path, monkeypatch, write_fails):
     from autodj import backup

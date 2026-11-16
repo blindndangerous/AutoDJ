@@ -52,7 +52,7 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -709,6 +709,14 @@ class StationAutostartBody(BaseModel):
     enabled: StrictBool
 
 
+class DeleteStationBody(BaseModel):
+    """Explicit destructive confirmation for one archived station."""
+
+    model_config = ConfigDict(extra="forbid")
+    confirmation: StrictStr
+    delete_voice_recordings: StrictBool = False
+
+
 class CreateStationBody(BaseModel):
     """A browser's request for a new stopped station."""
 
@@ -991,13 +999,47 @@ def create_app(
     _lyrics_read_gate = asyncio.Semaphore(1)
     install_log_prefix()
     cfg = services.cfg
+    recovery_problem = getattr(cfg, "station_deletion_recovery_problem", None)
+    if isinstance(recovery_problem, str) and recovery_problem:
+        raise RuntimeError(
+            "Station deletion recovery is incomplete; run autodj doctor and resolve its station-deletion-recovery finding before serving."
+        )
     shared = services
     stations = StationRegistry(default_station, extra_stations)
     set_log_labels(stations.log_labels())
     station_timezone = cfg.station.timezone or system_timezone()
     station_create_lock = asyncio.Lock()
+    station_request_condition = asyncio.Condition()
+    active_station_requests: dict[str, int] = {}
+    active_api_mutations = 0
+    station_mutations_blocked = False
     stations.stop_timeout_s = _SHUTDOWN_TIMEOUT_S
     listener_auth_limiter = ListenerAuthLimiter()
+
+    @contextlib.asynccontextmanager
+    async def station_request_barrier(
+        slug: str, *, block_mutations: bool = False
+    ) -> AsyncIterator[None]:
+        """Drain station requests and, for lifecycle changes, all API mutations."""
+        nonlocal station_mutations_blocked
+        try:
+            async with station_request_condition:
+                stations._deleting.add(slug)
+                if block_mutations:
+                    station_mutations_blocked = True
+                await station_request_condition.wait_for(
+                    lambda: (
+                        active_station_requests.get(slug, 0) == 0
+                        and (not block_mutations or active_api_mutations == 0)
+                    )
+                )
+            yield
+        finally:
+            async with station_request_condition:
+                stations._deleting.discard(slug)
+                if block_mutations:
+                    station_mutations_blocked = False
+                station_request_condition.notify_all()
 
     async def _read_lyrics_owned(path: str) -> list[dict[str, object]]:
         """Run one path read at a time without cancellation leaking capacity."""
@@ -1160,6 +1202,56 @@ def create_app(
     )
     app.state.listener_access = None
     app.state.stations = stations
+
+    @app.middleware("http")
+    async def drain_station_mutations(request: Request, call_next: Callable) -> Response:
+        """Drain named requests and reject new writes during a station transition."""
+        nonlocal active_api_mutations
+        parts = [part for part in request.url.path.split("/") if part]
+        station_api = len(parts) >= 3 and parts[:2] == ["api", "stations"]
+        station_suffix = parts[3:] if station_api else []
+        lifecycle_request = station_api and (
+            (request.method == "DELETE" and not station_suffix)
+            or station_suffix in (["archive"], ["restore"])
+        )
+        if lifecycle_request:
+            return await call_next(request)
+        station_slug = parts[2] if len(parts) >= 4 and parts[:2] == ["api", "stations"] else None
+        mutation = (
+            parts[:1] == ["api"]
+            and request.method not in {"GET", "HEAD", "OPTIONS"}
+            and not (parts == ["api", "stations"] and request.method == "POST")
+        )
+        counted = False
+        station_counted = False
+        async with station_request_condition:
+            if station_slug in stations._deleting or (mutation and station_mutations_blocked):
+                return JSONResponse(
+                    {"detail": "Station maintenance is in progress."}, status_code=409
+                )
+            if mutation:
+                active_api_mutations += 1
+                counted = True
+            if station_slug in stations._extras:
+                active_station_requests[station_slug] = (
+                    active_station_requests.get(station_slug, 0) + 1
+                )
+                station_counted = True
+        try:
+            return await call_next(request)
+        finally:
+            if counted or station_counted:
+                async with station_request_condition:
+                    if counted:
+                        active_api_mutations -= 1
+                    if station_counted and station_slug is not None:
+                        remaining = active_station_requests[station_slug] - 1
+                        if remaining:
+                            active_station_requests[station_slug] = remaining
+                        else:
+                            active_station_requests.pop(station_slug, None)
+                    station_request_condition.notify_all()
+
     from autodj.cue_rescan import CueRescan
 
     app.state.cue_rescan = CueRescan()
@@ -1965,6 +2057,197 @@ def create_app(
 
         return {"stations": stations.summaries(), "time_format": timefmt.time_format}
 
+    @app.post("/api/stations/{slug}/archive")
+    async def api_station_archive(slug: str) -> dict[str, Any]:
+        """Stop and archive a station, refusing incomplete shutdown."""
+
+        async def archive() -> dict[str, Any]:
+            async with station_create_lock:
+                if slug not in stations.slugs():
+                    raise HTTPException(status_code=404, detail="No station has that name")
+                async with station_request_barrier(slug, block_mutations=True):
+                    if _station_writes_active(app, slug):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Station writing work must finish before archiving.",
+                        )
+                    try:
+                        warnings = await stations.archive(slug)
+                    except KeyError:
+                        raise HTTPException(
+                            status_code=404, detail="No station has that name"
+                        ) from None
+                    except StationControlError as exc:
+                        raise HTTPException(status_code=409, detail=str(exc)) from exc
+                return {**stations.get(slug).summary(), "archived": True, "warnings": warnings}
+
+        task = asyncio.create_task(archive())
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                await task
+            except Exception:
+                logger.exception("Station %s archive failed after request cancellation", slug)
+            raise
+
+    @app.post("/api/stations/{slug}/restore")
+    async def api_station_restore(slug: str) -> dict[str, Any]:
+        """Make an archived station available again without starting it."""
+        async with station_create_lock:
+            try:
+                await stations.restore(slug)
+            except KeyError:
+                raise HTTPException(status_code=404, detail="No station has that name") from None
+            except StationControlError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return next(item for item in stations.summaries() if item["slug"] == slug)
+
+    @app.delete("/api/stations/{slug}")
+    async def api_station_delete(slug: str, body: DeleteStationBody) -> dict[str, Any]:
+        """Quarantine and permanently remove a fully stopped archived station."""
+        from autodj.station_deletion import (
+            StationDeletionError,
+            complete_station_deletion,
+            delete_archived_station,
+        )
+        from autodj.stations import DEFAULT_SLUG
+
+        if body.confirmation != "DELETE":
+            raise HTTPException(status_code=400, detail="Type DELETE exactly to confirm.")
+        if slug == DEFAULT_SLUG:
+            raise HTTPException(status_code=409, detail="The default station cannot be deleted.")
+        root = cfg
+        library = shared.library
+        if library is None or not hasattr(library, "catalog"):
+            raise HTTPException(status_code=503, detail="This server cannot delete a station")
+
+        async def delete() -> dict[str, Any]:
+            async with station_create_lock:
+                try:
+                    extra = stations._extras[slug]
+                except KeyError:
+                    raise HTTPException(
+                        status_code=404, detail="No station has that name"
+                    ) from None
+                async with station_request_barrier(slug, block_mutations=True):
+                    scan_lock = getattr(library, "_scan_lock", None)
+                    scan_reserved = scan_lock is not None and scan_lock.acquire(blocking=False)
+                    if scan_lock is not None and not scan_reserved:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="The library scan must finish before deletion.",
+                        )
+                    try:
+                        return await delete_drained(slug, body, extra, root, library)
+                    finally:
+                        if scan_lock is not None and scan_reserved:
+                            scan_lock.release()
+
+        async def delete_drained(
+            slug: str,
+            body: DeleteStationBody,
+            extra: ExtraStation,
+            root: Any,
+            library: Any,
+        ) -> dict[str, Any]:
+            async with stations._locks[slug]:
+                extra = stations._extras[slug]
+                if not extra.archived:
+                    raise HTTPException(
+                        status_code=409, detail="Archive the station before deleting it."
+                    )
+                if (
+                    slug in stations._running
+                    or slug in stations._stopping
+                    or slug in stations._stuck
+                ):
+                    raise HTTPException(
+                        status_code=409, detail="The station must be fully stopped before deletion."
+                    )
+                if getattr(library, "_cleanup_active", False):
+                    raise HTTPException(
+                        status_code=409, detail="Library cleanup must finish before deletion."
+                    )
+                if _station_writes_active(app):
+                    raise HTTPException(
+                        status_code=409, detail="Station writing work must finish before deletion."
+                    )
+                committed = False
+                try:
+                    await asyncio.to_thread(library.drop_station_ledger, slug)
+                    stations._content.pop(slug, None)
+                    station_spec = next((item for item in root.stations if item.slug == slug), None)
+                    if station_spec is None:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Station configuration is unavailable for deletion preflight.",
+                        )
+                    station_cfg = station_spec.cfg
+                    protected_roots = tuple(
+                        Path(item)
+                        for item in (
+                            station_cfg.recording.folder,
+                            station_cfg.time_checks.clips_folder,
+                            *station_cfg.time_checks.voice_packs,
+                        )
+                        if item
+                    )
+                    music_roots = tuple(
+                        Path(source["path"])
+                        for source in await asyncio.to_thread(library.catalog.sources, "music")
+                    )
+                    result = await asyncio.to_thread(
+                        delete_archived_station,
+                        root,
+                        slug,
+                        station_name=extra.name,
+                        delete_voice_recordings=body.delete_voice_recordings,
+                        music_roots=music_roots,
+                        protected_roots=protected_roots,
+                    )
+                    committed = True
+                    stations.forget_deleted(slug)
+                    root.stations = tuple(item for item in root.stations if item.slug != slug)
+                    try:
+                        await asyncio.to_thread(
+                            library.catalog.remove_station_lifecycle_state,
+                            slug,
+                            str(extra.paths.liners),
+                        )
+                        await asyncio.to_thread(
+                            complete_station_deletion, root, Path(result["journal"])
+                        )
+                    except Exception as exc:
+                        result["cleanup_pending"] = True
+                        result["cleanup_error"] = str(exc)
+                    else:
+                        result["cleanup_pending"] = False
+                except (StationDeletionError, OSError, ValueError, StationControlError) as exc:
+                    if isinstance(exc, StationDeletionError) and exc.committed:
+                        committed = True
+                    if committed:
+                        stations.forget_deleted(slug)
+                        root.stations = tuple(item for item in root.stations if item.slug != slug)
+                        return {
+                            "slug": slug,
+                            "committed": True,
+                            "cleanup_pending": True,
+                            "detail": str(exc),
+                        }
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return result
+
+        task = asyncio.create_task(delete())
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                await task
+            except Exception:
+                logger.exception("Station %s deletion failed after request cancellation", slug)
+            raise
+
     def label_refusal(slug: str) -> str | None:
         """Why a new station may not use *slug*: another station logs as it."""
         for other, label in stations.log_labels().items():
@@ -2414,7 +2697,7 @@ def create_app(
 
     def _settings_slug(request: Request) -> str:
         slug = request.path_params.get("slug", DEFAULT_SLUG)
-        if slug not in stations.slugs():
+        if slug not in stations.slugs() or slug in stations._deleting:
             raise HTTPException(status_code=404, detail="Station not found")
         return slug
 
@@ -2864,6 +3147,56 @@ def create_app(
     return app
 
 
+def _station_writes_active(app: FastAPI, slug: str | None = None) -> bool:
+    """Conservatively refuse station lifecycle changes during server-owned writes."""
+    from autodj.jobs import get_manager
+
+    stations = app.state.stations
+    paths = stations._extras[slug].paths if slug is not None else None
+    if slug is None and get_manager().running:
+        return True
+    speech = getattr(app.state, "speech", None)
+    if (
+        speech is not None
+        and speech.worker is not None
+        and speech.worker.is_alive()
+        and (slug is None or (paths is not None and speech.active_root == paths.speech))
+    ):
+        return True
+    reviews = getattr(app.state, "review_jobs", None)
+    if reviews is not None:
+        with reviews._lock:
+            run = reviews._active
+            if run is not None and (
+                slug is None or (paths is not None and run.root == paths.reviews)
+            ):
+                return True
+    generations = getattr(app.state, "show_generations", None)
+    if generations is not None:
+        with generations._lock:
+            if generations._busy is not None and (
+                slug is None or any(station == slug for station, _show_id in generations._shows)
+            ):
+                return True
+    rotations = getattr(app.state, "rotation_tests", None)
+    if rotations is not None:
+        with rotations._lock:
+            if any(
+                run.state == "running" and (slug is None or run.station == slug)
+                for run in rotations._runs.values()
+            ):
+                return True
+    previews = getattr(app.state, "hour_previews", None)
+    if previews is not None:
+        with previews._cond:
+            if any(slug is None or job.source.station == slug for job in previews._waiting) or any(
+                slug is None or key[0] == slug for key in previews._filling
+            ):
+                return True
+    cue_rescan = getattr(app.state, "cue_rescan", None)
+    return bool(slug is None and cue_rescan is not None and cue_rescan._lock.locked())
+
+
 def _station_names(stations: StationRegistry) -> list[tuple[str, str]]:
     """``(slug, name)`` of every configured station, the default first."""
     first = stations.default.slug
@@ -3122,6 +3455,7 @@ def _extra_station(
         requests_enabled=spec.cfg.requests.enabled,
         player_page=spec.cfg.player_page,
         defined_in=spec.defined_in,
+        archived=spec.archived,
     )
 
 

@@ -136,7 +136,7 @@ export function installStationCreator({
     row.autostartActions.hidden = !changed;
     save.disabled = row.autostartSaving || !changed;
     discard.disabled = row.autostartSaving || !changed;
-    box.disabled = row.station.autostart_locked || row.autostartSaving;
+    box.disabled = row.station.autostart_locked || row.station.archived || row.autostartSaving;
   }
 
   function editAutostart(row) {
@@ -190,6 +190,7 @@ export function installStationCreator({
   }
 
   async function startOrStop(station) {
+    if (station.archived) return;
     const stop = isOnAir(station);
     if (stop && !await confirmAction(doc, {
       title: `Stop ${station.name}?`,
@@ -207,6 +208,54 @@ export function installStationCreator({
     const warnings = Array.isArray(entry?.warnings) ? entry.warnings.join(" ") : "";
     say(`${stop ? "Stopped" : "Started"} ${station.name}.${warnings ? ` ${warnings}` : ""}`);
     await onChanged();
+  }
+
+  async function archiveStation(station) {
+    if (!await confirmAction(doc, {
+      title: `Archive ${station.name}?`,
+      message: "This stops the station and removes it from the station selector. Its settings, history and assets remain available to restore.",
+      confirmLabel: "Archive station",
+    })) return;
+    try {
+      await request(`/api/stations/${encodeURIComponent(station.slug)}/archive`, { method: "POST" });
+      say(`Archived ${station.name}.`);
+      await onChanged(station, "archive");
+    } catch (errorValue) {
+      say(failureText(`archive ${station.name}.`, errorValue, ""), "error");
+    }
+  }
+
+  async function restoreStation(station) {
+    try {
+      await request(`/api/stations/${encodeURIComponent(station.slug)}/restore`, { method: "POST" });
+      say(`Restored ${station.name}. It remains off air until you start it.`);
+      await onChanged(station, "restore");
+    } catch (errorValue) {
+      say(failureText(`restore ${station.name}.`, errorValue, ""), "error");
+    }
+  }
+
+  async function deleteStation(row) {
+    const station = row.station;
+    if (row.deleteText.value !== "DELETE") {
+      row.deleteText.setAttribute("aria-invalid", "true");
+      row.deleteText.focus();
+      say("Type DELETE exactly to confirm permanent deletion.", "error");
+      return;
+    }
+    row.deleteButton.disabled = true;
+    try {
+      await request(`/api/stations/${encodeURIComponent(station.slug)}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation: row.deleteText.value, delete_voice_recordings: row.deleteVoice.checked }),
+      });
+      say(`Permanently deleted ${station.name}.`);
+      await onChanged(station, "delete");
+    } catch (errorValue) {
+      row.deleteButton.disabled = false;
+      say(failureText(`permanently delete ${station.name}.`, errorValue, ""), "error");
+    }
   }
 
   function stationRow(station) {
@@ -228,7 +277,57 @@ export function installStationCreator({
     const button = doc.createElement("button");
     button.type = "button";
     button.addEventListener("click", () => void withDisabled(button, () => startOrStop(row.station)));
-    const row = tableRow(doc, ["", "", "", [box, actions], button]);
+    const lifecycle = doc.createElement("div");
+    lifecycle.className = "dialog-actions";
+    lifecycle.setAttribute("role", "group");
+    const archive = doc.createElement("button");
+    archive.type = "button";
+    archive.textContent = "Archive";
+    archive.addEventListener("click", async () => {
+      await archiveStation(row.station);
+      if (row.station.archived) row.restoreButton.focus();
+    });
+    const restore = doc.createElement("button");
+    restore.type = "button";
+    restore.textContent = "Restore";
+    restore.addEventListener("click", async () => {
+      await restoreStation(row.station);
+      if (!row.station.archived) row.archiveButton.focus();
+    });
+    const deleteToggle = doc.createElement("button");
+    deleteToggle.type = "button";
+    deleteToggle.textContent = "Delete permanently";
+    const deletePanel = doc.createElement("div");
+    deletePanel.hidden = true;
+    const deleteSummary = doc.createElement("p");
+    deleteSummary.textContent = "Removes this station's configuration and history. Shared music and external recording folders are not deleted. Voice recordings are retained outside this folder unless selected below.";
+    const deleteLabel = doc.createElement("label");
+    const deleteText = doc.createElement("input");
+    deleteText.type = "text";
+    deleteText.autocomplete = "off";
+    deleteLabel.append("Type DELETE to confirm: ", deleteText);
+    const voiceLabel = doc.createElement("label");
+    const deleteVoice = doc.createElement("input");
+    deleteVoice.type = "checkbox";
+    voiceLabel.append(deleteVoice, " Delete voice recordings");
+    const deleteButton = doc.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.textContent = "Confirm permanent deletion";
+    deleteButton.addEventListener("click", () => void deleteStation(row));
+    deleteToggle.addEventListener("click", () => {
+      deletePanel.hidden = !deletePanel.hidden;
+      if (!deletePanel.hidden) {
+        deleteText.value = "";
+        deleteText.removeAttribute("aria-invalid");
+        deleteVoice.checked = false;
+        deleteText.focus();
+      }
+    });
+    deletePanel.append(deleteSummary, deleteLabel, voiceLabel, deleteButton);
+    lifecycle.append(archive, restore, deleteToggle, deletePanel);
+    const row = tableRow(doc, ["", "", "", [box, actions], button, lifecycle]);
+    Object.assign(row, { archiveButton: archive, restoreButton: restore, deleteToggle, deletePanel,
+      deleteText, deleteVoice, deleteButton });
     row.dataset.station = station.slug;
     row.station = station;
     row.autostartBaseline = Boolean(station.autostart);
@@ -243,7 +342,8 @@ export function installStationCreator({
     const cells = [...row.children];
     const [nameCell, playingCell, listenersCell] = cells;
     const [playing, listeners] = stationCells(station);
-    for (const [cell, text] of [[nameCell, station.name], [playingCell, playing], [listenersCell, listeners]]) {
+    const shownName = station.archived ? `${station.name} (archived)` : station.name;
+    for (const [cell, text] of [[nameCell, shownName], [playingCell, playing], [listenersCell, listeners]]) {
       if (cell.textContent !== text) cell.textContent = text;
     }
     const box = cells[3].querySelector("input");
@@ -262,10 +362,17 @@ export function installStationCreator({
     discard.setAttribute("aria-label", `Discard Start with the server change for ${station.name}`);
     syncAutostart(row);
     const button = cells[4].querySelector("button");
-    button.hidden = false;
+    button.hidden = Boolean(station.archived);
     const action = isOnAir(station) ? "Stop" : "Start";
     if (button.textContent !== action) button.textContent = action;
     button.setAttribute("aria-label", `${action} ${station.name}`);
+    row.archiveButton.hidden = Boolean(station.archived);
+    row.restoreButton.hidden = !station.archived;
+    row.deleteToggle.hidden = !station.archived || station.slug === "default";
+    row.archiveButton.setAttribute("aria-label", `Archive ${station.name}`);
+    row.restoreButton.setAttribute("aria-label", `Restore ${station.name}`);
+    row.deleteToggle.setAttribute("aria-label", `Delete ${station.name} permanently`);
+    row.deletePanel.hidden = !station.archived || station.slug === "default" || row.deletePanel.hidden;
   }
 
   function renderList(all) {

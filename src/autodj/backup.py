@@ -74,6 +74,7 @@ if TYPE_CHECKING:
 # Current files of the index folder stored by a backup.
 INDEX_FILES = (
     "station.json",
+    "lifecycle.json",
     "station.db",
     "dj_meta.db",
     "library.db",
@@ -114,9 +115,24 @@ _FOLDERS = (
     "ad_plays",
     "stereo-tool-presets",
 )
+_RETAINED_AUDIO_FOLDERS = frozenset(
+    {
+        "announcements",
+        "liners",
+        "speech",
+        "edition_audio",
+        "carts",
+        "time_checks",
+        "time_checks_cache",
+        "intros",
+        "ads",
+    }
+)
+_RETAINED_AUDIO_NAME = re.compile(r"^(.+)-([0-9a-f]{32})$")
 # The default station's state files.
 _STATE_FILES = (
     "station.json",
+    "lifecycle.json",
     "web_state.json",
     "profile-defaults.json",
     "profile-selection.json",
@@ -210,6 +226,28 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
                 and (folder / "station.db").is_file()
             ):
                 roots.setdefault(f"stations/{folder.name}/index", folder)
+    deletion_root = cfg.index.index_dir / ".station-deletions"
+    if _is_link(deletion_root):
+        raise BackupError(
+            f"linked station deletion storage {deletion_root}; resolve it before backup"
+        )
+    if deletion_root.exists() and not deletion_root.is_dir():
+        raise BackupError(f"station deletion storage is not a folder: {deletion_root}")
+    quarantine = deletion_root / "quarantine"
+    if _is_link(quarantine):
+        raise BackupError(f"unsafe station deletion quarantine folder: {quarantine}")
+    if quarantine.exists():
+        if not quarantine.is_dir():
+            raise BackupError(f"unsafe station deletion quarantine folder: {quarantine}")
+        if any(quarantine.iterdir()):
+            raise BackupError(
+                "station deletion quarantine is not empty; finish recovery before backup"
+            )
+    if deletion_root.is_dir() and any(deletion_root.glob("*.json")):
+        raise BackupError("station deletion recovery is pending; finish it before backup")
+    retained_root = cfg.index.index_dir / "retained-station-audio"
+    _validate_retained_audio_root(retained_root)
+    roots["retained-station-audio"] = retained_root
     return roots
 
 
@@ -333,6 +371,75 @@ def _single_link(path: Path) -> None:
     """Refuse hard-link aliases, whose other name cannot be checked for containment."""
     if path.stat().st_nlink > 1:
         raise BackupError(f"hard-linked backup file {path}; use a separate file copy instead")
+
+
+def _validate_retained_audio_root(root: Path) -> None:
+    """Check retained operation manifests and child trees before backup/restore."""
+    from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN
+
+    if _is_link(root):
+        raise BackupError(f"linked retained station audio folder {root}")
+    if not root.exists():
+        return
+    if not root.is_dir():
+        raise BackupError(f"retained station audio path is not a folder: {root}")
+    for operation_root in sorted(root.iterdir()):
+        match = _RETAINED_AUDIO_NAME.fullmatch(operation_root.name)
+        if _is_link(operation_root) or not operation_root.is_dir() or match is None:
+            raise BackupError(f"unsafe retained station audio operation folder: {operation_root}")
+        slug, operation = match.groups()
+        if slug == DEFAULT_SLUG or not SLUG_PATTERN.fullmatch(slug):
+            raise BackupError(f"unsafe retained station ID in {operation_root}")
+        manifest_path = operation_root / "retention.json"
+        if _is_link(manifest_path) or not manifest_path.is_file():
+            raise BackupError(f"retained station audio has no regular manifest: {manifest_path}")
+        info = manifest_path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise BackupError(f"unsafe retained station audio manifest: {manifest_path}")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise BackupError(f"invalid retained station audio manifest: {manifest_path}") from exc
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("version") != 1
+            or manifest.get("operation") != operation
+            or manifest.get("station_id") != slug
+            or not isinstance(manifest.get("station_name"), str)
+            or not isinstance(manifest.get("retained_paths"), list)
+            or any(not isinstance(item, str) for item in manifest.get("retained_paths", []))
+            or not isinstance(manifest.get("deleted_at"), str)
+            or not isinstance(manifest.get("original_station_directory"), str)
+            or not isinstance(manifest.get("recovery"), str)
+        ):
+            raise BackupError(f"retained station audio manifest does not match {operation_root}")
+        children = [path for path in operation_root.iterdir() if path.name != "retention.json"]
+        if any(path.name not in _RETAINED_AUDIO_FOLDERS for path in children):
+            unexpected = next(path for path in children if path.name not in _RETAINED_AUDIO_FOLDERS)
+            raise BackupError(f"unknown retained station audio folder: {unexpected}")
+        if set(manifest["retained_paths"]) != {
+            f"{operation_root.name}/{path.name}" for path in children
+        }:
+            raise BackupError(
+                f"retained station audio manifest paths do not match {operation_root}"
+            )
+        for child in children:
+            if _is_link(child) or not child.is_dir():
+                raise BackupError(f"unsafe retained station audio folder: {child}")
+        for directory, folders, files in os.walk(operation_root, followlinks=False):
+            for name in folders:
+                path = Path(directory) / name
+                if _is_link(path):
+                    raise BackupError(f"linked retained station audio folder: {path}")
+            for name in files:
+                path = Path(directory) / name
+                if _is_link(path):
+                    raise BackupError(f"linked retained station audio file: {path}")
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise BackupError(
+                        f"non-regular or hard-linked retained station audio file: {path}"
+                    )
 
 
 # Temporary and set-aside names AutoDJ itself makes beside real files: an
@@ -572,6 +679,12 @@ def _check_backup_space(
 
 
 def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
+    """Create an atomic backup while serializing station lifecycle changes."""
+    with im.publication_lock(cfg.index.index_dir):
+        return _create_backup(cfg, destination, force=force)
+
+
+def _create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
     """Write a backup archive to *destination* and return its absolute path.
 
     Safe while AutoDJ serves: every station's state files are copied under
@@ -767,6 +880,18 @@ def _target(roots: dict[str, Path], name: str) -> Path:
     elif _is_files(key):
         if len(rest) == 1 and rest[0] in (*STATION_FILES, "station.db"):
             return roots[key] / rest[0]
+    elif key == "retained-station-audio":
+        if len(rest) >= 2:
+            operation_match = _RETAINED_AUDIO_NAME.fullmatch(rest[0])
+            if operation_match is None:
+                raise BackupError(f"unsafe retained station audio path in archive: {name}")
+            slug, _operation = operation_match.groups()
+            if slug == DEFAULT_SLUG or not SLUG_PATTERN.fullmatch(slug):
+                raise BackupError(f"unsafe retained station ID in archive: {name}")
+            if rest == (rest[0], "retention.json") or (
+                len(rest) >= 3 and rest[1] in _RETAINED_AUDIO_FOLDERS
+            ):
+                return roots[key].joinpath(*rest)
     elif key in roots and key.split("/")[-1] == "edition_audio":
         if len(rest) == 1 and re.fullmatch(r"[0-9a-f]{32}\.wav", rest[0]):
             return roots[key] / rest[0]

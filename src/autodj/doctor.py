@@ -18,6 +18,7 @@ import os
 import shutil
 import socket
 import sqlite3
+import stat
 import subprocess  # nosec B404 -- nvidia-smi with a fixed argv, never a shell
 import sys
 import tomllib
@@ -1160,11 +1161,89 @@ def run_doctor(
         if station in (None, spec.slug):
             checks += _checked(_station_checks, cfg, spec)
     checks += _checked(_station_folders_check, cfg)
+    checks += _station_deletion_checks(cfg)
     checks += [
         DoctorCheck("station-definition", CheckStatus.WARN, f"{path}: {reason}")
         for path, reason in cfg.skipped_definitions
     ]
     return DoctorReport(tuple(checks))
+
+
+def _station_deletion_checks(cfg: AutoDJConfig) -> list[DoctorCheck]:
+    """Report interrupted deletion journals and operator-retained station audio."""
+    from autodj.station_deletion import StationDeletionError, _no_link_components, _paths
+
+    _root, journal_dir, retained_root = _paths(cfg)
+    checks: list[DoctorCheck] = []
+    try:
+        _no_link_components(journal_dir)
+        _no_link_components(retained_root)
+    except StationDeletionError as exc:
+        return [
+            DoctorCheck(
+                "station-deletion-recovery",
+                CheckStatus.FAIL,
+                "station deletion storage contains a linked path",
+                str(exc),
+            )
+        ]
+    if cfg.station_deletion_recovery_problem:
+        checks.append(
+            DoctorCheck(
+                "station-deletion-recovery",
+                CheckStatus.FAIL,
+                "an interrupted station deletion needs recovery",
+                cfg.station_deletion_recovery_problem,
+            )
+        )
+    journals: list[dict[str, Any]] = []
+    if journal_dir.is_dir() and not journal_dir.is_symlink() and not journal_dir.is_junction():
+        for path in sorted(journal_dir.glob("*.json")):
+            try:
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    journals.append({"journal": str(path), "phase": "unsafe"})
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+                journals.append(
+                    {
+                        "journal": str(path),
+                        "station": data.get("slug") if isinstance(data, dict) else None,
+                        "phase": data.get("phase") if isinstance(data, dict) else "unreadable",
+                    }
+                )
+            except (OSError, UnicodeError, ValueError):
+                journals.append({"journal": str(path), "phase": "unreadable"})
+    if journals and not cfg.station_deletion_recovery_problem:
+        checks.append(
+            DoctorCheck(
+                "station-deletion-recovery",
+                CheckStatus.WARN,
+                "station deletion work remains pending",
+                {"journals": journals},
+            )
+        )
+    retained = []
+    if (
+        retained_root.is_dir()
+        and not retained_root.is_symlink()
+        and not retained_root.is_junction()
+    ):
+        retained = [
+            str(path)
+            for path in sorted(retained_root.iterdir())
+            if not path.is_symlink() and not path.is_junction() and path.is_dir()
+        ]
+    if retained:
+        checks.append(
+            DoctorCheck(
+                "retained-station-audio",
+                CheckStatus.WARN,
+                f"{len(retained)} retained station audio folder(s) are available for recovery",
+                {"folders": retained},
+            )
+        )
+    return checks
 
 
 def _restore_check(cfg: AutoDJConfig) -> tuple[DoctorCheck, ...]:

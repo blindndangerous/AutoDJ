@@ -18,6 +18,9 @@ destinations that point outside their configured folder.
 in the archive, including the current catalog at `index/library.db`; another station's are under
 `stations/<slug>/`, for example `stations/nightowl/index/web_state.json` and
 `stations/nightowl/liners/...`. New backups omit legacy index manifests and generation files.
+Archived-station lifecycle markers and the `retained-station-audio/` recovery tree are included.
+The recovery tree holds station-owned spoken audio preserved by permanent deletion; configured
+external recording and time-check folders remain outside the backup.
 Each station's `relays.json`, which holds relay source passwords, stays out of the backup, and a
 restore leaves the station's own `relays.json` in place (it skips one found in an archive made by
 an older build). Keep a separate private copy of `relays.json` if you need one. A folder two

@@ -125,7 +125,7 @@ Every control route of a station answers under `/api/stations/<slug>/`, for exam
 `/api/stations/nightowl/queue/add`; the default station keeps its `/api/...` addresses. These
 need a paired browser, like the default station's.
 
-- `GET /api/stations` lists every configured station: its slug, `defined_in` (`config` or `web`), name, state (`stopped`,
+- `GET /api/stations` lists every configured station: its slug, `defined_in` (`config` or `web`), name, `archived` flag, state (`stopped`,
   `stopping`, `stuck stopping`, `idle`, `playing` or `paused`), listener count and current
   song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path`, `m3u_path`,
   `player_path` and `embed_path`. The stream and playlist are `null` for a station that
@@ -146,6 +146,19 @@ need a paired browser, like the default station's.
   a duplicate name or ID, existing state folder or play history, station limit, or conflicting
   recording or relay location returns 409. A server without the shared library returns 503.
   The route requires a paired browser and an allowed Origin, and caps the body at 4 KiB.
+- `POST /api/stations/<slug>/archive` stops and archives a station. It refuses an incomplete
+  stop or station-writing work. An archived station remains in management but cannot start and
+  is excluded from the station switcher. Its saved autostart choice is retained but suppressed.
+- `POST /api/stations/<slug>/restore` makes an archived station available again without starting
+  it. The default station can be archived and restored.
+- `DELETE /api/stations/<slug>` permanently deletes an archived non-default station. The JSON
+  body requires `confirmation: "DELETE"`; `delete_voice_recordings` is a Boolean that defaults
+  to `false`. The operation quarantines the station directory before removal. With the default
+  choice, station-owned audio is retained under `<index_dir>/retained-station-audio/` with a
+  recovery manifest. Shared music sources and external recording or time-check folders are not
+  deleted. A response with `cleanup_pending: true` means the station deletion is committed, but
+  catalog metadata cleanup or interrupted physical cleanup still needs recovery; do not move the
+  station directory back. `autodj doctor` reports pending recovery and retained audio.
 - `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
   station changes nothing.
 - `POST /api/stations/<slug>/stop` stops a station completely: its listeners are disconnected,
