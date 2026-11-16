@@ -62,6 +62,7 @@ class Server:
         self.manager = LibraryManager(self.cfg, Similarity()) if library else None
         self.clock = Clock()
         self.songs = []
+        self.extra_managers = []
         if self.manager is not None:
             self.manager.start_scan = Mock()
             self.manager.analysis_queue._now = self.clock
@@ -105,8 +106,45 @@ class Server:
         return body, vector
 
     def close(self):
+        for manager in self.extra_managers:
+            manager.close()
         if self.manager is not None:
             self.manager.close()
+
+    def install_libraries(self, managers):
+        """Rebuild the test app with a tiny library-services pool."""
+
+        class Pool:
+            def __init__(self, by_id):
+                self.by_id = by_id
+
+            def get(self, library_id):
+                if library_id not in self.by_id:
+                    raise KeyError(library_id)
+                return SimpleNamespace(library=self.by_id[library_id])
+
+            def all(self):
+                return [SimpleNamespace(library=manager) for manager in self.by_id.values()]
+
+        bridge = SimpleNamespace(player=SimpleNamespace(_cfg=self.cfg), library=self.manager)
+        self.app = create_app(bridge, libraries=Pool(managers))
+        self.client = TestClient(self.app, base_url=HTTPS)
+
+
+def _server_with_second_library(server):
+    other_cfg = replace(
+        server.cfg,
+        index=replace(server.cfg.index, library_id="other"),
+    )
+    other = LibraryManager(other_cfg, Similarity())
+    other.start_scan = Mock()
+    other.catalog.add_source(other_cfg.library.music_dir)
+    for song in server.songs:
+        other.catalog.put_entry(make_entry(song))
+    other.refresh()
+    server.extra_managers.append(other)
+    server.install_libraries({"main": server.manager, "other": other})
+    return other
 
 
 @pytest.fixture
@@ -120,6 +158,88 @@ def claim(server, secret, batch=1):
     reply = server.call("POST", "/api/worker/claim", secret, json={"batch": batch})
     assert reply.status_code == 200, reply.text
     return reply.json()
+
+
+def test_worker_leases_are_bound_to_the_selected_library(server):
+    """A lease in one catalog cannot be read, failed, submitted, or released in another."""
+    other = _server_with_second_library(server)
+    token, secret = server.token()
+    main_reply = server.call("POST", "/api/worker/claim", secret, json={"batch": 1})
+    other_reply = server.call(
+        "POST", "/api/worker/libraries/other/claim", secret, json={"batch": 1}
+    )
+    assert main_reply.status_code == other_reply.status_code == 200
+    main_song = main_reply.json()["songs"][0]
+    other_song = other_reply.json()["songs"][0]
+    assert main_song["title"] == other_song["title"]
+    main_queue = server.manager.analysis_queue
+    other_queue = other.analysis_queue
+    assert main_queue.lease(main_song["lease"], token.token_id) is not None
+    assert other_queue.lease(other_song["lease"], token.token_id) is not None
+
+    wrong_audio = server.call(
+        "GET",
+        f"/api/worker/libraries/other/audio?lease={main_song['lease']}",
+        secret,
+    )
+    assert wrong_audio.status_code == 404
+    wrong_failed = server.call(
+        "POST",
+        "/api/worker/libraries/other/failed",
+        secret,
+        json={"lease": main_song["lease"], "reason": "wrong library"},
+    )
+    assert wrong_failed.status_code == 404
+    invalid_result = server.call(
+        "POST",
+        "/api/worker/libraries/other/result",
+        secret,
+        json={"lease": main_song["lease"], "energy": "invalid"},
+    )
+    assert invalid_result.status_code == 422
+    main_result, _vector = server.result(main_song, main_song["lease"])
+    wrong_result = server.call(
+        "POST",
+        "/api/worker/libraries/other/result",
+        secret,
+        json=main_result,
+    )
+    assert wrong_result.status_code == 404
+    wrong_release = server.call(
+        "POST",
+        "/api/worker/libraries/other/release",
+        secret,
+        json={"leases": [main_song["lease"]]},
+    )
+    assert wrong_release.status_code == 200
+    assert wrong_release.json()["released"] == 0
+    assert main_queue.lease(main_song["lease"], token.token_id) is not None
+    assert other_queue.lease(other_song["lease"], token.token_id) is not None
+
+    result, _vector = server.result(other_song, other_song["lease"])
+    submitted = server.call("POST", "/api/worker/libraries/other/result", secret, json=result)
+    assert submitted.status_code == 200, submitted.text
+    assert main_queue.lease(main_song["lease"], token.token_id) is not None
+    assert server.manager.catalog.record_for_path(server.songs[0])["energy"] == 0.25
+    assert other.catalog.record_for_path(server.songs[0])["energy"] == 0.3
+
+
+def test_worker_list_and_token_revocation_cover_every_library(server):
+    other = _server_with_second_library(server)
+    token, secret = server.token()
+    main_song = server.call("POST", "/api/worker/claim", secret, json={"batch": 1}).json()["songs"][
+        0
+    ]
+    other_song = server.call(
+        "POST", "/api/worker/libraries/other/claim", secret, json={"batch": 1}
+    ).json()["songs"][0]
+    workers = server.call("GET", "/api/analysis/workers", secret).json()["workers"]
+    assert {worker["library_id"] for worker in workers} == {"main", "other"}
+
+    revoked = server.call("DELETE", f"/api/machine-tokens/{token.token_id}", secret, headers=ORIGIN)
+    assert revoked.status_code == 200
+    assert server.manager.analysis_queue.lease(main_song["lease"], token.token_id) is None
+    assert other.analysis_queue.lease(other_song["lease"], token.token_id) is None
 
 
 def test_heartbeat_renews_only_reported_leases_and_connect_releases_orphans(server):

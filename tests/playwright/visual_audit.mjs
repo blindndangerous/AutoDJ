@@ -1869,11 +1869,11 @@ async function eachTarget(page, measure) {
         await page.waitForTimeout(150);
         await openEveryCard(page);
         await visit(`settings/${id.replace(/^stab-/, "")}`);
-        if (id === "stab-server") {
+        if (id === "stab-libraries") {
         await page.locator("#music-fade-drop").fill("0");
-        await page.locator("#music-fade-drop-save").click();
+        await page.locator("#spanel-libraries [data-settings-save]").click();
         await page.locator("#music-fade-drop-error").waitFor({ state: "visible" });
-        await visit("settings/server/music-fade-error");
+        await visit("settings/libraries/music-fade-error");
         await page.locator("#music-fade-drop").fill("10");
         }
         if (id === "stab-requests") await openRequestSettingsError(page, visit);

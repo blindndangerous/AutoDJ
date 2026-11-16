@@ -281,7 +281,8 @@ def test_shutting_down_stops_a_running_library_job(tmp_path: Path, monkeypatch) 
 
     manager = Mock()
     manager.shutdown.return_value = True
-    monkeypatch.setattr(autodj.jobs, "get_manager", lambda: manager)
+    monkeypatch.setattr(autodj.jobs, "_MANAGER", manager)
+    monkeypatch.setattr(autodj.jobs, "_MANAGERS", {})
     client = _client(tmp_path)
     with client:
         manager.shutdown.assert_not_called()

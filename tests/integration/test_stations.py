@@ -229,7 +229,9 @@ def _rig(
     monkeypatch.setattr("autodj.recorder.Recorder", Recorder)
     monkeypatch.setattr(stations, "start_stream_station", lambda *_args: stream_out)
     monkeypatch.setattr("autodj.player.apply_repeat_windows", lambda _player: None)
-    monkeypatch.setattr("autodj.dj_meta.close_cache", lambda: log.append("DJ-meta cache closed"))
+    monkeypatch.setattr(
+        "autodj.dj_meta.close_cache", lambda _library_dir=None: log.append("DJ-meta cache closed")
+    )
 
     runtime = StationRuntime(bridge, timezone="UTC", player_thread=_Thread(log), stream_mode=True)
 

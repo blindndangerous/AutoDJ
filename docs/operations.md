@@ -596,3 +596,41 @@ See [Compare speech and prepare generated time checks — Prepare time checks](g
 ### Evidence for workflow improvements
 
 See [Compare speech and prepare generated time checks — Evidence for workflow improvements](guides/operations/speech-studio.md#evidence-for-workflow-improvements).
+
+## Named music libraries
+
+Open Settings, Global, Libraries to create or rename a music library. Its ID
+stays fixed when its name changes. The existing collection is Main; adopting
+it does not move or reanalyse its tracks.
+
+Select the library in Library tools before managing its folders or running a
+job. To change Segue detection or the similarity analysis length, open
+**Settings > Global > Libraries** and choose the **Music library** under
+**Library settings**. Save applies to that library. In Settings, Station, General, choose **Music library** and save.
+For a running station, choose **Save and restart now** or **Save for next start**.
+Review warnings about missing queued songs or programming references. Cancel
+keeps the draft without saving. A restart changes the active library; saving
+for next start leaves current playback on its existing library.
+
+Libraries can share physical folders while keeping separate catalog tags and
+cue points. Writing tags to a music file affects every application reading that
+file; other AutoDJ libraries read the changed tags on their next rescan.
+If the file identity changes, that rescan also clears their cached analysis
+and cue points. Catalog-only edits stay within the selected library.
+
+For library maintenance on the command line, specify the ID before the command:
+
+```bash
+autodj --library evening stats
+autodj --library evening analyse-library
+```
+
+A remote worker selects its server library after the worker command:
+
+```bash
+autodj worker --server https://radio.example.net --library evening
+```
+
+Omitting the ID uses main. Backups include all libraries; Doctor checks their
+catalogs and station assignments. Library IDs are not access-control roles:
+paired operators retain the existing server-wide permissions.

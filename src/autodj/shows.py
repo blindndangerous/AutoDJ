@@ -248,7 +248,7 @@ class ShowStore:
                 "nothing is saved over it"
             )
 
-    def _load_locked(self) -> dict[str, Show]:
+    def _load_locked(self, *, repair_invalid: bool = True) -> dict[str, Show]:
         """Every show, read again if the file changed.  Caller holds ``_lock``.
 
         Raises:
@@ -264,6 +264,8 @@ class ShowStore:
             try:
                 document = _ShowsFile.model_validate_json(data)
             except ValueError as exc:
+                if not repair_invalid:
+                    raise
                 # Raises when it cannot be moved, so a save never writes over it.
                 self._keep_bad_copy(str(exc).splitlines()[0])
                 stamp = None
@@ -302,12 +304,14 @@ class ShowStore:
             stamp = None
         self._stamp, self._shows = stamp, dict(shows)
 
-    def all(self) -> dict[str, Show]:
-        """Every show; the shows last read when the file cannot be read just now."""
+    def all(self, *, repair_invalid: bool = True) -> dict[str, Show]:
+        """Every show; preflight reads can refuse invalid files without moving them."""
         with self._lock:
             try:
-                return self._load_locked()
+                return self._load_locked(repair_invalid=repair_invalid)
             except OSError as exc:
+                if not repair_invalid:
+                    raise
                 logger.warning("Could not read the shows file %s: %s", self.path, exc)
                 return dict(self._shows)
 

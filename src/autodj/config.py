@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from autodj.library_registry import validate_library_id
 from autodj.liners import LINER_PICK_MODES
 from autodj.repeat_settings import RepeatSettings, ignore_unknown_repeat_keys
 from autodj.sqlite_utils import readonly_uri
@@ -160,6 +161,7 @@ class IndexConfig(_Section):
     index_dir: Path = field(default_factory=lambda: Path("index"))
     model_dir: Path = field(default_factory=lambda: Path("models"))
     throttle_ms: float = 0.0
+    library_id: str = "main"
 
     def __post_init__(self) -> None:
         """Expand the paths and validate the throttle.
@@ -170,6 +172,7 @@ class IndexConfig(_Section):
         """
         self.index_dir = Path(self.index_dir).expanduser()
         self.model_dir = Path(self.model_dir).expanduser()
+        self.library_id = validate_library_id(self.library_id)
         if isinstance(self.throttle_ms, bool) or not isinstance(self.throttle_ms, int | float):
             raise TypeError("index.throttle_ms must be a number")
         self.throttle_ms = float(self.throttle_ms)
@@ -179,8 +182,7 @@ class IndexConfig(_Section):
     @property
     def library_dir(self) -> Path:
         """The music library: library.db, dj_meta.db, related artists and tracks, logs."""
-        # ponytail: one library, "main"; a station picking another comes later.
-        return self.index_dir / "libraries" / "main"
+        return self.index_dir / "libraries" / self.library_id
 
     @property
     def shared_dir(self) -> Path:
@@ -1169,10 +1171,12 @@ class StationConfig(_Section):
     server_audio_too: bool = False
     #: Shown in brackets at the start of the station's log lines; empty uses its slug.
     log_label: str = ""
+    library_id: str = "main"
 
     def __post_init__(self) -> None:
         """Validate the station's time zone, upload cap, output mode and log label."""
         self.log_label = check_log_label(self.log_label)
+        self.library_id = validate_library_id(self.library_id)
         if self.timezone is not None:
             try:
                 ZoneInfo(self.timezone)

@@ -388,6 +388,7 @@ def install_worker_api(
     identity: Callable[[], dict[str, object]],
     rate_limit: int = RATE_LIMIT_PER_MINUTE,
     stations: Callable[[], list[tuple[str, str]]] = _default_stations,
+    libraries: Any = None,
 ) -> None:
     """Add the worker and token-management routes to *app*.
 
@@ -453,6 +454,17 @@ def install_worker_api(
             )
         return found
 
+    def selected_library(request: Request) -> LibraryManager | None:
+        library_id = request.path_params.get("library_id", "main")
+        if libraries is None:
+            if library_id != "main":
+                raise HTTPException(status_code=404, detail="Library not found")
+            return library()
+        try:
+            return libraries.get(library_id).library
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="Library not found") from exc
+
     def worker_context(request: Request) -> tuple[MachineToken, LibraryManager]:
         token: MachineToken | None = getattr(request.state, "machine_token", None)
         if token is None:  # pragma: no cover -- the middleware always sets it
@@ -464,7 +476,7 @@ def install_worker_api(
                 detail="Too many requests from this worker",
                 headers={"Retry-After": str(wait)},
             )
-        manager = library()
+        manager = selected_library(request)
         if manager is None:
             raise HTTPException(status_code=503, detail="This server has no library catalog")
         return token, manager
@@ -499,6 +511,7 @@ def install_worker_api(
     # Worker routes (machine token with the analysis-worker scope)
     # ------------------------------------------------------------------
 
+    @app.post(WORKER_PREFIX + "libraries/{library_id}/claim")
     @app.post(WORKER_PREFIX + "claim")
     async def worker_claim(body: ClaimBody, request: Request) -> JSONResponse:
         """Lease up to *batch* songs to this worker and describe them.
@@ -635,6 +648,7 @@ def install_worker_api(
             audit_as_routine(request)
         return JSONResponse(reply, headers=_NO_STORE)
 
+    @app.api_route(WORKER_PREFIX + "libraries/{library_id}/audio", methods=["GET", "HEAD"])
     @app.api_route(WORKER_PREFIX + "audio", methods=["GET", "HEAD"])
     async def worker_audio(lease: _LeaseQuery, request: Request) -> FileResponse:
         """The original audio file of a song this worker has claimed."""
@@ -663,7 +677,7 @@ def install_worker_api(
         except (HTTPException, RequestValidationError) as exc:
             invalid_content = isinstance(exc, RequestValidationError) or exc.status_code == 422
             token: MachineToken | None = getattr(request.state, "machine_token", None)
-            manager = library()
+            manager = selected_library(request)
             payload = await request.json()
             lease_id = payload.get("lease") if isinstance(payload, dict) else None
             if token is not None and manager is not None and isinstance(lease_id, str):
@@ -677,6 +691,10 @@ def install_worker_api(
                 await asyncio.to_thread(fail)
             raise
 
+    @app.post(
+        WORKER_PREFIX + "libraries/{library_id}/result",
+        dependencies=[Depends(fail_rejected_result)],
+    )
     @app.post(WORKER_PREFIX + "result", dependencies=[Depends(fail_rejected_result)])
     async def worker_result(body: ResultBody, request: Request) -> dict[str, bool]:
         """Store one song's analysis, or refuse it as stale or wrong."""
@@ -798,6 +816,7 @@ def install_worker_api(
             )
         return {"stored": True}
 
+    @app.post(WORKER_PREFIX + "libraries/{library_id}/failed")
     @app.post(WORKER_PREFIX + "failed")
     async def worker_failed(body: FailedBody, request: Request) -> dict[str, bool]:
         """Note a song the worker could not analyse; it is held back for a while."""
@@ -820,6 +839,7 @@ def install_worker_api(
         await asyncio.to_thread(fail)
         return {"recorded": True}
 
+    @app.post(WORKER_PREFIX + "libraries/{library_id}/heartbeat")
     @app.post(WORKER_PREFIX + "heartbeat")
     async def worker_heartbeat(body: HeartbeatBody, request: Request) -> dict[str, object]:
         """Renew reported claims, or release orphaned claims on process startup.
@@ -858,6 +878,7 @@ def install_worker_api(
             **reply,
         }
 
+    @app.post(WORKER_PREFIX + "libraries/{library_id}/release")
     @app.post(WORKER_PREFIX + "release")
     async def worker_release(body: ReleaseBody, request: Request) -> dict[str, int]:
         """Give unanalysed songs back to the queue, as a stopping worker does."""
@@ -918,9 +939,12 @@ def install_worker_api(
             found = store.get(token_id)
             if found is None or not store.revoke(token_id):
                 return None
-            manager = library()
-            if manager is not None:
-                manager.analysis_queue.forget_worker(token_id)
+            managers = (
+                [item.library for item in libraries.all()] if libraries is not None else [library()]
+            )
+            for manager in managers:
+                if manager is not None:
+                    manager.analysis_queue.forget_worker(token_id)
             return found
 
         revoked = await asyncio.to_thread(revoke)
@@ -1024,13 +1048,22 @@ def install_worker_api(
         (``None`` for a worker too old to say), and ``refusals`` lists the
         latest time the server refused each worker token, and why.
         """
-        manager = library()
-        if manager is None:
+        candidates = (
+            [item.library for item in libraries.all()] if libraries is not None else [library()]
+        )
+        managers = [manager for manager in candidates if manager is not None]
+        if not managers:
             return JSONResponse({"available": False, "workers": [], "waiting": 0, "analysing": 0})
 
         def snapshot() -> dict[str, Any]:
-            queue = manager.analysis_queue
-            workers = queue.workers()
+            workers = []
+            for manager in managers:
+                for worker in manager.analysis_queue.workers():
+                    workers.append(
+                        {**worker, "library_id": manager.cfg.index.library_id}
+                        if libraries is not None
+                        else worker
+                    )
             store = tokens()
             settings = store.all_worker_settings()
             for worker in workers:
@@ -1043,8 +1076,8 @@ def install_worker_api(
             return {
                 "available": True,
                 "workers": workers,
-                "waiting": manager.catalog.unembedded_count(),
-                "analysing": queue.leased_count(),
+                "waiting": sum(manager.catalog.unembedded_count() for manager in managers),
+                "analysing": sum(manager.analysis_queue.leased_count() for manager in managers),
                 "server_paused": any(worker["connected"] for worker in workers),
                 "refusals": [_refusal_view(refusal) for refusal in store.refusals()],
             }

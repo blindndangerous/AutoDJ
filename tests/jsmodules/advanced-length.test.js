@@ -24,13 +24,13 @@ const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "
 function mount() {
   const page = document.createElement("template");
   page.innerHTML = html;
-  document.body.replaceChildren(page.content.querySelector("#spanel-server").cloneNode(true));
+  document.body.replaceChildren(page.content.querySelector("#spanel-libraries").cloneNode(true));
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const field = (id) => document.getElementById(id);
-const saveButton = () => document.querySelector("#spanel-server [data-settings-save]");
-const saveStatus = () => document.querySelector("#spanel-server .settings-save-status");
+const saveButton = () => document.querySelector("#spanel-libraries [data-settings-save]");
+const saveStatus = () => document.querySelector("#spanel-libraries .settings-save-status");
 function setup(options = {}) {
   const controls = installAdvancedLength({ document, ...options });
   applySettingsDrafts({ revision: "one", profile: "", values: {} });
@@ -56,7 +56,7 @@ describe("similarity analysis length (#391)", () => {
     expect(group.querySelector("legend").textContent).toBe("Similarity analysis");
     const page = document.createElement("template");
     page.innerHTML = html;
-    expect(page.content.querySelector("#advanced-length-group").closest("#spanel-server")).not.toBeNull();
+    expect(page.content.querySelector("#advanced-length-group").closest("#spanel-libraries")).not.toBeNull();
     const input = field("advanced-length");
     expect(document.querySelector('label[for="advanced-length"]').textContent).toBe("Similarity analysis maximum song length (minutes)");
     expect([input.type, input.min, input.max, input.step, input.value]).toEqual(["number", "0", "600", "1", "15"]);
@@ -64,8 +64,8 @@ describe("similarity analysis length (#391)", () => {
     expect(field("advanced-length-help").textContent).toBe("0 means no limit. Longer tracks still get audio analysis when selected.");
     expect(field("advanced-length-error").hidden).toBe(true);
     setup({ request: vi.fn() });
-    expect(document.querySelectorAll("#spanel-server [data-settings-save]")).toHaveLength(1);
-    expect(document.querySelectorAll("#spanel-server [data-settings-discard]")).toHaveLength(1);
+    expect(document.querySelectorAll("#spanel-libraries [data-settings-save]")).toHaveLength(1);
+    expect(document.querySelectorAll("#spanel-libraries [data-settings-discard]")).toHaveLength(1);
     expect(field("advanced-length-save")).toBeNull();
   });
 
@@ -84,13 +84,13 @@ describe("similarity analysis length (#391)", () => {
     saveButton().click();
     await vi.waitFor(() => expect(saveStatus().textContent)
       .toContain("Similarity analysis has no length limit."));
-    expect(request).toHaveBeenLastCalledWith("/api/library/advanced-length", expect.objectContaining({ method: "PUT", body: JSON.stringify({ minutes: 0 }) }));
+    expect(request).toHaveBeenLastCalledWith("/api/library/advanced-length?library=main", expect.objectContaining({ method: "PUT", body: JSON.stringify({ minutes: 0 }) }));
 
     edit(45);
     saveButton().click();
     await vi.waitFor(() => expect(saveStatus().textContent)
       .toContain("Songs longer than 45 minutes get audio analysis only."));
-    expect(saveStatus().textContent).toContain("Settings saved for this server.");
+    expect(saveStatus().textContent).toContain("Settings saved for Library: main.");
   });
 
   it("puts a refused value's message under the field, linked and focused", () => {
@@ -161,7 +161,7 @@ describe("similarity analysis length (#391)", () => {
     await flush();
     await vi.waitFor(() => expect(saveStatus().textContent)
       .toContain("Could not save all settings: Server unavailable"));
-    expect(document.querySelector("#spanel-server .settings-save-bar > p:nth-of-type(2)").textContent)
+    expect(document.querySelector("#spanel-libraries .settings-save-bar > p:nth-of-type(2)").textContent)
       .toContain("Unsaved changes");
   });
 });

@@ -755,6 +755,7 @@
   <div role="tablist" class="subtabs" aria-labelledby="settings-global-heading" aria-orientation="horizontal">
     <button type="button" role="tab" id="stab-server" data-settings-kind="server" data-subview="server" data-panel="spanel-server" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Server</button>
     <button type="button" role="tab" id="stab-station-management" data-settings-kind="server" data-subview="station-management" data-panel="spanel-station-management" aria-selected="false" tabindex="-1">Stations</button>
+    <button type="button" role="tab" id="stab-libraries" data-settings-kind="server" data-subview="libraries" data-panel="spanel-libraries" aria-selected="false" tabindex="-1">Libraries</button>
     <button type="button" role="tab" id="stab-workers" data-settings-kind="server" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
     <button type="button" role="tab" id="stab-updates" data-settings-kind="server" data-subview="updates" data-panel="spanel-updates" aria-selected="false" tabindex="-1">Update and restart</button>
     <button type="button" role="tab" id="stab-display" data-settings-kind="browser" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Browser preferences</button>
@@ -1209,7 +1210,7 @@
           <input type="checkbox" id="repeat-use-related-artists" aria-describedby="repeat-related-status">
           <label for="repeat-use-related-artists">Use related artists</label>
         </div>
-        <details><summary>Related artists help</summary><p class="setting-desc" id="repeat-related-desc">Also holds back the artists linked in related-artists.toml in the library folder to an artist that played within the limits below: <code id="repeat-related-default">index/libraries/main/related-artists.toml</code>. Edit that file, then save repeat settings to reload it.</p></details>
+        <details><summary>Related artists help</summary><p class="setting-desc" id="repeat-related-desc">Also holds back the artists linked in related-artists.toml in the library folder to an artist that played within the limits below: <code id="repeat-related-default">related-artists.toml</code>. Edit that file, then save repeat settings to reload it.</p></details>
         <!-- A problem found in the file at startup or on save; empty and
              hidden while there is none. -->
         <p class="setting-desc" id="repeat-related-status" hidden></p>
@@ -1274,7 +1275,7 @@
           <input type="checkbox" id="repeat-use-related-tracks" aria-describedby="repeat-related-tracks-status">
           <label for="repeat-use-related-tracks">Use related tracks</label>
         </div>
-        <details><summary>Related tracks help</summary><p class="setting-desc" id="repeat-related-tracks-desc">Holds back tracks that sound alike, such as a song and one that samples it. Each group in related-tracks.toml in the library folder lists tracks as Artist - Title: <code id="repeat-related-tracks-default">index/libraries/main/related-tracks.toml</code>. Edit that file, then save repeat settings to reload it.</p></details>
+        <details><summary>Related tracks help</summary><p class="setting-desc" id="repeat-related-tracks-desc">Holds back tracks that sound alike, such as a song and one that samples it. Each group in related-tracks.toml in the library folder lists tracks as Artist - Title: <code id="repeat-related-tracks-default">related-tracks.toml</code>. Edit that file, then save repeat settings to reload it.</p></details>
         <!-- A problem found in the file at startup or on save; empty and
              hidden while there is none. -->
         <p class="setting-desc" id="repeat-related-tracks-status" hidden></p>
@@ -1929,6 +1930,11 @@
       <label for="station-upload-cap">Maximum liner upload size (MiB)</label>
       <input type="number" id="station-upload-cap" min="1" max="1024" step="1">
       <p>Output changes apply when this station next starts.</p>
+    </fieldset>
+    <fieldset>
+      <legend>Music library</legend>
+      <label for="station-library">Music library</label>
+      <select id="station-library"><option value="main">Main</option></select>
     </fieldset>
     <fieldset>
       <legend>Logs for the selected station</legend>
@@ -2592,25 +2598,6 @@
     <h3>Server</h3>
     <div id="secure-connections"></div>
     <p id="secure-connections-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></p>
-    <fieldset id="music-fade-drop-group">
-      <legend>Automatic Segue detection</legend>
-      <div class="settings-row">
-        <label for="music-fade-drop">Fade detection threshold (dB)</label>
-        <input type="number" id="music-fade-drop" min="1" max="30" step="1" value="10" inputmode="numeric">
-      </div>
-      <p class="setting-desc" id="music-fade-drop-help">Drop in volume used for new Segue suggestions.</p>
-      <p class="field-error" id="music-fade-drop-error" hidden></p>
-      <button type="button" id="music-fade-drop-save">Save</button>
-    </fieldset>
-    <fieldset id="advanced-length-group">
-      <legend>Similarity analysis</legend>
-      <div class="settings-row">
-        <label for="advanced-length">Similarity analysis maximum song length (minutes)</label>
-        <input type="number" id="advanced-length" min="0" max="600" step="1" value="15" inputmode="numeric" aria-describedby="advanced-length-help">
-      </div>
-      <p class="setting-desc" id="advanced-length-help">0 means no limit. Longer tracks still get audio analysis when selected.</p>
-      <p class="field-error" id="advanced-length-error" hidden></p>
-    </fieldset>
     <div class="settings-row">
       <label for="time-format">Time format</label>
       <select id="time-format">
@@ -2757,6 +2744,39 @@
       <p id="station-create-done-text"></p>
       <button type="button" id="station-create-switch">Switch to the new station</button>
     </div>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-libraries" data-settings-kind="server" aria-labelledby="stab-libraries" hidden>
+    <h3>Libraries</h3>
+    <div id="libraries-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <h4 id="libraries-list-heading">Music libraries</h4>
+    <div id="libraries-list" aria-labelledby="libraries-list-heading"></div>
+    <button type="button" id="libraries-add">Add library</button>
+    <fieldset id="library-settings-group">
+      <legend>Library settings</legend>
+      <div class="settings-row">
+        <label for="library-settings-library">Music library</label>
+        <select id="library-settings-library"><option value="main">Main</option></select>
+      </div>
+      <fieldset id="music-fade-drop-group">
+        <legend>Automatic Segue detection</legend>
+        <div class="settings-row">
+          <label for="music-fade-drop">Fade detection threshold (dB)</label>
+          <input type="number" id="music-fade-drop" min="1" max="30" step="1" value="10" inputmode="numeric">
+        </div>
+        <p class="setting-desc" id="music-fade-drop-help">Drop in volume used for new Segue suggestions.</p>
+        <p class="field-error" id="music-fade-drop-error" hidden></p>
+      </fieldset>
+      <fieldset id="advanced-length-group">
+        <legend>Similarity analysis</legend>
+        <div class="settings-row">
+          <label for="advanced-length">Similarity analysis maximum song length (minutes)</label>
+          <input type="number" id="advanced-length" min="0" max="600" step="1" value="15" inputmode="numeric" aria-describedby="advanced-length-help">
+        </div>
+        <p class="setting-desc" id="advanced-length-help">0 means no limit. Longer tracks still get audio analysis when selected.</p>
+        <p class="field-error" id="advanced-length-error" hidden></p>
+      </fieldset>
+    </fieldset>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-workers" data-settings-kind="server" aria-labelledby="stab-workers" hidden>
@@ -3535,6 +3555,10 @@
       <summary><h2>Library tools</h2></summary>
 
       <p>Songs are available to play before similarity analysis finishes.</p>
+      <div class="settings-row">
+        <label for="library-tools-library">Music library</label>
+        <select id="library-tools-library"><option value="main">Main</option></select>
+      </div>
 
       <section class="flow-form">
         <h3 id="source-folders-heading">Music folders and Voice liner folders</h3>

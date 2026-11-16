@@ -524,18 +524,22 @@ class CategoryStore:
     def _keep_bad_copy(self, reason: str) -> None:
         set_aside(self.path, "categories file", reason)
 
-    def load(self) -> list[Category]:
-        """Read the file; a missing file is no categories, a bad one is set aside."""
+    def load(self, *, repair_invalid: bool = True) -> list[Category]:
+        """Read categories, optionally refusing invalid files without moving them."""
         try:
             data = self.path.read_bytes()
         except FileNotFoundError:
             return []
         except OSError as exc:
+            if not repair_invalid:
+                raise
             logger.error("Could not read the categories file %s: %s", self.path, exc)
             return []
         try:
             return CategoriesFile.model_validate_json(data).categories
         except ValidationError as exc:
+            if not repair_invalid:
+                raise
             first = exc.errors()[0]
             where = ".".join(str(part) for part in first.get("loc", ()))
             self._keep_bad_copy(f"{where}: {first['msg']}" if where else str(first["msg"]))
@@ -1138,6 +1142,7 @@ class CategoryIndex:
         path: Path | None = None,
         clock: Callable[[], float] | None = None,
         beets: Any = None,
+        repair_invalid: bool = True,
     ) -> None:
         self._cfg = cfg
         self._entries = entries
@@ -1147,6 +1152,7 @@ class CategoryIndex:
         self._beets = beets
         # One station's categories: the default station's without *path*.
         self.store = CategoryStore(path or store_path(cfg))
+        self._repair_invalid = repair_invalid
         self._lock = threading.Lock()
         self._resolved: _Resolved | None = None
         self._loaded: tuple[tuple[int, int] | None, tuple[Category, ...]] | None = None
@@ -1165,7 +1171,7 @@ class CategoryIndex:
         """The saved categories, read again only when the file changed."""
         stamp = _stat(self.store.path)
         if self._loaded is None or self._loaded[0] != stamp or stamp is None:
-            self._loaded = (stamp, tuple(self.store.load()))
+            self._loaded = (stamp, tuple(self.store.load(repair_invalid=self._repair_invalid)))
         return self._loaded[1]
 
     def folders(self) -> list[dict[str, Any]]:

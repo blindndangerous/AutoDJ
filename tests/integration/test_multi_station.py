@@ -194,9 +194,9 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fixture
     closes: list[str] = []
     real_close = __import__("autodj.dj_meta", fromlist=["close_cache"]).close_cache
 
-    def close_cache() -> None:
+    def close_cache(library_dir=None) -> None:
         closes.append("closed")
-        real_close()
+        real_close(library_dir)
 
     monkeypatch.setattr("autodj.dj_meta.close_cache", close_cache)
     cfg = load_config(_write_config(tmp_path, **values), environ={})

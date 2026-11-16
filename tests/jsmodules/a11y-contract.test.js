@@ -2014,7 +2014,7 @@ describe("static accessibility contracts", () => {
     expect(globalTabs.hidden).toBe(false);
     expect(profileTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect(stationTabs.querySelectorAll('[role="tab"]')).toHaveLength(5);
-    expect(globalTabs.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    expect(globalTabs.querySelectorAll('[role="tab"]')).toHaveLength(6);
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)
       ?.textContent.replace(/\s+/g, " ").trim();
     const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
@@ -3942,9 +3942,10 @@ describe("station switcher and station context contracts (#70)", () => {
     const general = document.getElementById("spanel-stations");
     expect(general.getAttribute("aria-labelledby")).toBe("stab-stations");
     expect(document.getElementById("stab-stations").textContent).toBe("General");
-    for (const id of ["time-settings", "station-output", "station-log-label"]) {
+    for (const id of ["time-settings", "station-output", "station-log-label", "station-library"]) {
       expect(general.contains(document.getElementById(id)), id).toBe(true);
     }
+    expect(general.querySelector('label[for="station-library"]').textContent.trim()).toBe("Music library");
     expect(document.getElementById("spanel-live").closest('[role="tabpanel"]').id).toBe("spanel-stream");
     const table = document.getElementById("stations-table");
     expect(panel.contains(table)).toBe(true);

@@ -221,3 +221,13 @@ Historical motivation for every storage migration has not been recovered.
 The test links do not prove behavior on every filesystem or against every old
 release. The FAISS choice remains accepted under ADR 2; acceptance of this
 storage/compatibility record remains pending.
+
+## Amendment, 2026-11-15: named library ownership
+
+Issues [#801](https://github.com/blindndangerous/AutoDJ/issues/801) and
+[#802](https://github.com/blindndangerous/AutoDJ/issues/802) introduce named
+libraries and a saved library choice per station.
+[ADR 23](0023-named-libraries-with-station-bindings.md) records the proposed
+ownership extension, migration and verification. Station history remains
+station-owned; the earlier single-library description is retained as history.
+This amendment does not change this record's acceptance status.

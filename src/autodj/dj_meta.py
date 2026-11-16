@@ -581,9 +581,10 @@ class DjMetaCache:
     checkpoints during a long ``analyse`` run stay cheap even on NAS
     mounts.
 
-    A single process-wide instance is shared via :func:`get_cache`.  All
-    operations are thread-safe (the player loads tracks on a background
-    thread while the server reads cache state for the API).
+    One process-wide instance per library directory is shared via
+    :func:`get_cache`. All operations are thread-safe (the player loads
+    tracks on a background thread while the server reads cache state for
+    the API).
 
     Analysed rows are kept in memory once read.  A track with no analysed
     row is looked up again after :attr:`MISS_TTL_S` seconds, because
@@ -1096,47 +1097,88 @@ class DjMetaCache:
             self.close()
 
 
-# Process-wide singleton — set by the player / server when they boot
+# Process-wide per-library cache registry — set by the player / server at boot.
+# `_CACHE` remains the first live cache for no-argument compatibility.
 _CACHE: DjMetaCache | None = None
 _CACHE_LOCK = threading.Lock()
+_CACHES: dict[str, DjMetaCache] = {}
+_DEFAULT_CACHE_KEY: str | None = None
+
+
+def _cache_key(index_dir: Path) -> tuple[str, Path]:
+    """Return a canonical key and directory for one library cache."""
+    directory = Path(index_dir).expanduser().resolve()
+    return os.path.normcase(os.fspath(directory)), directory
 
 
 def get_cache(
     index_dir: Path | None = None,
     music_dir: Path | None = None,
 ) -> DjMetaCache | None:
-    """Return the process-wide :class:`DjMetaCache` instance.
+    """Return the cache for *index_dir*, or the first live cache without a path.
 
-    Pass *index_dir* on the first call to initialise the cache; subsequent
-    calls ignore the argument and return the same instance.
+    Cache instances are keyed by the canonical resolved library directory.
+    Repeated calls for the same directory return the same object; different
+    directories get independent SQLite stores, even when they use the same
+    physical music folder. A no-argument call preserves the legacy behavior
+    of returning the first initialized cache, or ``None`` if none is open.
 
     Args:
-        index_dir: Directory containing the FAISS index (the cache lives
-            at ``<index_dir>/dj_meta.db``).  Required on first call.
+        index_dir: Library directory (the cache lives at
+            ``<index_dir>/dj_meta.db``). Required to initialize that library's
+            cache.
         music_dir: Optional library root for portable relative cache keys.
 
     Returns:
         The shared cache, or ``None`` if uninitialised and no *index_dir*
         was provided.
     """
-    global _CACHE
+    global _CACHE, _DEFAULT_CACHE_KEY
     with _CACHE_LOCK:
-        if _CACHE is None and index_dir is not None:
-            _CACHE = DjMetaCache(index_dir / "dj_meta.db", music_dir)
-        return _CACHE
+        if index_dir is None:
+            if _DEFAULT_CACHE_KEY not in _CACHES:
+                _DEFAULT_CACHE_KEY = next(iter(_CACHES), None)
+            _CACHE = _CACHES.get(_DEFAULT_CACHE_KEY) if _DEFAULT_CACHE_KEY else None
+            return _CACHE
+        key, directory = _cache_key(index_dir)
+        cache = _CACHES.get(key)
+        if cache is None:
+            cache = DjMetaCache(directory / "dj_meta.db", music_dir)
+            _CACHES[key] = cache
+            if _DEFAULT_CACHE_KEY is None:
+                _DEFAULT_CACHE_KEY = key
+        _CACHE = _CACHES.get(_DEFAULT_CACHE_KEY) if _DEFAULT_CACHE_KEY else None
+        return cache
 
 
-def close_cache() -> None:
-    """Flush, close, and clear the process-wide cache; safe to call repeatedly."""
-    global _CACHE
+def close_cache(index_dir: Path | None = None) -> None:
+    """Flush and close one library cache, or all caches when no path is given."""
+    global _CACHE, _DEFAULT_CACHE_KEY
     with _CACHE_LOCK:
-        cache, _CACHE = _CACHE, None
-    if cache is None:
-        return
-    try:
-        cache.flush(force=True)
-    finally:
-        cache.close()
+        if index_dir is None:
+            keys = list(_CACHES)
+        else:
+            key, _directory = _cache_key(index_dir)
+            keys = [key] if key in _CACHES else []
+        caches = [(key, _CACHES.pop(key)) for key in keys]
+        if _DEFAULT_CACHE_KEY not in _CACHES:
+            _DEFAULT_CACHE_KEY = next(iter(_CACHES), None)
+        _CACHE = _CACHES.get(_DEFAULT_CACHE_KEY) if _DEFAULT_CACHE_KEY else None
+        first_error: BaseException | None = None
+        for _key, cache in caches:
+            try:
+                cache.flush(force=True)
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+            finally:
+                try:
+                    cache.close()
+                except BaseException as exc:
+                    if first_error is None:
+                        first_error = exc
+        if first_error is not None:
+            raise first_error
 
 
 atexit.register(close_cache)

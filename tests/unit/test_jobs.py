@@ -171,6 +171,77 @@ class TestGetManager:
         b = get_manager()
         assert a is b
 
+    def test_returns_one_manager_per_canonical_library_dir(self, tmp_path, monkeypatch) -> None:
+        import autodj.jobs as jobs
+
+        monkeypatch.setattr(jobs, "_MANAGERS", {})
+        first_path = tmp_path / "index" / "libraries" / "main"
+        other_path = tmp_path / "index" / "libraries" / "other"
+        first = jobs.get_manager(first_path)
+        assert jobs.get_manager(first_path / ".") is first
+        other = jobs.get_manager(other_path)
+        assert other is not first
+
+        other.configure(
+            config_path=tmp_path / "config.toml",
+            index_dir=tmp_path / "index",
+            library_id="other",
+        )
+        assert other._child_argv("index", ["--limit", "5"]) == [
+            jobs.sys.executable,
+            "-m",
+            "autodj",
+            "--config",
+            str(tmp_path / "config.toml"),
+            "--library",
+            "other",
+            "index",
+            "--limit",
+            "5",
+        ]
+
+    def test_shared_admission_blocks_jobs_across_library_managers(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import threading
+
+        import autodj.jobs as jobs
+
+        monkeypatch.setattr(jobs, "_MANAGERS", {})
+        monkeypatch.setattr(jobs, "_ACTIVE_MANAGER", None)
+        main = jobs.get_manager(tmp_path / "libraries" / "main")
+        other = jobs.get_manager(tmp_path / "libraries" / "other")
+        release = threading.Event()
+
+        class BlockingStdout:
+            def __iter__(self):
+                release.wait(timeout=5)
+                return iter(())
+
+        class Process:
+            stdout = BlockingStdout()
+
+            def poll(self):
+                return 0 if release.is_set() else None
+
+            def wait(self, timeout=None):
+                release.wait(timeout=timeout)
+                return 0
+
+        first_proc = Process()
+        second_proc = Process()
+        with patch("autodj.jobs.subprocess.Popen", side_effect=[first_proc, second_proc]) as popen:
+            assert main.start("index") is True
+            assert other.start("stats") is False
+            assert popen.call_count == 1
+
+            release.set()
+            main._thread.join(timeout=5)
+            assert not main.running
+            assert other.start("stats") is True
+            assert popen.call_count == 2
+            other._thread.join(timeout=5)
+
 
 class TestSpawnFailure:
     def test_oserror_on_spawn_records_failure(self) -> None:

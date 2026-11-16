@@ -31,6 +31,8 @@ import { installSeekController } from "./modules/seek-controller.js";
 import { tableRow } from "./modules/table-row.js";
 import { installTableNavigation } from "./modules/table-navigation.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
+import { installLibraries } from "./modules/libraries.js";
+import { installLibrarySettings } from "./modules/library-settings.js";
 import { showStaticText } from "./modules/beets-paths.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
 import { installIntroRulesPanel } from "./modules/intro-rules-panel.js";
@@ -315,6 +317,9 @@ const liveSettings = installLiveSettings({
 const auth = initAuthDialog({ document });
 let authExpiryHandled = false;
 let libraryFoldersControls = null;
+let libraryJobControls = null;
+let librariesControls = null;
+let librarySettingsControls = null;
 let librarySearchControls = null;
 let clockwheelPanelControls = null;
 let categoriesPanelControls = null;
@@ -1467,6 +1472,13 @@ installAnalysisWorkers();
 // Settings > Updates -- ./modules/updates.js loads when its subtab is shown.
 const updateControls = installUpdates();
 const timeSettings = installTimeSettings();
+librariesControls = installLibraries({
+  onLibraryChange: () => {
+    void libraryFoldersControls?.refreshForLibrary?.();
+    void libraryJobControls?.refresh?.();
+  },
+});
+librarySettingsControls = installLibrarySettings();
 
 // ----------------------------------------------------------------
 // WebSocket
@@ -3311,6 +3323,7 @@ import { initViewRouter, isReturningToView } from "./modules/tabs.js";
 initViewRouter();
 
 libraryFoldersControls = installLibraryFolders({
+  request: librariesControls?.request,
   landmarks: landmarkControls,
   getStation: currentStation,
   onBackgroundError: reportBackgroundRequestError,
@@ -3441,6 +3454,8 @@ function startAuthenticatedApp(initialState) {
   authenticatedAppStarted = true;
   authExpiryHandled = false;
   authenticatedActivityActive = true;
+  void librariesControls?.refresh();
+  void librarySettingsControls?.load();
   void librarySearchControls?.refresh();
   libraryFoldersControls?.resume();
   clockwheelPanelControls?.resume();
@@ -3450,7 +3465,7 @@ function startAuthenticatedApp(initialState) {
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();
-  installLibraryJobs(_libEls);
+  libraryJobControls = installLibraryJobs(_libEls, { request: librariesControls?.request });
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.
   // Whenever the server mixes the audio (stream mode or --server-audio),

@@ -2433,7 +2433,7 @@ class StationRegistry:
 
 
 class SharedLibrary:
-    """The music library every station plays from: its scan, tick and close."""
+    """One music library shared by its stations: scan, tick and close."""
 
     def __init__(self, library: LibraryManager | None, stations: StationRegistry) -> None:
         self.library = library
@@ -2468,6 +2468,11 @@ class SharedLibrary:
     def _first_songs_pending(self) -> bool:
         """Whether a station with a mix bus has not started its first song yet."""
         for station in self._stations.all():
+            if (
+                getattr(getattr(station, "bridge", None), "library", self.library)
+                is not self.library
+            ):
+                continue
             player = getattr(station, "player", None)
             started = getattr(player, "first_song_started", None)
             if (
@@ -2490,6 +2495,11 @@ class SharedLibrary:
     def _scan_done(self) -> None:
         """After a clean scan (on its thread): forget liner dates and song intros now gone."""
         for station in self._stations.all():
+            if (
+                getattr(getattr(station, "bridge", None), "library", self.library)
+                is not self.library
+            ):
+                continue
             try:
                 prune_liner_dates(station)
             except Exception:
@@ -2544,7 +2554,10 @@ class SharedLibrary:
             try:
                 from autodj.dj_meta import close_cache
 
-                await asyncio.to_thread(close_cache)
+                await asyncio.to_thread(
+                    close_cache,
+                    self.library.cfg.index.library_dir if self.library is not None else None,
+                )
                 cache_closed = True
             except Exception:  # pragma: no cover -- defensive shutdown logging
                 logger.debug("shutdown: DJ-meta close failed", exc_info=True)
@@ -2568,7 +2581,8 @@ class SharedLibrary:
 
             library.tick()
             for station in self._stations.all():
-                apply_repeat_windows(station.player)
+                if getattr(getattr(station, "bridge", None), "library", self.library) is library:
+                    apply_repeat_windows(station.player)
 
         while True:
             await asyncio.to_thread(tick)

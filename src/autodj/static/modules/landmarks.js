@@ -26,7 +26,9 @@
 
 import { failureText, isStaleStationReply, requestJson } from "./api-client.js";
 import { fmtTime, srSpeak } from "./dom-helpers.js";
-import { stationEpoch } from "./stations.js";
+import { stationApi, stationEpoch } from "./stations.js";
+
+const previewUrl = (path) => stationApi(`/api/audio?path=${encodeURIComponent(path)}`);
 
 // A landmark this close ahead counts as where you are, not the next one.
 const AHEAD_S = 0.25;
@@ -230,7 +232,7 @@ export function installLandmarks({
   async function jumpPreview(direction) {
     const preview = el("points-preview");
     if (!shown?.path || !preview
-        || preview.getAttribute("src") !== `/api/audio?path=${encodeURIComponent(shown.path)}`) {
+        || preview.getAttribute("src") !== previewUrl(shown.path)) {
       speak("Open a song in Track info to move through its landmarks.");
       return;
     }

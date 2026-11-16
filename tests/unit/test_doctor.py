@@ -61,6 +61,20 @@ def _config(tmp_path: Path, *, host: str = "127.0.0.2") -> AutoDJConfig:
     )
 
 
+def test_missing_named_library_diagnostics_do_not_create_or_substitute_a_catalog(tmp_path):
+    cfg = _config(tmp_path)
+    cfg.station.library_id = "missing"
+    before = set(tmp_path.rglob("*"))
+    category = doctor._station_categories_check(cfg)
+    assert category.status is CheckStatus.SKIP
+    assert "missing" in category.summary
+    findings = doctor._named_library_checks(cfg)
+    assert any(
+        check.name == "station-library" and check.status is CheckStatus.FAIL for check in findings
+    )
+    assert set(tmp_path.rglob("*")) == before
+
+
 def _write_index(cfg: AutoDJConfig) -> None:
     cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
     cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)

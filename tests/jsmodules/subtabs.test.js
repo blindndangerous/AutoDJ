@@ -51,7 +51,7 @@ describe("Settings subtabs markup", () => {
     for (const list of [profileList, stationList, globalList]) expect(list.hidden).toBe(false);
     expect(profileList.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect(stationList.querySelectorAll('[role="tab"]')).toHaveLength(5);
-    expect([...globalList.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Server", "Stations", "Analysis workers", "Update and restart", "Browser preferences"]);
+    expect([...globalList.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Server", "Stations", "Libraries", "Analysis workers", "Update and restart", "Browser preferences"]);
     expect(profileList.compareDocumentPosition(stationList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(stationList.compareDocumentPosition(globalList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const targetRow = byId("settings-profile").closest(".profile-target-row");
@@ -60,7 +60,7 @@ describe("Settings subtabs markup", () => {
     const tabs = [...outer.querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "Mixing", "Song picking", "Sound", "Announcements", "General",
-      "Profiles", "Broadcasting", "Requests", "Schedule", "Server", "Stations", "Analysis workers", "Update and restart", "Browser preferences",
+      "Profiles", "Broadcasting", "Requests", "Schedule", "Server", "Stations", "Libraries", "Analysis workers", "Update and restart", "Browser preferences",
     ]);
     expect(byId("spanel-requests").getAttribute("role")).toBe("tabpanel");
     expect(byId("spanel-requests").getAttribute("aria-labelledby")).toBe("stab-requests");
@@ -200,6 +200,8 @@ describe("initSubtabs", () => {
     expect(document.activeElement).toBe(byId("stab-updates"));
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-workers"));
+    press(document.activeElement, "ArrowLeft");
+    expect(document.activeElement).toBe(byId("stab-libraries"));
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-station-management"));
     press(document.activeElement, "ArrowLeft");

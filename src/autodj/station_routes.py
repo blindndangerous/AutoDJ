@@ -583,6 +583,7 @@ def _station_settings_values(
                 "server_audio_too": configuration.station.server_audio_too,
                 "liner_upload_max_mib": configuration.station.liner_upload_max_mib,
                 "log_label": configuration.station.log_label,
+                "library_id": configuration.station.library_id,
             },
             "time": {
                 "timezone": configuration.station.timezone or system_timezone(),
@@ -1585,11 +1586,27 @@ def install_station_routes(router: StationRouter) -> None:
                         raise HTTPException(status_code=400, detail=detail) from exc
                     parsed[name] = value
                 elif name == "station":
-                    allowed = {"output", "server_audio_too", "liner_upload_max_mib", "log_label"}
+                    allowed = {
+                        "output",
+                        "server_audio_too",
+                        "liner_upload_max_mib",
+                        "log_label",
+                        "library_id",
+                    }
                     if not value or value.keys() - allowed:
                         raise HTTPException(
                             status_code=400, detail="Choose a station option to change"
                         )
+                    if "library_id" in value:
+                        libraries = getattr(request.app.state, "libraries", None)
+                        try:
+                            if libraries is None:
+                                if value["library_id"] != "main":
+                                    raise KeyError(value["library_id"])
+                            else:
+                                libraries.get(value["library_id"])
+                        except (KeyError, ValueError) as exc:
+                            raise FieldError("Library not found", "library_id") from exc
                     if "log_label" in value:
                         from autodj.config import LOG_LABEL_RULE, check_log_label
 
@@ -1819,9 +1836,13 @@ def install_station_routes(router: StationRouter) -> None:
 
                         registry.save_options(slug, {"timezone": value["timezone"]})
                         try:
-                            _catalog_library(station).catalog.set_setting(
-                                "time_format", value["time_format"]
+                            libraries = getattr(request.app.state, "libraries", None)
+                            time_library = (
+                                libraries.get("main").library
+                                if libraries is not None
+                                else _catalog_library(station)
                             )
+                            time_library.catalog.set_setting("time_format", value["time_format"])
                         except Exception as exc:
                             raise RuntimeError(
                                 f"The station time zone was saved, but time format was not: {exc}"

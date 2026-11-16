@@ -141,70 +141,6 @@ describe("clock folder and points controls", () => {
     expect(existing.selectedOptions[0].disabled).toBe(true);
   });
 
-  it("announces the shared analysis limit from Settings while Library tools is hidden", async () => {
-    const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-    const page = document.createElement("template");
-    page.innerHTML = html;
-    const settings = page.content.querySelector("#panel-settings").cloneNode(true);
-    settings.hidden = false;
-    settings.querySelector("#spanel-stations").hidden = false;
-    document.body.append(settings);
-    document.body.insertAdjacentHTML("beforeend", '<p id="sr-status" role="status" aria-live="polite"></p><div id="status-toast-box" hidden><div id="status-toast" aria-hidden="true" hidden></div></div>');
-    expect(document.getElementById("panel-library").hidden).toBe(true);
-    let finish;
-    let failSave = false;
-    const request = vi.fn((url, options) => {
-      if (url === "/api/library/advanced-length" && !options) return Promise.resolve({ minutes: 20 });
-      if (options?.method === "PUT") {
-        if (failSave) return Promise.reject(Object.assign(new Error("Server unavailable"), { status: 503 }));
-        return new Promise((resolve) => { finish = resolve; });
-      }
-      return Promise.resolve({ folders: [] });
-    });
-    installLibraryFolders({ document, request });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(document.getElementById("advanced-length").value).toBe("20");
-
-    const input = document.getElementById("advanced-length");
-    input.value = "30";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    document.querySelector("#spanel-server [data-settings-save]").click();
-    await new Promise((resolve) => setTimeout(resolve, 350));
-    expect(document.querySelector("#spanel-server .settings-save-status").textContent).toBe("Saving changes…");
-    finish({ minutes: 30 });
-    await vi.waitFor(() => expect(document.querySelector("#spanel-server .settings-save-status").textContent)
-      .toContain("Songs longer than 30 minutes get audio analysis only."));
-
-    failSave = true;
-    input.value = "40";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    document.querySelector("#spanel-server [data-settings-save]").click();
-    await vi.waitFor(() => expect(document.querySelector("#spanel-server .settings-save-status").textContent)
-      .toContain("Server unavailable"));
-  });
-
-  it("loads and saves the shared fade threshold in Settings without opening Library tools", async () => {
-    const page = document.createElement("template");
-    page.innerHTML = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-    const settings = page.content.querySelector("#panel-settings").cloneNode(true);
-    settings.hidden = false;
-    settings.querySelector("#spanel-server").hidden = false;
-    document.body.append(settings);
-    document.body.insertAdjacentHTML("beforeend", '<p id="sr-status" role="status"></p>');
-    const request = vi.fn(async (url, options) => {
-      if (url === "/api/library/music-fade") return options ? JSON.parse(options.body) : { drop_db: 14 };
-      return { folders: [] };
-    });
-    installLibraryFolders({ document, request });
-    await vi.waitFor(() => expect(document.getElementById("music-fade-drop").value).toBe("14"));
-    expect(document.getElementById("panel-library").hidden).toBe(true);
-    expect(settings.querySelector("#spanel-server #music-fade-drop")).not.toBeNull();
-    document.getElementById("music-fade-drop").value = "18";
-    document.getElementById("music-fade-drop-save").click();
-    await vi.waitFor(() => expect(document.getElementById("sr-status").textContent).toContain("18 dB"));
-    expect(request).toHaveBeenCalledWith("/api/library/music-fade", expect.objectContaining({ method: "PUT", body: '{"drop_db":18}' }));
-  });
-
   it("reconciles existing folder choices as similarity availability changes without losing focus", async () => {
     document.getElementById("panel-library").hidden = false;
     let available = false;
@@ -704,6 +640,8 @@ describe("clock folder and points controls", () => {
     await document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "M:/song.flac" } }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(request.mock.calls[0][0]).toBe("/api/library/points?path=M%3A%2Fsong.flac&station=nightowl");
+    expect(document.getElementById("points-preview").getAttribute("src"))
+      .toBe("/api/audio?path=M%3A%2Fsong.flac&station=nightowl");
     document.querySelector('[data-point="start"]').value = "2";
     document.getElementById("points-save").click();
     await new Promise((resolve) => setTimeout(resolve, 0));
