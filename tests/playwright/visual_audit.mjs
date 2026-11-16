@@ -334,7 +334,7 @@ async function standInForTrackInfo(page) {
   await page.route("**/api/library/points?*", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify(TRACK_RECORD),
   }));
-  await page.route("**/api/library/points/rescan", (route) => route.fulfill({
+  await page.route((url) => url.pathname === "/api/library/points/rescan", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify({
       token: "visual-cue-scan", current_points: TRACK_RECORD.points,
       current_sources: { ...TRACK_RECORD.point_sources, intro: "imported" },
@@ -342,7 +342,7 @@ async function standInForTrackInfo(page) {
       point_sources: { ...TRACK_RECORD.point_sources, intro: "lyrics" },
     }),
   }));
-  await page.route("**/api/library/tags", (route) => route.fulfill({
+  await page.route((url) => url.pathname === "/api/library/tags", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify({ ...TRACK_RECORD, beets: "updated" }),
   }));
   await page.route("**/api/intros?*", (route) => route.fulfill({
