@@ -316,6 +316,129 @@ class TestCliConfigSelection:
         assert result.exit_code == 0
         assert cfg.config_sources == original_sources
 
+    def test_serve_cleans_completed_station_deletion_from_every_library_first(
+        self, tmp_path: Path
+    ) -> None:
+        """A recovered deletion clears station-owned catalog state before library startup."""
+        import sqlite3
+        from contextlib import closing
+
+        from autodj.catalog import LibraryCatalog
+        from autodj.config import load_config
+        from autodj.library_registry import LibraryRegistry
+        from autodj.station_deletion import delete_archived_station
+        from autodj.stations import StationPaths
+
+        index_dir = tmp_path / "index"
+        music_root = tmp_path / "music"
+        music_root.mkdir()
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            f'[index]\nindex_dir = "{index_dir.as_posix()}"\n'
+            f'[library]\nmusic_dir = "{music_root.as_posix()}"\n',
+            encoding="utf-8",
+        )
+        cfg = load_config(config_path, environ={})
+        definition = LibraryRegistry(index_dir / "libraries").create("alt", "Alt")
+        station_paths = StationPaths.for_station(cfg, "nightowl")
+        station_paths.state_dir.mkdir(parents=True)
+        (station_paths.state_dir / "settings.json").write_text("{}", encoding="utf-8")
+        station_paths.liners.mkdir(parents=True)
+        retained_voice = station_paths.liners / "welcome.wav"
+        retained_voice.write_bytes(b"voice")
+        library_roots = {
+            "main": index_dir / "libraries" / "main",
+            "alt": definition.path,
+        }
+        for library_root in library_roots.values():
+            with LibraryCatalog(library_root / "library.db") as catalog:
+                catalog.add_source(music_root, kind="music")
+                catalog.add_source(station_paths.liners, kind="liner", advanced=False)
+                db = catalog._db()
+                db.execute(
+                    "INSERT INTO station_plays VALUES (?, ?, ?)",
+                    ("nightowl", "C:/music/song.mp3", 123.0),
+                )
+                db.execute(
+                    "INSERT INTO play_history "
+                    "(event_id, title, artist, duration, played_at, station) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        "nightowl-event",
+                        "Song",
+                        "Artist",
+                        180.0,
+                        "2026-01-01T00:00:00Z",
+                        "nightowl",
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO catalog_settings VALUES (?, ?)",
+                    ("sources_seeded:nightowl", "true"),
+                )
+                db.commit()
+
+        deletion = delete_archived_station(
+            cfg,
+            "nightowl",
+            station_name="Night Owl",
+            delete_voice_recordings=False,
+        )
+        journal_path = Path(deletion["journal"])
+        assert journal_path.is_file()
+        retained_audio = Path(deletion["retained_audio"])
+        assert (retained_audio / "liners" / "welcome.wav").read_bytes() == b"voice"
+
+        def manager_after_recovery(received_cfg, sim, *, compatibility_checked=False):
+            assert compatibility_checked is True
+            assert not journal_path.exists()
+            for library_root in library_roots.values():
+                with closing(sqlite3.connect(library_root / "library.db")) as db:
+                    assert (
+                        db.execute(
+                            "SELECT COUNT(*) FROM station_plays WHERE station='nightowl'"
+                        ).fetchone()[0]
+                        == 0
+                    )
+                    assert (
+                        db.execute(
+                            "SELECT COUNT(*) FROM play_history WHERE station='nightowl'"
+                        ).fetchone()[0]
+                        == 0
+                    )
+                    assert (
+                        db.execute(
+                            "SELECT COUNT(*) FROM catalog_settings "
+                            "WHERE key='sources_seeded:nightowl'"
+                        ).fetchone()[0]
+                        == 0
+                    )
+                    sources = db.execute("SELECT kind, path FROM catalog_sources").fetchall()
+                    assert (
+                        "liner",
+                        os.path.normcase(os.path.abspath(station_paths.liners)),
+                    ) not in sources
+                    assert ("music", os.path.normcase(os.path.abspath(music_root))) in sources
+            library = MagicMock()
+            library.snapshot.return_value = {
+                "tracks_ready": 0,
+                "tracks_indexed": 0,
+                "import": {"errors": []},
+            }
+            library.entries_snapshot.return_value = ()
+            return library
+
+        with (
+            patch("autodj.cli._claim_index_for_serve", return_value=True),
+            patch("autodj.cli._load_index_for_serve", return_value=_make_sim()),
+            patch("autodj.cli._stage_serve_server", return_value=cfg.server),
+            patch("autodj.library.LibraryManager", side_effect=manager_after_recovery),
+            patch("autodj.server.serve"),
+        ):
+            result = CliRunner().invoke(cli, ["--config", str(config_path), "serve"])
+
+        assert result.exit_code == 0, result.output + result.stderr
+
 
 # ---------------------------------------------------------------------------
 # CLI commands — index-not-found exits with code 1
