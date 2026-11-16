@@ -2735,10 +2735,10 @@ async function shortcutHintProblems(browser) {
   const local = await pageForMode(false);
   try {
     const pause = local.page.locator("#btn-pause");
-    await expect(pause).toHaveAttribute("data-shortcut-visible", "Space / k");
-    await expect(pause).toHaveAccessibleName("Play or Pause (Space / k)");
+    await expect(pause).toHaveAttribute("data-shortcut-visible", "k");
+    await expect(pause).toHaveAccessibleName("Play or Pause (k)");
     const visibleHint = await pause.evaluate((button) => window.getComputedStyle(button, "::after").content);
-    if (!visibleHint.includes("Space / k")) problems.push(`local Play hint is not visible: ${visibleHint}`);
+    if (!visibleHint.includes("k")) problems.push(`local Play hint is not visible: ${visibleHint}`);
     const helpButton = local.page.locator("#btn-shortcuts");
     await expect(helpButton).toHaveAttribute("data-shortcut-visible", "?");
     if (!(await helpButton.evaluate((button) => window.getComputedStyle(button, "::after").content)).includes("?")) {
@@ -2773,11 +2773,11 @@ async function shortcutHintProblems(browser) {
   const stream = await pageForMode(true);
   try {
     await expect(stream.page.locator("#btn-listen")).toBeVisible();
-    await expect(stream.page.locator("#btn-listen")).toHaveAttribute("data-shortcut-visible", "Space / k");
+    await expect(stream.page.locator("#btn-listen")).toHaveAttribute("data-shortcut-visible", "k");
     await expect(stream.page.locator("#btn-pause")).not.toHaveAttribute("data-shortcut-visible", /.+/);
     const listenHint = await stream.page.locator("#btn-listen")
       .evaluate((button) => window.getComputedStyle(button, "::after").content);
-    if (!listenHint.includes("Space / k")) problems.push(`stream Listen here hint is not visible: ${listenHint}`);
+    if (!listenHint.includes("k")) problems.push(`stream Listen here hint is not visible: ${listenHint}`);
   } finally {
     await stream.context.close();
   }
