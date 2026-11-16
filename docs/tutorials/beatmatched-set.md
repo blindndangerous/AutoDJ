@@ -22,7 +22,7 @@ limit. Identical tempos make a tempo change harder to observe.
 
 Allow enough time to hear both songs through a natural transition twice. Skipping
 is a different operation and will not demonstrate the same overlap. Keep listening
-volume low. You can stop at any point using **Stop** for Practice in **Settings**,
+volume low. You can stop at any point using **Stop** for Practice in **Settings**, **Global**,
 **Stations**, then confirm **Stop station**. **Listen here** only controls your
 browser's listening connection; stopping that connection is not a station stop.
 
@@ -70,13 +70,13 @@ Record the original settings before changing them so you can restore them later.
    **Key shift** where available. In **Transitions**,
    set **Transition effect** to **none** so it does not distract from this comparison.
 3. In **Voice liners**, leave **Enable voice liners** unchecked.
-4. In **Settings**, **Station**, **Stations**, set **Playback output** to **Radio stream**.
+4. In **Settings**, **Station**, **General**, set **Playback output** to **Radio stream**.
    Leave **Also play the radio stream on the server sound card** unchecked.
-5. Press **Save changes** in the Stations tab. In Practice's station row press **Stop**,
-   confirm **Stop station**, wait for **Off air**, then press **Start**.
+5. Press **Save changes** in the General tab. In **Settings**, **Global**, **Stations**,
+   on Practice's row press **Stop**, confirm **Stop station**, wait for **Off air**, then press **Start**.
 
 Press **Save changes** in each Settings tab after editing. Output has two boundaries:
-the Stations tab saves the choice, and restarting the station applies it. The **Beatmatch** option
+the General tab saves the choice, and restarting the station applies it. The **Beatmatch** option
 in **DJ mixing** serves server mixing. Browser **Beatmatch on skip** is a separate
 control and is not used here. **Use saved segue points** would bypass these mixing
 options, which is why the lesson chooses another transition mode.
@@ -105,12 +105,12 @@ continued operation does not establish that your chosen comparison ran.
 
 ## Repeat with beatmatching
 
-1. Stop listening with **Listen here**, then stop Practice in **Settings**, **Station**, **Stations**.
+1. Stop listening with **Listen here**, then stop Practice in **Settings**, **Global**, **Stations**.
 2. In **DJ mixing**, check **Beatmatch**, set **Beatmatch stretch limit (percent)**
    to `8` and **Glide back (bars)** to `8`. Uncheck **Drop mixing**,
    and leave **Phrase align** and **Key shift** off.
-3. Start Practice again. Restarting avoids comparing a transition rendered before
-   you changed the setting.
+3. Start Practice again from **Settings**, **Global**, **Stations**. Restarting avoids
+   comparing a transition rendered before you changed the setting.
 4. Repeat the complete A-into-B procedure above, including clearing the queue,
    queueing B, playing A, and listening through A's natural finish.
 
@@ -141,8 +141,9 @@ forces a change. Restore `8` after checking your answer.
 
 Stop **Listen here** if pressed. Stop Practice and confirm **Off air**. Restore
 the transition settings you recorded, select **Browser** output and press
-**Save changes** in the Stations tab. Start Practice, then pause browser playback with
-**Play or Pause** if needed. Check that elapsed time stops advancing.
+**Save changes** in the General tab. Start Practice from **Settings**, **Global**,
+**Stations**, then pause browser playback with **Play or Pause** if needed. Check that
+elapsed time stops advancing.
 
 Your category, clockwheel, songs and analysis remain. No cue edits were necessary;
 any cue edits you choose to save later belong to the shared library and can affect

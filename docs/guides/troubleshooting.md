@@ -34,13 +34,13 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 ## Streaming
 
-**The stream is missing.** In **Settings**, **Station**, **Stations**, set **Playback output** to **Radio stream** and press **Save changes**. In **Stations on this server**, stop the station, confirm **Stop station**, then start it again; this applies to the default station too and disconnects its listeners. **Settings**, **Station**, **Broadcasting** appears when stream output is active. For a one-time default stream, start AutoDJ with `serve --stream`. FFmpeg must be installed. The default stream is `/stream.mp3`; named stations use `/<station-id>.mp3`.
+**The stream is missing.** In **Settings**, **Station**, **General**, set **Playback output** to **Radio stream** and press **Save changes** in **General**. In **Settings**, **Global**, **Stations**, stop the station, confirm **Stop station**, then start it again; this applies to the default station too and disconnects its listeners. **Settings**, **Station**, **Broadcasting** appears when stream output is active. For a one-time default stream, start AutoDJ with `serve --stream`. FFmpeg must be installed. The default stream is `/stream.mp3`; named stations use `/<station-id>.mp3`.
 
 **A player cannot connect.** Copy **Stream address** from **Settings**, **Station**, **Broadcasting** while the page is open through a network address. An address containing `127.0.0.1` works only on the AutoDJ computer. Check the firewall, the listener limit, any password, and address bans. A stopped station has no active stream.
 
 **A relay is disconnected.** In **Settings**, **Station**, **Broadcasting**, open **Relays** and read the relay's last error. Check the host, listener port, mount point or stream ID, and source password supplied by the host. Relay source passwords cross the network without TLS, so use a trusted connection.
 
-**The wrong station plays.** Use the **Station** button at the top of the page to choose which station you control. Then check **Settings**, **Station**, **Stations** for its running state and **Start with the server** setting. Each station has its own queue, history, sound settings, and stream.
+**The wrong station plays.** Use the **Station** button at the top of the page to choose which station you control. Then check **Settings**, **Global**, **Stations** for its running state and **Start with the server** setting. Each station has its own queue, history, sound settings, and stream.
 
 ## Get more detail
 
