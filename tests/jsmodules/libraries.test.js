@@ -25,6 +25,23 @@ describe("library routing", () => {
 });
 
 describe("library management", () => {
+  it("reports a failed refresh and preserves the loaded libraries", async () => {
+    document.body.innerHTML = `
+      <div id="spanel-libraries"><div id="libraries-list"></div><p id="libraries-status"></p>
+        <button id="libraries-add">Add library</button></div>
+      <select id="library-tools-library"><option value="main">Main</option></select>`;
+    const records = [{ id: "main", name: "Main" }];
+    const request = vi.fn().mockResolvedValueOnce({ libraries: records })
+      .mockRejectedValueOnce(new Error("Connection lost"));
+    const controls = installLibraries({ document, request });
+    await controls.refresh();
+    await expect(controls.refresh()).resolves.toEqual(records);
+    await vi.waitFor(() => expect(document.getElementById("libraries-status").textContent)
+      .toContain("Connection lost"));
+    expect(document.getElementById("library-tools-library").value).toBe("main");
+    expect(document.getElementById("libraries-list").textContent).toContain("Main");
+  });
+
   it("opens a named dialog heading without generic instructions", async () => {
     document.body.innerHTML = `
       <div id="spanel-libraries"><div id="libraries-list"></div><p id="libraries-status"></p>

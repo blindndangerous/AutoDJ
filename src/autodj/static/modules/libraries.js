@@ -1,7 +1,7 @@
-import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
+import { captureAuthenticatedRequestEpoch, failureText, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { createCollectionTable } from "./collection-table.js";
 import { createEditorDialog } from "./editor-dialog.js";
-import { clearFieldError, failureText, focusAfterDialog, showFieldError } from "./dom-helpers.js";
+import { clearFieldError, focusAfterDialog, showFieldError } from "./dom-helpers.js";
 import { makeSay } from "./live-region.js";
 import { isStationRoute } from "./stations.js";
 

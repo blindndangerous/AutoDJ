@@ -69,6 +69,7 @@ import {
   installStationSwitcher,
   isOnAir,
   knownStations,
+  onStationChange,
   rememberStationInAddress,
   selectStation,
   setKnownStations,
@@ -1471,7 +1472,10 @@ import { setTimeFormat } from "./modules/time-format.js";
 installAnalysisWorkers();
 // Settings > Updates -- ./modules/updates.js loads when its subtab is shown.
 const updateControls = installUpdates();
-const timeSettings = installTimeSettings();
+const timeSettings = installTimeSettings({
+  confirmLibraryChange: async () => (await libraryFoldersControls?.confirmStationChange?.()) !== false,
+  onLibraryChanged: refreshLibraryViews,
+});
 librariesControls = installLibraries({
   onLibraryChange: () => {
     void libraryFoldersControls?.refreshForLibrary?.();
@@ -2096,6 +2100,7 @@ async function switchStation(slug) {
   const entry = knownStations().find((item) => item.slug === slug);
   if (!entry || entry.archived) return;
   if (!await confirmSettingsNavigation()) return;
+  if ((await libraryFoldersControls?.confirmStationChange?.()) === false) return;
   if (!await confirmLeavingStation(entry.name)) return;
   if (slug === currentStation()) return;
   resetSettingsDrafts();
@@ -2123,9 +2128,11 @@ btnStationStart?.addEventListener("click", () => void withDisabled(btnStationSta
   const station = currentStation();
   const name = stationName();
   try {
+    if ((await libraryFoldersControls?.confirmStationChange?.()) === false) return;
     const entry = await requestJson(`/api/stations/${encodeURIComponent(station)}/start`,
       { method: "POST" });
     if (station !== currentStation()) return;
+    refreshLibraryViews();
     setKnownStations(knownStations().map((item) => (item.slug === station ? entry : item)));
     announceStatus(document.getElementById("sr-status"), `${name} started.`,
       { dwellMs: 4000, force: true });
@@ -3336,6 +3343,15 @@ libraryFoldersControls = installLibraryFolders({
     updateLibraryFolderOptions();
   },
 });
+function refreshLibraryViews(refreshSearch = true) {
+  libraryFoldersControls?.clearTrackInfo();
+  registeredLibraryFolders = [];
+  updateLibraryFolderOptions();
+  librarySearchControls?.clear();
+  void libraryFoldersControls?.refresh();
+  if (refreshSearch) void librarySearchControls?.refresh();
+}
+onStationChange(() => refreshLibraryViews(false));
 
 const createCategory = (options) => categoriesPanelControls?.create(options);
 clockwheelPanelControls = installClockwheelPanel({ createCategory });

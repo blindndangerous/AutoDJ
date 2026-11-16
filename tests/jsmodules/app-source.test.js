@@ -250,6 +250,9 @@ async function setupApp({
         ? jsonResponse({ stations })
         : jsonResponse({ detail: "Station list unavailable" }, 503));
     }
+    if (url === "/api/libraries") {
+      return Promise.resolve(jsonResponse({ libraries: [{ id: "main", name: "Main" }] }));
+    }
     if (url === "/api/version") return Promise.resolve(jsonResponse(version));
     return Promise.resolve(onRequest(url, options));
   });
@@ -2464,13 +2467,22 @@ describe("app request behavior", () => {
   it("loads type-specific folder choices when Queue & Search opens", async () => {
     window.location.hash = "#now";
     try {
-      const { fetchImpl } = await setupApp({ onRequest: (url) => url === "/api/library/folders"
+      const isLibraryFolders = (url) =>
+        new URL(url, "http://localhost").pathname === "/api/library/folders";
+      const { fetchImpl } = await setupApp({ onRequest: (url) => isLibraryFolders(url)
         ? jsonResponse({ folders: [
           { id: 1, path: "M:/rock", kind: "music", recursive: true, advanced: true },
           { id: 2, path: "N:/ids", kind: "liner", recursive: true, advanced: false },
         ] })
         : jsonResponse({ ok: true }) });
-      const folderCalls = () => fetchImpl.mock.calls.filter(([url]) => url === "/api/library/folders");
+      const folderCalls = () => fetchImpl.mock.calls.filter(([url]) => isLibraryFolders(url));
+      const toolsLibrary = document.getElementById("library-tools-library");
+      const otherLibrary = document.createElement("option");
+      otherLibrary.value = "other";
+      otherLibrary.textContent = "Other";
+      toolsLibrary.add(otherLibrary);
+      toolsLibrary.value = "other";
+      toolsLibrary.dispatchEvent(new Event("change"));
       expect(folderCalls()).toHaveLength(0);
       document.querySelector("#tab-queue").click();
       await vi.waitFor(() => expect(document.querySelector("#panel-queue").hidden).toBe(false));
@@ -2478,6 +2490,10 @@ describe("app request behavior", () => {
       const select = document.querySelector("#library-folder");
       await vi.waitFor(() => expect([...select.options].map((option) => option.value)).toEqual(["all", "folder:1"]));
       expect(folderCalls()).toHaveLength(1);
+      const folderQuery = new URL(folderCalls()[0][0], "http://localhost").searchParams;
+      expect(folderQuery.get("station")).toBe("default");
+      expect(folderQuery.has("library")).toBe(false);
+      expect(toolsLibrary.value).toBe("other");
       kind.value = "liner";
       kind.dispatchEvent(new Event("change", { bubbles: true }));
       expect([...select.options].map((option) => option.value)).toEqual(["all", "folder:2"]);

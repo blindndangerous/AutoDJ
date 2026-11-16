@@ -159,6 +159,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
   let opening = false;
   let saving = false;
   let folderSignature = null;
+  let browseFolderSignature = null;
+  let folderRefreshGeneration = 0;
   let protectedGeneration = 0;
   let busyController = new AbortController();
   let rescanResult = null;
@@ -309,7 +311,6 @@ export function installLibraryFolders({ document: doc = document, request = requ
       else list.replaceChildren(tableRow(doc, ["No folders added yet."], { colspan: [5] }));
       folderSignature = signature;
       tableNavigation.refresh();
-      onFolders?.(folders);
       if (focused && !list.contains(doc.activeElement)) {
         const cell = [...list.querySelectorAll("tr")].find((row) => row.dataset.id === focused.id)?.cells[focused.column];
         const replacement = cell?.querySelector("button:not(:disabled), input:not(:disabled), select:not(:disabled)") || cell;
@@ -347,11 +348,28 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (suspended || ((!panel || panel.closest("[hidden]")) && (!searchPanel || searchPanel.closest("[hidden]")))) return;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
+    const refreshGeneration = ++folderRefreshGeneration;
+    const browsing = !!searchPanel && !searchPanel.closest("[hidden]");
+    const station = getStation();
     try {
-      const data = await request("/api/library/folders");
-      if (requestCurrent(epoch, generation)) renderFolders(data);
+      const data = await request(browsing
+        ? `/api/library/folders?station=${encodeURIComponent(station)}`
+        : "/api/library/folders");
+      if (!requestCurrent(epoch, generation) || refreshGeneration !== folderRefreshGeneration
+        || (browsing && station !== getStation())) return;
+      if (browsing) {
+        const folders = data.folders || [];
+        const signature = JSON.stringify([station, folders]);
+        if (signature !== browseFolderSignature) {
+          browseFolderSignature = signature;
+          onFolders?.(folders);
+        }
+      } else renderFolders(data);
     } catch (error) {
-      if (requestCurrent(epoch, generation)) progress.textContent = failureText("load folders", error);
+      if (requestCurrent(epoch, generation) && refreshGeneration === folderRefreshGeneration) {
+        if (browsing) onBackgroundError(error);
+        else progress.textContent = failureText("load folders", error);
+      }
     }
   }
   function visible() { return !suspended && !!panel && !panel.closest("[hidden]") && !doc.hidden; }
@@ -961,18 +979,13 @@ export function installLibraryFolders({ document: doc = document, request = requ
   window.addEventListener("hashchange", updatePolling);
   doc.addEventListener("visibilitychange", updatePolling);
   updatePolling();
-  function clearProtectedData() {
-    pendingFolderEdits.clear();
-    suspended = true;
+  function clearTrackInfo() {
+    browseFolderSignature = null;
     clearRescan();
     protectedGeneration += 1;
     busyController.abort();
     busyController = new AbortController();
-    clearAnnouncedStatus(status);
     clearAnnouncedStatus(pointStatus);
-    if (timer != null) clearInterval(timer);
-    timer = null;
-    searchShown = false;
     opening = saving = false;
     const dialog = doc.getElementById("track-info-dialog");
     if (dialog?.open) dialog.close();
@@ -987,22 +1000,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
     landmarks.clear();
     currentPath = null;
     currentRecord = null;
+    currentStation = getStation();
     currentKind = "music";
     currentName = "this track";
     if (allowOutro) allowOutro.checked = false;
     savedFields = "";
-    list.replaceChildren();
-    folderSignature = null;
-    pathInput.value = "";
-    clearAddError();
-    autoRescan?.clear();
-    errorSignature = "";
-    importRunning = false;
-    errorList.hidden = true;
-    errorList.open = false;
-    errorList.querySelector("ul").replaceChildren();
-    status.textContent = "";
-    progress.textContent = "";
+    savedBeforeSwitch = "";
     pointStatus.textContent = "";
     returnTarget = null;
     returnView = null;
@@ -1025,25 +1028,49 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const preview = doc.getElementById("points-preview");
     if (preview) { preview.pause(); preview.removeAttribute("src"); preview.load(); }
   }
+  function confirmStationChange() {
+    return !currentPath || !unsaved() ? Promise.resolve(true) : confirmTrackChange();
+  }
+  function clearProtectedData() {
+    pendingFolderEdits.clear();
+    suspended = true;
+    clearTrackInfo();
+    if (timer != null) clearInterval(timer);
+    timer = null;
+    searchShown = false;
+    clearAnnouncedStatus(status);
+    list.replaceChildren();
+    folderSignature = null;
+    browseFolderSignature = null;
+    pathInput.value = "";
+    clearAddError();
+    autoRescan?.clear();
+    errorSignature = "";
+    importRunning = false;
+    errorList.hidden = true;
+    errorList.open = false;
+    errorList.querySelector("ul").replaceChildren();
+    status.textContent = "";
+    progress.textContent = "";
+    pointStatus.textContent = "";
+  }
   function resume() { suspended = false; updatePolling(); }
   function refreshForLibrary() {
+    folderRefreshGeneration += 1;
     void refresh();
     void autoRescan?.load();
   }
-  // Refresh station-owned details without discarding shared cue or tag edits.
+  // Track info belongs to the selected library, so never carry its editor
+  // draft or metadata across a station's library binding.
   const refreshIntros = () => {
-    landmarks.refresh();
     const station = getStation();
     const changedStation = station !== currentStation;
-    if (changedStation) clearRescan();
+    if (changedStation) clearTrackInfo();
+    else landmarks.refresh();
     currentStation = station;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
     const path = currentPath;
-    if (changedStation && currentRecord) {
-      currentRecord.last_played = null;
-      renderDetails(currentRecord);
-    }
     const timestamp = path
       ? request(`/api/library/points?path=${encodeURIComponent(path)}&station=${encodeURIComponent(station)}`)
         .then((data) => {
@@ -1058,5 +1085,5 @@ export function installLibraryFolders({ document: doc = document, request = requ
       : Promise.resolve();
     return Promise.all([intros.refresh?.(), timestamp]);
   };
-  return { refresh, refreshForLibrary, openEditor, clearProtectedData, resume, refreshIntros, destroy() { clearProtectedData(); tags.destroy(); intros.destroy(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
+  return { refresh, refreshForLibrary, openEditor, clearTrackInfo, confirmStationChange, clearProtectedData, resume, refreshIntros, destroy() { clearProtectedData(); tags.destroy(); intros.destroy(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
 }

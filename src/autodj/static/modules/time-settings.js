@@ -10,7 +10,8 @@ import { registerSettingsGroup } from "./settings-drafts.js";
 
 const ENDPOINT = "/api/time-settings";
 
-export function installTimeSettings({ doc = document, request = requestJson } = {}) {
+export function installTimeSettings({ doc = document, request = requestJson,
+  confirmLibraryChange = async () => true, onLibraryChanged = () => {} } = {}) {
   const stationsPanel = doc.getElementById("spanel-stations");
   const zone = doc.getElementById("time-zone");
   const format = doc.getElementById("time-format");
@@ -116,6 +117,7 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
     read: () => ({ library_id: library.value || "main" }), write: showLibrary,
     beforeSave: async (value, baseline, { station, current }) => {
       if (value.library_id === baseline.library_id) return "next";
+      if (!await confirmLibraryChange() || !current()) return false;
       const check = await request(`/api/libraries/${encodeURIComponent(value.library_id)}/check?station=${encodeURIComponent(station)}`);
       if (!current()) return false;
       const warnings = Array.isArray(check.warnings) ? check.warnings : [];
@@ -137,12 +139,16 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
       return choice === "accept" ? "restart" : choice === "alternate" ? "next" : false;
     },
     afterSave: async (_value, { station, current, decision }) => {
-      if (decision !== "restart" || !current()) return "";
-      await request(`/api/stations/${encodeURIComponent(station)}/stop`, { method: "POST" });
       if (!current()) return "";
-      await request(`/api/stations/${encodeURIComponent(station)}/start`, { method: "POST" });
-      if (!current()) return "";
-      return `${stationName()} restarted.`;
+      try {
+        if (decision !== "restart") return "";
+        await request(`/api/stations/${encodeURIComponent(station)}/stop`, { method: "POST" });
+        if (!current()) return "";
+        await request(`/api/stations/${encodeURIComponent(station)}/start`, { method: "POST" });
+        return current() ? `${stationName()} restarted.` : "";
+      } finally {
+        if (current()) onLibraryChanged();
+      }
     },
     });
   }

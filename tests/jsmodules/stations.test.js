@@ -81,10 +81,12 @@ describe("where a request goes", () => {
     selectStation("nightowl");
     for (const url of [
       "/api/stations", "/api/stations/oldies/start", "/api/stereo-tool-presets/upload", "/api/devices", "/api/version",
-      "/stream.mp3", "/api/library/clockwork",
+      "/stream.mp3",
     ]) {
       expect(stationApi(url)).toBe(url);
     }
+    expect(stationApi("/api/library/clockwork"))
+      .toBe("/api/library/clockwork?station=nightowl");
     expect(stationApi("/api/search?q=x")).toBe("/api/search?q=x&station=nightowl");
     expect(stationApi("/api/lyrics?path=a.mp3")).toBe("/api/lyrics?path=a.mp3&station=nightowl");
     expect(stationApi("/api/audio?path=a.mp3")).toBe("/api/audio?path=a.mp3&station=nightowl");
@@ -197,7 +199,7 @@ describe("requests while switching", () => {
     await requestJson("/api/skip", { method: "POST" });
     await requestJson("/api/search?q=a");
     expect(fetchMock.mock.calls.map(([url]) => url))
-      .toEqual(["/api/stations/nightowl/skip", "/api/search?q=a"]);
+      .toEqual(["/api/stations/nightowl/skip", "/api/search?q=a&station=nightowl"]);
   });
 
   it("drops a station reply that comes back after a switch, but not a shared one", async () => {
@@ -211,10 +213,10 @@ describe("requests while switching", () => {
     expect(isStaleStationReply(failure)).toBe(true);
     expect(failure.message).toMatch(/station this page has just left/);
 
-    const shared = requestJson("/api/search?q=a");
+    const shared = requestJson("/api/version");
     selectStation(DEFAULT_STATION);
-    answer(jsonResponse({ results: [] }));
-    await expect(shared).resolves.toEqual({ results: [] });
+    answer(jsonResponse({ version: "test" }));
+    await expect(shared).resolves.toEqual({ version: "test" });
   });
 
   it("says what an action answered after a switch did on the station left", async () => {

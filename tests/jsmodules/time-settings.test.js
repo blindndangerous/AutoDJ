@@ -160,7 +160,7 @@ it("stages a station library choice and restarts only after a successful save", 
   ]));
 });
 
-async function stationLibraryDraft({ check = { running: true, warnings: [] }, requestOverride } = {}) {
+async function stationLibraryDraft({ check = { running: true, warnings: [] }, requestOverride, ...options } = {}) {
   groups.length = 0;
   selectStation("default");
   document.body.innerHTML = `
@@ -175,7 +175,7 @@ async function stationLibraryDraft({ check = { running: true, warnings: [] }, re
     if (url.includes("/check?")) return check;
     return {};
   });
-  await installTimeSettings({ request }).load();
+  await installTimeSettings({ request, ...options }).load();
   const library = document.getElementById("station-library");
   const draft = groups.find((group) => group.group === "station" && group.controls?.includes(library));
   library.value = "oldies";
@@ -233,8 +233,33 @@ it("drops a library preflight reply after the station context changes", async ()
   const { draft } = await stationLibraryDraft({ requestOverride: request });
   const current = vi.fn(() => true);
   const pending = draft.beforeSave(draft.read(), { library_id: "main" }, { station: "default", current });
+  await vi.waitFor(() => expect(finishCheck).toBeTypeOf("function"));
   current.mockReturnValue(false);
   finishCheck({ running: true, warnings: [] });
   expect(await pending).toBe(false);
   expect(choose).not.toHaveBeenCalled();
+});
+
+// ADR-0023-08
+it("keeps the library selection unsaved when Track info editing is canceled", async () => {
+  const confirmLibraryChange = vi.fn(async () => false);
+  const { draft, request } = await stationLibraryDraft({ confirmLibraryChange });
+  request.mockClear();
+  expect(await draft.beforeSave(draft.read(), { library_id: "main" }, {
+    station: "default", current: () => true,
+  })).toBe(false);
+  expect(confirmLibraryChange).toHaveBeenCalledOnce();
+  expect(request).not.toHaveBeenCalled();
+});
+
+it("invalidates old library views after saving for next start or a failed restart", async () => {
+  const onLibraryChanged = vi.fn();
+  const { draft, request } = await stationLibraryDraft({ onLibraryChanged });
+  await draft.afterSave({}, { station: "default", current: () => true, decision: "next" });
+  expect(onLibraryChanged).toHaveBeenCalledOnce();
+  request.mockRejectedValueOnce(new Error("Could not stop station"));
+  await expect(draft.afterSave({}, {
+    station: "default", current: () => true, decision: "restart",
+  })).rejects.toThrow("Could not stop station");
+  expect(onLibraryChanged).toHaveBeenCalledTimes(2);
 });

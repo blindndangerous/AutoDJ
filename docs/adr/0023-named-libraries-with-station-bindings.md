@@ -70,6 +70,12 @@ The General settings selector uses the existing draft/save boundary from
 [ADR 17](0017-save-settings-through-one-draft-boundary.md). A canceled warning
 does not save; a failed save does not restart the station.
 
+Browse follows the station's library even when Library tools selects another
+library. Before changing stations or a station's library, unsaved Track info
+edits use the existing Save, Discard or Cancel dialog. The old editor and Browse
+results are cleared when the owner changes so they cannot be saved into the
+next library.
+
 ## Implementation and operation
 
 - [Definitions](../../src/autodj/library_registry.py), [runtime ownership](../../src/autodj/library_runtime.py),
@@ -90,6 +96,7 @@ does not save; a failed save does not restart the station.
 | ADR-0023-05 | Selecting and changing libraries remains usable with keyboard and screen-reader navigation. | manual | On Windows with NVDA, create and rename a library, change a station's saved choice, cancel a warning, save for next start, and save with restart. Check focus, names and announcements; record browser and screen-reader versions. |
 | ADR-0023-06 | Station library preflight presents running-station choices and stopped-station warnings, and ignores a stale reply. | automated | `tests/jsmodules/time-settings.test.js::offers all three running station choices and their warning text`; `tests/jsmodules/time-settings.test.js::asks before saving a stopped station's library when programming warnings exist`; `tests/jsmodules/time-settings.test.js::drops a library preflight reply after the station context changes` |
 | ADR-0023-07 | Catalog tag edits affect one library; shared file rewrites reach other libraries on rescan with existing file-identity invalidation. | automated | `tests/integration/test_named_libraries.py::test_tag_edits_target_one_catalog_and_shared_file_changes_arrive_on_rescan` |
+| ADR-0023-08 | Browse and Track info keep their station's catalog context across library and station changes. | automated | `tests/jsmodules/library-folders.test.js::keeps Browse folders separate from the library being managed`; `tests/jsmodules/library-folders.test.js::reads the same path from the newly selected station after clearing Track info`; `tests/jsmodules/time-settings.test.js::keeps the library selection unsaved when Track info editing is canceled` |
 
 Automated test links identify checks to run; they are not a claim that the
 checks or the manual procedure have passed. The PR records that evidence.

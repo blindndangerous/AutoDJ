@@ -589,7 +589,8 @@ describe("clock folder and points controls", () => {
   });
 
   it("updates browser folders only when the registered folder signature changes", async () => {
-    document.getElementById("panel-library").hidden = false;
+    document.getElementById("panel-library").hidden = true;
+    document.getElementById("panel-queue").hidden = false;
     const folders = [{ id: 2, path: "N:/voice", kind: "liner", recursive: true, advanced: false }];
     const onFolders = vi.fn();
     const controls = installLibraryFolders({ document, request: vi.fn(async () => ({ folders })), onFolders });
@@ -599,6 +600,46 @@ describe("clock folder and points controls", () => {
     await controls.refresh();
     expect(onFolders).toHaveBeenCalledTimes(1);
     controls.destroy();
+  });
+
+  // ADR-0023-08
+  it("keeps Browse folders separate from the library being managed", async () => {
+    const library = document.getElementById("panel-library");
+    const queue = document.getElementById("panel-queue");
+    library.hidden = true;
+    queue.hidden = false;
+    const stationFolders = [{ id: 1, path: "M:/station", kind: "music" }];
+    const toolFolders = [{ id: 2, path: "M:/other", kind: "music" }];
+    const request = vi.fn(async (url) => ({
+      folders: url.includes("station=nightowl") ? stationFolders : toolFolders,
+    }));
+    const onFolders = vi.fn();
+    const controls = installLibraryFolders({ document, request, onFolders, getStation: () => "nightowl" });
+    await vi.waitFor(() => expect(onFolders).toHaveBeenCalledWith(stationFolders));
+    expect(request).toHaveBeenCalledWith("/api/library/folders?station=nightowl");
+    queue.hidden = true;
+    library.hidden = false;
+    await controls.refresh();
+    expect(document.getElementById("source-folders").textContent).toContain("M:/other");
+    expect(onFolders).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores Browse folders returned after switching stations", async () => {
+    document.getElementById("panel-library").hidden = true;
+    document.getElementById("panel-queue").hidden = false;
+    let station = "nightowl";
+    let finishOld;
+    const folders = [{ id: 2, path: "M:/day", kind: "music" }];
+    const request = vi.fn((url) => url.includes("station=nightowl")
+      ? new Promise((resolve) => { finishOld = resolve; })
+      : Promise.resolve({ folders }));
+    const onFolders = vi.fn();
+    const controls = installLibraryFolders({ document, request, onFolders, getStation: () => station });
+    station = "day";
+    await controls.refresh();
+    finishOld({ folders: [{ id: 1, path: "M:/night", kind: "music" }] });
+    await Promise.resolve();
+    expect(onFolders).toHaveBeenCalledExactlyOnceWith(folders);
   });
 
   it("loads music provenance, hides overlap start, previews the source file, and saves values", async () => {
@@ -615,7 +656,7 @@ describe("clock folder and points controls", () => {
     expect(document.querySelector('[data-point="intro"]').value).toBe("0:12");
     expect(document.querySelector('[data-point-source="intro"]').textContent).toBe(" (detected)");
     expect(document.querySelector('[data-point="overlap_start"]').closest("label").hidden).toBe(true);
-    expect(preview.getAttribute("src")).toBe("/api/audio?path=M%3A%2Fsong.flac");
+    expect(preview.getAttribute("src")).toBe("/api/audio?path=M%3A%2Fsong.flac&station=default");
     document.querySelector('[data-point="segue"]').value = "2:50";
     document.querySelector('[data-preview="segue"]').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -797,7 +838,7 @@ describe("clock folder and points controls", () => {
     expect(document.getElementById("points-rescan-results").hidden).toBe(true);
   });
 
-  it("refreshes only play time on station switch and ignores a late prior-station reply", async () => {
+  it("clears the prior library editor on station switch and ignores its late reply", async () => {
     let station = "default";
     let finishOldRefresh;
     let pointsReads = 0;
@@ -811,17 +852,14 @@ describe("clock folder and points controls", () => {
     const controls = installLibraryFolders({ document, request, getStation: () => station });
     void controls.openEditor("M:/song.flac");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const lastPlayed = () => [...document.querySelectorAll("#track-info-details dt")]
-      .find((term) => term.textContent === "Last played").nextElementSibling.textContent;
-    const initialTimestamp = lastPlayed();
     document.querySelector('[data-point="start"]').value = "2";
     const oldRefresh = controls.refreshIntros();
     station = "nightowl";
     await controls.refreshIntros();
     finishOldRefresh();
     await oldRefresh;
-    expect(document.querySelector('[data-point="start"]').value).toBe("2");
-    expect(lastPlayed()).not.toBe(initialTimestamp);
+    expect(document.querySelector('[data-point="start"]').value).toBe("");
+    expect(document.getElementById("track-info-details").hidden).toBe(true);
   });
 
   it("opens liner points from a folder row event and exposes only its source window", async () => {
@@ -851,7 +889,7 @@ describe("clock folder and points controls", () => {
     document.getElementById("points-save").click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const save = request.mock.calls.find(([url]) => url === "/api/library/points");
-    expect(JSON.parse(save[1].body)).toEqual({ path: "N:/voice/same.wav", points: { start: 0.2, segue: 2.6, end: 3.8, overlap_start: null }, allow_outro: false });
+    expect(JSON.parse(save[1].body)).toEqual({ path: "N:/voice/same.wav", points: { start: 0.2, segue: 2.6, end: 3.8, overlap_start: null }, allow_outro: false, station: "default" });
   });
 
   it("treats liner overlap start as relative to saved Start for preview and setting current", async () => {
@@ -931,7 +969,7 @@ describe("clock folder and points controls", () => {
 
   function trackRequest() {
     return vi.fn(async (url) => ({
-      path: decodeURIComponent(url.split("path=")[1] || "M:/one.flac"),
+      path: new URL(url, "http://localhost").searchParams.get("path") || "M:/one.flac",
       title: url.includes("two") ? "Two" : "One", artist: "Artist", kind: "music",
       last_played: 172800, analysis: "ready", loudness_ready: true,
       points: { intro: 8, end: 180 }, point_sources: { intro: "analysis" },
@@ -977,7 +1015,7 @@ describe("clock folder and points controls", () => {
     document.getElementById("track-info-save").click();
     await switching;
     expect(request.mock.calls.map(([url]) => url)).toEqual([
-      "/api/library/points?path=M%3A%2Fone.flac", "/api/library/points", "/api/library/points?path=M%3A%2Ftwo.flac",
+      "/api/library/points?path=M%3A%2Fone.flac&station=default", "/api/library/points", "/api/library/points?path=M%3A%2Ftwo.flac&station=default",
     ]);
     const body = JSON.parse(request.mock.calls[1][1].body);
     expect(body.path).toBe("M:/one.flac");
@@ -995,7 +1033,7 @@ describe("clock folder and points controls", () => {
         return { path: body.path, title: body.tags.title, artist: "Artist", kind: "music", points: {}, tags: tagsOf(body.tags.title), tags_writable: true, beets: "off" };
       }
       const two = url.includes("two");
-      return { path: decodeURIComponent(url.split("path=")[1]), title: two ? "Two" : "One", artist: "Artist", kind: "music", points: { end: 180 }, tags: tagsOf(two ? "Two" : "One"), tags_writable: true };
+      return { path: new URL(url, "http://localhost").searchParams.get("path"), title: two ? "Two" : "One", artist: "Artist", kind: "music", points: { end: 180 }, tags: tagsOf(two ? "Two" : "One"), tags_writable: true };
     });
     const controls = installLibraryFolders({ document, request });
     await controls.openEditor("M:/one.flac");
@@ -1008,8 +1046,8 @@ describe("clock folder and points controls", () => {
     document.getElementById("track-info-save").click();
     await switching;
     const urls = request.mock.calls.map(([url]) => url);
-    expect(urls).toEqual(["/api/library/points?path=M%3A%2Fone.flac", "/api/library/tags", "/api/library/points?path=M%3A%2Ftwo.flac"]);
-    expect(JSON.parse(request.mock.calls[1][1].body)).toEqual({ path: "M:/one.flac", tags: { title: "Uno" }, beets: false, write_file: false });
+    expect(urls).toEqual(["/api/library/points?path=M%3A%2Fone.flac&station=default", "/api/library/tags", "/api/library/points?path=M%3A%2Ftwo.flac&station=default"]);
+    expect(JSON.parse(request.mock.calls[1][1].body)).toEqual({ path: "M:/one.flac", tags: { title: "Uno" }, beets: false, write_file: false, station: "default" });
     expect(title.value).toBe("Two");
     // Saving here updates the details and the heading in place.
     title.value = "Dos";
@@ -1068,6 +1106,83 @@ describe("clock folder and points controls", () => {
     expect(document.querySelector('[data-point="intro"]').value).toBe("0:10");
     expect(document.getElementById("points-path").value).toBe("M:/one.flac");
     expect(document.activeElement).toBe(opener);
+  });
+
+  it("cancels a station change and keeps the cue draft", async () => {
+    const controls = installLibraryFolders({ document, request: trackRequest() });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+
+    const confirmation = controls.confirmStationChange();
+    expect(document.getElementById("track-info-dialog").open).toBe(true);
+    document.getElementById("track-info-keep").click();
+
+    await expect(confirmation).resolves.toBe(false);
+    expect(document.querySelector('[data-point="intro"]').value).toBe("0:10");
+    expect(document.getElementById("points-path").value).toBe("M:/one.flac");
+  });
+
+  it("discards track info without clearing Library tools inputs", async () => {
+    document.getElementById("panel-library").insertAdjacentHTML("beforeend", `
+      <input id="auto-rescan-hours"><input id="auto-rescan-minutes">
+      <button id="auto-rescan-save"></button><p id="auto-rescan-error"></p>`);
+    const folderPath = document.getElementById("source-folder-path");
+    folderPath.value = "M:/shared music";
+    document.getElementById("auto-rescan-hours").value = "2";
+    document.getElementById("auto-rescan-minutes").value = "30";
+    const controls = installLibraryFolders({ document, request: trackRequest() });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+
+    const confirmation = controls.confirmStationChange();
+    document.getElementById("track-info-discard").click();
+    await expect(confirmation).resolves.toBe(true);
+    controls.clearTrackInfo();
+
+    expect(document.getElementById("points-editor").hidden).toBe(true);
+    expect(document.getElementById("points-path").value).toBe("");
+    expect(folderPath.value).toBe("M:/shared music");
+    expect(document.getElementById("auto-rescan-hours").value).toBe("2");
+    expect(document.getElementById("auto-rescan-minutes").value).toBe("30");
+  });
+
+  // ADR-0023-08
+  it("reads the same path from the newly selected station after clearing Track info", async () => {
+    let station = "default";
+    const request = vi.fn(async (url) => {
+      const path = new URL(url, "http://localhost").searchParams.get("path");
+      return {
+        path, title: "Same track", kind: "music",
+        points: { intro: url.includes("station=nightowl") ? 24 : 12 },
+      };
+    });
+    const controls = installLibraryFolders({ document, request, getStation: () => station });
+    await controls.openEditor("M:/same.flac");
+    expect(document.querySelector('[data-point="intro"]').value).toBe("0:12");
+
+    station = "nightowl";
+    await controls.refreshIntros();
+    expect(document.getElementById("points-editor").hidden).toBe(true);
+    await controls.openEditor("M:/same.flac");
+
+    expect(request.mock.calls.filter(([url]) => url.startsWith("/api/library/points?"))).toEqual([
+      ["/api/library/points?path=M%3A%2Fsame.flac&station=default"],
+      ["/api/library/points?path=M%3A%2Fsame.flac&station=nightowl"],
+    ]);
+    expect(document.querySelector('[data-point="intro"]').value).toBe("0:24");
+  });
+
+  it("ignores a Track info reply that arrives after clearing the editor", async () => {
+    let finish;
+    const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const controls = installLibraryFolders({ document, request });
+    const opening = controls.openEditor("M:/one.flac");
+    controls.clearTrackInfo();
+    finish({ path: "M:/one.flac", title: "One", kind: "music", points: { intro: 10 } });
+    await opening;
+
+    expect(document.getElementById("points-editor").hidden).toBe(true);
+    expect(document.getElementById("points-path").value).toBe("");
   });
 
   // #631: show() and aria-modal, not showModal(), so NVDA keeps its place on
@@ -1140,7 +1255,7 @@ describe("clock folder and points controls", () => {
     let finish;
     const request = vi.fn((url, options) => options?.method === "POST"
       ? new Promise((resolve) => { finish = resolve; })
-      : Promise.resolve({ path: decodeURIComponent(url.split("path=")[1] || "M:/one.flac"), title: "One", kind: "music", points: { end: 180 } }));
+      : Promise.resolve({ path: new URL(url, "http://localhost").searchParams.get("path") || "M:/one.flac", title: "One", kind: "music", points: { end: 180 } }));
     const controls = installLibraryFolders({ document, request });
     await controls.openEditor("M:/one.flac");
     const dialog = document.getElementById("track-info-dialog");
@@ -1198,7 +1313,7 @@ describe("clock folder and points controls", () => {
   });
 
   it("discards a liner draft without saving, and offers the same liner fields", async () => {
-    const request = vi.fn(async (url) => ({ path: decodeURIComponent(url.split("path=")[1]), title: "Test jingle", kind: "liner", points: { start: 0, segue: 5.3, end: 8.8, overlap_start: 5.3 } }));
+    const request = vi.fn(async (url) => ({ path: new URL(url, "http://localhost").searchParams.get("path"), title: "Test jingle", kind: "liner", points: { start: 0, segue: 5.3, end: 8.8, overlap_start: 5.3 } }));
     const controls = installLibraryFolders({ document, request });
     await controls.openEditor("N:/jingle.wav", "liner");
     const preview = document.getElementById("points-preview");
@@ -1334,7 +1449,7 @@ describe("clock folder and points controls", () => {
     document.getElementById("points-allow-outro-label").remove();
     const request = vi.fn(async (url) => url === "/api/library/points"
       ? { points: { start: 0, segue: 5, end: 8 } }
-      : { path: decodeURIComponent(url.split("path=")[1]), title: "Old liner", kind: "liner", points: { start: 0, segue: 5, end: 8 } });
+      : { path: new URL(url, "http://localhost").searchParams.get("path"), title: "Old liner", kind: "liner", points: { start: 0, segue: 5, end: 8 } });
     const controls = installLibraryFolders({ document, request });
     await controls.openEditor("N:/one.wav", "liner");
     expect(document.getElementById("panel-now").hidden).toBe(false);
