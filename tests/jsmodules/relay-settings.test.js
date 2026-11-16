@@ -17,7 +17,7 @@ function markup() {
       <p id="stream-relay-form-error" class="field-error" hidden></p>
       <button type="submit"></button><button type="button" id="stream-relay-cancel"></button>
     </form>
-    <input id="stream-station-name"><input id="stream-station-genre"><input id="stream-station-description"><input id="stream-station-url">
+    <input id="stream-station-genre"><input id="stream-station-description"><input id="stream-station-url">
     <table role="grid"><tbody id="stream-relay-rows"></tbody></table>
     </details></div>
     <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
@@ -27,7 +27,7 @@ function markup() {
 describe("relay settings", () => {
   beforeEach(markup);
 
-  it("stages station metadata without using relay CRUD", () => {
+  it("stages the relay metadata fields without using relay CRUD", () => {
     const post = vi.fn(async () => true);
     installRelaySettings({
       doc: document, request: vi.fn(async () => ({ relays: [] })), post,
@@ -37,12 +37,12 @@ describe("relay settings", () => {
       profile: "",
       revision: "test-revision",
       values: { stream: {
-        station_name: "AutoDJ", genre: "", description: "", url: "",
+        genre: "", description: "", url: "",
       } },
     });
-    const name = document.getElementById("stream-station-name");
-    name.value = "Night Radio";
-    name.dispatchEvent(new Event("input", { bubbles: true }));
+    const genre = document.getElementById("stream-station-genre");
+    genre.value = "Night Radio";
+    genre.dispatchEvent(new Event("input", { bubbles: true }));
     expect(document.querySelector("#spanel-stream .settings-save-bar").textContent)
       .toContain("Unsaved changes");
     expect(post).not.toHaveBeenCalled();

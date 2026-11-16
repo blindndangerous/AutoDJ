@@ -2055,7 +2055,7 @@ describe("static accessibility contracts", () => {
     const name = document.querySelector("#stream-station-name");
     expect(name.getAttribute("type")).toBe("text");
     expect(name.getAttribute("maxlength")).toBe("100");
-    expect(labelText("stream-station-name")).toBe("Station name");
+    expect(labelText("stream-station-name")).toBe("Station display name");
     // Long help stays visible and is not announced.
     expect(name.hasAttribute("aria-describedby")).toBe(false);
     expect(document.getElementById("stream-station-name-desc").hidden).toBe(false);
@@ -2105,7 +2105,8 @@ describe("static accessibility contracts", () => {
     // More formats and now-playing cards, then the Listeners and Bans
     // sections and the Listener statistics card close the fieldset, so
     // heading navigation never puts a general setting under one of them.
-    const order = ["#stream-relays", "#stream-station-name", "#stream-bitrate",
+    expect(document.getElementById("stream-station-name").closest("[role=tabpanel]").id).toBe("spanel-stations");
+    const order = ["#stream-relays", "#stream-bitrate",
       "#stream-continuous", "#recording-controls", "#stream-relay-settings",
       "#stream-formats", "#np-settings",
       "#listener-control-title", "#listener-bans-title", "#listener-stats-title"]
@@ -3956,7 +3957,7 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(table.caption.textContent).toBe(document.getElementById("stations-list-heading").textContent);
     expect(document.getElementById("stations-list-heading").tagName).toBe("H4");
     expect([...table.querySelectorAll("th[scope=col]")].map((th) => th.textContent))
-      .toEqual(["Station", "Now playing", "Listeners", "Start with the server", "Start or stop"]);
+      .toEqual(["Station", "Now playing", "Listeners", "Start with the server", "Start or stop", "Archive and delete"]);
     const form = document.getElementById("station-create-form");
     expect(form.querySelector("legend").textContent.trim()).toBe("New station");
     // Short visible labels of their own, no aria-label in their place.

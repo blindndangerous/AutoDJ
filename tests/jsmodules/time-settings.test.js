@@ -29,6 +29,7 @@ describe("time format", () => {
   it("loads time settings and exposes the station time draft", async () => {
     document.body.innerHTML = `
       <div id="spanel-stations" role="tabpanel"><div id="stations-status"></div>
+      <input id="stream-station-name" value="AutoDJ">
       <select id="time-zone"></select></div>
       <div id="spanel-server" role="tabpanel">
       <select id="time-format"><option value="24">24</option><option value="12">12</option></select></div>`;
@@ -46,6 +47,11 @@ describe("time format", () => {
       .toEqual({ timezone: "Pacific/Auckland" });
     expect(drafts.find((group) => group.panel.id === "spanel-server").read())
       .toEqual({ time_format: "12" });
+    const displayName = groups.find((group) => group.group === "stream");
+    expect(displayName.panel.id).toBe("spanel-stations");
+    expect(displayName.controls).toContain(document.getElementById("stream-station-name"));
+    document.getElementById("stream-station-name").value = "Night Radio";
+    expect(displayName.read()).toEqual({ station_name: "Night Radio" });
     expect(request).toHaveBeenCalledTimes(2);
     drafts.find((group) => group.panel.id === "spanel-server").write({ time_format: "12" });
     expect(clockText(when, { locale: "en-US" })).toBe("3:04 PM");
