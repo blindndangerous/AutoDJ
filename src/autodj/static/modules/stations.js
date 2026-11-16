@@ -532,5 +532,5 @@ export function installStationSwitcher({ wrap, button, list, onChoose }) {
     event.stopPropagation();
   });
 
-  return { render, close, isOpen, focus: () => button.focus() };
+  return { render, open, close, isOpen, focus: () => button.focus() };
 }

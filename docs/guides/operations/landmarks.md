@@ -61,7 +61,7 @@ ends.
   starts with the station's name.
 
 Each key says its answer once, politely, and never moves focus. They are single-key shortcuts, so
-**Enable keyboard shortcuts** (Settings, Global, Browser preferences) turns them off with the rest. Neither
+The **Enable keyboard shortcuts** or **Disable keyboard shortcuts** button in the **Keyboard shortcuts** dialog turns them off with the rest. Neither
 bracket nor Shift+U is used by the browsers or by NVDA and JAWS outside browse mode; in browse
 mode, use focus mode, or press NVDA+F2 or JAWS Insert+3 first to pass the key through. On a
 keyboard layout that types brackets with AltGr, AltGr and the bracket key work; Ctrl+Alt with the
