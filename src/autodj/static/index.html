@@ -103,7 +103,7 @@
     <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
     <button type="button" role="tab" id="tab-voice"    data-view="voice"    aria-selected="false" tabindex="-1">Voice tracks</button>
     <button type="button" role="tab" id="tab-ads"      data-view="ads"      aria-selected="false" tabindex="-1">Ads</button>
-    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1" aria-describedby="shared-context">Library tools</button>
+    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1">Library tools</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
   </div>
   <button type="button" id="collapse-all-cards">Collapse all cards</button>
@@ -2609,7 +2609,7 @@
           <legend>Days</legend>
           <!-- Named by the fieldset's aria-describedby only while shown (scheduler-panel.js). -->
           <p class="setting-desc" id="schedule-days-desc" data-repeat="interval">
-            Optional.  Leave every day unchecked to run every day.  A window that crosses midnight belongs to the day it starts.
+            Optional.  No days selected means every day.  A window that crosses midnight belongs to the day it starts.
           </p>
           <div class="settings-check"><input type="checkbox" id="schedule-day-0" value="0"><label for="schedule-day-0">Monday</label></div>
           <div class="settings-check"><input type="checkbox" id="schedule-day-1" value="1"><label for="schedule-day-1">Tuesday</label></div>
@@ -3276,10 +3276,7 @@
     <h2 id="ads-heading">Ads</h2>
     <div id="ads-panel">
       <p id="ads-help">
-        Spots are the ads. An ad break plays some of them between two songs, at the minutes past
-        the hour you choose or from a Schedule event, and never cuts a song: it joins the next song
-        change it can, about a song later. Every spot that aired or was missed goes into the ad report.
-        Times are in the station time zone: <span id="ads-timezone"></span>.
+        Ad breaks play at a song change. Time zone: <span id="ads-timezone"></span>.
       </p>
       <!-- Why this station does not air ads, or a problem with ads.json: words on the page. -->
       <p id="ads-reason" class="ads-notice" hidden></p>
@@ -3298,11 +3295,11 @@
             <p id="ads-spot-error" class="field-error" hidden></p>
             <div class="settings-row" id="ads-spot-file-row">
               <label for="ads-spot-file">Audio file</label>
-              <input type="file" id="ads-spot-file" aria-describedby="ads-spot-file-desc"
+              <input type="file" id="ads-spot-file"
                      accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,audio/*">
             </div>
             <span class="setting-desc" id="ads-spot-file-desc">
-              MP3, WAV, OGG, M4A, FLAC or AAC. AutoDJ trims the silence before and after the sound.
+              MP3, WAV, OGG, M4A, FLAC or AAC. Silence is trimmed.
             </span>
             <div class="settings-row">
               <label for="ads-spot-title">Spot title</label>
@@ -3320,33 +3317,32 @@
             </div>
             <div class="settings-row">
               <label for="ads-spot-category">Competing category</label>
-              <input type="text" id="ads-spot-category" maxlength="100" autocomplete="off" aria-describedby="ads-spot-category-desc">
+              <input type="text" id="ads-spot-category" maxlength="100" autocomplete="off">
             </div>
             <span class="setting-desc" id="ads-spot-category-desc">
-              Optional, such as Car dealers. Spots with the same category compete: they never share a break
-              and keep the separation time apart, as spots from one advertiser do.
+              Same-category spots cannot share a break and follow the separation rule.
             </span>
             <div class="settings-row">
               <label for="ads-spot-start">First day</label>
-              <input type="date" id="ads-spot-start" aria-describedby="ads-spot-dates-desc">
+              <input type="date" id="ads-spot-start">
             </div>
             <div class="settings-row">
               <label for="ads-spot-end">Last day</label>
-              <input type="date" id="ads-spot-end" aria-describedby="ads-spot-dates-desc">
+              <input type="date" id="ads-spot-end">
             </div>
             <span class="setting-desc" id="ads-spot-dates-desc">
-              The flight: the spot airs only from its first day to its last day, both included. Leave either empty for no limit on that side.
+              Optional; both days included.
             </span>
             <div class="settings-row">
               <label for="ads-spot-day">Plays a day</label>
-              <input type="number" id="ads-spot-day" min="0" max="500" step="1" aria-describedby="ads-spot-limits-desc">
+              <input type="number" id="ads-spot-day" min="0" max="500" step="1">
             </div>
             <div class="settings-row">
               <label for="ads-spot-hour">Plays an hour</label>
-              <input type="number" id="ads-spot-hour" min="0" max="60" step="1" aria-describedby="ads-spot-limits-desc">
+              <input type="number" id="ads-spot-hour" min="0" max="60" step="1">
             </div>
             <span class="setting-desc" id="ads-spot-limits-desc">
-              The most times the spot airs in one day and in one clock hour. 0 is no limit.
+              0 means no limit.
             </span>
             <div class="settings-check">
               <input type="checkbox" id="ads-spot-enabled">
@@ -3374,25 +3370,25 @@
             </div>
             <div class="settings-row">
               <label for="ads-break-minutes">Minutes past the hour</label>
-              <input type="text" id="ads-break-minutes" inputmode="numeric" maxlength="60" autocomplete="off" aria-describedby="ads-break-minutes-desc">
+              <input type="text" id="ads-break-minutes" inputmode="numeric" maxlength="60" autocomplete="off">
             </div>
             <span class="setting-desc" id="ads-break-minutes-desc">
-              Numbers from 0 to 59, separated by commas, such as 15, 45. Leave empty to run the break only from a Schedule event or Run now.
+              0–59, separated by commas. Blank means Schedule or Run now only.
             </span>
             <div class="settings-row">
               <label for="ads-break-from">From hour</label>
-              <select id="ads-break-from" aria-describedby="ads-break-hours-desc"></select>
+              <select id="ads-break-from"></select>
             </div>
             <div class="settings-row">
               <label for="ads-break-until">Until hour</label>
-              <select id="ads-break-until" aria-describedby="ads-break-hours-desc"></select>
+              <select id="ads-break-until"></select>
             </div>
             <span class="setting-desc" id="ads-break-hours-desc">
-              The break runs at its minutes from the start of From hour to the start of Until hour.
+              Until hour is excluded.
             </span>
-            <fieldset id="ads-break-days" aria-describedby="ads-break-days-desc">
+            <fieldset id="ads-break-days">
               <legend>Days</legend>
-              <p class="setting-desc" id="ads-break-days-desc">Leave every day unchecked to run every day.</p>
+              <p class="setting-desc" id="ads-break-days-desc">No days selected means every day.</p>
               <div class="settings-check"><input type="checkbox" id="ads-break-day-0" value="0"><label for="ads-break-day-0">Monday</label></div>
               <div class="settings-check"><input type="checkbox" id="ads-break-day-1" value="1"><label for="ads-break-day-1">Tuesday</label></div>
               <div class="settings-check"><input type="checkbox" id="ads-break-day-2" value="2"><label for="ads-break-day-2">Wednesday</label></div>
@@ -3403,14 +3399,14 @@
             </fieldset>
             <div class="settings-row">
               <label for="ads-break-start">First day</label>
-              <input type="date" id="ads-break-start" aria-describedby="ads-break-dates-desc">
+              <input type="date" id="ads-break-start">
             </div>
             <div class="settings-row">
               <label for="ads-break-end">Last day</label>
-              <input type="date" id="ads-break-end" aria-describedby="ads-break-dates-desc">
+              <input type="date" id="ads-break-end">
             </div>
             <span class="setting-desc" id="ads-break-dates-desc">
-              Optional. The break runs by itself only from its first day to its last day, both included.
+              Optional; applies to scheduled runs. Both days included.
             </span>
             <div class="settings-row">
               <label for="ads-break-spots">Spots in the break</label>
@@ -3418,9 +3414,9 @@
             </div>
             <div class="settings-row">
               <label for="ads-break-seconds">Longest break in seconds</label>
-              <input type="number" id="ads-break-seconds" min="0" max="900" step="1" aria-describedby="ads-break-seconds-desc">
+              <input type="number" id="ads-break-seconds" min="0" max="900" step="1">
             </div>
-            <span class="setting-desc" id="ads-break-seconds-desc">0 is no limit. Otherwise from 10 to 900 seconds.</span>
+            <span class="setting-desc" id="ads-break-seconds-desc">10–900 seconds. 0 means no limit.</span>
             <div class="settings-check">
               <input type="checkbox" id="ads-break-enabled">
               <label for="ads-break-enabled">Runs</label>
@@ -3445,21 +3441,21 @@
           <p id="ads-rules-error" class="field-error" hidden></p>
           <div class="settings-row">
             <label for="ads-rules-separation">Separation in minutes</label>
-            <input type="number" id="ads-rules-separation" min="0" max="1440" step="1" aria-describedby="ads-rules-separation-desc">
+            <input type="number" id="ads-rules-separation" min="0" max="1440" step="1">
           </div>
           <span class="setting-desc" id="ads-rules-separation-desc">
-            Spots from one advertiser, or with one competing category, keep at least this far apart. 0 lets them follow each other in the next break.
+            Minimum gap between spots from the same advertiser or category. 0 allows consecutive breaks.
           </span>
           <div class="settings-row">
             <label for="ads-rules-late">Late after, in minutes</label>
-            <input type="number" id="ads-rules-late" min="1" max="240" step="1" aria-describedby="ads-rules-late-desc">
+            <input type="number" id="ads-rules-late" min="1" max="240" step="1">
           </div>
-          <span class="setting-desc" id="ads-rules-late-desc">A spot that airs more than this long after its break's time is reported as aired late.</span>
+          <span class="setting-desc" id="ads-rules-late-desc">Spots aired after this delay are marked late.</span>
           <div class="settings-row">
             <label for="ads-rules-missed">Missed after, in minutes</label>
-            <input type="number" id="ads-rules-missed" min="5" max="720" step="1" aria-describedby="ads-rules-missed-desc">
+            <input type="number" id="ads-rules-missed" min="5" max="720" step="1">
           </div>
-          <span class="setting-desc" id="ads-rules-missed-desc">A break that cannot air this long after its time is dropped and reported as missed.</span>
+          <span class="setting-desc" id="ads-rules-missed-desc">Overdue breaks are dropped and reported as missed.</span>
           <button type="submit" id="ads-rules-save">Save rules</button>
         </form>
       </details>
@@ -3538,10 +3534,8 @@
     <details class="card" id="library-tools-card">
       <summary><h2>Library tools</h2></summary>
 
-      <p>Songs are available to play before similarity analysis finishes.</p>
-
       <section class="flow-form">
-        <h3 id="source-folders-heading">Music folders and Voice liner folders</h3>
+        <h3 id="source-folders-heading">Folders</h3>
         <p>Use a folder on the machine running AutoDJ.</p>
         <label for="source-folder-path">Folder path</label>
         <input id="source-folder-path" type="text" autocomplete="off">
@@ -3976,7 +3970,7 @@
               <select id="intro-rules-selection-mode"><option value="specific">Specific liners</option><option value="pattern">Match filenames</option></select>
             </div>
             <div id="intro-rules-specific-liners">
-              <p id="intro-rules-liners-empty">This station has no registered voice liners. Add a Voice liner folder under Music folders and Voice liner folders.</p>
+              <p id="intro-rules-liners-empty">This station has no registered voice liners. Add a Voice liner folder under Folders.</p>
               <div id="intro-rules-liners" class="intro-rule-liners"></div>
               <p id="intro-rules-clips-error" class="field-error" hidden></p>
               <div class="settings-row tag-field">

@@ -12,7 +12,7 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 ## Music and the library
 
-**No songs appear.** In **Library tools**, check **Music folders and Voice liner folders**. Add the path the AutoDJ computer can see, then run **Rescan**. In Docker use `/music`, not the host's path. If a network share is disconnected, mount it before rescanning.
+**No songs appear.** In **Library tools**, check **Folders**. Add the path the AutoDJ computer can see, then run **Rescan**. In Docker use `/music`, not the host's path. If a network share is disconnected, mount it before rescanning.
 
 **Songs appear but are not picked.** Check **Settings**, **Profile**, **Song picking** and the active clockwheel. A category may be empty, restricted to another time, or blocked by repeat rules. Use **Test rotation** and check its reasons. Songs can be queued while analysis runs. [Build your sound](build-your-sound.md) explains the pick modes.
 

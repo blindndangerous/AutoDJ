@@ -3905,7 +3905,8 @@ describe("station switcher and station context contracts (#70)", () => {
     const shared = document.getElementById("shared-context");
     expect(shared.hidden).toBe(true);
     expect(shared.textContent).toBe("");
-    for (const id of ["tab-library", "points-save", "stab-server"]) {
+    expect(ids(document.getElementById("tab-library"), "aria-describedby")).not.toContain("shared-context");
+    for (const id of ["points-save", "stab-server"]) {
       expect(ids(document.getElementById(id), "aria-describedby"), id).toContain("shared-context");
     }
   });

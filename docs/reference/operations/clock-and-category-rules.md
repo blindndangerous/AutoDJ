@@ -184,7 +184,7 @@ incomplete conditions are shown in the form; automatic updates are not announced
 
 **Dayparting.** Under **When the songs may play**, a category can allow its songs only on chosen
 days, only between two times (**Allowed from** and **Allowed until**), or both, such as Friday and
-Saturday from 22:00 until 02:00. Leave every day unchecked for every day and both times empty for
+Saturday from 22:00 until 02:00. No days selected means every day; both times empty means
 all day. The times are wall-clock times in the station time zone (`station.timezone in the station definition`);
 the start time is included and the end time is not. A window that crosses midnight belongs to the
 day it starts, so Friday 22:00 until 02:00 still allows the songs at 01:00 on Saturday. On the

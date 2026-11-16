@@ -514,6 +514,7 @@ These values are saved for the selected station or browser rather than in the co
 - **Add subfolders** for a registered music folder: on or off; default on. Includes nested folders in import. **Perform advanced analysis**: on or off; default on. Runs sound matching analysis for music in that folder.
 - **Find beats and song structure** in **Library tools**: on or off; default on. Finds beat grids and song sections during basic analysis.
 - **Longest song, in minutes** under **Advanced analysis length** in **Library tools**: 0 or a positive number; default 15. Longer songs get basic analysis only; 0 runs advanced analysis on every length.
+- **Similarity analysis maximum song length (minutes)** in **Settings**, **Global**, **Server**: 0 to 600; default 15. Limits similarity analysis length; 0 means no limit, and longer tracks still get audio analysis when selected.
 - **Fade detection threshold (dB)** under **Automatic Segue detection** in **Settings**, **Global**, **Server**: 1–30 dB; default 10. Sets the relative drop for new music Segue suggestions. Saved cues stay unchanged. See [cue rescans and fade detection](guides/operations/library.md#rescan-cue-points-in-track-info).
 - **Display name** in **Settings**, **Station**, **Broadcasting**: printable name up to 80 characters; default blank. Shows the DJ name to listeners and in History while live.
 - **Time format** in **Settings**, **Global**, **Server**: 24 hour or 12 hour; default 24 hour. Changes time display for every station.
