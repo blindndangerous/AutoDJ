@@ -7,7 +7,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from autodj._bridge import PlayerBridge
-from autodj.config import station_config
+from autodj.config import StationSpec, station_config
+from autodj.station_store import StationStore
+from autodj.stations import ExtraStation, StationPaths
 from tests._server import create_app
 from tests.integration._helpers import _make_player_mock, patch_station_settings
 from tests.unit.test_library import make_entry
@@ -83,6 +85,74 @@ def test_create_and_rename_library_preserve_identity(libraries):
     assert (
         client.post("/api/libraries", json={"id": "../outside", "name": "Bad"}).status_code == 400
     )
+
+
+def test_create_station_copies_clock_from_its_bound_library(libraries):
+    """A cloned station takes its active clock from the source's catalog owner."""
+    source_cfg = station_config(libraries.root, libraries.root)
+    source_cfg.station.library_id = "other"
+    source_cfg.recording.folder = libraries.root.recording.folder / "nightowl"
+    source_paths = StationPaths.for_station(source_cfg, "nightowl")
+    source_paths.state_dir.mkdir(parents=True)
+    source_paths.definition.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "station": {
+                    "station": asdict(source_cfg.station),
+                    "stream": {"station_name": "Night Owl"},
+                    "recording": {"folder": str(source_cfg.recording.folder)},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    libraries.root.stations = (
+        StationSpec(slug="nightowl", autostart=False, cfg=source_cfg, defined_in="web"),
+    )
+    source_extra = ExtraStation(
+        slug="nightowl",
+        name="Night Owl",
+        autostart=False,
+        paths=source_paths,
+        preset="included",
+        build=lambda _registry: None,
+        defined_in="web",
+    )
+    player = _make_player_mock()
+    player._cfg = libraries.root
+    main = libraries.get("main").library
+    other = libraries.get("other").library
+    assert main.attached_ledger("nightowl") is None
+    source_ledger = other.station_ledger("nightowl")
+    source_ledger.select_clock("Other clock", cursor=2)
+    source_ledger.remember_setting("clock", {"name": "Other clock", "cursor": 7})
+    bridge = PlayerBridge(player=player, sim=libraries.get("main").sim, library=main)
+    client = TestClient(create_app(bridge, extra_stations=(source_extra,), libraries=libraries))
+
+    response = client.post(
+        "/api/stations",
+        json={
+            "slug": "newstation",
+            "name": "New Station",
+            "source": "nightowl",
+            "copy_clockwheels": True,
+        },
+        headers={"Origin": "http://testserver"},
+    )
+
+    assert response.status_code == 201, response.text
+    store = StationStore(
+        StationPaths.for_station(libraries.root, "newstation").state_dir / "station.db",
+        "newstation",
+    )
+    try:
+        assert store.get_setting("clock") == {"name": "Other clock", "cursor": 7}
+    finally:
+        store.close()
+    assert libraries.root.stations[-1].cfg.station.library_id == "other"
+    assert main.attached_ledger("nightowl") is None
+    assert main.attached_ledger("newstation") is None
 
 
 @pytest.mark.parametrize("library_id", [[], {}, None, 3, "../outside", "missing"])

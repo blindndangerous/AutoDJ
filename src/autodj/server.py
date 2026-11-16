@@ -2360,10 +2360,24 @@ def create_app(
             except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             clock = None
+            destination_library = library
             if body.copy_clockwheels:
                 assert body.source is not None
+                source_station = stations.get(body.source)
+                if libraries is None:
+                    source_library = library
+                elif isinstance(source_station, StoppedStation):
+                    source_cfg = stations.configuration(body.source)
+                    source_library = libraries.get(source_cfg.station.library_id).library
+                else:
+                    source_library = source_station.bridge.library
+                destination_library = (
+                    library
+                    if libraries is None
+                    else libraries.get(spec.cfg.station.library_id).library
+                )
                 clock = await asyncio.to_thread(
-                    lambda: library.station_ledger(body.source).get_setting("clock")
+                    lambda: source_library.station_ledger(body.source).get_setting("clock")
                 )
             try:
                 _, destination, copied = await asyncio.to_thread(
@@ -2387,7 +2401,7 @@ def create_app(
                         paths = StationPaths.for_station(root, body.slug)
                         store = StationStore(paths.state_dir / "station.db", body.slug)
                         try:
-                            migrate_legacy(library.catalog, store)
+                            migrate_legacy(destination_library.catalog, store)
                             store.set_setting("clock", clock)
                         finally:
                             store.close()

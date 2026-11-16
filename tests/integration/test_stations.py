@@ -256,6 +256,7 @@ def _rig(
         return True
 
     library: Any = SimpleNamespace(
+        cfg=player._cfg,
         start_scan=lambda: None,
         tick=lambda: None,
         stop_scan=stop_scan,

@@ -734,6 +734,7 @@ def test_stopped_station_time_and_output_settings_round_trip(rig: Any) -> None:
     assert output_response.status_code == 200
     station_values = output_response.json()["settings"]["values"]["station"]
     assert station_values == {
+        "library_id": "main",
         "liner_upload_max_mib": 12,
         "log_label": "",
         "output": "stream",
