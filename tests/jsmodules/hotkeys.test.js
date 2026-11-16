@@ -627,17 +627,54 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
   }
   afterEach(() => { groups.length = 0; vi.unstubAllGlobals(); });
 
-  it("turns every page shortcut off and back on, and saves the choice", async () => {
+  // ADR-0017-06
+  it("updates key hints and stable names when the dialog button changes the saved preference", async () => {
+    document.body.innerHTML = `
+      <button id="hotkey-shortcuts-toggle" type="button">Disable keyboard shortcuts</button>
+      <p id="hotkey-shortcuts-error" role="status" aria-live="polite" hidden></p>
+      <button id="play" data-shortcut="Space / k" aria-label="Play or Pause">Play or Pause</button>
+      <button id="shuffle" data-shortcut="s">Shuffle</button>`;
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+    vi.resetModules();
+    const hotkeys = await import("../../src/autodj/static/modules/hotkeys.js");
+    const toggle = document.querySelector("#hotkey-shortcuts-toggle");
+    const play = document.querySelector("#play");
+    const shuffle = document.querySelector("#shuffle");
+    hotkeys.installHotkeys({ isEnabled: () => false });
+    expect(toggle.textContent).toBe("Disable keyboard shortcuts");
+    expect(play.getAttribute("aria-label")).toBe("Play or Pause (Space / k)");
+    expect(shuffle.dataset.shortcutVisible).toBe("s");
+    const writes = vi.spyOn(play, "setAttribute");
+    hotkeys.updateShortcutHints();
+    expect(writes).not.toHaveBeenCalled();
+
+    toggle.click();
+    expect(storage.setItem).toHaveBeenLastCalledWith(STORAGE_KEY, "off");
+    expect(toggle.textContent).toBe("Enable keyboard shortcuts");
+    expect(play.getAttribute("aria-label")).toBe("Play or Pause");
+    expect(shuffle.hasAttribute("data-shortcut-visible")).toBe(false);
+    expect(document.querySelector("#hotkey-shortcuts-error").hidden).toBe(true);
+
+    toggle.click();
+    expect(storage.setItem).toHaveBeenLastCalledWith(STORAGE_KEY, "on");
+    expect(toggle.textContent).toBe("Disable keyboard shortcuts");
+    expect(play.getAttribute("aria-label")).toBe("Play or Pause (Space / k)");
+    expect(shuffle.dataset.shortcutVisible).toBe("s");
+  });
+
+  it("turns every page shortcut off and back on from the dialog button", async () => {
     document.body.innerHTML = `
       <section id="panel-now"></section>
-      <input type="checkbox" id="toggle" checked>
+      <button id="hotkey-shortcuts-toggle" type="button"></button>
+      <p id="hotkey-shortcuts-error" role="status" aria-live="polite" hidden></p>
       <div id="toggle-plain" tabindex="0">Plain</div>`;
     const storage = memoryStorage();
     vi.stubGlobal("localStorage", storage);
     vi.resetModules();
     const hotkeys = await import("../../src/autodj/static/modules/hotkeys.js");
     const click = vi.fn();
-    const toggle = document.querySelector("#toggle");
+    const toggle = document.querySelector("#hotkey-shortcuts-toggle");
     const plain = document.querySelector("#toggle-plain");
     const press = (key) => {
       keyEvent(plain, key);
@@ -645,15 +682,12 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
     };
     const jumpLandmark = vi.fn();
     const getUpcomingLandmark = vi.fn(async () => "");
-    hotkeys.installHotkeys({ togglePlay: click, shortcutToggle: toggle, jumpLandmark, getUpcomingLandmark });
-    expect(toggle.checked).toBe(true);
+    hotkeys.installHotkeys({ togglePlay: click, jumpLandmark, getUpcomingLandmark });
+    expect(toggle.textContent).toBe("Disable keyboard shortcuts");
 
-    toggle.checked = false;
-    toggle.dispatchEvent(new Event("change"));
-    expect(storage.setItem).not.toHaveBeenCalled();
-    expect(hotkeys.shortcutsEnabled()).toBe(true);
-    groups.find((group) => group.controls[0] === toggle).commit({ enabled: false });
+    toggle.click();
     expect(storage.setItem).toHaveBeenLastCalledWith(STORAGE_KEY, "off");
+    expect(hotkeys.shortcutsEnabled()).toBe(false);
     press("k");
     expect(click).not.toHaveBeenCalled();
     // The landmark keys (#60) are single-key shortcuts too.
@@ -664,14 +698,73 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
     expect(jumpLandmark).not.toHaveBeenCalled();
     expect(getUpcomingLandmark).not.toHaveBeenCalled();
 
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event("change"));
-    groups.find((group) => group.controls[0] === toggle).commit({ enabled: true });
+    toggle.click();
     expect(storage.setItem).toHaveBeenLastCalledWith(STORAGE_KEY, "on");
+    expect(hotkeys.shortcutsEnabled()).toBe(true);
     press("k");
     expect(click).toHaveBeenCalledOnce();
     press("]");
     expect(jumpLandmark).toHaveBeenCalledWith(1);
+  });
+
+  // ADR-0017-06
+  it("keeps the current label and preference when browser storage rejects the activation", async () => {
+    document.body.innerHTML = `
+      <button id="hotkey-shortcuts-toggle" type="button"></button>
+      <p id="hotkey-shortcuts-error" role="status" aria-live="polite" hidden></p>
+      <button id="play" data-shortcut="k" aria-label="Play">Play</button>`;
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => { throw new Error("blocked"); },
+    });
+    vi.resetModules();
+    const hotkeys = await import("../../src/autodj/static/modules/hotkeys.js");
+    const toggle = document.querySelector("#hotkey-shortcuts-toggle");
+    const play = document.querySelector("#play");
+    const error = document.querySelector("#hotkey-shortcuts-error");
+    hotkeys.installHotkeys({ isEnabled: () => false });
+    expect(toggle.textContent).toBe("Disable keyboard shortcuts");
+    expect(play.getAttribute("aria-label")).toBe("Play (k)");
+
+    toggle.focus();
+    toggle.click();
+    expect(document.activeElement).toBe(toggle);
+    expect(hotkeys.shortcutsEnabled()).toBe(true);
+    expect(toggle.textContent).toBe("Disable keyboard shortcuts");
+    expect(play.getAttribute("aria-label")).toBe("Play (k)");
+    expect(error.hidden).toBe(false);
+    await vi.waitFor(() => expect(error.textContent).toBe("Could not save keyboard shortcuts: blocked"));
+  });
+
+  it("starts with the saved choice and defaults on when storage throws", async () => {
+    document.body.innerHTML = `
+      <button id="hotkey-shortcuts-toggle" type="button"></button>
+      <p id="hotkey-shortcuts-error" role="status" aria-live="polite" hidden></p>`;
+    vi.stubGlobal("localStorage", memoryStorage({ [STORAGE_KEY]: "off" }));
+    vi.resetModules();
+    const saved = await import("../../src/autodj/static/modules/hotkeys.js");
+    saved.installHotkeys({ isEnabled: () => false });
+    expect(document.querySelector("#hotkey-shortcuts-toggle").textContent).toBe("Enable keyboard shortcuts");
+
+    // A new page instance must have a new control as well as a new module.
+    document.body.innerHTML = `
+      <button id="hotkey-shortcuts-toggle" type="button"></button>
+      <p id="hotkey-shortcuts-error" role="status" aria-live="polite" hidden></p>`;
+    vi.stubGlobal("localStorage", {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("blocked"); },
+    });
+    vi.resetModules();
+    const blocked = await import("../../src/autodj/static/modules/hotkeys.js");
+    blocked.installHotkeys({ isEnabled: () => false });
+    const toggle = document.querySelector("#hotkey-shortcuts-toggle");
+    expect(toggle.textContent).toBe("Disable keyboard shortcuts");
+    toggle.click();
+    expect(blocked.shortcutsEnabled()).toBe(true);
+    expect(toggle.textContent).toBe("Disable keyboard shortcuts");
+    const error = document.querySelector("#hotkey-shortcuts-error");
+    expect(error.hidden).toBe(false);
+    await vi.waitFor(() => expect(error.textContent).toBe("Could not save keyboard shortcuts: blocked"));
   });
 
   it("keeps \"Bracket keys seek the song on air\" off by default, and saves the choice (#60)", async () => {
@@ -696,6 +789,10 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
     const saved = await import("../../src/autodj/static/modules/hotkeys.js");
     expect(saved.bracketSeekEnabled()).toBe(true);
 
+    // A new page instance must have a new control as well as a new module.
+    document.body.innerHTML = `
+      <button id="hotkey-shortcuts-toggle" type="button"></button>
+      <p id="hotkey-shortcuts-error" role="status" aria-live="polite" hidden></p>`;
     vi.stubGlobal("localStorage", {
       getItem: () => { throw new Error("blocked"); },
       setItem: () => { throw new Error("blocked"); },
@@ -714,32 +811,7 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
     expect(blocked.bracketSeekEnabled()).toBe(false);
   });
 
-  it("starts with the saved choice and defaults on when storage throws", async () => {
-    vi.stubGlobal("localStorage", memoryStorage({ [STORAGE_KEY]: "off" }));
-    vi.resetModules();
-    const saved = await import("../../src/autodj/static/modules/hotkeys.js");
-    const offToggle = document.createElement("input");
-    offToggle.type = "checkbox";
-    saved.installHotkeys({ shortcutToggle: offToggle });
-    expect(offToggle.checked).toBe(false);
 
-    vi.stubGlobal("localStorage", {
-      getItem: () => { throw new Error("blocked"); },
-      setItem: () => { throw new Error("blocked"); },
-    });
-    vi.resetModules();
-    const blocked = await import("../../src/autodj/static/modules/hotkeys.js");
-    const onToggle = document.createElement("input");
-    onToggle.type = "checkbox";
-    blocked.installHotkeys({ shortcutToggle: onToggle });
-    expect(onToggle.checked).toBe(true);
-    onToggle.checked = false;
-    onToggle.dispatchEvent(new Event("change"));
-    expect(blocked.shortcutsEnabled()).toBe(true);
-    expect(() => groups.find((group) => group.controls[0] === onToggle).commit({ enabled: false }))
-      .toThrow("blocked");
-    expect(blocked.shortcutsEnabled()).toBe(true);
-  });
 });
 
 describe("landmark keys (#60)", () => {

@@ -1,4 +1,5 @@
 import { failureText } from "./api-client.js";
+import { announceStatus, clearAnnouncedStatus } from "./live-region.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 // Hotkeys module — global keydown listener wiring.
 //
@@ -166,6 +167,7 @@ export function toggleShortcutsModal() {
   const modal = document.getElementById("hotkey-help-modal");
   if (!modal) return false;
   _wireShortcutsModal(modal);
+  updateShortcutHints();
   if (modal.open) {
     _closeShortcuts(modal);
   } else {
@@ -194,6 +196,28 @@ export function shortcutsEnabled() {
   return _shortcutsOn;
 }
 
+const shortcutNames = new WeakMap();
+
+export function updateShortcutHints() {
+  const enabled = shortcutsEnabled();
+  for (const button of document.querySelectorAll("button[data-shortcut]")) {
+    const key = enabled ? button.dataset.shortcut : "";
+    if (key) {
+      if (button.dataset.shortcutVisible !== key) button.dataset.shortcutVisible = key;
+    } else if (button.hasAttribute("data-shortcut-visible")) {
+      button.removeAttribute("data-shortcut-visible");
+    }
+    if (button.hasAttribute("aria-label")) {
+      if (!shortcutNames.has(button)) shortcutNames.set(button, button.getAttribute("aria-label"));
+      const name = shortcutNames.get(button) + (key ? ` (${key})` : "");
+      if (button.getAttribute("aria-label") !== name) button.setAttribute("aria-label", name);
+    }
+  }
+  const toggle = document.getElementById("hotkey-shortcuts-toggle");
+  const label = enabled ? "Disable keyboard shortcuts" : "Enable keyboard shortcuts";
+  if (toggle && toggle.textContent !== label) toggle.textContent = label;
+}
+
 function writePreference(key, value) {
   const storage = defaultStorage();
   if (!storage) throw new Error("Browser storage is unavailable.");
@@ -203,15 +227,33 @@ function writePreference(key, value) {
 function setShortcutsEnabled(on) {
   writePreference(SHORTCUTS_STORAGE_KEY, on ? "on" : "off");
   _shortcutsOn = Boolean(on);
+  updateShortcutHints();
 }
 
-function installShortcutToggle(checkbox) {
-  if (!checkbox) return;
-  checkbox.checked = shortcutsEnabled();
-  registerSettingsGroup({ panel: checkbox.closest('[id^="spanel-"]'), controls: [checkbox],
-    read: () => ({ enabled: checkbox.checked }), write: (value) => { checkbox.checked = value.enabled; },
-    persisted: () => ({ enabled: readStorage(defaultStorage(), SHORTCUTS_STORAGE_KEY) !== "off" }),
-    commit: (value) => setShortcutsEnabled(value.enabled),
+function installShortcutControl() {
+  const button = document.getElementById("hotkey-shortcuts-toggle");
+  if (!button || button.dataset.shortcutToggleInstalled) return;
+  button.dataset.shortcutToggleInstalled = "true";
+  button.addEventListener("click", () => {
+    const error = document.getElementById("hotkey-shortcuts-error");
+    if (error) {
+      clearAnnouncedStatus(error);
+      error.hidden = true;
+    }
+    try {
+      setShortcutsEnabled(!shortcutsEnabled());
+    } catch (errorValue) {
+      // Keep the previous in-memory preference, hints and button label when
+      // the browser refuses the write; tell the user in the open dialog.
+      updateShortcutHints();
+      const message = failureText("save keyboard shortcuts", errorValue, "Browser storage is unavailable.");
+      if (error) {
+        error.hidden = false;
+        announceStatus(error, message, { force: true, mirror: false, tone: "error" });
+      } else {
+        srSpeak(message);
+      }
+    }
   });
 }
 
@@ -250,7 +292,6 @@ export function installHotkeys({
   // Shift+H: says how the hour lands, from the hour preview (#126).
   speakHour = null,
   isEnabled = () => true,
-  shortcutToggle = null,
   // Stations (#70): focus the switcher (false when there is none), the
   // sentence Shift+C says, and the "Night Owl Radio: " the status keys
   // start with while there are several stations.
@@ -267,7 +308,8 @@ export function installHotkeys({
   // Settings, Keyboard: "Bracket keys seek the song on air".
   bracketSeekToggle = null,
 }) {
-  installShortcutToggle(shortcutToggle);
+  updateShortcutHints();
+  installShortcutControl();
   installBracketSeekToggle(bracketSeekToggle);
   const active = () => isEnabled() && shortcutsEnabled();
   // The latch only has to stop a held key from firing again before it

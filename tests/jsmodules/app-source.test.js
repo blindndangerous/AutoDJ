@@ -217,6 +217,7 @@ async function setupApp({
     bracketSeekEnabled: vi.fn(() => false),
     installHotkeys: vi.fn(),
     toggleShortcutsModal: vi.fn(),
+    updateShortcutHints: vi.fn(),
   }));
   vi.doMock(moduleMocks[3], () => ({
     installMediaActionHandlers: vi.fn(),
@@ -3311,6 +3312,8 @@ describe("stream mode", () => {
       onRequest: () => lyricsFor("a.mp3"),
     });
     const options = await hotkeyOptions();
+    expect(document.getElementById("btn-listen").dataset.shortcut).toBe("Space / k");
+    expect(document.getElementById("btn-pause").dataset.shortcut).toBe("");
     const listenClick = vi.spyOn(document.getElementById("btn-listen"), "click")
       .mockImplementation(() => {});
     const pauseClick = vi.spyOn(document.getElementById("btn-pause"), "click");
@@ -3324,6 +3327,8 @@ describe("stream mode", () => {
     await setupApp({ initialState: { current_track: { path: "a.mp3", title: "A" } },
       onRequest: () => jsonResponse({ paused: true }) });
     const options = await hotkeyOptions();
+    expect(document.getElementById("btn-pause").dataset.shortcut).toBe("Space / k");
+    expect(document.getElementById("btn-listen").dataset.shortcut).toBe("");
     const pauseClick = vi.spyOn(document.getElementById("btn-pause"), "click")
       .mockImplementation(() => {});
     options.togglePlay();

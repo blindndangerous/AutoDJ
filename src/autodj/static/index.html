@@ -67,7 +67,7 @@
        is chosen only by pressing its button.  See modules/stations.js
        for the keys. -->
   <div id="station-switcher" class="station-switcher" hidden>
-    <button type="button" id="station-button" aria-expanded="false"
+    <button type="button" id="station-button" data-shortcut="c" aria-expanded="false"
             aria-controls="station-list"><span>Station:</span> <span class="station-switcher-name">AutoDJ</span><span class="station-switcher-caret" aria-hidden="true">▾</span></button>
     <ul id="station-list" hidden></ul>
   </div>
@@ -218,7 +218,7 @@
            the same cues twice.  #cue-details is the one browsable copy. -->
       <p id="cue-summary" class="visually-hidden" aria-hidden="true">No cue points</p>
       <p id="cue-details" class="visually-hidden">No cue points</p>
-      <button type="button" id="edit-current-points">Track info</button>
+      <button type="button" id="edit-current-points" data-shortcut="t">Track info</button>
     </div>
   </details>
 
@@ -234,7 +234,7 @@
         <!-- Stream mode only.  Fixed name plus aria-pressed, like Mute:
              it plays the station in this browser, while Play / Pause
              pauses the station for every listener. -->
-        <button type="button" id="btn-listen" aria-pressed="false" aria-describedby="listen-station" hidden><span aria-hidden="true">🔊</span> Listen here</button>
+        <button type="button" id="btn-listen" data-shortcut="" aria-pressed="false" aria-describedby="listen-station" hidden><span aria-hidden="true">🔊</span> Listen here</button>
         <!-- Fix 2: emoji wrapped in aria-hidden so screen readers don't double-announce -->
         <!-- Play / Pause keeps one name, "Play or Pause"; only the hidden
              glyph shows the state.  A label that changed with the state was
@@ -244,11 +244,11 @@
              name plus aria-pressed. -->
         <!-- No title attributes on Play, Skip and Mute: NVDA read each one
              as a description that only repeated the name. -->
-        <button id="btn-pause" aria-label="Play or Pause" disabled><span aria-hidden="true">▶ Play or Pause</span></button>
-        <button id="btn-skip">
+        <button id="btn-pause" data-shortcut="Space / k" aria-label="Play or Pause" disabled><span aria-hidden="true">▶ Play or Pause</span></button>
+        <button id="btn-skip" data-shortcut="n">
           <span aria-hidden="true">⏭</span> Skip
         </button>
-        <button id="btn-shuffle"
+        <button id="btn-shuffle" data-shortcut="s"
                 title="Pick a fresh random track from the library (reseed the session)">
           <span aria-hidden="true">🔀</span> Shuffle
         </button>
@@ -294,7 +294,7 @@
              aria-valuetext="100%">
       <span id="vol-pct" aria-hidden="true">100%</span>
       <!-- Fix 2: emoji wrapped in aria-hidden -->
-      <button id="btn-mute"
+      <button id="btn-mute" data-shortcut="m"
               aria-pressed="false">
         <span aria-hidden="true">🔊</span> Mute
       </button>
@@ -2968,10 +2968,6 @@
     <fieldset>
       <legend>Keyboard</legend>
       <div class="settings-check">
-        <input type="checkbox" id="hotkeys-enabled" checked>
-        <label for="hotkeys-enabled">Enable keyboard shortcuts</label>
-      </div>
-      <div class="settings-check">
         <input type="checkbox" id="hotkeys-bracket-seek">
         <label for="hotkeys-bracket-seek">Bracket keys seek the song on air</label>
       </div>
@@ -4275,7 +4271,7 @@
 <dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
   <h1 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h1>
   <p>Space and the Up and Down Arrow keys work on the Now Playing tab only, because on other tabs they scroll the page. Every other shortcut works from any tab.</p>
-  <p>You can toggle keyboard shortcuts under Settings.</p>
+  <p>Use the button below to turn shortcuts on or off.</p>
   <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
     <dt><kbd>Space</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>k</kbd></dt><dd>Play or pause. In stream mode, start or stop listening on this page.</dd>
     <dt><kbd>n</kbd></dt><dd>Skip to next track</dd>
@@ -4312,6 +4308,8 @@
     NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first, or press NVDA+F2 and then the shortcut to pass that one key through.
   </p>
   <div style="margin-top:1rem;text-align:right">
+    <p id="hotkey-shortcuts-error" class="field-error" role="status" aria-live="polite" aria-atomic="true" hidden></p>
+    <button id="hotkey-shortcuts-toggle" type="button">Disable keyboard shortcuts</button>
     <button id="btn-shortcuts-close" type="button">Close</button>
   </div>
 </dialog>
@@ -4337,9 +4335,7 @@
 -->
 <footer id="page-footer">
   <p id="footer-links">
-    <button type="button" id="btn-shortcuts"
-            title="View keyboard shortcuts (or press ?)"
-            aria-description="View keyboard shortcuts, or press the question mark key">
+    <button type="button" id="btn-shortcuts" data-shortcut="?">
       <span aria-hidden="true">⌨</span> Keyboard shortcuts
     </button>
     <a id="changelog-link" href="https://github.com/blindndangerous/AutoDJ/blob/master/CHANGELOG.md"

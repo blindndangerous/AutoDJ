@@ -606,6 +606,12 @@ function setButtonContent(button, html) {
 // The visible words are the name itself, so a speech-input user who says
 // what they see ("click Play or Pause") reaches it (WCAG 2.5.3).
 function renderPlayPause(playing) {
+  const listen = _lastStreamMode && !localOwner.owned;
+  const pauseKey = listen ? "" : "Space / k";
+  const listenKey = listen ? "Space / k" : "";
+  if (btnPause.dataset.shortcut !== pauseKey) btnPause.dataset.shortcut = pauseKey;
+  if (btnListen.dataset.shortcut !== listenKey) btnListen.dataset.shortcut = listenKey;
+  updateShortcutHints();
   setButtonContent(btnPause,
     `<span aria-hidden="true">${playing ? "\u23F8" : "\u25B6"} Play or Pause</span>`);
 }
@@ -2751,6 +2757,7 @@ import {
   bracketSeekEnabled,
   installHotkeys,
   toggleShortcutsModal,
+  updateShortcutHints,
 } from "./modules/hotkeys.js";
 import { installLandmarks } from "./modules/landmarks.js";
 
@@ -2804,7 +2811,6 @@ installHotkeys({
   jumpLandmark: (direction) => landmarkControls.jump(direction),
   getUpcomingLandmark: () => landmarkControls.upcoming(),
   isEnabled: authenticatedInteractionEnabled,
-  shortcutToggle: document.getElementById("hotkeys-enabled"),
   bracketSeekToggle: document.getElementById("hotkeys-bracket-seek"),
   focusStationSwitcher: () => {
     if (!severalStations()) return false;

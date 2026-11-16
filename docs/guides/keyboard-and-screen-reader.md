@@ -1,6 +1,11 @@
 # Use the keyboard and a screen reader
 
-The control page has named tabs, headings, lists, buttons, and status messages. Press the **Keyboard shortcuts** button at the bottom of the page, or press `?`, to open the list in a dialog. **Settings**, **Global**, **Browser preferences**, **Enable keyboard shortcuts** turns single-key shortcuts off for this browser. Text fields and dropdowns keep their typing keys. Open dialogs stop playback shortcuts.
+The control page has named tabs, headings, lists, buttons, and status messages. Press the **Keyboard shortcuts** button at the bottom of the page, or press `?`, to open the list in a dialog. Its **Enable keyboard shortcuts** or **Disable keyboard shortcuts** button changes single-key shortcuts for this browser. Text fields and dropdowns keep their typing keys. Open dialogs stop playback shortcuts.
+
+Buttons show their single-key shortcuts while that preference is enabled. The
+**Keyboard shortcuts** button still opens the list when shortcuts are off, and
+the dialog shows the current setting. Space and `k` appear beside **Listen here**
+when they control listening rather than local playback.
 
 ## Move around the page
 
@@ -75,6 +80,6 @@ The **Carts** wall has its own keys while it has focus: number keys 1 through 9 
 
 **Settings**, **Global**, **Browser preferences**, **Announce track changes** offers **On every tab**, **Only on Now Playing**, and **Off**. The default is **Only on Now Playing**. Choose **Off** if song changes interrupt other work; use the status shortcuts when you want an update. Short success and error messages are spoken once through the page area that owns them. Their visible message can be dismissed without moving focus away from your work.
 
-**Enable keyboard shortcuts** and announcement choices are stored in this browser. **Bracket keys seek the song on air** is also per browser. Buttons, tab strips, sliders, and dialogs still have their normal keyboard controls when shortcuts are off.
+Shortcut enablement and announcement preferences are stored in this browser. **Bracket keys seek the song on air** is also per browser. Buttons, tab strips, sliders, and dialogs still have their normal keyboard controls when shortcuts are off.
 
 AutoDJ and this page were developed with AI assistance.
