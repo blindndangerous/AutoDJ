@@ -59,6 +59,103 @@ def test_schedule_is_backed_up_and_restored(tmp_path: Path) -> None:
     assert json.loads(schedule.read_text(encoding="utf-8"))["schema_version"] == 1
 
 
+def test_station_archive_marker_and_retained_audio_round_trip(tmp_path: Path) -> None:
+    """ADR-0005-07 and ADR-0010-10: restore keeps archive state and retained audio."""
+    cfg = _config(tmp_path)
+    default = cfg.index.stations_dir / "default"
+    default.mkdir(parents=True, exist_ok=True)
+    marker = default / "lifecycle.json"
+    marker.write_text('{"version":1,"archived":true}', encoding="utf-8")
+    (cfg.index.stations_dir / "default" / "announcements").mkdir()
+    (cfg.index.stations_dir / "default" / "announcements" / "welcome.wav").write_bytes(
+        b"announcement"
+    )
+    (cfg.index.stations_dir / "default" / "time_checks_cache").mkdir()
+    (cfg.index.stations_dir / "default" / "time_checks_cache" / "hour.wav").write_bytes(
+        b"time check"
+    )
+    operation_root = cfg.index.index_dir / "retained-station-audio" / f"nightowl-{'a' * 32}"
+    operation_root.mkdir(parents=True)
+    (operation_root / "announcements").mkdir()
+    (operation_root / "announcements" / "welcome.wav").write_bytes(b"spoken")
+    (operation_root / "ads").mkdir()
+    (operation_root / "ads" / "ad.wav").write_bytes(b"spot")
+    (operation_root / "retention.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "operation": "a" * 32,
+                "station_id": "nightowl",
+                "station_name": "Night Owl",
+                "deleted_at": "2026-11-15T00:00:00+00:00",
+                "original_station_directory": str(cfg.index.stations_dir / "nightowl"),
+                "retained_paths": [
+                    f"{operation_root.name}/ads",
+                    f"{operation_root.name}/announcements",
+                ],
+                "recovery": "Restore the station files from a matching backup first.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    external = tmp_path / "recordings"
+    external.mkdir()
+    (external / "broadcast.wav").write_bytes(b"external")
+    cfg.recording.folder = external
+
+    archive = create_backup(cfg, tmp_path / "station-lifecycle.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        members = set(backup.namelist())
+        assert "index/lifecycle.json" in members
+        assert "announcements/welcome.wav" in members
+        assert "time_checks_cache/hour.wav" in members
+        assert f"retained-station-audio/{operation_root.name}/announcements/welcome.wav" in members
+        assert f"retained-station-audio/{operation_root.name}/retention.json" in members
+        assert not any("broadcast.wav" in name for name in members)
+
+    marker.unlink()
+    (cfg.index.stations_dir / "default" / "announcements" / "welcome.wav").unlink()
+    (cfg.index.stations_dir / "default" / "time_checks_cache" / "hour.wav").unlink()
+    operation_root.rename(tmp_path / "retained-saved")
+    restore_backup(cfg, archive, force=True)
+    assert json.loads(marker.read_text(encoding="utf-8"))["archived"] is True
+    assert (
+        cfg.index.stations_dir / "default" / "announcements" / "welcome.wav"
+    ).read_bytes() == b"announcement"
+    assert (
+        cfg.index.stations_dir / "default" / "time_checks_cache" / "hour.wav"
+    ).read_bytes() == b"time check"
+    assert (operation_root / "announcements" / "welcome.wav").read_bytes() == b"spoken"
+
+
+def test_backup_refuses_unknown_retained_station_audio_children(tmp_path: Path) -> None:
+    """ADR-0010-10: unknown retained folders are not silently omitted from backup."""
+    cfg = _config(tmp_path)
+    operation_root = cfg.index.index_dir / "retained-station-audio" / f"nightowl-{'b' * 32}"
+    operation_root.mkdir(parents=True)
+    (operation_root / "unknown-audio").mkdir()
+    (operation_root / "retention.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "operation": "b" * 32,
+                "station_id": "nightowl",
+                "station_name": "Night Owl",
+                "deleted_at": "2026-11-15T00:00:00+00:00",
+                "original_station_directory": str(cfg.index.stations_dir / "nightowl"),
+                "retained_paths": [f"{operation_root.name}/unknown-audio"],
+                "recovery": "Restore the station files from a matching backup first.",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BackupError, match="unknown retained station audio folder"):
+        create_backup(cfg, tmp_path / "unknown-retained.zip", force=False)
+
+    assert (operation_root / "unknown-audio").is_dir()
+
+
 @pytest.mark.parametrize("write_fails", [False, True])
 def test_snapshot_never_writes_live_dj_secrets(tmp_path, monkeypatch, write_fails):
     from autodj import backup
@@ -478,6 +575,122 @@ def test_backup_ignores_legacy_generation_files(tmp_path: Path) -> None:
     )
 
 
+def test_backup_and_restore_round_trip_all_named_libraries(tmp_path: Path) -> None:
+    from autodj.library_registry import LibraryRegistry
+
+    cfg = _config(tmp_path)
+    registry = LibraryRegistry(cfg.index.index_dir / "libraries")
+    registry.ensure_main()
+    secondary = registry.create("jazz", "Jazz", {"analysis": {"enabled": True}})
+    cfg.index.library_id = "jazz"
+    with LibraryCatalog(secondary.path / "library.db"):
+        pass
+    cues = sqlite3.connect(secondary.path / "dj_meta.db")
+    cues.execute("CREATE TABLE cues(value TEXT)")
+    cues.execute("INSERT INTO cues VALUES ('jazz cue')")
+    cues.commit()
+    cues.close()
+    (secondary.path / "related-artists.toml").write_text("jazz links", encoding="utf-8")
+
+    archive = create_backup(cfg, tmp_path / "named.zip", force=False)
+
+    with zipfile.ZipFile(archive) as backup:
+        names = set(backup.namelist())
+        assert "index/library.json" in names
+        assert "index/library.db" in names
+        assert "libraries/jazz/library.json" in names
+        assert "libraries/jazz/library.db" in names
+        assert "libraries/jazz/dj_meta.db" in names
+        assert "libraries/jazz/related-artists.toml" in names
+
+    moved = tmp_path / "saved-jazz-library"
+    secondary.path.rename(moved)
+    restore_backup(cfg, archive, force=True)
+
+    restored = registry.get("jazz")
+    assert restored.name == "Jazz"
+    assert restored.settings == {"analysis": {"enabled": True}}
+    assert restored.path == secondary.path
+    assert moved.is_dir()
+    assert (restored.path / "related-artists.toml").read_text(encoding="utf-8") == "jazz links"
+    with closing(sqlite3.connect(restored.path / "dj_meta.db")) as conn:
+        assert conn.execute("SELECT value FROM cues").fetchall() == [("jazz cue",)]
+    with closing(sqlite3.connect(restored.path / "library.db")) as conn:
+        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+def test_restore_refuses_mismatched_named_library_definition_before_changes(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    archive = _archive(
+        tmp_path / "bad-library.zip",
+        {
+            "index/library.db": (cfg.index.library_dir / "library.db").read_bytes(),
+            "libraries/jazz/library.json": (
+                b'{"schema_version":1,"id":"other","name":"Jazz","settings":{}}'
+            ),
+            "libraries/jazz/library.db": b"not reached",
+        },
+    )
+
+    with pytest.raises(BackupError, match="does not match"):
+        restore_backup(cfg, archive, force=True)
+
+    assert not (cfg.index.index_dir / "libraries" / "jazz").exists()
+    with closing(sqlite3.connect(cfg.index.library_dir / "library.db")) as conn:
+        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+def test_old_single_library_backup_restores_without_replacing_main_definition(
+    tmp_path: Path,
+) -> None:
+    from autodj.library_registry import LibraryRegistry
+
+    cfg = _config(tmp_path)
+    registry = LibraryRegistry(cfg.index.index_dir / "libraries")
+    main = registry.ensure_main()
+    catalog = _catalog(cfg)
+    catalog.close()
+    original = (main.path / "library.db").read_bytes()
+    archive = _archive(tmp_path / "old-single-library.zip", {"index/library.db": original})
+    with closing(sqlite3.connect(main.path / "library.db")) as conn:
+        conn.execute("UPDATE catalog_entries SET title='Changed'")
+        conn.commit()
+
+    restore_backup(cfg, archive, force=True)
+
+    assert registry.get("main").name == "Main"
+    with closing(sqlite3.connect(main.path / "library.db")) as conn:
+        assert conn.execute("SELECT title FROM catalog_entries").fetchall() == [("Kept",)]
+
+
+def test_restore_reserves_legacy_main_name_when_definition_is_blank(tmp_path: Path) -> None:
+    from autodj.backup import _prepare_library_restore, _roots
+
+    cfg = _config(tmp_path)
+    main = cfg.index.index_dir / "libraries" / "main"
+    main.mkdir(parents=True, exist_ok=True)
+    (main / "library.json").write_text("\n", encoding="utf-8")
+    archived_definition = {
+        "schema_version": 1,
+        "id": "other",
+        "name": "Main",
+        "settings": {},
+    }
+    archive_path = tmp_path / "legacy-name.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("libraries/other/library.json", json.dumps(archived_definition))
+
+    with (
+        zipfile.ZipFile(archive_path) as archive,
+        pytest.raises(BackupError, match="library names in the backup conflict"),
+    ):
+        _prepare_library_restore(archive, ["libraries/other/library.json"], _roots(cfg))
+
+    assert (main / "library.json").read_text(encoding="utf-8") == "\n"
+
+
 def test_backup_requires_a_current_catalog(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     (cfg.index.library_dir / "library.db").unlink()
@@ -486,6 +699,24 @@ def test_backup_requires_a_current_catalog(tmp_path: Path) -> None:
         create_backup(cfg, tmp_path / "backup.zip", force=False)
 
     assert not (tmp_path / "backup.zip").exists()
+
+
+def test_backup_does_not_write_a_legacy_main_definition(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    definition = cfg.index.index_dir / "libraries" / "main" / "library.json"
+    assert not definition.exists()
+
+    archive = create_backup(cfg, tmp_path / "legacy-main.zip", force=False)
+
+    assert not definition.exists()
+    with zipfile.ZipFile(archive) as backup:
+        archived = json.loads(backup.read("index/library.json"))
+    assert archived == {
+        "schema_version": 1,
+        "id": "main",
+        "name": "Main",
+        "settings": {},
+    }
 
 
 def test_backup_refuses_valid_sqlite_that_is_not_a_catalog(tmp_path: Path) -> None:

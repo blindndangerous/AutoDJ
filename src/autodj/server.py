@@ -52,7 +52,7 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -709,6 +709,14 @@ class StationAutostartBody(BaseModel):
     enabled: StrictBool
 
 
+class DeleteStationBody(BaseModel):
+    """Explicit destructive confirmation for one archived station."""
+
+    model_config = ConfigDict(extra="forbid")
+    confirmation: StrictStr
+    delete_voice_recordings: StrictBool = False
+
+
 class CreateStationBody(BaseModel):
     """A browser's request for a new stopped station."""
 
@@ -983,6 +991,7 @@ def create_app(
     default_station: ExtraStation,
     secure_cookie: bool = False,
     extra_stations: Sequence[ExtraStation] = (),
+    libraries: Any = None,
 ) -> FastAPI:
     """Create the server with shared library services and station factories."""
     from autodj.runtime_packages import require_runtime_packages
@@ -991,19 +1000,53 @@ def create_app(
     _lyrics_read_gate = asyncio.Semaphore(1)
     install_log_prefix()
     cfg = services.cfg
+    recovery_problem = getattr(cfg, "station_deletion_recovery_problem", None)
+    if isinstance(recovery_problem, str) and recovery_problem:
+        raise RuntimeError(
+            "Station deletion recovery is incomplete; run autodj doctor and resolve its station-deletion-recovery finding before serving."
+        )
     shared = services
     stations = StationRegistry(default_station, extra_stations)
     set_log_labels(stations.log_labels())
     station_timezone = cfg.station.timezone or system_timezone()
     station_create_lock = asyncio.Lock()
+    station_request_condition = asyncio.Condition()
+    active_station_requests: dict[str, int] = {}
+    active_api_mutations = 0
+    station_mutations_blocked = False
     stations.stop_timeout_s = _SHUTDOWN_TIMEOUT_S
     listener_auth_limiter = ListenerAuthLimiter()
 
-    async def _read_lyrics_owned(path: str) -> list[dict[str, object]]:
+    @contextlib.asynccontextmanager
+    async def station_request_barrier(
+        slug: str, *, block_mutations: bool = False
+    ) -> AsyncIterator[None]:
+        """Drain station requests and, for lifecycle changes, all API mutations."""
+        nonlocal station_mutations_blocked
+        try:
+            async with station_request_condition:
+                stations._deleting.add(slug)
+                if block_mutations:
+                    station_mutations_blocked = True
+                await station_request_condition.wait_for(
+                    lambda: (
+                        active_station_requests.get(slug, 0) == 0
+                        and (not block_mutations or active_api_mutations == 0)
+                    )
+                )
+            yield
+        finally:
+            async with station_request_condition:
+                stations._deleting.discard(slug)
+                if block_mutations:
+                    station_mutations_blocked = False
+                station_request_condition.notify_all()
+
+    async def _read_lyrics_owned(path: str, selected: LibraryServices) -> list[dict[str, object]]:
         """Run one path read at a time without cancellation leaking capacity."""
         await _lyrics_read_gate.acquire()
         try:
-            worker = asyncio.create_task(asyncio.to_thread(shared.lyrics_for, path))
+            worker = asyncio.create_task(asyncio.to_thread(selected.lyrics_for, path))
         except BaseException:
             _lyrics_read_gate.release()
             raise
@@ -1025,9 +1068,12 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         """FastAPI lifespan: start and stop the station and the shared library."""
         started = time.perf_counter()
-        library = SharedLibrary(shared.library, stations)
+        library = libraries if libraries is not None else SharedLibrary(shared.library, stations)
         await stations.start_all()
-        await library.start()
+        if libraries is not None:
+            await libraries.start(stations)
+        else:
+            await library.start()
         app.state.acme.start()
         STARTUP_COMPLETE.set()
         logger.info(
@@ -1042,7 +1088,7 @@ def create_app(
             # The scan winds down while the rest stops; the library waits for
             # it before the DJ-meta cache closes.
             library.stop_scan(_SHUTDOWN_TIMEOUT_S)
-            from autodj.jobs import get_manager
+            from autodj.jobs import shutdown_all
 
             async def stopped(name: str, worker: Any) -> bool:
                 """Shut *worker* down in a thread; whether it stopped in time (or is absent)."""
@@ -1070,7 +1116,7 @@ def create_app(
                 # button does, so a restart does not leave it beside the next server.
                 timed_shutdown_step(
                     "stopping the library job",
-                    asyncio.to_thread(get_manager().shutdown, _SHUTDOWN_TIMEOUT_S),
+                    asyncio.to_thread(shutdown_all, _SHUTDOWN_TIMEOUT_S),
                 ),
                 stopped("stopping speech", getattr(app.state, "speech", None)),
                 # A rotation test reads the library: stop it before the library closes.
@@ -1160,6 +1206,85 @@ def create_app(
     )
     app.state.listener_access = None
     app.state.stations = stations
+
+    class StationMutationMiddleware:
+        """Drain named requests and reject new writes during a station transition.
+
+        This is pure ASGI so exceptions from the outer security middleware's
+        capped request receiver retain their status instead of being converted
+        into a body-parsing error by Starlette's BaseHTTPMiddleware bridge.
+        """
+
+        def __init__(self, app: ASGIApp) -> None:
+            self.app = app
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            nonlocal active_api_mutations
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+
+            parts = [part for part in str(scope.get("path", "")).split("/") if part]
+            method = str(scope.get("method", "")).upper()
+            station_api = len(parts) >= 3 and parts[:2] == ["api", "stations"]
+            station_suffix = parts[3:] if station_api else []
+            lifecycle_request = station_api and (
+                (method == "DELETE" and not station_suffix)
+                or (method == "POST" and station_suffix in (["archive"], ["restore"]))
+            )
+            if lifecycle_request:
+                await self.app(scope, receive, send)
+                return
+            station_slug = (
+                parts[2] if len(parts) >= 4 and parts[:2] == ["api", "stations"] else None
+            )
+            mutation = (
+                parts[:1] == ["api"]
+                and method not in {"GET", "HEAD", "OPTIONS"}
+                and not (parts == ["api", "stations"] and method == "POST")
+            )
+            counted = False
+            station_counted = False
+            rejected = False
+            async with station_request_condition:
+                if station_slug in stations._deleting or (mutation and station_mutations_blocked):
+                    rejected = True
+                else:
+                    if mutation:
+                        active_api_mutations += 1
+                        counted = True
+                    if station_slug in stations._extras:
+                        active_station_requests[station_slug] = (
+                            active_station_requests.get(station_slug, 0) + 1
+                        )
+                        station_counted = True
+            if rejected:
+                response = JSONResponse(
+                    {"detail": "Station maintenance is in progress."}, status_code=409
+                )
+                await response(scope, receive, send)
+                return
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                if counted or station_counted:
+                    async with station_request_condition:
+                        if counted:
+                            active_api_mutations -= 1
+                        if station_counted and station_slug is not None:
+                            remaining = active_station_requests[station_slug] - 1
+                            if remaining:
+                                active_station_requests[station_slug] = remaining
+                            else:
+                                active_station_requests.pop(station_slug, None)
+                        station_request_condition.notify_all()
+
+    app.add_middleware(StationMutationMiddleware)
+
+    app.state.libraries = libraries
+    from autodj.libraries_api import install_libraries
+
+    install_libraries(app, libraries, stations)
     from autodj.cue_rescan import CueRescan
 
     app.state.cue_rescan = CueRescan()
@@ -1278,6 +1403,11 @@ def create_app(
         "/api/editions/{edition_id}/start": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/tags": lambda: TAG_BODY_MAX_BYTES,
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,
+        WORKER_PREFIX + "libraries/{library_id}/result": lambda: RESULT_BODY_MAX_BYTES,
+        **{
+            WORKER_PREFIX + "libraries/{library_id}/" + name: (lambda: SMALL_BODY_MAX_BYTES)
+            for name in ("claim", "failed", "heartbeat", "release")
+        },
         **{
             WORKER_PREFIX + name: (lambda: SMALL_BODY_MAX_BYTES)
             for name in ("claim", "failed", "heartbeat", "release")
@@ -1311,6 +1441,7 @@ def create_app(
         library=lambda: getattr(shared, "library", None),
         identity=lambda: analysis_identity(cfg.model.name, model_commit()),
         stations=lambda: _station_names(stations),
+        libraries=libraries,
     )
     # Compresses the page, scripts and JSON; audio, cover art and Range
     # replies pass through as is.
@@ -1965,6 +2096,204 @@ def create_app(
 
         return {"stations": stations.summaries(), "time_format": timefmt.time_format}
 
+    @app.post("/api/stations/{slug}/archive")
+    async def api_station_archive(slug: str) -> dict[str, Any]:
+        """Stop and archive a station, refusing incomplete shutdown."""
+
+        async def archive() -> dict[str, Any]:
+            async with station_create_lock:
+                if slug not in stations.slugs():
+                    raise HTTPException(status_code=404, detail="No station has that name")
+                async with station_request_barrier(slug, block_mutations=True):
+                    if _station_writes_active(app, slug):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Station writing work must finish before archiving.",
+                        )
+                    try:
+                        warnings = await stations.archive(slug)
+                    except KeyError:
+                        raise HTTPException(
+                            status_code=404, detail="No station has that name"
+                        ) from None
+                    except StationControlError as exc:
+                        raise HTTPException(status_code=409, detail=str(exc)) from exc
+                return {**stations.get(slug).summary(), "archived": True, "warnings": warnings}
+
+        task = asyncio.create_task(archive())
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                await task
+            except Exception:
+                logger.exception("Station %s archive failed after request cancellation", slug)
+            raise
+
+    @app.post("/api/stations/{slug}/restore")
+    async def api_station_restore(slug: str) -> dict[str, Any]:
+        """Make an archived station available again without starting it."""
+        async with station_create_lock:
+            try:
+                await stations.restore(slug)
+            except KeyError:
+                raise HTTPException(status_code=404, detail="No station has that name") from None
+            except StationControlError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return next(item for item in stations.summaries() if item["slug"] == slug)
+
+    @app.delete("/api/stations/{slug}")
+    async def api_station_delete(slug: str, body: DeleteStationBody) -> dict[str, Any]:
+        """Quarantine and permanently remove a fully stopped archived station."""
+        from autodj.station_deletion import (
+            StationDeletionError,
+            complete_station_deletion,
+            delete_archived_station,
+        )
+        from autodj.stations import DEFAULT_SLUG
+
+        if body.confirmation != "DELETE":
+            raise HTTPException(status_code=400, detail="Type DELETE exactly to confirm.")
+        if slug == DEFAULT_SLUG:
+            raise HTTPException(status_code=409, detail="The default station cannot be deleted.")
+        root = cfg
+        library = shared.library
+        if library is None or not hasattr(library, "catalog"):
+            raise HTTPException(status_code=503, detail="This server cannot delete a station")
+
+        async def delete() -> dict[str, Any]:
+            async with station_create_lock:
+                try:
+                    extra = stations._extras[slug]
+                except KeyError:
+                    raise HTTPException(
+                        status_code=404, detail="No station has that name"
+                    ) from None
+                async with station_request_barrier(slug, block_mutations=True):
+                    owners = (
+                        [services.library for services in libraries.all()]
+                        if libraries is not None
+                        else [library]
+                    )
+                    with contextlib.ExitStack() as reserved:
+                        for owner in owners:
+                            scan_lock = getattr(owner, "_scan_lock", None)
+                            if scan_lock is None:
+                                continue
+                            if not scan_lock.acquire(blocking=False):
+                                raise HTTPException(
+                                    status_code=409,
+                                    detail="Library scans must finish before deletion.",
+                                )
+                            reserved.callback(scan_lock.release)
+                        return await delete_drained(slug, body, extra, root, owners)
+
+        async def delete_drained(
+            slug: str,
+            body: DeleteStationBody,
+            extra: ExtraStation,
+            root: Any,
+            owners: list[Any],
+        ) -> dict[str, Any]:
+            async with stations._locks[slug]:
+                extra = stations._extras[slug]
+                if not extra.archived:
+                    raise HTTPException(
+                        status_code=409, detail="Archive the station before deleting it."
+                    )
+                if (
+                    slug in stations._running
+                    or slug in stations._stopping
+                    or slug in stations._stuck
+                ):
+                    raise HTTPException(
+                        status_code=409, detail="The station must be fully stopped before deletion."
+                    )
+                if any(getattr(owner, "_cleanup_active", False) for owner in owners):
+                    raise HTTPException(
+                        status_code=409, detail="Library cleanup must finish before deletion."
+                    )
+                if _station_writes_active(app):
+                    raise HTTPException(
+                        status_code=409, detail="Station writing work must finish before deletion."
+                    )
+                committed = False
+                try:
+                    for owner in owners:
+                        await asyncio.to_thread(owner.drop_station_ledger, slug)
+                    stations._content.pop(slug, None)
+                    station_spec = next((item for item in root.stations if item.slug == slug), None)
+                    if station_spec is None:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Station configuration is unavailable for deletion preflight.",
+                        )
+                    station_cfg = station_spec.cfg
+                    protected_roots = tuple(
+                        Path(item)
+                        for item in (
+                            station_cfg.recording.folder,
+                            station_cfg.time_checks.clips_folder,
+                            *station_cfg.time_checks.voice_packs,
+                        )
+                        if item
+                    )
+                    music_roots: list[Path] = []
+                    for owner in owners:
+                        sources = await asyncio.to_thread(owner.catalog.sources, "music")
+                        music_roots.extend(Path(source["path"]) for source in sources)
+                    result = await asyncio.to_thread(
+                        delete_archived_station,
+                        root,
+                        slug,
+                        station_name=extra.name,
+                        delete_voice_recordings=body.delete_voice_recordings,
+                        music_roots=tuple(music_roots),
+                        protected_roots=protected_roots,
+                    )
+                    committed = True
+                    stations.forget_deleted(slug)
+                    root.stations = tuple(item for item in root.stations if item.slug != slug)
+                    try:
+                        for owner in owners:
+                            await asyncio.to_thread(
+                                owner.catalog.remove_station_lifecycle_state,
+                                slug,
+                                str(extra.paths.liners),
+                            )
+                        await asyncio.to_thread(
+                            complete_station_deletion, root, Path(result["journal"])
+                        )
+                    except Exception as exc:
+                        result["cleanup_pending"] = True
+                        result["cleanup_error"] = str(exc)
+                    else:
+                        result["cleanup_pending"] = False
+                except (StationDeletionError, OSError, ValueError, StationControlError) as exc:
+                    if isinstance(exc, StationDeletionError) and exc.committed:
+                        committed = True
+                    if committed:
+                        stations.forget_deleted(slug)
+                        root.stations = tuple(item for item in root.stations if item.slug != slug)
+                        return {
+                            "slug": slug,
+                            "committed": True,
+                            "cleanup_pending": True,
+                            "detail": str(exc),
+                        }
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return result
+
+        task = asyncio.create_task(delete())
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                await task
+            except Exception:
+                logger.exception("Station %s deletion failed after request cancellation", slug)
+            raise
+
     def label_refusal(slug: str) -> str | None:
         """Why a new station may not use *slug*: another station logs as it."""
         for other, label in stations.log_labels().items():
@@ -2031,10 +2360,24 @@ def create_app(
             except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             clock = None
+            destination_library = library
             if body.copy_clockwheels:
                 assert body.source is not None
+                source_station = stations.get(body.source)
+                if libraries is None:
+                    source_library = library
+                elif isinstance(source_station, StoppedStation):
+                    source_cfg = stations.configuration(body.source)
+                    source_library = libraries.get(source_cfg.station.library_id).library
+                else:
+                    source_library = source_station.bridge.library
+                destination_library = (
+                    library
+                    if libraries is None
+                    else libraries.get(spec.cfg.station.library_id).library
+                )
                 clock = await asyncio.to_thread(
-                    lambda: library.station_ledger(body.source).get_setting("clock")
+                    lambda: source_library.station_ledger(body.source).get_setting("clock")
                 )
             try:
                 _, destination, copied = await asyncio.to_thread(
@@ -2058,7 +2401,7 @@ def create_app(
                         paths = StationPaths.for_station(root, body.slug)
                         store = StationStore(paths.state_dir / "station.db", body.slug)
                         try:
-                            migrate_legacy(library.catalog, store)
+                            migrate_legacy(destination_library.catalog, store)
                             store.set_setting("clock", clock)
                         finally:
                             store.close()
@@ -2066,7 +2409,9 @@ def create_app(
                     await asyncio.to_thread(save_clock)
                 if stations._closing:
                     raise StationControlError("The server is shutting down")
-                extra = _extra_station(root, spec, shared.sim, library, station_timezone)
+                extra = _extra_station(
+                    root, spec, shared.sim, library, station_timezone, libraries=libraries
+                )
                 # A label saved while the station was staged may have taken its ID.
                 # Saving a label holds this lock, and sees the station once it is added.
                 with stations.configuration_lock:
@@ -2147,9 +2492,11 @@ def create_app(
         return {**stations.get(slug).summary(), "warnings": warnings}
 
     @app.get("/api/search")
-    async def api_search(q: str = "", limit: int = 100) -> dict[str, list]:
+    async def api_search(request: Request, q: str = "", limit: int = 100) -> dict[str, list]:
         """Search the indexed library by title / artist / album."""
-        results = await asyncio.to_thread(shared.search, q, max(1, min(500, int(limit))))
+        results = await asyncio.to_thread(
+            _library_services(request).search, q, max(1, min(500, int(limit)))
+        )
         return {"results": results}
 
     # ------------------------------------------------------------------
@@ -2157,23 +2504,23 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.get("/api/art")
-    async def api_art(path: str) -> Response:
+    async def api_art(request: Request, path: str) -> Response:
         """Return the embedded album art for a track (304 if unchanged)."""
         # Only serve art for tracks that exist in the index — prevents
         # arbitrary file access through the path parameter.
-        entry = shared.entry_for_path(path)
+        entry = _library_services(request).entry_for_path(path)
         if entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
-        result = await asyncio.to_thread(shared.cover_art_for, entry.path)
+        result = await asyncio.to_thread(_library_services(request).cover_art_for, entry.path)
         if result is None:
             raise HTTPException(status_code=404, detail="No embedded cover art")
         data, mime = result
         return Response(content=data, media_type=mime)
 
     @app.get("/api/lyrics")
-    async def api_lyrics(path: str) -> dict[str, object]:
+    async def api_lyrics(request: Request, path: str) -> dict[str, object]:
         """Return timed lyric lines for one exact indexed track path."""
-        authorized_entry = shared.entry_for_path(path)
+        authorized_entry = _library_services(request).entry_for_path(path)
         if authorized_entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
         # Keep lookup keys opaque; read the authorized entry's filesystem path.
@@ -2181,8 +2528,8 @@ def create_app(
         read_path = getattr(authorized_entry, "path", None)
         if read_path is None:
             read_path = normalize_path(path)
-        lyrics = await _read_lyrics_owned(read_path)
-        if shared.entry_for_path(path) != authorized_entry:
+        lyrics = await _read_lyrics_owned(read_path, _library_services(request))
+        if _library_services(request).entry_for_path(path) != authorized_entry:
             raise HTTPException(status_code=409, detail="Track index changed")
         return {"path": path, "lyrics": lyrics}
 
@@ -2193,7 +2540,7 @@ def create_app(
     @app.api_route("/api/audio", methods=["GET", "HEAD"])
     async def api_audio(path: str, request: Request) -> Response:
         """Serve indexed audio with byte ranges; ALAC is transcoded to MP3."""
-        entry = shared.entry_for_path(path)
+        entry = _library_services(request).entry_for_path(path)
         if entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
         audio_path = Path(entry.path)
@@ -2286,13 +2633,30 @@ def create_app(
     # Library tools — index / enrich / prune / stats from the web UI
     # ------------------------------------------------------------------
 
-    def _catalog_library() -> Any:
-        if shared.library is None:
+    def _library_services(request: Request, station_slug: str = DEFAULT_SLUG) -> LibraryServices:
+        if libraries is None:
+            if request.query_params.get("library", "main") != "main":
+                raise HTTPException(status_code=404, detail="Library not found")
+            return shared
+        explicit = request.query_params.get("library")
+        try:
+            if explicit is not None:
+                return libraries.get(explicit)
+            slug = library_station(request.query_params.get("station", station_slug))
+            station = stations.editable(slug)
+            return LibraryServices(station.cfg, station.bridge.sim, station.bridge.library)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="Library not found") from exc
+
+    def _catalog_library(request: Request, station_slug: str = DEFAULT_SLUG) -> Any:
+        library = _library_services(request, station_slug).library
+        if library is None:
             raise HTTPException(status_code=503, detail="Folder library is not attached")
-        return shared.library
+        return library
 
     @app.get("/api/library/tracks")
     async def api_library_tracks(
+        request: Request,
         q: str = "",
         kind: Literal["music", "liner"] = "music",
         source_id: str | None = None,
@@ -2301,14 +2665,14 @@ def create_app(
         sort: Literal["title", "artist", "recently_added", "most_played"] = "title",
         station: str = DEFAULT_SLUG,
     ) -> dict:
-        library = _catalog_library()
+        library = _catalog_library(request)
         play_counts = None
         if sort == "most_played":
             station = library_station(station)
             end = datetime.now(UTC)
             start = end - timedelta(days=30)
             play_counts = await asyncio.to_thread(
-                library.station_ledger(station).store.play_counts, start, end
+                _station_ledger(library, station).store.play_counts, start, end
             )
         try:
             return await asyncio.to_thread(
@@ -2320,12 +2684,14 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/library/folders")
-    async def api_library_folders() -> dict:
-        return await asyncio.to_thread(_catalog_library().snapshot)
+    async def api_library_folders(
+        request: Request,
+    ) -> dict:
+        return await asyncio.to_thread(_catalog_library(request).snapshot)
 
     @app.post("/api/library/folders")
-    async def api_library_add_folder(body: LibraryFolderBody) -> dict:
-        library = _catalog_library()
+    async def api_library_add_folder(request: Request, body: LibraryFolderBody) -> dict:
+        library = _catalog_library(request)
         try:
             source = await asyncio.to_thread(
                 library.catalog.add_source,
@@ -2343,7 +2709,9 @@ def create_app(
     # Browse buttons: the server's folders, for typing a new library folder,
     # and the folders and audio files inside a registered one (path_browse).
     @app.get("/api/library/browse")
-    async def api_library_browse(path: Annotated[str, Query(max_length=4096)] = "") -> dict:
+    async def api_library_browse(
+        request: Request, path: Annotated[str, Query(max_length=4096)] = ""
+    ) -> dict:
         from autodj.path_browse import BrowseError, list_server_folder
 
         try:
@@ -2353,13 +2721,14 @@ def create_app(
 
     @app.get("/api/library/folders/{source_id}/browse")
     async def api_library_folder_browse(
+        request: Request,
         source_id: str,
         path: Annotated[str, Query(max_length=4096)] = "",
         files: bool = False,
     ) -> dict:
         from autodj.path_browse import BrowseError, list_library_folder
 
-        library = _catalog_library()
+        library = _catalog_library(request)
         sources = await asyncio.to_thread(library.catalog.sources)
         source = next((s for s in sources if s["id"] == source_id), None)
         if source is None:
@@ -2375,8 +2744,10 @@ def create_app(
             raise HTTPException(status_code=exc.status, detail=str(exc)) from None
 
     @app.patch("/api/library/folders/{source_id}")
-    async def api_library_update_folder(source_id: str, body: LibraryFolderUpdateBody) -> dict:
-        library = _catalog_library()
+    async def api_library_update_folder(
+        request: Request, source_id: str, body: LibraryFolderUpdateBody
+    ) -> dict:
+        library = _catalog_library(request)
         updated = await asyncio.to_thread(
             library.catalog.update_source,
             source_id,
@@ -2390,23 +2761,25 @@ def create_app(
         return await asyncio.to_thread(library.snapshot)
 
     @app.delete("/api/library/folders/{source_id}")
-    async def api_library_remove_folder(source_id: str) -> dict:
-        library = _catalog_library()
+    async def api_library_remove_folder(request: Request, source_id: str) -> dict:
+        library = _catalog_library(request)
         if not await asyncio.to_thread(library.catalog.remove_source, source_id):
             raise HTTPException(status_code=404, detail="Folder not registered")
         await asyncio.to_thread(library.refresh)
         return await asyncio.to_thread(library.snapshot)
 
     @app.post("/api/library/rescan")
-    async def api_library_rescan(body: LibraryRescanBody | None = None) -> dict:
-        library = _catalog_library()
+    async def api_library_rescan(request: Request, body: LibraryRescanBody | None = None) -> dict:
+        library = _catalog_library(request)
         if not library.start_scan(override_tags=body.override_tags if body else False):
             raise HTTPException(status_code=409, detail="Library cleanup is running")
         return await asyncio.to_thread(library.snapshot)
 
     @app.get("/api/library/auto-rescan")
-    async def api_library_auto_rescan() -> dict[str, int]:
-        hours, minutes = divmod(_catalog_library().auto_rescan_minutes(), 60)
+    async def api_library_auto_rescan(
+        request: Request,
+    ) -> dict[str, int]:
+        hours, minutes = divmod(_catalog_library(request).auto_rescan_minutes(), 60)
         return {"hours": hours, "minutes": minutes}
 
     station_router = StationRouter(app.router)
@@ -2414,7 +2787,7 @@ def create_app(
 
     def _settings_slug(request: Request) -> str:
         slug = request.path_params.get("slug", DEFAULT_SLUG)
-        if slug not in stations.slugs():
+        if slug not in stations.slugs() or slug in stations._deleting:
             raise HTTPException(status_code=404, detail="Station not found")
         return slug
 
@@ -2447,8 +2820,10 @@ def create_app(
         return await asyncio.to_thread(stations.public_settings, _settings_slug(request))
 
     @app.put("/api/library/auto-rescan")
-    async def api_library_set_auto_rescan(body: LibraryAutoRescanBody) -> dict[str, int]:
-        library = _catalog_library()
+    async def api_library_set_auto_rescan(
+        request: Request, body: LibraryAutoRescanBody
+    ) -> dict[str, int]:
+        library = _catalog_library(request)
         total = body.hours * 60 + body.minutes
         if 0 < total < AUTO_RESCAN_MIN_MINUTES:
             raise HTTPException(
@@ -2458,34 +2833,44 @@ def create_app(
         return {"hours": body.hours, "minutes": body.minutes}
 
     @app.get("/api/library/music-fade")
-    async def api_library_music_fade() -> dict[str, int]:
-        return {"drop_db": await asyncio.to_thread(_catalog_library().music_fade_drop_db)}
+    async def api_library_music_fade(
+        request: Request,
+    ) -> dict[str, int]:
+        return {"drop_db": await asyncio.to_thread(_catalog_library(request).music_fade_drop_db)}
 
     @app.put("/api/library/music-fade")
-    async def api_library_set_music_fade(body: LibraryMusicFadeBody) -> dict[str, int]:
-        library = _catalog_library()
+    async def api_library_set_music_fade(
+        request: Request, body: LibraryMusicFadeBody
+    ) -> dict[str, int]:
+        library = _catalog_library(request)
         await asyncio.to_thread(library.set_music_fade_drop_db, body.drop_db)
         return {"drop_db": body.drop_db}
 
     @app.get("/api/library/advanced-length")
-    async def api_library_advanced_length() -> dict[str, int]:
+    async def api_library_advanced_length(
+        request: Request,
+    ) -> dict[str, int]:
         """The advanced analysis length cutoff in minutes; 0 analyses every length."""
-        return {"minutes": await asyncio.to_thread(_catalog_library().advanced_max_minutes)}
+        return {"minutes": await asyncio.to_thread(_catalog_library(request).advanced_max_minutes)}
 
     @app.put("/api/library/advanced-length")
-    async def api_library_set_advanced_length(body: LibraryAdvancedLengthBody) -> dict[str, int]:
-        await asyncio.to_thread(_catalog_library().set_advanced_max_minutes, body.minutes)
+    async def api_library_set_advanced_length(
+        request: Request, body: LibraryAdvancedLengthBody
+    ) -> dict[str, int]:
+        await asyncio.to_thread(_catalog_library(request).set_advanced_max_minutes, body.minutes)
         return {"minutes": body.minutes}
 
     @app.get("/api/library/missing")
-    async def api_library_missing_preview() -> dict:
+    async def api_library_missing_preview(
+        request: Request,
+    ) -> dict:
         """Preview records missing after a complete scan of available folders."""
-        return await asyncio.to_thread(_catalog_library().missing_removal_preview)
+        return await asyncio.to_thread(_catalog_library(request).missing_removal_preview)
 
     @app.post("/api/library/remove-missing")
-    async def api_library_remove_missing(body: LibraryRemoveMissingBody) -> dict:
+    async def api_library_remove_missing(request: Request, body: LibraryRemoveMissingBody) -> dict:
         """Remove only the unchanged set shown by a clean-scan preview."""
-        library = _catalog_library()
+        library = _catalog_library(request)
         try:
             removed = await asyncio.to_thread(
                 library.remove_missing,
@@ -2508,20 +2893,27 @@ def create_app(
         return slug
 
     @app.get("/api/library/points")
-    async def api_library_points(path: str, station: str = DEFAULT_SLUG) -> dict:
+    async def api_library_points(request: Request, path: str, station: str = DEFAULT_SLUG) -> dict:
         station = library_station(station)
-        library = _catalog_library()
+        library = _catalog_library(request)
         entry = library.entry_for_path(path)
         if entry is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
         return await _track_info(library, path, station)
+
+    def _station_ledger(library: Any, slug: str) -> Any:
+        if libraries is not None:
+            return stations.editable(slug).bridge.ledger
+        return library.station_ledger(slug)
 
     async def _track_info(library: Any, path: str, station: str = DEFAULT_SLUG) -> dict:
         """The Track info record of *path*: details, cue points and tag form."""
         record = await asyncio.to_thread(library.catalog.record_for_path, path)
         if record is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
-        record["last_played"] = library.station_ledger(station).last_played().get(record["path"], 0)
+        record["last_played"] = (
+            _station_ledger(library, station).last_played().get(record["path"], 0)
+        )
         record["playable"] = True
         from autodj.processing import loudness_matches
 
@@ -2550,12 +2942,12 @@ def create_app(
         record.update(await asyncio.to_thread(tag_form, library, record))
         return record
 
-    install_tag_editor(app, shared, _track_info)
+    install_tag_editor(app, shared, _track_info, resolve_library=_catalog_library)
 
     @app.post("/api/library/points")
-    async def api_library_save_points(body: SongPointsBody) -> dict:
+    async def api_library_save_points(request: Request, body: SongPointsBody) -> dict:
         station = library_station(body.station)
-        library = _catalog_library()
+        library = _catalog_library(request, body.station)
         entry = library.entry_for_path(body.path)
         if entry is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
@@ -2578,13 +2970,15 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         record = await asyncio.to_thread(library.catalog.record_for_path, body.path)
-        record["last_played"] = library.station_ledger(station).last_played().get(record["path"], 0)
+        record["last_played"] = (
+            _station_ledger(library, station).last_played().get(record["path"], 0)
+        )
         return record
 
     @app.post("/api/library/points/rescan")
-    async def api_library_points_rescan(body: CueRescanBody) -> dict:
+    async def api_library_points_rescan(request: Request, body: CueRescanBody) -> dict:
         station = library_station(body.station)
-        library = _catalog_library()
+        library = _catalog_library(request, body.station)
         if await asyncio.to_thread(library.entry_for_path, body.path) is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
         try:
@@ -2601,9 +2995,9 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/library/points/rescan/apply")
-    async def api_library_points_rescan_apply(body: CueRescanApplyBody) -> dict:
+    async def api_library_points_rescan_apply(request: Request, body: CueRescanApplyBody) -> dict:
         station = library_station(body.station)
-        library = _catalog_library()
+        library = _catalog_library(request, body.station)
         if await asyncio.to_thread(library.entry_for_path, body.path) is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
         cue_rescan = getattr(app.state, "cue_rescan", None)
@@ -2626,24 +3020,28 @@ def create_app(
         return await _track_info(library, body.path, station)
 
     @app.get("/api/library/job")
-    async def api_library_job_status() -> dict:
+    async def api_library_job_status(
+        request: Request,
+    ) -> dict:
         """Return the live library job status."""
         from autodj.jobs import get_manager
 
-        return get_manager().snapshot()
+        return get_manager(_library_services(request).cfg.index.library_dir).snapshot()
 
     @app.post("/api/library/run")
-    async def api_library_run(body: LibraryJobBody) -> dict:
+    async def api_library_run(request: Request, body: LibraryJobBody) -> dict:
         """Start one of the allowed library CLI jobs."""
         from autodj.jobs import get_manager
 
-        mgr = get_manager()
+        selected = _library_services(request)
+        mgr = get_manager(selected.cfg.index.library_dir)
         # Point the child at the same configuration this server is running
         # on, every time: settings can change under a live server,
         # so reading it at app-creation time would go stale.
         mgr.configure(
             config_path=cfg.config_path,
             index_dir=cfg.index.index_dir,
+            library_id=selected.cfg.index.library_id,
         )
         # start() may wait up to a second for the previous job's output reader
         # and spawns a process, so keep it off the event loop.
@@ -2656,23 +3054,27 @@ def create_app(
         return mgr.snapshot()
 
     @app.post("/api/library/stop")
-    async def api_library_stop() -> dict[str, bool]:
+    async def api_library_stop(
+        request: Request,
+    ) -> dict[str, bool]:
         """Cancel the running library job."""
         from autodj.jobs import get_manager
 
-        return {"stopped": get_manager().stop()}
+        return {"stopped": get_manager(_library_services(request).cfg.index.library_dir).stop()}
 
     @app.get("/api/library/stats")
-    async def api_library_stats() -> dict:
+    async def api_library_stats(
+        request: Request,
+    ) -> dict:
         """Return summary stats about the loaded SimilarityIndex.
 
         Single pass over ``entries`` so the cost stays O(N) instead of
         4×O(N).  Negligible at 1 k tracks; measurable at 70 k.
         """
-        similarity = shared.sim
+        similarity = _library_services(request).sim
         entries = (
-            shared.library.entries_snapshot()
-            if shared.library is not None
+            _library_services(request).library.entries_snapshot()
+            if _library_services(request).library is not None
             else similarity.entries_snapshot()
         )
         n = len(entries)
@@ -2854,14 +3256,75 @@ def create_app(
         from autodj.station_content import StationContent
 
         saved_cfg = station_config(extra.paths._cfg, cfg)
+        selected = libraries.bind(extra.slug, saved_cfg) if libraries is not None else shared
         return StationContent(
-            saved_cfg, StationPaths.for_station(saved_cfg, extra.slug), shared.library, shared.sim
+            saved_cfg,
+            StationPaths.for_station(saved_cfg, extra.slug),
+            selected.library,
+            selected.sim,
         )
 
     stations.build_content = build_content
     stations.prepare = prepare
     stations.disconnect = disconnect
     return app
+
+
+def _station_writes_active(app: FastAPI, slug: str | None = None) -> bool:
+    """Conservatively refuse station lifecycle changes during server-owned writes."""
+    from autodj.jobs import get_manager
+
+    stations = app.state.stations
+    paths = stations._extras[slug].paths if slug is not None else None
+    if slug is None:
+        libraries = getattr(app.state, "libraries", None)
+        managers = (
+            [get_manager(services.cfg.index.library_dir) for services in libraries.all()]
+            if libraries is not None
+            else [get_manager()]
+        )
+        if any(manager.running for manager in managers):
+            return True
+    speech = getattr(app.state, "speech", None)
+    if (
+        speech is not None
+        and speech.worker is not None
+        and speech.worker.is_alive()
+        and (slug is None or (paths is not None and speech.active_root == paths.speech))
+    ):
+        return True
+    reviews = getattr(app.state, "review_jobs", None)
+    if reviews is not None:
+        with reviews._lock:
+            run = reviews._active
+            if run is not None and (
+                slug is None or (paths is not None and run.root == paths.reviews)
+            ):
+                return True
+    generations = getattr(app.state, "show_generations", None)
+    if generations is not None:
+        with generations._lock:
+            if generations._busy is not None and (
+                slug is None or any(station == slug for station, _show_id in generations._shows)
+            ):
+                return True
+    rotations = getattr(app.state, "rotation_tests", None)
+    if rotations is not None:
+        with rotations._lock:
+            if any(
+                run.state == "running" and (slug is None or run.station == slug)
+                for run in rotations._runs.values()
+            ):
+                return True
+    previews = getattr(app.state, "hour_previews", None)
+    if previews is not None:
+        with previews._cond:
+            if any(slug is None or job.source.station == slug for job in previews._waiting) or any(
+                slug is None or key[0] == slug for key in previews._filling
+            ):
+                return True
+    cue_rescan = getattr(app.state, "cue_rescan", None)
+    return bool(slug is None and cue_rescan is not None and cue_rescan._lock.locked())
 
 
 def _station_names(stations: StationRegistry) -> list[tuple[str, str]]:
@@ -3018,6 +3481,7 @@ def _extra_station(
     stream_mode: bool | None = None,
     no_playback: bool | None = None,
     seed_entry: IndexEntry | None = None,
+    libraries: Any = None,
 ) -> ExtraStation:
     """Build any station afresh, with its own player and optional audio outputs.
 
@@ -3032,6 +3496,9 @@ def _extra_station(
 
         nonlocal seed_entry
         cfg = station_config(spec.cfg, root)
+        selected = libraries.bind(slug, cfg) if libraries is not None else None
+        station_library = selected.library if selected is not None else library
+        station_sim = selected.sim if selected is not None else sim
         streams = cfg.station.output == "stream" if stream_mode is None else stream_mode
         speakers = (
             cfg.station.output == "server" or cfg.station.server_audio_too
@@ -3046,25 +3513,29 @@ def _extra_station(
             if shutil.which("ffmpeg") is None:
                 raise RuntimeError("Server-mixed audio requires ffmpeg on PATH.")
         first_track = seed_entry
+        if first_track is not None and selected is not None:
+            first_track = station_library.entry_for_path(first_track.path)
+            if first_track is None:
+                raise ValueError("The starting track is absent from this station's library")
         paths = StationPaths.for_station(cfg, slug)
         paths.state_dir.mkdir(parents=True, exist_ok=True)
         # Its liner folder joins the library's liner sources the first time.
-        library.seed_station_liners(slug, paths.liners)
+        station_library.seed_station_liners(slug, paths.liners)
         player = Player(
             cfg,
-            sim,
+            station_sim,
             dry_run=not speakers and not streams,
             stream_mode=streams,
             server_audio_too=streams and speakers,
         )
-        player._library = library
-        ledger = library.station_ledger(slug)
+        player._library = station_library
+        ledger = station_library.station_ledger(slug)
         player._ledger = ledger
         player.station_paths = paths
         bridge = PlayerBridge(
             player=player,
-            sim=sim,
-            library=library,
+            sim=station_sim,
+            library=station_library,
             ledger=ledger,
             paths=paths,
             stream_path="/stream.mp3" if slug == DEFAULT_SLUG else f"/{slug}.mp3",
@@ -3122,6 +3593,7 @@ def _extra_station(
         requests_enabled=spec.cfg.requests.enabled,
         player_page=spec.cfg.player_page,
         defined_in=spec.defined_in,
+        archived=spec.archived,
     )
 
 
@@ -3293,9 +3765,16 @@ def serve(
 
     from autodj.library import LibraryManager
 
+    if cfg.index.library_id != "main":
+        raise ValueError(
+            "Serve starts from main; choose each station's library in General settings"
+        )
     if library is None:
         library = LibraryManager(cfg, sim, compatibility_checked=True)
     _apply_time_settings(cfg, library)
+    from autodj.library_runtime import Libraries
+
+    libraries = Libraries(LibraryServices(cfg, sim, library))
     timezone = cfg.station.timezone or system_timezone()
     default = cfg.default_station or StationSpec(slug=DEFAULT_SLUG, autostart=True, cfg=cfg)
     default_station = _extra_station(
@@ -3307,13 +3786,18 @@ def serve(
         stream_mode=stream,
         no_playback=no_playback,
         seed_entry=seed_entry,
+        libraries=libraries,
     )
-    extra_stations = [_extra_station(cfg, spec, sim, library, timezone) for spec in cfg.stations]
+    extra_stations = [
+        _extra_station(cfg, spec, sim, library, timezone, libraries=libraries)
+        for spec in cfg.stations
+    ]
     app = create_app(
         services=LibraryServices(cfg, sim, library),
         default_station=default_station,
         secure_cookie=secure_cookie,
         extra_stations=extra_stations,
+        libraries=libraries,
     )
 
     logger.info("Startup: server app construction took %.2f s", time.perf_counter() - started)

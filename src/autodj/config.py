@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from autodj.library_registry import validate_library_id
 from autodj.liners import LINER_PICK_MODES
 from autodj.repeat_settings import RepeatSettings, ignore_unknown_repeat_keys
 from autodj.sqlite_utils import readonly_uri
@@ -160,6 +161,7 @@ class IndexConfig(_Section):
     index_dir: Path = field(default_factory=lambda: Path("index"))
     model_dir: Path = field(default_factory=lambda: Path("models"))
     throttle_ms: float = 0.0
+    library_id: str = "main"
 
     def __post_init__(self) -> None:
         """Expand the paths and validate the throttle.
@@ -170,6 +172,7 @@ class IndexConfig(_Section):
         """
         self.index_dir = Path(self.index_dir).expanduser()
         self.model_dir = Path(self.model_dir).expanduser()
+        self.library_id = validate_library_id(self.library_id)
         if isinstance(self.throttle_ms, bool) or not isinstance(self.throttle_ms, int | float):
             raise TypeError("index.throttle_ms must be a number")
         self.throttle_ms = float(self.throttle_ms)
@@ -179,8 +182,7 @@ class IndexConfig(_Section):
     @property
     def library_dir(self) -> Path:
         """The music library: library.db, dj_meta.db, related artists and tracks, logs."""
-        # ponytail: one library, "main"; a station picking another comes later.
-        return self.index_dir / "libraries" / "main"
+        return self.index_dir / "libraries" / self.library_id
 
     @property
     def shared_dir(self) -> Path:
@@ -1169,10 +1171,12 @@ class StationConfig(_Section):
     server_audio_too: bool = False
     #: Shown in brackets at the start of the station's log lines; empty uses its slug.
     log_label: str = ""
+    library_id: str = "main"
 
     def __post_init__(self) -> None:
         """Validate the station's time zone, upload cap, output mode and log label."""
         self.log_label = check_log_label(self.log_label)
+        self.library_id = validate_library_id(self.library_id)
         if self.timezone is not None:
             try:
                 ZoneInfo(self.timezone)
@@ -2039,6 +2043,7 @@ class AutoDJConfig:
     legacy_relay_environment: dict[str, str] = field(default_factory=dict, repr=False)
     config_sources: tuple[str, ...] = ("defaults",)
     skipped_definitions: tuple[tuple[str, str], ...] = ()
+    station_deletion_recovery_problem: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2060,11 +2065,31 @@ class StationSpec:
     autostart: bool
     cfg: AutoDJConfig = field(repr=False)
     defined_in: str = "config"
+    archived: bool = False
 
     @property
     def name(self) -> str:
         """The station's name, as listeners see it (``stream.station_name``)."""
         return self.cfg.stream.station_name
+
+
+def _read_station_archive(state_dir: Path) -> bool:
+    """Whether a station has the durable archive marker in its owned folder."""
+    marker = state_dir / "lifecycle.json"
+    try:
+        info = marker.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ValueError(f"station archive marker must be a regular file: {marker}")
+    document = json.loads(marker.read_text(encoding="utf-8"))
+    if (
+        not isinstance(document, dict)
+        or document.get("version") != 1
+        or not isinstance(document.get("archived"), bool)
+    ):
+        raise ValueError(f"station archive marker is invalid: {marker}")
+    return document["archived"]
 
 
 # ---------------------------------------------------------------------------
@@ -2877,6 +2902,8 @@ def _load_web_stations(
     folder = Path(cfg.index.stations_dir)
     from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN, StationPaths
 
+    cfg.station_deletion_recovery_problem = _station_deletion_pending_problem(cfg)
+
     skipped: list[tuple[str, str]] = []
     default_path = StationPaths.default(cfg).definition
     try:
@@ -2911,6 +2938,10 @@ def _load_web_stations(
         logger.error("Skipping %s: %s", default_path, reason)
         skipped.append((str(default_path), reason))
         cfg.default_station = replace(_build_station(DEFAULT_SLUG, {}, cfg), defined_in="default")
+    cfg.default_station = replace(
+        cfg.default_station,
+        archived=_read_station_archive(StationPaths.default(cfg).state_dir),
+    )
     _project_default_station(cfg)
     if not folder.is_dir():
         cfg.skipped_definitions = tuple(skipped)
@@ -2975,10 +3006,35 @@ def _load_web_stations(
             logger.error("Skipping %s: %s", path, reason)
             skipped.append((str(path), reason))
             continue
-        cfg.stations += (spec,)
+        cfg.stations += (replace(spec, archived=_read_station_archive(path.parent)),)
     _check_station_conflicts(cfg, cfg.stations)
     _validate_relay_environment(cfg, environment or {})
     cfg.skipped_definitions = tuple(skipped)
+
+
+def _station_deletion_pending_problem(cfg: AutoDJConfig) -> str | None:
+    """Notice interrupted station deletion without changing recovery files."""
+    root = Path(cfg.index.index_dir)
+    journal = root / ".station-deletions"
+    try:
+        if journal.is_symlink() or journal.is_junction():
+            return f"Linked station deletion journal folder: {journal}"
+        if journal.exists():
+            if not journal.is_dir():
+                return f"Station deletion journal path is not a folder: {journal}"
+            if next(journal.glob("*.json"), None) is not None:
+                return f"Station deletion recovery is pending in {journal}"
+            quarantine = journal / "quarantine"
+            if quarantine.is_symlink() or quarantine.is_junction():
+                return f"Linked station deletion quarantine folder: {quarantine}"
+            if quarantine.exists():
+                if not quarantine.is_dir():
+                    return f"Station deletion quarantine path is not a folder: {quarantine}"
+                if next(quarantine.iterdir(), None) is not None:
+                    return f"Station deletion recovery is pending in {quarantine}"
+    except OSError as exc:
+        return f"Could not inspect station deletion recovery files: {exc}"
+    return None
 
 
 def _validate_relay_environment(cfg: AutoDJConfig, environment: Mapping[str, str]) -> None:

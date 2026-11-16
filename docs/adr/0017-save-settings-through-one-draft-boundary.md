@@ -66,6 +66,7 @@ behavior, screen-reader speech or filesystem power-loss durability.
 | `ADR-0017-03` | Stopped stations validate batches and reject stale revisions. | automated | `tests/integration/test_stopped_station_editing.py::test_stopped_station_settings_batch_validates_and_detects_conflicts` |
 | `ADR-0017-04` | Real keyboard, screen-reader and device behavior requires platform evidence. | manual | Exercise Save, Discard, invalid fields, conflicts and station switching per docs/accessibility-testing.md; report engine/device and speech limitations. |
 | `ADR-0017-05` | Standalone settings saves release stale busy state without allowing an old reply to unlock or overwrite a newer save. | automated | `tests/jsmodules/standalone-settings.test.js::clears an old save immediately without letting its reply unlock or overwrite a newer save` |
+| `ADR-0017-07` | Library settings keep drafts bound to the selected library; switching offers Save, Discard or Cancel, and stale loads cannot overwrite the new selection. | automated | `tests/jsmodules/library-settings.test.js::cancels a library change when the settings draft should be kept`; `tests/jsmodules/library-settings.test.js::discards a library draft before loading the next library`; `tests/jsmodules/library-settings.test.js::saves the old library draft before loading the next library`; `tests/jsmodules/library-settings.test.js::discards a stale library response and keeps the new library values` |
 
 ## Amendment 2026-10-31: shared browser-page helpers
 
@@ -82,3 +83,18 @@ presses instead (#331). A refused setting is placed on its control by the
 setting's name: a part's `fields` map, a control named for the setting, or the
 only control of a one-setting part. A refusal no control matches is said in
 the panel status with "Unsaved changes remain."
+## Amendment 2026-11-15: library settings drafts
+
+[Issues #801](https://github.com/blindndangerous/AutoDJ/issues/801)
+and [#802](https://github.com/blindndangerous/AutoDJ/issues/802)
+add named libraries with separate settings owners. Global > Libraries uses the
+shared Save/Discard bar. Its library selector offers Save, Discard or Cancel
+when a draft is pending; Save writes to the old library before loading the new
+one. Requests carry the library ID, and replies must still match the selected
+library and authentication session. A failed load keeps the previous selection
+and values. The selector keeps focus while loading.
+
+The station's Music library choice belongs to its General draft. A running
+station keeps its active library until restart, as described in
+[ADR 23](0023-named-libraries-with-station-bindings.md). This amendment does not
+change this record's Proposed status.

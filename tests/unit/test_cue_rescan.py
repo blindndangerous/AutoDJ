@@ -12,6 +12,26 @@ def _entry(path: Path) -> IndexEntry:
     return IndexEntry(str(path), "Title", "Artist", "Album", "", 120, 2000, 20, 0.2, -1, -1, 0.0)
 
 
+def test_rescan_proposal_cannot_be_applied_to_another_library(tmp_path, monkeypatch):
+    from autodj import cue_rescan
+
+    audio = tmp_path / "same.wav"
+    audio.write_bytes(b"audio")
+    monkeypatch.setattr(
+        cue_rescan, "analyze_basic", lambda *_a, **_k: (_entry(audio), {"intro": 3.0})
+    )
+    with LibraryCatalog(tmp_path / "a.db") as first, LibraryCatalog(tmp_path / "b.db") as second:
+        for catalog in (first, second):
+            catalog.put_entry(_entry(audio), points={"intro": 1.0}, point_source="user")
+        scanner = CueRescan()
+        result = scanner.scan(first, str(audio), "default")
+        with pytest.raises(RuntimeError, match="Scan expired"):
+            scanner.apply(second, str(audio), "default", result["token"], ["intro"])
+        assert second.points(audio)["intro"] == 1.0
+        scanner.apply(first, str(audio), "default", result["token"], ["intro"])
+        assert first.points(audio)["intro"] == 3.0
+
+
 @pytest.fixture
 def catalog_audio(tmp_path):
     audio = tmp_path / "song.wav"

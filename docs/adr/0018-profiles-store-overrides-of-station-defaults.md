@@ -199,3 +199,12 @@ or evidence that implementation is complete.
 | `ADR-0018-04` | Normal restarts retain persisted live changes without rewriting profiles; offline edits to defaults or the selected profile are applied. | automated | `tests/unit/test_profile_settings.py::test_restart_reads_offline_edits_to_defaults_and_selected_profile`; `tests/unit/test_profile_settings.py::test_restart_applies_saved_defaults_before_any_profile_has_been_selected`; `tests/unit/test_profile_settings.py::test_restart_preserves_live_changes_without_rewriting_saved_profiles` |
 | `ADR-0018-05` | Profile overrides and active selection are isolated per station, and profile routes are classified as station-owned. | automated | `tests/integration/test_profile_editing.py::test_profile_defaults_editing_apply_reset_and_station_isolation`; `tests/integration/test_station_routes.py::test_every_route_is_classified_as_shared_or_station` |
 | `ADR-0018-06` | The Profile to edit combobox and reset confirmation preserve native keyboard focus and report confirmation results accessibly. | manual | Walk through target changes, cancelled switch, reset confirmation and cancellation with keyboard and a supported screen reader; record browser, screen reader, date and actual speech. |
+
+## Amendment 2026-11-15: library ownership
+
+Named-library settings in Global > Libraries are owned by each library, not by
+a station profile. A station's saved Music library binding is also outside
+profile overrides: changing a profile must not switch its catalog. See
+[ADR 23](0023-named-libraries-with-station-bindings.md) for saved and active
+bindings, and [ADR 17](0017-save-settings-through-one-draft-boundary.md) for
+library drafts. This clarification leaves this record Proposed.

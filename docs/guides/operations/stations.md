@@ -59,8 +59,25 @@ webhooks, and its own Stereo Tool licence key) never go in `station.json`. They 
 station sections and `[stations.<slug>]` tables from `config.toml` and `config.local.toml`, and writes
 the canonical station files. The
 legacy sections remain in the TOML file but normal loading ignores them; remove them after
-migration to avoid confusion. A later edit to legacy TOML is not applied. To remove a web-created
-station, stop AutoDJ and move its station folder away. There is no delete button yet.
+migration to avoid confusion. A later edit to legacy TOML is not applied.
+
+## Archive, restore and permanently delete a station
+
+Use the station management table to archive a station that should no longer appear in the
+station switcher. AutoDJ stops it first and refuses to archive it if it cannot confirm a full
+stop. Archiving preserves its settings and saved autostart choice; an archived station does not
+start automatically and cannot be started manually.
+
+Restore makes the station available in the switcher again, but does not start it. Its saved
+autostart choice applies at a later server start.
+
+Only archived stations can be permanently deleted, and the default station is protected. The
+delete action requires typing `DELETE`. By default, station-owned spoken audio is moved to
+`<index_dir>/retained-station-audio/` with a recovery manifest before the station folder is
+removed. The checkbox to delete those recordings is off by default. Deletion removes the
+station's settings, history and other state; it does not delete shared music or configured
+external recording and time-check folders. Whole-installation backups include retained station
+audio. The Doctor reports retained audio and any deletion recovery that still needs attention.
 
 ## The station switcher
 
@@ -110,7 +127,7 @@ page controls has a tick and is read as current.
   the station itself goes on for everyone else.
 - **A stopped station:** choosing one, or having the station stopped while the page controls it,
   shows "Night Owl Radio is off air." with a **Start Night Owl Radio** button on Now Playing. The
-  page looks every 10 seconds whether the station is back. **Settings, Station, Stations** has Stop and
+  page looks every 10 seconds whether the station is back. **Settings, Global, Stations** has Stop and
   Start controls for every station, including the default.
 
 Every page has its own choice, so two browsers can control two stations at once.
@@ -127,7 +144,7 @@ moves: the default station keeps its files, and Night Owl starts with empty ones
    One Stereo Tool licence runs one copy, so give the new station
    `playback.loudness_processing = "smooth"` unless you have a second licence.
 2. **Stop AutoDJ and take a backup:** `uv run autodj backup backups/before-nightowl.zip`.
-3. **Restart AutoDJ, then create the station** in Settings > Station > Stations. Set its display name, output, and whether it
+3. **Restart AutoDJ, then create the station** in Settings > Global > Stations. Set its display name, output, and whether it
    starts with the server. Review its Stream, Playback, and Recording settings; they are saved in
    `<index_dir>/stations/nightowl/station.json`. The station folder is created automatically.
    Its secrets are stored separately in `secrets.json` and `relays.json`. For deployment
@@ -145,7 +162,7 @@ moves: the default station keeps its files, and Night Owl starts with empty ones
    folder or relay target another station uses, or an invalid station definition) stops the
    configuration from loading, and doctor says which. Doctor offers to
    make the station's folder; AutoDJ also makes it when the station first starts.
-7. **Start Night Owl** in Settings > Station > Stations (and start AutoDJ first if you stopped it again). The startup log names each streaming station's stream and status page, such as
+7. **Start Night Owl** in Settings > Global > Stations (and start AutoDJ first if you stopped it again). The startup log names each streaming station's stream and status page, such as
    `/nightowl.mp3`. Run `uv run autodj doctor` again: each station now has its own
    lines.
 8. **Set it up in the web page.** Choose Night Owl Radio with the Station button in the banner
@@ -161,7 +178,7 @@ moves: the default station keeps its files, and Night Owl starts with empty ones
 10. **Take a new backup** and check that its `stations/nightowl/` files are in it (see
     [Backups and doctor](backup.md#backups-and-doctor)).
 
-To retire a station, stop it (Settings > Station > Stations > Stop, or `POST /api/stations/<slug>/stop`),
+To retire a station, stop it (Settings > Global > Stations > Stop, or `POST /api/stations/<slug>/stop`),
 stop AutoDJ, then move its canonical station definition out of the station folder before
 restarting. Editing old TOML station tables does not remove a migrated station. Its folder stays: doctor names
 it as no longer configured, and backups leave it out. Move or delete it by hand once a backup

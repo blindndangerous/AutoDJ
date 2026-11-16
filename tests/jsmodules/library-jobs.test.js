@@ -513,7 +513,7 @@ describe("library job follow-up", () => {
       <span id="genre"></span><span id="energy"></span>
       <button id="run-stats">Stats</button><p id="sr-status"></p>
       <div id="status-toast" hidden></div>`;
-    const fetchImpl = vi.fn((url) => (url === "/api/library/job" ? onJob() : json(stats)));
+    const fetchImpl = vi.fn((url) => (url === "/api/library/job?station=default" ? onJob() : json(stats)));
     vi.stubGlobal("fetch", fetchImpl);
     const $ = (id) => document.getElementById(id);
     const els = {
@@ -543,7 +543,7 @@ describe("library job follow-up", () => {
     // The next push still carries only 25 lines; the full log stays.
     applyLibraryJobState(finished(allLines.slice(-25)), els);
     expect(logLines(els.libLog)).toEqual(allLines);
-    expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/library/job")).toHaveLength(1);
+    expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/library/job?station=default")).toHaveLength(1);
     await vi.waitFor(() => expect(els.statCount.textContent).toBe("7"));
     vi.unstubAllGlobals();
   });
@@ -581,7 +581,7 @@ describe("missing catalog track confirmation", () => {
       dialog.dispatchEvent(new Event("close"));
     };
     const fetchImpl = vi.fn((url) => Promise.resolve(new globalThis.Response(
-      JSON.stringify(url === "/api/library/missing"
+      JSON.stringify(url === "/api/library/missing?station=default"
         ? { ready: true, count: 1, total: 20, percentage: 5, requires_override: false,
           tracks: [{ artist: "Artist", title: "Track", path: "Z:/Music/Track.flac" }], token: "fresh" }
         : { removed: 1, remaining: 19 }),
@@ -601,8 +601,8 @@ describe("missing catalog track confirmation", () => {
     expect(document.querySelector("#confirm-message").textContent).toContain("Z:/Music/Track.flac");
     expect(document.querySelector("#confirm-message").textContent).toContain("play history are kept");
     document.querySelector("#confirm-accept").click();
-    await vi.waitFor(() => expect(fetchImpl.mock.calls.some(([url]) => url === "/api/library/remove-missing")).toBe(true));
-    expect(JSON.parse(fetchImpl.mock.calls.find(([url]) => url === "/api/library/remove-missing")[1].body))
+    await vi.waitFor(() => expect(fetchImpl.mock.calls.some(([url]) => url === "/api/library/remove-missing?station=default")).toBe(true));
+    expect(JSON.parse(fetchImpl.mock.calls.find(([url]) => url === "/api/library/remove-missing?station=default")[1].body))
       .toEqual({ token: "fresh", confirmed: true, allow_mass: false });
     vi.unstubAllGlobals();
   });

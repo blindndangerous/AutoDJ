@@ -110,7 +110,7 @@
 //         Dismiss button works by mouse and by keyboard, putting focus
 //         back where it was.
 //
-//   - Settings > Stations (#233): New station refused by a stood-in
+//   - Settings > Global > Stations (#797): New station refused by a stood-in
 //     server, its error on the page, linked to Station ID and focused, is
 //     measured like a view in every theme mode and at 320 px and 200 %
 //     text; in the System light mode a refused create keeps nothing said
@@ -334,7 +334,7 @@ async function standInForTrackInfo(page) {
   await page.route("**/api/library/points?*", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify(TRACK_RECORD),
   }));
-  await page.route("**/api/library/points/rescan", (route) => route.fulfill({
+  await page.route((url) => url.pathname === "/api/library/points/rescan", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify({
       token: "visual-cue-scan", current_points: TRACK_RECORD.points,
       current_sources: { ...TRACK_RECORD.point_sources, intro: "imported" },
@@ -342,7 +342,7 @@ async function standInForTrackInfo(page) {
       point_sources: { ...TRACK_RECORD.point_sources, intro: "lyrics" },
     }),
   }));
-  await page.route("**/api/library/tags", (route) => route.fulfill({
+  await page.route((url) => url.pathname === "/api/library/tags", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify({ ...TRACK_RECORD, beets: "updated" }),
   }));
   await page.route("**/api/intros?*", (route) => route.fulfill({
@@ -1735,15 +1735,16 @@ const CREATE_REFUSAL = {
   field: "slug",
 };
 
-// Settings > Stations: New station, a copy, refused on its Station ID.
+// Settings > Global > Stations: New station, a copy, refused on its Station ID.
 async function openStationCreateError(page, visit) {
+  await clickSubtabUnprompted(page, "stab-station-management");
   await page.locator("#station-create-source").selectOption("default");
   await page.locator("#station-create-copies").waitFor({ state: "visible" });
   await page.locator("#station-create-name").fill("Audit Refused Station With A Long Name");
   await page.locator("#station-create-slug").fill("audit-refused");
   await page.locator("#station-create-submit").click();
   await page.locator("#station-create-error").waitFor({ state: "visible" });
-  await visit("settings/stations/refused");
+  await visit("settings/stations/station-create/refused");
 }
 
 function realStations(page) {
@@ -1868,11 +1869,11 @@ async function eachTarget(page, measure) {
         await page.waitForTimeout(150);
         await openEveryCard(page);
         await visit(`settings/${id.replace(/^stab-/, "")}`);
-        if (id === "stab-server") {
+        if (id === "stab-libraries") {
         await page.locator("#music-fade-drop").fill("0");
-        await page.locator("#music-fade-drop-save").click();
+        await page.locator("#spanel-libraries [data-settings-save]").click();
         await page.locator("#music-fade-drop-error").waitFor({ state: "visible" });
-        await visit("settings/server/music-fade-error");
+        await visit("settings/libraries/music-fade-error");
         await page.locator("#music-fade-drop").fill("10");
         }
         if (id === "stab-requests") await openRequestSettingsError(page, visit);
@@ -1883,7 +1884,7 @@ async function eachTarget(page, measure) {
         }
         if (id === "stab-schedule") await openScheduleWaitError(page, visit);
         if (id === "stab-announcements") await openPackDatesError(page, visit);
-        if (id === "stab-stations") await openStationCreateError(page, visit);
+        if (id === "stab-station-management") await openStationCreateError(page, visit);
         if (id === "stab-stream") await openLiveDjError(page, visit);
         if (id === "stab-workers") await openWorkerStates(page, visit);
         if (id === "stab-updates") await openRestartConfirm(page, visit);
@@ -2621,9 +2622,21 @@ async function toastBehaviourProblems(page) {
 async function stationCreateProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
-  await clickSubtabUnprompted(page, "stab-stations");
-  await page.locator("#station-create-name").waitFor({ state: "visible" });
   const problems = [];
+  await clickSubtabUnprompted(page, "stab-stations");
+  if (await page.locator("#stab-stations").textContent() !== "General") problems.push("Station tab is not named General");
+  await expect(page.locator("#time-settings")).toBeVisible();
+  for (const id of ["station-output", "station-log-label"]) {
+    if (!await page.locator(`#${id}`).isVisible()) problems.push(`${id} is not in Station > General`);
+  }
+  if (await page.locator("#station-create-form").isVisible()) problems.push("station creation is visible in General");
+  await clickSubtabUnprompted(page, "stab-station-management");
+  if (await page.locator("#stab-station-management").textContent() !== "Stations") problems.push("Global tab is not named Stations");
+  await expect(page.locator("#station-create-name")).toBeVisible();
+  if (await page.locator("#time-settings").isVisible()) problems.push("station-specific settings are visible in Global > Stations");
+  if (await page.locator("#station-create-form").evaluate((form) => form.closest("#spanel-server") !== null)) {
+    problems.push("station creation is still in Server");
+  }
   await page.evaluate(() => {
     window.__stationCreateSaid = [];
     const region = document.getElementById("stations-status");
@@ -3429,7 +3442,7 @@ async function selectedTabEntryProblems(page) {
   for (const [group, selected, first, other] of [
     ["Profile", "stab-sound", "stab-mixing", "stab-stations"],
     ["Station", "stab-schedule", "stab-stations", "stab-sound"],
-    ["Global", "stab-display", "stab-server", "stab-sound"],
+    ["Global", "stab-display", "stab-server", "stab-stations"],
   ]) {
     await page.locator(`#${selected}`).click();
     await page.locator(".skip-link").focus();

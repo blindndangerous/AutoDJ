@@ -2,6 +2,7 @@
 // notification-shade transport pill on Chromium / WebKit / Firefox.
 
 import { requestJsonBestEffort } from "./api-client.js";
+import { stationApi } from "./stations.js";
 
 export function updateMediaSession(s) {
   if (!("mediaSession" in navigator)) return;
@@ -16,7 +17,7 @@ export function updateMediaSession(s) {
     artist: t.artist || "",
     album:  t.album || "",
     artwork: [{
-      src: "/api/art?path=" + encodeURIComponent(t.path),
+      src: stationApi("/api/art?path=" + encodeURIComponent(t.path)),
       sizes: "512x512",
       type: "image/jpeg",
     }],

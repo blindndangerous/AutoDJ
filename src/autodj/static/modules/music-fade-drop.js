@@ -1,7 +1,7 @@
-import { failureText } from "./api-client.js";
-// Shared music fade threshold in Settings > Global > Server.
-import { clearFieldError, showFieldError, applyServerFieldError } from "./dom-helpers.js";
-import { createSettingsSave } from "./standalone-settings.js";
+// Per-library fade detection threshold for automatic Segue suggestions.
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
+import { registerSettingsGroup } from "./settings-drafts.js";
+import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent } from "./api-client.js";
 
 export function musicFadeDropProblem(text) {
   const value = String(text ?? "").trim();
@@ -11,11 +11,15 @@ export function musicFadeDropProblem(text) {
   return null;
 }
 
-export function installMusicFadeDrop({ document: doc, request, say, isCurrent = () => true }) {
+function libraryUrl(url, libraryId) {
+  return `${url}${url.includes("?") ? "&" : "?"}library=${encodeURIComponent(libraryId || "main")}`;
+}
+
+export function installMusicFadeDrop({ document: doc, request, getLibrary = () => "main",
+  getLibraryName = getLibrary, isCurrent = () => true }) {
   const input = doc.getElementById("music-fade-drop");
-  const save = doc.getElementById("music-fade-drop-save");
   const error = doc.getElementById("music-fade-drop-error");
-  if (!input || !save || !error) return null;
+  if (!input || !error) return null;
   let loaded = 0;
 
   const clearError = () => clearFieldError(input, error);
@@ -24,43 +28,57 @@ export function installMusicFadeDrop({ document: doc, request, say, isCurrent = 
     const drop = Number(value?.drop_db);
     input.value = Number.isInteger(drop) && drop >= 1 && drop <= 30 ? String(drop) : "10";
   }
-  async function load() {
+  async function load({ libraryId = getLibrary(), accept = true } = {}) {
     const ticket = ++loaded;
+    const epoch = captureAuthenticatedRequestEpoch();
     try {
-      const value = await request("/api/library/music-fade");
-      if (ticket === loaded && isCurrent() && !saver.pending) show(value);
-    } catch { /* Save reports a load failure when the operator acts. */ }
+      const value = await request(libraryUrl("/api/library/music-fade", libraryId));
+      if (ticket !== loaded || !isAuthenticatedRequestCurrent(epoch) || !isCurrent()) return null;
+      const loadedValue = { drop_db: Number(value?.drop_db) };
+      if (accept) {
+        if (getLibrary() !== libraryId) return null;
+        draft.accept(loadedValue);
+      }
+      return loadedValue;
+    } catch (error) {
+      if (ticket === loaded && isAuthenticatedRequestCurrent(epoch) && isCurrent()) throw error;
+      return null;
+    }
   }
   input.addEventListener("input", () => {
     if (input.getAttribute("aria-invalid") && !musicFadeDropProblem(input.value)) clearError();
   });
-  const saver = createSettingsSave({ button: save, isCurrent, say, pendingText: "Saving the fade detection threshold\u2026", save: async (current) => {
-    const problem = musicFadeDropProblem(input.value);
-    if (problem) { showError(problem); return; }
-    clearError();
-    loaded += 1;
-    try {
-      const value = await request("/api/library/music-fade", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ drop_db: Number(input.value.trim()) }),
-      });
-      if (!current()) return;
-      show(value);
-      say(`Saved. Fade detection threshold is ${input.value} dB.`);
-    } catch (err) {
-      if (!current()) return;
-      if (err?.status === 422 || err?.status === 400) applyServerFieldError({ field: "drop_db", message: musicFadeDropProblem("x") }, { drop_db: input }, error);
-      else say(failureText("save the fade detection threshold", err), "error");
-    }
-  } });
-  save.addEventListener("click", saver.run);
+  const panel = input.closest('[role="tabpanel"]') || doc.getElementById("spanel-libraries") || input.parentElement;
+  const draft = registerSettingsGroup({
+    panel,
+    loadSettings: false,
+    scope: "library",
+    scopeName: () => `Library: ${getLibraryName()}`,
+    controls: [input],
+    read: () => ({ drop_db: Number(input.value) }),
+    write: show,
+    validate: () => {
+      const problem = musicFadeDropProblem(input.value);
+      if (problem) { showError(problem); return false; }
+      clearError();
+      return true;
+    },
+    commit: (value) => request(libraryUrl("/api/library/music-fade", getLibrary()), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ drop_db: value.drop_db }),
+    }),
+  });
   clearError();
   return {
     load,
+    accept(value, libraryId) {
+      if (getLibrary() !== libraryId || !isCurrent()) return false;
+      draft.accept(value);
+      return true;
+    },
     clear() {
       loaded += 1;
-      saver.clear();
       clearError();
       input.value = "10";
     },

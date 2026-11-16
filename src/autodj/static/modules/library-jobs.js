@@ -35,6 +35,7 @@ let spokenPhase = null;
 let shownLines = null;
 let installed = false;
 let latest = null;
+let libraryRequest = requestJson;
 
 // Write `text` into the live region only when the phase actually
 // changed.  Repeated ticks carrying the same phase are silent.  quiet: the
@@ -214,15 +215,15 @@ function renderFullLog(libLog, lines) {
   shownLines = lines.slice();
 }
 
-async function followUpFinishedJob(els, job) {
+async function followUpFinishedJob(els, job, request = libraryRequest) {
   const epoch = captureAuthenticatedRequestEpoch();
   // Index stats change after index, enrich, analyse and prune.  Quiet: the
   // finish announcement is the one thing said.
-  void refreshLibStats(els, null, { quiet: true });
+  void refreshLibStats(els, null, { quiet: true, request });
   if (!els.libLog) return;
   let full;
   try {
-    full = await requestJson("/api/library/job");
+    full = await request("/api/library/job");
   } catch (_errorValue) {
     return;  // The last 25 lines stay on screen.
   }
@@ -249,30 +250,31 @@ function reportBusy(els, name) {
     { dwellMs: 5000, force: true });
 }
 
-export function installLibraryJobs(els) {
+export function installLibraryJobs(els, { request = requestJson } = {}) {
   const {
     runIndex, runEnrich, runAnalyse, runPrune, runStats, runStop,
     indexLimit, statsRefresh,
     statCount,
   } = els;
+  libraryRequest = request;
   installed = true;
 
   if (runIndex) {
     runIndex.addEventListener("click", (event) => {
       const limit = parseInt(indexLimit && indexLimit.value, 10);
       const args = !isNaN(limit) && limit > 0 ? ["--limit", String(limit)] : [];
-      void _run(els, "index", args, event.currentTarget);
+      void _run(els, "index", args, event.currentTarget, request);
     });
   }
-  if (runEnrich) runEnrich.addEventListener("click", (event) => void _run(els, "enrich", [], event.currentTarget));
-  if (runAnalyse) runAnalyse.addEventListener("click", (event) => void _run(els, "analyse", [], event.currentTarget));
-  if (runPrune) runPrune.addEventListener("click", (event) => void _removeMissing(els, event.currentTarget));
-  if (runStats)  runStats.addEventListener("click",  (event) => void _run(els, "stats", [], event.currentTarget));
+  if (runEnrich) runEnrich.addEventListener("click", (event) => void _run(els, "enrich", [], event.currentTarget, request));
+  if (runAnalyse) runAnalyse.addEventListener("click", (event) => void _run(els, "analyse", [], event.currentTarget, request));
+  if (runPrune) runPrune.addEventListener("click", (event) => void _removeMissing(els, event.currentTarget, request));
+  if (runStats)  runStats.addEventListener("click",  (event) => void _run(els, "stats", [], event.currentTarget, request));
   if (runStop) {
     runStop.addEventListener("click", (event) => {
       const control = event.currentTarget;
       const epoch = captureAuthenticatedRequestEpoch();
-      void withDisabled(control, () => requestJson(
+      void withDisabled(control, () => request(
         "/api/library/stop", { method: "POST" },
       )).catch((errorValue) => {
         if (!isAuthenticatedRequestCurrent(epoch)) return;
@@ -284,15 +286,16 @@ export function installLibraryJobs(els) {
     });
   }
   if (statsRefresh) statsRefresh.addEventListener("click", (event) => {
-    void refreshLibStats(els, event.currentTarget);
+    void refreshLibStats(els, event.currentTarget, { request });
   });
-  if (statCount) void refreshLibStats(els);
+  if (statCount) void refreshLibStats(els, null, { request });
+  return { refresh: () => refreshLibStats(els, null, { quiet: true, request }) };
 }
 
-async function _removeMissing(els, control) {
+async function _removeMissing(els, control, request = libraryRequest) {
   const epoch = captureAuthenticatedRequestEpoch();
   try {
-    const preview = await withDisabled(control, () => requestJson("/api/library/missing"));
+    const preview = await withDisabled(control, () => request("/api/library/missing"));
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     if (!preview.ready) {
       reportJobError(els.jobStatus, "Run a complete, successful rescan before reviewing missing tracks.");
@@ -319,21 +322,21 @@ async function _removeMissing(els, control) {
       confirmLabel: "Confirm large removal",
     });
     if (preview.requires_override && !allowMass) return;
-    const result = await withDisabled(control, () => requestJson("/api/library/remove-missing", {
+    const result = await withDisabled(control, () => request("/api/library/remove-missing", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: preview.token, confirmed: true, allow_mass: allowMass }),
     }));
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     setJobPhase(els.jobStatus, "missing:removed", `Removed ${result.removed} missing tracks; play history was kept.`);
-    await refreshLibStats(els);
+    await refreshLibStats(els, null, { request });
   } catch (errorValue) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     reportJobError(els.jobStatus, failureText("remove missing tracks", errorValue));
   }
 }
 
-async function _run(els, name, args = [], control = null) {
+async function _run(els, name, args = [], control = null, request = libraryRequest) {
   const { jobStatus } = els;
   const running = runningJobName();
   if (running) {
@@ -342,7 +345,7 @@ async function _run(els, name, args = [], control = null) {
   }
   const epoch = captureAuthenticatedRequestEpoch();
   try {
-    await withDisabled(control, () => requestJson("/api/library/run", {
+    await withDisabled(control, () => request("/api/library/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, args }),
@@ -362,14 +365,14 @@ async function _run(els, name, args = [], control = null) {
   }
 }
 
-async function refreshLibStats(els, control = null, { quiet = false } = {}) {
+async function refreshLibStats(els, control = null, { quiet = false, request = libraryRequest } = {}) {
   const {
     statCount, statAvgBpm, statWithKey, statWithGenre, statWithEnergy,
   } = els;
   if (!statCount) return;
   const epoch = captureAuthenticatedRequestEpoch();
   try {
-    const s = await withDisabled(control, () => requestJson("/api/library/stats"));
+    const s = await withDisabled(control, () => request("/api/library/stats"));
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     statCount.textContent       = s.track_count;
     if (s.average_bpm) {
@@ -418,6 +421,6 @@ export function applyLibraryJobState(s, els) {
   const finished = !job.running && job.exit_code != null && job.started_at != null;
   if (finished && current.finishedFor !== job.started_at && installed) {
     current.finishedFor = job.started_at;
-    void followUpFinishedJob(els, job);
+    void followUpFinishedJob(els, job, libraryRequest);
   }
 }

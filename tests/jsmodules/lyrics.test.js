@@ -57,7 +57,7 @@ describe("lyrics request ownership", () => {
     expect(elements.lyricsCard.hidden).toBe(true);
     expect(elements.lyricsList.children).toHaveLength(0);
     expect(fetchImpl).toHaveBeenCalledWith(
-      "/api/lyrics?path=Z%3A%2FMusic%2FA%20%26%20B.flac",
+      "/api/lyrics?path=Z%3A%2FMusic%2FA%20%26%20B.flac&station=default",
       expect.objectContaining({ signal: expect.any(globalThis.AbortSignal) }),
     );
 

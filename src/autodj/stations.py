@@ -189,6 +189,11 @@ class StationPaths:
         return self.state_dir / "station.json"
 
     @property
+    def archive_marker(self) -> Path:
+        """Durable lifecycle state; keeps archive metadata out of editable settings."""
+        return self.state_dir / "lifecycle.json"
+
+    @property
     def schedule(self) -> Path:
         """Scheduled events."""
         return self.state_dir / "schedule.json"
@@ -1598,6 +1603,7 @@ class ExtraStation:
     #: Its ``[player_page]`` settings, so its pages answer while it is stopped.
     player_page: PlayerPageConfig | None = None
     defined_in: str = "config"
+    archived: bool = False
 
 
 @dataclass
@@ -1755,6 +1761,8 @@ class StationRegistry:
         if DEFAULT_SLUG in self._extras:
             raise ValueError(f"station {DEFAULT_SLUG!r} is already registered")
         self._extras[DEFAULT_SLUG] = default
+        # Set by the server while named routes drain for archive/delete.
+        self._deleting: set[str] = set()
         # The name each stopped station shows: its saved one, read the first
         # time it is asked for, then the name it had when it last stopped (it
         # changes only while the station runs).
@@ -1807,6 +1815,8 @@ class StationRegistry:
         Raises:
             KeyError: No station has that name.
         """
+        if slug in self._deleting:
+            raise KeyError(slug)
         running = self._running.get(slug)
         if running is not None and slug not in self._stopping:
             return running
@@ -1886,18 +1896,26 @@ class StationRegistry:
         """
         out = []
         for slug in dict.fromkeys((DEFAULT_SLUG, *self._extras)):
+            if slug in self._deleting:
+                continue
             extra = self._extras[slug]
             out.append(
                 {
                     **self.get(slug).summary(),
                     "autostart": extra.autostart,
                     "autostart_locked": extra.defined_in != "web",
+                    "archived": extra.archived,
                 }
             )
         return out
 
     def editable(self, slug: str) -> Any:
         """Return the running station or its saved editors, without starting playback."""
+        if slug in self._deleting:
+            raise KeyError(slug)
+        extra = self._extras[slug]
+        if extra.archived:
+            raise StationControlError("This station is archived. Restore it before editing it.")
         current = self.get(slug)
         lock = self._locks.get(slug)
         if lock is not None and lock.locked():
@@ -1915,6 +1933,8 @@ class StationRegistry:
 
     def configuration(self, slug: str) -> AutoDJConfig:
         """Saved configuration is available independently of the running engine."""
+        if slug in self._deleting:
+            raise KeyError(slug)
         return self._extras[slug].paths._cfg
 
     def log_labels(self) -> dict[str, str]:
@@ -2017,7 +2037,13 @@ class StationRegistry:
         from autodj.fsutil import atomic_write
 
         with self.configuration_lock:
+            if slug in self._deleting:
+                raise StationControlError("Station maintenance is in progress.")
             extra = self._extras[slug]
+            if extra.archived:
+                raise StationControlError(
+                    "Restore this station before changing Start with the server."
+                )
             if extra.defined_in != "web":
                 raise StationControlError(
                     f"{extra.name} is set in config.toml; change autostart there."
@@ -2027,6 +2053,82 @@ class StationRegistry:
             document["station"]["autostart"] = enabled
             atomic_write(path, json.dumps(document, indent=2) + "\n")
             self._extras[slug] = replace(extra, autostart=enabled)
+
+    async def archive(self, slug: str) -> list[str]:
+        """Stop a station fully, then mark it archived without changing its saved autostart."""
+        from autodj.fsutil import atomic_write
+
+        extra = self._extras[slug]
+        if extra.archived:
+            return []
+        warnings = await self.stop(slug)
+        if warnings:
+            raise StationControlError("The station did not stop cleanly; it was not archived.")
+        async with self._locks[slug]:
+            if slug in self._running or slug in self._stopping or slug in self._stuck:
+                raise StationControlError("The station is still stopping; it was not archived.")
+            with self.configuration_lock:
+                extra = self._extras[slug]
+                atomic_write(
+                    extra.paths.archive_marker,
+                    json.dumps(
+                        {
+                            "version": 1,
+                            "archived": True,
+                            "autostart": extra.autostart,
+                            "archived_at": datetime.now(UTC).isoformat(),
+                        },
+                        indent=2,
+                    )
+                    + "\n",
+                )
+                self._extras[slug] = replace(extra, archived=True)
+        return []
+
+    async def restore(self, slug: str) -> None:
+        """Restore a station's selector/start availability without enabling autostart."""
+        from autodj.fsutil import atomic_write
+
+        async with self._locks[slug]:
+            with self.configuration_lock:
+                extra = self._extras[slug]
+                if not extra.archived:
+                    return
+                try:
+                    state = json.loads(extra.paths.archive_marker.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, ValueError) as exc:
+                    raise StationControlError(
+                        f"Could not read station archive state: {exc}"
+                    ) from exc
+                if not isinstance(state, dict) or state.get("version") != 1:
+                    raise StationControlError(
+                        "Station archive state is invalid; it was not restored."
+                    )
+                state["archived"] = False
+                state["restored_at"] = datetime.now(UTC).isoformat()
+                atomic_write(extra.paths.archive_marker, json.dumps(state, indent=2) + "\n")
+                self._extras[slug] = replace(extra, archived=False)
+
+    def forget_deleted(self, slug: str) -> None:
+        """Unregister a station after its archived folder has been quarantined and purged."""
+        if slug == DEFAULT_SLUG:
+            raise StationControlError("The default station cannot be deleted.")
+        extra = self._extras[slug]
+        if (
+            not extra.archived
+            or slug in self._running
+            or slug in self._stopping
+            or slug in self._stuck
+        ):
+            raise StationControlError("Only a fully stopped archived station can be deleted.")
+        if not self._locks[slug].locked():
+            raise StationControlError("Station deletion must hold its lifecycle lock.")
+        with self.configuration_lock:
+            self._extras.pop(slug)
+            self._locks.pop(slug)
+            self._content.pop(slug, None)
+            self._stopped_names.pop(slug, None)
+            self._stopped_requests.pop(slug, None)
 
     def stereo_tool_presets(self) -> list[tuple[str, str]]:
         """(station name, Stereo Tool preset) for every configured station.
@@ -2046,7 +2148,7 @@ class StationRegistry:
         """Start configured autostart stations; a failure leaves the server available."""
         for slug in dict.fromkeys((DEFAULT_SLUG, *self._extras)):
             extra = self._extras.get(slug)
-            if extra is None or not extra.autostart:
+            if extra is None or extra.archived or not extra.autostart:
                 continue
             try:
                 await self.start(slug)
@@ -2061,6 +2163,10 @@ class StationRegistry:
             StationControlError: The station could not start.
         """
         extra = self._extras[slug]
+        if slug in self._deleting:
+            raise StationControlError(f"{extra.name} is undergoing station maintenance.")
+        if extra.archived:
+            raise StationControlError(f"{extra.name} is archived. Restore it before starting it.")
         self._refuse_while_stopping(extra)
         # Shielded: a request cancelled at shutdown must not leave a
         # half-built station running outside the registry.
@@ -2083,6 +2189,13 @@ class StationRegistry:
         async with self._locks[slug]:
             if self._closing:
                 raise StationControlError("The server is shutting down.")
+            extra = self._extras[slug]
+            if slug in self._deleting:
+                raise StationControlError(f"{extra.name} is undergoing station maintenance.")
+            if extra.archived:
+                raise StationControlError(
+                    f"{extra.name} is archived. Restore it before starting it."
+                )
             # Again, now the lock is held: a stop may have begun meanwhile.
             self._refuse_while_stopping(extra)
             running = self._running.get(slug)
@@ -2320,7 +2433,7 @@ class StationRegistry:
 
 
 class SharedLibrary:
-    """The music library every station plays from: its scan, tick and close."""
+    """One music library shared by its stations: scan, tick and close."""
 
     def __init__(self, library: LibraryManager | None, stations: StationRegistry) -> None:
         self.library = library
@@ -2355,6 +2468,11 @@ class SharedLibrary:
     def _first_songs_pending(self) -> bool:
         """Whether a station with a mix bus has not started its first song yet."""
         for station in self._stations.all():
+            if (
+                getattr(getattr(station, "bridge", None), "library", self.library)
+                is not self.library
+            ):
+                continue
             player = getattr(station, "player", None)
             started = getattr(player, "first_song_started", None)
             if (
@@ -2377,6 +2495,11 @@ class SharedLibrary:
     def _scan_done(self) -> None:
         """After a clean scan (on its thread): forget liner dates and song intros now gone."""
         for station in self._stations.all():
+            if (
+                getattr(getattr(station, "bridge", None), "library", self.library)
+                is not self.library
+            ):
+                continue
             try:
                 prune_liner_dates(station)
             except Exception:
@@ -2431,7 +2554,10 @@ class SharedLibrary:
             try:
                 from autodj.dj_meta import close_cache
 
-                await asyncio.to_thread(close_cache)
+                await asyncio.to_thread(
+                    close_cache,
+                    self.library.cfg.index.library_dir if self.library is not None else None,
+                )
                 cache_closed = True
             except Exception:  # pragma: no cover -- defensive shutdown logging
                 logger.debug("shutdown: DJ-meta close failed", exc_info=True)
@@ -2455,7 +2581,8 @@ class SharedLibrary:
 
             library.tick()
             for station in self._stations.all():
-                apply_repeat_windows(station.player)
+                if getattr(getattr(station, "bridge", None), "library", self.library) is library:
+                    apply_repeat_windows(station.player)
 
         while True:
             await asyncio.to_thread(tick)

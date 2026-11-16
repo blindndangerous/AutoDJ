@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -13,7 +14,9 @@ from starlette.websockets import WebSocketDisconnect
 from autodj.config import ServerConfig, StationConfig
 from autodj.security import station_relative
 from autodj.server import PlayerBridge
+from autodj.station_deletion import StationDeletionError
 from autodj.station_routes import STATION_PREFIX
+from autodj.stations import ExtraStation, StationPaths
 from tests._layout import point_index
 from tests._server import create_app
 
@@ -65,6 +68,9 @@ SHARED = frozenset(
         "/api/server/certificates/{certificate_id}",
         "/api/server/certificates/{certificate_id}/activate",
         "/api/server/certificates/{certificate_id}/download",
+        "/api/libraries",
+        "/api/libraries/{library_id}",
+        "/api/libraries/{library_id}/check",
         "/api/library/tracks",
         "/api/library/folders",
         "/api/library/folders/{source_id}",
@@ -92,13 +98,22 @@ SHARED = frozenset(
         "/api/analysis/workers/{token_id}/refusal",
         "/api/worker-pair",
         "/api/worker/claim",
+        "/api/worker/libraries/{library_id}/claim",
         "/api/worker/audio",
+        "/api/worker/libraries/{library_id}/audio",
         "/api/worker/result",
+        "/api/worker/libraries/{library_id}/result",
         "/api/worker/failed",
+        "/api/worker/libraries/{library_id}/failed",
         "/api/worker/heartbeat",
+        "/api/worker/libraries/{library_id}/heartbeat",
         "/api/worker/release",
+        "/api/worker/libraries/{library_id}/release",
         # The station list, and starting and stopping a station by name.
         "/api/stations",
+        "/api/stations/{slug}/archive",
+        "/api/stations/{slug}/restore",
+        "/api/stations/{slug}",
         "/api/stations/{slug}/start",
         "/api/stations/{slug}/autostart",
         "/api/stations/{slug}/stop",
@@ -398,6 +413,97 @@ def test_a_named_station_route_acts_on_that_station(tmp_path: Path) -> None:
     listed = client.get("/api/schedule").json()["events"]
     assert [event["id"] for event in listed] == [created.json()["id"]]
     assert (tmp_path / "stations" / "default" / "schedule.json").is_file()
+
+
+def test_archived_default_cannot_start_or_delete_and_restore_does_not_start(
+    tmp_path: Path,
+) -> None:
+    """ADR-0005-06 and ADR-0010-09: archive protects default and restore leaves it stopped."""
+    client, _bridge = _app(tmp_path)
+    registry = client.app.state.stations
+    registry._running.pop("default")
+
+    archived = client.post("/api/stations/default/archive")
+    assert archived.status_code == 200, archived.text
+    assert archived.json()["archived"] is True
+    assert client.post("/api/stations/default/start").status_code == 409
+    assert (
+        client.request(
+            "DELETE", "/api/stations/default", json={"confirmation": "DELETE"}
+        ).status_code
+        == 409
+    )
+
+    restored = client.post("/api/stations/default/restore")
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["archived"] is False
+    assert "default" not in registry._running
+
+
+def test_archive_unknown_station_is_404_and_maintenance_blocks_named_routes() -> None:
+    """ADR-0005-06 and ADR-0010-09: lifecycle gates reject stale station requests."""
+    client, _bridge = _app()
+    unknown = client.post("/api/stations/missing/archive")
+    assert unknown.status_code == 404
+
+    registry = client.app.state.stations
+    registry._deleting.add("default")
+    try:
+        response = client.post("/api/stations/default/start")
+    finally:
+        registry._deleting.discard("default")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Station maintenance is in progress."
+
+
+def test_committed_delete_cleanup_failure_unregisters_station(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0005-07 and ADR-0010-10: committed cleanup failures never re-expose a station."""
+    from autodj.config import _build_station
+
+    player = _make_player_mock()
+    point_index(player._cfg.index, tmp_path)
+    spec = replace(
+        _build_station("nightowl", {"stream": {"station_name": "Night Owl"}}, player._cfg),
+        defined_in="web",
+    )
+    extra = ExtraStation(
+        slug="nightowl",
+        name="Night Owl",
+        autostart=False,
+        paths=StationPaths.for_station(spec.cfg, "nightowl"),
+        preset="included",
+        build=lambda _registry: None,
+        archived=True,
+    )
+    player._cfg.stations = (spec,)
+    bridge = PlayerBridge(player=player, sim=_make_sim_mock())
+    client = TestClient(create_app(bridge, extra_stations=(extra,)))
+    registry = client.app.state.stations
+    library = MagicMock()
+    library.catalog.sources.return_value = []
+    library._scan_lock.locked.return_value = False
+    library._cleanup_active = False
+    client.app.state.library_services.library = library
+    monkeypatch.setattr(
+        "autodj.station_deletion.delete_archived_station",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            StationDeletionError("committed recovery pending", committed=True)
+        ),
+    )
+
+    response = client.request(
+        "DELETE",
+        "/api/stations/nightowl",
+        json={"confirmation": "DELETE", "delete_voice_recordings": False},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["committed"] is True
+    assert response.json()["cleanup_pending"] is True
+    assert "nightowl" not in registry.slugs()
+    assert all(item["slug"] != "nightowl" for item in player._cfg.stations)
 
 
 def test_an_unknown_station_is_404_and_a_stopped_one_409() -> None:

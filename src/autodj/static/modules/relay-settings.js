@@ -13,8 +13,8 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
   const rows = id("relay-rows");
   const form = id("relay-form");
   const formError = id("relay-form-error");
-  const metadata = [id("station-name"), id("station-genre"), id("station-description"), id("station-url")];
-  const metadataKeys = ["station_name", "genre", "description", "url"];
+  const metadata = [id("station-genre"), id("station-description"), id("station-url")];
+  const metadataKeys = ["genre", "description", "url"];
   metadata.forEach((control, index) => {
     const key = metadataKeys[index];
     registerSettingsGroup({

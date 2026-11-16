@@ -202,6 +202,45 @@ describe("Settings drafts", () => {
     expect(JSON.parse(mocks.request.mock.calls[0][1].body)).toEqual({ revision: "one", changes: { playback: { music_speed_percent: 3 } }, profile: "" });
     expect(drafts.settingsHaveChanges()).toBe(false);
   });
+  it("runs save preflight before PATCH and follows up only after a complete save", async () => {
+    const beforeSave = vi.fn(async () => "restart");
+    const afterSave = vi.fn(async (_value, context) => `${context.station} restarted.`);
+    register("playback", { beforeSave, afterSave });
+    drafts.applySettingsDrafts(snapshot("one", 0)); edit(2);
+    mocks.request.mockResolvedValue({ revision: "two", applied: ["playback"], settings: snapshot("two", 2) });
+
+    expect(await drafts.saveSettingsPanel(panel)).toBe(true);
+    expect(beforeSave).toHaveBeenCalledWith({ music_speed_percent: 2 }, { music_speed_percent: 0 },
+      expect.objectContaining({ station: "default" }));
+    expect(mocks.request).toHaveBeenCalledOnce();
+    expect(afterSave).toHaveBeenCalledWith({ music_speed_percent: 2 },
+      expect.objectContaining({ station: "default", decision: "restart" }));
+    await vi.waitFor(() => expect(panel.querySelector(".settings-save-status").textContent).toContain("default restarted."));
+  });
+
+  it("does not save or run follow-up when preflight is cancelled", async () => {
+    const afterSave = vi.fn();
+    register("playback", { beforeSave: vi.fn(async () => false), afterSave });
+    drafts.applySettingsDrafts(snapshot()); edit(2);
+
+    expect(await drafts.saveSettingsPanel(panel)).toBe(false);
+    expect(mocks.request).not.toHaveBeenCalled();
+    expect(afterSave).not.toHaveBeenCalled();
+    expect(drafts.settingsHaveChanges()).toBe(true);
+  });
+
+  it("does not run follow-up after a partial settings save", async () => {
+    const afterSave = vi.fn();
+    register("playback", { beforeSave: vi.fn(async () => "restart"), afterSave });
+    drafts.applySettingsDrafts(snapshot()); edit(2);
+    mocks.request.mockResolvedValue({ revision: "two", applied: [], failed: { playback: "Not saved." },
+      settings: snapshot("two", 0) });
+
+    expect(await drafts.saveSettingsPanel(panel)).toBe(false);
+    expect(afterSave).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(panel.querySelector(".settings-save-status").textContent).toContain("No settings were saved."));
+  });
+
   it("loads and saves the selected profile without following runtime pushes", async () => {
     register();
     mocks.request.mockResolvedValue({ ...snapshot("profile-rev", 1), profile: "Late" });

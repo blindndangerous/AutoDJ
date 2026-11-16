@@ -51,7 +51,7 @@ describe("Settings subtabs markup", () => {
     for (const list of [profileList, stationList, globalList]) expect(list.hidden).toBe(false);
     expect(profileList.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect(stationList.querySelectorAll('[role="tab"]')).toHaveLength(5);
-    expect([...globalList.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Server", "Analysis workers", "Update and restart", "Browser preferences"]);
+    expect([...globalList.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(["Server", "Stations", "Libraries", "Analysis workers", "Update and restart", "Browser preferences"]);
     expect(profileList.compareDocumentPosition(stationList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(stationList.compareDocumentPosition(globalList) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const targetRow = byId("settings-profile").closest(".profile-target-row");
@@ -59,8 +59,8 @@ describe("Settings subtabs markup", () => {
     expect(targetRow.compareDocumentPosition(byId("spanel-mixing")) & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const tabs = [...outer.querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent)).toEqual([
-      "Mixing", "Song picking", "Sound", "Announcements", "Stations",
-      "Profiles", "Broadcasting", "Requests", "Schedule", "Server", "Analysis workers", "Update and restart", "Browser preferences",
+      "Mixing", "Song picking", "Sound", "Announcements", "General",
+      "Profiles", "Broadcasting", "Requests", "Schedule", "Server", "Stations", "Libraries", "Analysis workers", "Update and restart", "Browser preferences",
     ]);
     expect(byId("spanel-requests").getAttribute("role")).toBe("tabpanel");
     expect(byId("spanel-requests").getAttribute("aria-labelledby")).toBe("stab-requests");
@@ -201,6 +201,10 @@ describe("initSubtabs", () => {
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-workers"));
     press(document.activeElement, "ArrowLeft");
+    expect(document.activeElement).toBe(byId("stab-libraries"));
+    press(document.activeElement, "ArrowLeft");
+    expect(document.activeElement).toBe(byId("stab-station-management"));
+    press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-server"));
     byId("stab-display").focus();
     press(document.activeElement, "Home");
@@ -231,6 +235,22 @@ describe("initSubtabs", () => {
     expect(ui.selected).toBe("sound");
   });
 
+  it("maps the previous Stations preference to General", () => {
+    const storage = memoryStorage();
+    storage.data.set("autodj.settingsSubtab", "stations");
+    const { ui } = setup(storage);
+    expect(ui.selected).toBe("general");
+    expect(byId("stab-stations").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("remembers the new Global > Stations tab separately", () => {
+    const { ui, storage } = setup();
+    byId("stab-station-management").click();
+    expect(ui.selected).toBe("station-management");
+    expect(storage.data.get("autodj.settingsSubtab")).toBe("station-management");
+    expect(setup(storage).ui.selected).toBe("station-management");
+  });
+
   it("shows Stream only when asked and leaves it when it goes", () => {
     const { ui } = setup();
     ui.setTabHidden("stream", false);
@@ -238,7 +258,7 @@ describe("initSubtabs", () => {
     expect(byId("spanel-stream").hidden).toBe(false);
     ui.setTabHidden("stream", true);
     expect(byId("stab-stream").hidden).toBe(true);
-    expect(ui.selected).toBe("stations");
+    expect(ui.selected).toBe("general");
     expect(byId("spanel-stream").hidden).toBe(true);
     ui.focusSelected();
     expect(document.activeElement).toBe(byId("stab-stations"));

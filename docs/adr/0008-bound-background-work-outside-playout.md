@@ -661,3 +661,13 @@ Workers and servers negotiate a versioned scan protocol. A worker with a differe
 version does not publish incompatible scan features; the server handles those scans locally.
 Existing compatible vector work remains available under the worker's model and embedding identity
 checks. These additions document the Issue #594 boundary and retain this ADR's Proposed status.
+
+## Amendment, 2026-11-15: named library ownership
+
+Issues [#801](https://github.com/blindndangerous/AutoDJ/issues/801) and
+[#802](https://github.com/blindndangerous/AutoDJ/issues/802) introduce named
+libraries and a saved library choice per station.
+[ADR 23](0023-named-libraries-with-station-bindings.md) records the proposed
+ownership extension, migration and verification. Station history remains
+station-owned; the earlier single-library description is retained as history.
+This amendment does not change this record's acceptance status.

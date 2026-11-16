@@ -18,6 +18,7 @@ import os
 import shutil
 import socket
 import sqlite3
+import stat
 import subprocess  # nosec B404 -- nvidia-smi with a fixed argv, never a shell
 import sys
 import tomllib
@@ -1151,7 +1152,7 @@ def run_doctor(
         checks += [
             *_checked(_time_checks_check, cfg),
             *_checked(_voice_pack_checks, cfg),
-            *_checked(_categories_check, cfg),
+            *_checked(_station_categories_check, cfg),
         ]
     checks += [*_checked(_config_keys_check, cfg), *_checked(_restore_check, cfg)]
     if default:
@@ -1160,11 +1161,152 @@ def run_doctor(
         if station in (None, spec.slug):
             checks += _checked(_station_checks, cfg, spec)
     checks += _checked(_station_folders_check, cfg)
+    checks += _station_deletion_checks(cfg)
+    checks += _checked(_named_library_checks, cfg)
     checks += [
         DoctorCheck("station-definition", CheckStatus.WARN, f"{path}: {reason}")
         for path, reason in cfg.skipped_definitions
     ]
     return DoctorReport(tuple(checks))
+
+
+def _station_deletion_checks(cfg: AutoDJConfig) -> list[DoctorCheck]:
+    """Report interrupted deletion journals and operator-retained station audio."""
+    from autodj.station_deletion import StationDeletionError, _no_link_components, _paths
+
+    _root, journal_dir, retained_root = _paths(cfg)
+    checks: list[DoctorCheck] = []
+    try:
+        _no_link_components(journal_dir)
+        _no_link_components(retained_root)
+    except StationDeletionError as exc:
+        return [
+            DoctorCheck(
+                "station-deletion-recovery",
+                CheckStatus.FAIL,
+                "station deletion storage contains a linked path",
+                str(exc),
+            )
+        ]
+    if cfg.station_deletion_recovery_problem:
+        checks.append(
+            DoctorCheck(
+                "station-deletion-recovery",
+                CheckStatus.FAIL,
+                "an interrupted station deletion needs recovery",
+                cfg.station_deletion_recovery_problem,
+            )
+        )
+    journals: list[dict[str, Any]] = []
+    if journal_dir.is_dir() and not journal_dir.is_symlink() and not journal_dir.is_junction():
+        for path in sorted(journal_dir.glob("*.json")):
+            try:
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    journals.append({"journal": str(path), "phase": "unsafe"})
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+                journals.append(
+                    {
+                        "journal": str(path),
+                        "station": data.get("slug") if isinstance(data, dict) else None,
+                        "phase": data.get("phase") if isinstance(data, dict) else "unreadable",
+                    }
+                )
+            except (OSError, UnicodeError, ValueError):
+                journals.append({"journal": str(path), "phase": "unreadable"})
+    if journals and not cfg.station_deletion_recovery_problem:
+        checks.append(
+            DoctorCheck(
+                "station-deletion-recovery",
+                CheckStatus.WARN,
+                "station deletion work remains pending",
+                {"journals": journals},
+            )
+        )
+    retained = []
+    if (
+        retained_root.is_dir()
+        and not retained_root.is_symlink()
+        and not retained_root.is_junction()
+    ):
+        retained = [
+            str(path)
+            for path in sorted(retained_root.iterdir())
+            if not path.is_symlink() and not path.is_junction() and path.is_dir()
+        ]
+    if retained:
+        checks.append(
+            DoctorCheck(
+                "retained-station-audio",
+                CheckStatus.WARN,
+                f"{len(retained)} retained station audio folder(s) are available for recovery",
+                {"folders": retained},
+            )
+        )
+    return checks
+
+
+def _named_library_checks(cfg: AutoDJConfig) -> list[DoctorCheck]:
+    """Inspect every catalog and station assignment without adopting legacy data."""
+    from autodj.config import LibraryConfig
+    from autodj.library_registry import LibraryRegistry
+
+    registry = LibraryRegistry(cfg.index.index_dir / "libraries")
+    try:
+        definitions = registry.list(allow_legacy_main=True)
+    except (OSError, ValueError) as exc:
+        return [
+            DoctorCheck("libraries", CheckStatus.FAIL, "Library definitions are invalid", str(exc))
+        ]
+    checks = []
+    known = {"main", *(item.id for item in definitions)}
+    assignments = [("default", cfg.default_station.cfg if cfg.default_station is not None else cfg)]
+    assignments.extend((spec.slug, spec.cfg) for spec in cfg.stations)
+    for slug, station_cfg in assignments:
+        if station_cfg.station.library_id not in known:
+            checks.append(
+                DoctorCheck(
+                    "station-library",
+                    CheckStatus.FAIL,
+                    f"Library {station_cfg.station.library_id!r} is missing",
+                    station=slug,
+                )
+            )
+    for item in definitions:
+        if item.id == "main":
+            continue
+        try:
+            selected = replace(
+                cfg,
+                index=replace(cfg.index, library_id=item.id),
+                library=LibraryConfig.from_dict(item.settings),
+            )
+        except (TypeError, ValueError) as exc:
+            checks.append(
+                DoctorCheck(
+                    f"library-{item.id}-settings",
+                    CheckStatus.FAIL,
+                    "Library settings are invalid",
+                    str(exc),
+                )
+            )
+            continue
+        for inspect in (
+            _music_paths_check,
+            _beets_db_check,
+            _index_check,
+            _dj_meta_database_check,
+            _related_artists_check,
+            _related_tracks_check,
+        ):
+            checks.extend(
+                # Existing repair actions take the root configuration. Do not
+                # offer one for a different catalog without its library context.
+                replace(check, name=f"library-{item.id}-{check.name}", repair=None)
+                for check in _checked(inspect, selected)
+            )
+    return checks
 
 
 def _restore_check(cfg: AutoDJConfig) -> tuple[DoctorCheck, ...]:
@@ -1209,6 +1351,30 @@ def _table(paths: StationPaths | None, section: str) -> str:
     return f"[stations.{paths.slug}.{section}]"
 
 
+def _station_categories_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> DoctorCheck:
+    """Check categories against the selected library without masking other diagnostics."""
+    from autodj.config import LibraryConfig
+    from autodj.library_registry import LibraryRegistry
+
+    library_id = cfg.station.library_id
+    if library_id != "main":
+        try:
+            definition = LibraryRegistry(cfg.index.index_dir / "libraries").get(library_id)
+            cfg = replace(
+                cfg,
+                index=replace(cfg.index, library_id=library_id),
+                library=LibraryConfig.from_dict(definition.settings),
+            )
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            return DoctorCheck(
+                "categories",
+                CheckStatus.SKIP,
+                f"Cannot check categories: library {library_id!r} is unavailable",
+                str(exc),
+            )
+    return _categories_check(cfg, paths)
+
+
 def _station_checks(cfg: AutoDJConfig, spec: StationSpec) -> list[DoctorCheck]:
     """The checks of one station besides the default one, from its own configuration."""
     from autodj.config import station_config
@@ -1226,7 +1392,7 @@ def _station_checks(cfg: AutoDJConfig, spec: StationSpec) -> list[DoctorCheck]:
         *_checked(_relay_checks, own, paths=paths),
         *_checked(_time_checks_check, own, paths),
         *_checked(_voice_pack_checks, own, paths),
-        *_checked(_categories_check, own, paths),
+        *_checked(_station_categories_check, own, paths),
         *_checked(_recording_check, own, paths),
         *_checked(_liners_check, own, paths),
     ]

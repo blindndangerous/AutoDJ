@@ -2,6 +2,7 @@
 // preparation; 0 permits model analysis at every length.
 import { clearFieldError, showFieldError } from "./dom-helpers.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
+import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent } from "./api-client.js";
 
 const MAX_ADVANCED_MINUTES = 600;
 
@@ -15,7 +16,11 @@ export function advancedLengthProblem(text) {
 }
 
 // *isCurrent()* is false when the session has ended or the panel was cleared.
-export function installAdvancedLength({ document: doc, request, isCurrent = () => true }) {
+function libraryUrl(url, libraryId) {
+  return `${url}${url.includes("?") ? "&" : "?"}library=${encodeURIComponent(libraryId || "main")}`;
+}
+
+export function installAdvancedLength({ document: doc, request, getLibrary = () => "main", getLibraryName = getLibrary, isCurrent = () => true }) {
   const input = doc.getElementById("advanced-length");
   const error = doc.getElementById("advanced-length-error");
   if (!input || !error) return null;
@@ -29,13 +34,22 @@ export function installAdvancedLength({ document: doc, request, isCurrent = () =
     input.value = Number.isInteger(minutes) && minutes >= 0 ? String(minutes) : "15";
   }
 
-  async function load() {
+  async function load({ libraryId = getLibrary(), accept = true } = {}) {
     const ticket = ++loaded;
+    const epoch = captureAuthenticatedRequestEpoch();
     try {
-      const value = await request("/api/library/advanced-length");
-      if (ticket === loaded && isCurrent()) draft.accept({ minutes: Number(value?.minutes) });
-    } catch {
+      const value = await request(libraryUrl("/api/library/advanced-length", libraryId));
+      if (ticket !== loaded || !isAuthenticatedRequestCurrent(epoch) || !isCurrent()) return null;
+      const loadedValue = { minutes: Number(value?.minutes) };
+      if (accept) {
+        if (getLibrary() !== libraryId) return null;
+        draft.accept(loadedValue);
+      }
+      return loadedValue;
+    } catch (error) {
       // The field keeps what it shows; Save reports any problem.
+      if (ticket === loaded && isAuthenticatedRequestCurrent(epoch) && isCurrent()) throw error;
+      return null;
     }
   }
 
@@ -45,7 +59,9 @@ export function installAdvancedLength({ document: doc, request, isCurrent = () =
   const groupPanel = input.closest('[role="tabpanel"]') || doc.getElementById("panel-library") || input.parentElement;
   const draft = registerSettingsGroup({
     panel: groupPanel,
-    scope: "server",
+    loadSettings: false,
+    scope: "library",
+    scopeName: () => `Library: ${getLibraryName()}`,
     controls: [input],
     read: () => ({ minutes: Number(input.value) }),
     write: (value) => show(value),
@@ -58,7 +74,7 @@ export function installAdvancedLength({ document: doc, request, isCurrent = () =
     describe: (value) => value.minutes === 0
       ? "Similarity analysis has no length limit."
       : `Songs longer than ${value.minutes} minutes get audio analysis only.`,
-    commit: (value) => request("/api/library/advanced-length", {
+    commit: (value) => request(libraryUrl("/api/library/advanced-length", getLibrary()), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ minutes: value.minutes }),
@@ -67,6 +83,11 @@ export function installAdvancedLength({ document: doc, request, isCurrent = () =
   clearError();
   return {
     load,
+    accept(value, libraryId) {
+      if (getLibrary() !== libraryId || !isCurrent()) return false;
+      draft.accept(value);
+      return true;
+    },
     clear() {
       loaded += 1;
       clearError();

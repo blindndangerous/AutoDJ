@@ -7,7 +7,7 @@ Look up canonical station configuration, public and paired routes, lifecycle sta
 ## Configuration
 
 Every station has `<index_dir>/stations/<slug>/station.json`, including `stations/default/`.
-Use Settings > Station > Stations to create or duplicate a station and set whether it starts with the
+Use Settings > Global > Stations to create or duplicate a station and set whether it starts with the
 server. The slug uses lower-case letters, digits and inner hyphens, up to 32 characters.
 A server supports the default station and up to eight additional stations.
 
@@ -17,8 +17,8 @@ legacy relay environment passwords when their matching relays exist. Normal load
 migrated format; old TOML keys and default-only `AUTODJ_STREAM_*` variables are not fallback
 settings. Station secrets live separately in `secrets.json` and `relays.json` and remain excluded
 from backups. Server and library configuration remain in `config.toml`. Fresh installations
-configure every station in its `station.json`; existing settings can also be changed in Settings,
-Stations.
+configure every station in its `station.json`; station-owned settings can also be changed in
+Settings under **Station > General** and the other Station tabs.
 
 The top-level `station` object in `station.json` contains the station's settings sections. Its
 nested `station` section holds output, time zone, upload size and log label, for example:
@@ -40,7 +40,7 @@ nested `station` section holds output, time zone, upload size and log label, for
 }
 ```
 
-Settings > Station > Stations edits these options for the selected station, including while it is stopped.
+Settings > Station > General edits these options for the selected station, including while it is stopped.
 Output can be `browser`, `server` (sound card), or `stream`. In stream mode, `server_audio_too`
 also sends audio to the sound card. Stations may play on the same sound card simultaneously.
 Output and timezone changes take effect on that station's next start; upload size and log label
@@ -125,7 +125,7 @@ Every control route of a station answers under `/api/stations/<slug>/`, for exam
 `/api/stations/nightowl/queue/add`; the default station keeps its `/api/...` addresses. These
 need a paired browser, like the default station's.
 
-- `GET /api/stations` lists every configured station: its slug, `defined_in` (`config` or `web`), name, state (`stopped`,
+- `GET /api/stations` lists every configured station: its slug, `defined_in` (`config` or `web`), name, `archived` flag, state (`stopped`,
   `stopping`, `stuck stopping`, `idle`, `playing` or `paused`), listener count and current
   song, and its public addresses: `status_path`, `nowplaying_path`, `stream_path`, `m3u_path`,
   `player_path` and `embed_path`. The stream and playlist are `null` for a station that
@@ -146,6 +146,19 @@ need a paired browser, like the default station's.
   a duplicate name or ID, existing state folder or play history, station limit, or conflicting
   recording or relay location returns 409. A server without the shared library returns 503.
   The route requires a paired browser and an allowed Origin, and caps the body at 4 KiB.
+- `POST /api/stations/<slug>/archive` stops and archives a station. It refuses an incomplete
+  stop or station-writing work. An archived station remains in management but cannot start and
+  is excluded from the station switcher. Its saved autostart choice is retained but suppressed.
+- `POST /api/stations/<slug>/restore` makes an archived station available again without starting
+  it. The default station can be archived and restored.
+- `DELETE /api/stations/<slug>` permanently deletes an archived non-default station. The JSON
+  body requires `confirmation: "DELETE"`; `delete_voice_recordings` is a Boolean that defaults
+  to `false`. The operation quarantines the station directory before removal. With the default
+  choice, station-owned audio is retained under `<index_dir>/retained-station-audio/` with a
+  recovery manifest. Shared music sources and external recording or time-check folders are not
+  deleted. A response with `cleanup_pending: true` means the station deletion is committed, but
+  catalog metadata cleanup or interrupted physical cleanup still needs recovery; do not move the
+  station directory back. `autodj doctor` reports pending recovery and retained audio.
 - `POST /api/stations/<slug>/start` builds and starts a stopped station. Starting a running
   station changes nothing.
 - `POST /api/stations/<slug>/stop` stops a station completely: its listeners are disconnected,
@@ -205,7 +218,7 @@ installation's Python environment; this imports modules without starting the ser
 
 A log line from a station starts with its slug, such as `[nightowl] Stream station tick failed`
 or `[default] Stream station tick failed`. A station with a log label (`station.log_label`, or
-**Log label** in Settings, Station, Stations) shows the label instead, such as `[nor] Stream station tick
+**Log label** in Settings, Station, General) shows the label instead, such as `[nor] Stream station tick
 failed`. A label change applies to the next line logged, without a restart.
 
 AutoDJ refuses a label that another station uses or that is another station's ID, ignoring case.

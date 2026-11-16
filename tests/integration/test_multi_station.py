@@ -194,9 +194,9 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fixture
     closes: list[str] = []
     real_close = __import__("autodj.dj_meta", fromlist=["close_cache"]).close_cache
 
-    def close_cache() -> None:
+    def close_cache(library_dir=None) -> None:
         closes.append("closed")
-        real_close()
+        real_close(library_dir)
 
     monkeypatch.setattr("autodj.dj_meta.close_cache", close_cache)
     cfg = load_config(_write_config(tmp_path, **values), environ={})
@@ -527,6 +527,7 @@ def test_two_stations_run_side_by_side(rig: Any) -> None:
         "embed_path": "/stations/nightowl/embed",
         "autostart": True,
         "autostart_locked": False,
+        "archived": False,
     }
     assert listing["default"]["player_path"] is None
     assert listing["default"]["embed_path"] is None
@@ -733,6 +734,7 @@ def test_stopped_station_time_and_output_settings_round_trip(rig: Any) -> None:
     assert output_response.status_code == 200
     station_values = output_response.json()["settings"]["values"]["station"]
     assert station_values == {
+        "library_id": "main",
         "liner_upload_max_mib": 12,
         "log_label": "",
         "output": "stream",

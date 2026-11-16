@@ -173,7 +173,7 @@ export function installTagEditor({ document: doc = document, request = requestJs
       const record = await withDisabled(form, () => request("/api/library/tags", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path, tags: changed, beets: !!(beets && !beetsLabel?.hidden && beets.checked), write_file: file, ...(station !== "default" ? { station } : {}) }),
+        body: JSON.stringify({ path, tags: changed, beets: !!(beets && !beetsLabel?.hidden && beets.checked), write_file: file, station }),
       }), { signal: busy.signal });
       if (mine !== generation || !isAuthenticatedRequestCurrent(epoch) || !isCurrent() || getStation() !== station) return false;
       const keepBeets = beets?.checked;

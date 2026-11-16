@@ -158,6 +158,19 @@ def _load_cfg_or_exit(
             if handler is not None:
                 early.setTarget(handler)
                 early.flush()
+        context = click.get_current_context(silent=True)
+        library_id = (
+            (context.find_root().obj or {}).get("library_id", "main") if context else "main"
+        )
+        if library_id != "main":
+            from dataclasses import replace
+
+            from autodj.config import LibraryConfig
+            from autodj.library_registry import LibraryRegistry
+
+            definition = LibraryRegistry(cfg.index.index_dir / "libraries").get(library_id)
+            cfg.index = replace(cfg.index, library_id=library_id)
+            cfg.library = LibraryConfig.from_dict(definition.settings)
         return cfg
     except LayoutError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -377,8 +390,9 @@ def _print_serve_url_banner(
     default=False,
     help="Enable debug logging (otherwise info / warning / error are shown).",
 )
+@click.option("--library", "library_id", default="main", help="Library ID for library commands.")
 @click.pass_context
-def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
+def cli(ctx: click.Context, config_path: str | None, verbose: bool, library_id: str) -> None:
     """AutoDJ — AI-powered local music continuity player.
 
     Indexes your music library using MuQ audio embeddings and plays songs
@@ -386,6 +400,22 @@ def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
     """
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config_path
+    from autodj.library_registry import validate_library_id
+
+    try:
+        ctx.obj["library_id"] = validate_library_id(library_id)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--library") from exc
+    if library_id != "main" and ctx.invoked_subcommand not in {
+        "index",
+        "analyse",
+        "analyse-library",
+        "enrich",
+        "stats",
+    }:
+        raise click.UsageError(
+            "--library applies to index, analyse, analyse-library, enrich and stats."
+        )
 
     # Default level INFO so users see boot banners, WS connect /
     # disconnect, background analysis progress, and external-cue import
@@ -1354,6 +1384,9 @@ def cmd_download_model(ctx: click.Context) -> None:
 
 @cli.command("worker")
 @click.option(
+    "--library", "worker_library_id", default="main", help="Music library ID on the server."
+)
+@click.option(
     "--server",
     required=True,
     help="Address of the AutoDJ server, such as https://nas.local:8765.",
@@ -1443,6 +1476,7 @@ def cmd_download_model(ctx: click.Context) -> None:
 @click.pass_context
 def cmd_worker(
     ctx: click.Context,
+    worker_library_id: str,
     server: str,
     token: str | None,
     pair_code: str | None,
@@ -1551,7 +1585,7 @@ def cmd_worker(
         )
 
     try:
-        api = ServerApi(HttpTransport(server, token, ca_cert=ca_cert))
+        api = ServerApi(HttpTransport(server, token, ca_cert=ca_cert), library_id=worker_library_id)
         chosen = choose_device(device)
     except WorkerError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -1813,7 +1847,9 @@ class _ServeCommand(click.Command):
             raise
 
 
-def _claim_index_for_serve(ctx: click.Context, library_dir: Path) -> None:
+def _claim_index_for_serve(
+    ctx: click.Context, library_dir: Path, cfg: AutoDJConfig | None = None
+) -> bool:
     """Refuse to serve a half-restored index; hold the serve lock while serving.
 
     A restore that stopped part way leaves its journal: some files are new
@@ -1839,6 +1875,15 @@ def _claim_index_for_serve(ctx: click.Context, library_dir: Path) -> None:
     except BackupError as exc:
         raise click.ClickException(str(exc)) from exc
     ctx.call_on_close(serve_lock.release)
+    if cfg is None or not cfg.station_deletion_recovery_problem:
+        return False
+    from autodj.station_deletion import recover_station_deletions
+
+    try:
+        recover_station_deletions(cfg)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise click.ClickException(f"Station deletion recovery could not finish: {exc}") from exc
+    return True
 
 
 @cli.command("serve", cls=_ServeCommand)
@@ -2029,9 +2074,15 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         raise click.ClickException(str(exc)) from exc
 
     preflight = ServePreflight(tls_context, origin)
-    _claim_index_for_serve(ctx, cfg.index.library_dir)
+    recovered_station_deletion = _claim_index_for_serve(
+        ctx, cfg.index.index_dir / "libraries" / "main", cfg=cfg
+    )
     # Only a safe preflight and successful claim may migrate layouts, open logs, or save a LAN token.
-    cfg = _load_cfg_or_exit(ctx.obj["config_path"], log_file=True, loaded=cfg)
+    cfg = _load_cfg_or_exit(
+        ctx.obj["config_path"],
+        log_file=True,
+        loaded=None if recovered_station_deletion else cfg,
+    )
     staged_server = _stage_serve_server(
         cfg,
         host=host,
@@ -2055,6 +2106,29 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         and not is_loopback_bind(staged_server.host)
     ):
         console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
+    if recovered_station_deletion:
+        from contextlib import ExitStack
+
+        from autodj.catalog import LibraryCatalog
+        from autodj.library_registry import LibraryRegistry
+        from autodj.station_deletion import cleanup_completed_station_deletions
+
+        try:
+            registry = LibraryRegistry(cfg.index.index_dir / "libraries")
+            roots = {cfg.index.index_dir / "libraries" / "main"}
+            roots.update(item.path for item in registry.list(allow_legacy_main=True))
+            with ExitStack() as opened:
+                catalogs = tuple(
+                    opened.enter_context(LibraryCatalog(path / "library.db"))
+                    for path in sorted(roots)
+                )
+                cleanup_completed_station_deletions(cfg, catalogs)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise click.ClickException(
+                f"Station deletion catalog cleanup could not finish: {exc}"
+            ) from exc
+        cfg.station_deletion_recovery_problem = None
+
     from autodj.library import LibraryManager
 
     library = LibraryManager(cfg, sim, compatibility_checked=True)

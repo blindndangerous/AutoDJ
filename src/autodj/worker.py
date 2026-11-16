@@ -236,7 +236,10 @@ class _CappedFile:
 class ServerApi:
     """The worker routes of one AutoDJ server."""
 
-    def __init__(self, transport: Transport) -> None:
+    def __init__(self, transport: Transport, *, library_id: str = "main") -> None:
+        from autodj.library_registry import validate_library_id
+
+        self.library_id = validate_library_id(library_id)
         self._transport = transport
         self._scan_envelope = False
         self._scan_decode = False
@@ -254,6 +257,8 @@ class ServerApi:
     def _call(
         self, method: str, path: str, body: dict[str, Any] | None = None, sink: Any = None
     ) -> dict[str, Any]:
+        if self.library_id != "main" and path.startswith("/api/worker/"):
+            path = path.replace("/api/worker/", f"/api/worker/libraries/{self.library_id}/", 1)
         status, headers, raw = self._transport.request(method, path, body, sink)
         if 200 <= status < 300:
             return {} if sink is not None else json.loads(raw or b"{}")

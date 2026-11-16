@@ -38,24 +38,26 @@ edits remain pending. Output-mode changes take effect after restarting the stati
 | Sound | Selected station's processing and presets |
 | Announcements | Selected station's liners, time checks and breaks |
 | Profiles | Profile management and activation; Profile to edit applies only to profile-aware controls |
-| Stations | Selected station's output, scheduling timezone, upload limit, log label, display, lyrics, keys and prefetch |
+| General | Selected station's output, scheduling timezone, upload limit, log label, display, lyrics, keys and prefetch |
 | Broadcasting | Station stream formats, metadata, listener limits, retention, public player, DMCA mode, recording configuration and Live DJ talkover |
 | Requests | Station listener-request availability, approval and smooth-transition policy |
 | Schedule | Station schedule definitions and events |
-| Server | Shared analysis limits, time format, Stereo Tool installation and shared licence, browser access |
+| Server | Time format, Stereo Tool installation and shared licence, browser access |
+| Stations | All-station status, start controls and station creation |
+| Libraries | Library names, automatic Segue detection and similarity analysis length |
 | Analysis workers | Worker pairing, worker settings and machine tokens |
 | Update and restart | Update checks, channel, installation and restart |
 | Browser preferences | Browser display, keyboard and audio-device preferences |
 
 Settings keeps three heading-labeled tab groups visible: **Profile**
-(four tabs), **Station** (Stations, Profiles, Broadcasting, Requests and Schedule),
-and **Global** (Server, Analysis workers, Update and restart, and Browser preferences). Each
+(four tabs), **Station** (General, Profiles, Broadcasting, Requests and Schedule),
+and **Global** (Server, Stations, Libraries, Analysis workers, Update and restart, and Browser preferences). Each
 tab opens its settings panel; arrow, Home and End navigation stays within its
 group. The **Profile to edit** selector follows all three groups and is hidden
 while a non-Profile tab is selected. Profile selection edits profile-aware
 controls in their tabs; it does not make server configuration or browser
 preferences profile overrides. Presentation, lyrics, key notation and prefetch
-are station-owned settings in Stations.
+are station-owned settings in **Station > General**.
 
 Relay, scheduled-event and DJ-account forms submit individual records. Profile
 edits use the selected profile in Settings and its shared draft save. Creation,
@@ -63,8 +65,11 @@ activation, reset and deletion remain separate actions on Station > Profiles. Ea
 Uploads, credentials, pairing and destructive actions also retain their explicit
 actions; they are not part of a tab's configuration save. Operational recording
 Start/Stop remains separate from recording configuration.
-The **Start with the server** checkbox edits one station record in **Stations**;
+The **Start with the server** checkbox edits one station record in
+**Global > Stations**;
 Save and Discard appear on that row while its value differs from the server.
+
+Choose **Music library** in **Station > General**. Saving a new library for a running station offers a restart now or on its next start. **Global > Libraries** has a separate library selector for its settings; Library Tools has its own selector for folder and maintenance work.
 
 ### Profiles
 
@@ -280,10 +285,10 @@ Station section: `playback` in `station.json`.
 - `pick_temperature`. Values: number from 0 to 10. Default: 0.3. Controls the randomness among those close songs; has no effect when pick_top_k is 1. **Pick randomness**.
 - `hour_fit`. Values: true or false. Default: false. Prefers songs ending near the next fixed time. **Fit songs to the hour**.
 - `hour_fit_window_minutes`. Values: whole number from 1 to 30. Default: 10. Starts hour fitting this many minutes before the fixed time. **Minutes before to start fitting**.
-- `key_notation`. Values: `camelot` (Camelot (8A or 8B)) or `musical` (Musical (C, A minor, F sharp minor)). Default: `camelot`. Chooses how keys are shown. **Key notation** in Settings, **Station**, **Stations**.
-- `key_prefer_flats`. Values: true or false. Default: false. Uses flat names when musical key notation is selected. **Use flats** in Settings, **Station**, **Stations**.
-- `show_lyrics`. Values: true or false. Default: true. Shows the lyrics card when lyrics exist. **Show lyrics** in Settings, **Station**, **Stations**.
-- `prefetch_next_track`. Values: true or false. Default: true. Loads the next song early for browser playback. Server sound-card and stream playback do not use it: they always prepare the next song while the current one plays. **Load the next song early** in Settings, **Station**, **Stations**.
+- `key_notation`. Values: `camelot` (Camelot (8A or 8B)) or `musical` (Musical (C, A minor, F sharp minor)). Default: `camelot`. Chooses how keys are shown. **Key notation** in Settings, **Station**, **General**.
+- `key_prefer_flats`. Values: true or false. Default: false. Uses flat names when musical key notation is selected. **Use flats** in Settings, **Station**, **General**.
+- `show_lyrics`. Values: true or false. Default: true. Shows the lyrics card when lyrics exist. **Show lyrics** in Settings, **Station**, **General**.
+- `prefetch_next_track`. Values: true or false. Default: true. Loads the next song early for browser playback. Server sound-card and stream playback do not use it: they always prepare the next song while the current one plays. **Load the next song early** in Settings, **Station**, **General**.
 - `silence_trigger_crossfade`. Values: true or false. Default: true. Starts a browser crossfade when the ending song falls silent. **Crossfade when a song goes quiet**.
 - `audio_device`. Values: device number, name fragment, or blank. Default: blank. Selects server speaker output; blank uses the system default.
 - `import_external_cues`. Values: true or false. Default: true. Imports cue points stored by supported DJ tools when songs are analysed.
@@ -301,7 +306,7 @@ Station section: `playback` in `station.json`.
 - `matched_intro_only_without_liner`. Values: true or false. Default: false. Plays matched intros only when no liner is due. **Only when no liner is scheduled**.
 - `liners_talk_up`. Legacy server live overlays and time checks only; values true or false, default false. Retained for existing configurations and live time checks. Saved-point automatic liners always use the shared cue-based handoff; the checkbox applies only to live server overlays. Browser playback ignores this key.
 
-Songs of any length import and play. In **Library tools**, **Advanced analysis length**, set **Longest song, in minutes** to limit the expensive analysis; the default is 15. Set 0 to analyse every length. Longer songs still receive basic analysis.
+Songs of any length import and play. In **Settings > Global > Libraries**, choose a library and set **Similarity analysis maximum song length (minutes)**. The default is 15; 0 means no limit. Longer songs still receive audio analysis when selected.
 
 ### DJ mixing
 
@@ -513,8 +518,8 @@ These values are saved for the selected station or browser rather than in the co
 - **Automatic rescan every** in **Library tools**: **Hours** 0 to 168 and **Minutes** 0 to 59; default 0 and 0 (off). Runs **Rescan** after the last scan ends; the shortest enabled interval is 5 minutes. Automatic scans do not override populated file tags.
 - **Add subfolders** for a registered music folder: on or off; default on. Includes nested folders in import. **Perform advanced analysis**: on or off; default on. Runs sound matching analysis for music in that folder.
 - **Find beats and song structure** in **Library tools**: on or off; default on. Finds beat grids and song sections during basic analysis.
-- **Longest song, in minutes** under **Advanced analysis length** in **Library tools**: 0 or a positive number; default 15. Longer songs get basic analysis only; 0 runs advanced analysis on every length.
-- **Fade detection threshold (dB)** under **Automatic Segue detection** in **Settings**, **Global**, **Server**: 1–30 dB; default 10. Sets the relative drop for new music Segue suggestions. Saved cues stay unchanged. See [cue rescans and fade detection](guides/operations/library.md#rescan-cue-points-in-track-info).
+- **Similarity analysis maximum song length (minutes)** in **Settings**, **Global**, **Libraries**: 0 to 600; default 15. Limits similarity analysis length; 0 means no limit, and longer tracks still get audio analysis when selected.
+- **Fade detection threshold (dB)** under **Automatic Segue detection** in **Settings**, **Global**, **Libraries**: 1–30 dB; default 10. Sets the relative drop for new music Segue suggestions. Saved cues stay unchanged. See [cue rescans and fade detection](guides/operations/library.md#rescan-cue-points-in-track-info).
 - **Display name** in **Settings**, **Station**, **Broadcasting**: printable name up to 80 characters; default blank. Shows the DJ name to listeners and in History while live.
 - **Time format** in **Settings**, **Global**, **Server**: 24 hour or 12 hour; default 24 hour. Changes time display for every station.
 - **Theme** in **Settings**, **Global**, **Browser preferences**: System, Light, or Dark; default System. Changes this browser's colors.
@@ -524,7 +529,7 @@ These values are saved for the selected station or browser rather than in the co
 - **Anchor to seed** in **Song picking**: on or off; default off. Keeps similarity near the session's first song.
 - **BPM range** in **Song picking**: optional minimum and maximum BPM; default blank. Restricts automatic picks.
 - **Inject distant tracks**: on or off; default off. Enables the `discovery_every` interval.
-- **Start with the server** in **Stations**: on or off for a named station; new stations default off. Starts that station on server startup.
+- **Start with the server** in **Global > Stations**: on or off for a named station; new stations default off. Starts that station on server startup.
 - **Source address** and **DJ accounts** in **Broadcasting**: station URL and named DJ credentials; no DJ accounts by default. They let a live source take over a stream.
 - **Return time (seconds)**: 0.1 to 10; default 0.5. Raises the music after browser talkover. **Duck amount (dB)**: 0 to 30; default 12. Lowers music while someone talks.
 - **Record broadcast** in **Broadcasting**: on or off; default off. Saves the server mix as MP3 files.
@@ -541,7 +546,8 @@ AutoDJ creates `stations/default/station.json` at startup. The page creates
 `stations/<slug>/station.json` for each new named station, which starts stopped. The **Start from**
 choice is AutoDJ defaults or a saved station; copied settings exclude secrets, history, relays,
 and requests. **Also copy** can include Clockwheels, Schedule, and Carts. **Start with the server**
-defaults off for a new named station. Station IDs use up to 32 lower-case letters, digits, and
+defaults off for a new named station and is set in **Settings > Global > Stations**.
+Station IDs use up to 32 lower-case letters, digits, and
 hyphens. A named station's saved settings and content can be edited while it is stopped. The
 default streams at `/stream.mp3` when streaming; named stations use `/<slug>.mp3`.
 
