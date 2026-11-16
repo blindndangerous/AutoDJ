@@ -165,19 +165,6 @@ class LibraryRegistry:
             self._write_definition(current.path, library_id, name, current.settings)
             return self._read_definition(current.path)
 
-    def update_settings(self, library_id: str, settings: dict[str, Any]) -> LibraryDefinition:
-        """Replace a library's opaque settings document, preserving identity and name."""
-        library_id = self._validate_id(library_id)
-        settings = self._validate_settings(settings)
-        self._prepare_root(create=False)
-        with self._lock(create=False):
-            definitions = self._list_unlocked()
-            current = next((item for item in definitions if item.id == library_id), None)
-            if current is None:
-                raise KeyError(f"unknown library ID: {library_id}")
-            self._write_definition(current.path, library_id, current.name, settings)
-            return self._read_definition(current.path)
-
     def _prepare_root(self, *, create: bool = True) -> None:
         if self._is_link(self.root):
             raise LibraryRegistryError(f"refusing linked library registry root: {self.root}")

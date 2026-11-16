@@ -73,7 +73,7 @@ def test_ensure_main_recovers_blank_interrupted_definition(tmp_path: Path) -> No
     assert json.loads((main / "library.json").read_text(encoding="utf-8"))["id"] == "main"
 
 
-def test_create_rename_and_settings_keep_stable_path_and_identity(tmp_path: Path) -> None:
+def test_create_and_rename_keep_settings_path_and_identity(tmp_path: Path) -> None:
     registry = LibraryRegistry(tmp_path / "libraries")
     registry.ensure_main()
     created = registry.create("jazz", "Jazz", {"music_folders": ["/music/jazz"]})
@@ -81,14 +81,11 @@ def test_create_rename_and_settings_keep_stable_path_and_identity(tmp_path: Path
     database.write_bytes(b"catalog")
 
     renamed = registry.rename("jazz", "Late Night Jazz")
-    updated = registry.update_settings("jazz", {"analysis": {"enabled": False}})
 
     assert renamed.id == "jazz"
     assert renamed.path == created.path
     assert renamed.settings == created.settings
-    assert updated.name == "Late Night Jazz"
-    assert updated.path == created.path
-    assert updated.settings == {"analysis": {"enabled": False}}
+    assert renamed.name == "Late Night Jazz"
     assert database.read_bytes() == b"catalog"
     assert registry.path("jazz") == created.path
     assert [item.id for item in registry.list()] == ["jazz", "main"]

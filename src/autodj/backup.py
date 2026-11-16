@@ -335,11 +335,6 @@ def _library_roots(roots: dict[str, Path]) -> list[tuple[str, Path]]:
     )
 
 
-def _library_member(key: str, name: str) -> str:
-    """Map a library root member to its archive name, retaining main's old names."""
-    return f"index/{name}" if key == "library" else f"{key}/{name}"
-
-
 def _swallows(folder: Path, other: Path) -> bool:
     """Whether replacing *folder* whole would also replace *other*."""
     folder, other = folder.resolve(), other.resolve()
