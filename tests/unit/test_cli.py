@@ -282,7 +282,8 @@ class TestCliConfigSelection:
         ):
             result = CliRunner().invoke(cli, ["serve"])
         assert result.exit_code == 0
-        loader.assert_called_once_with(None)
+        assert loader.call_count >= 1
+        assert all(call.args == (None,) for call in loader.call_args_list)
 
     def test_explicit_missing_config_exits_one(self, tmp_path: Path) -> None:
         result = CliRunner().invoke(cli, ["--config", str(tmp_path / "missing.toml"), "serve"])

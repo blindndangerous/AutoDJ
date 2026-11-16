@@ -1813,7 +1813,9 @@ class _ServeCommand(click.Command):
             raise
 
 
-def _claim_index_for_serve(ctx: click.Context, library_dir: Path) -> None:
+def _claim_index_for_serve(
+    ctx: click.Context, library_dir: Path, cfg: AutoDJConfig | None = None
+) -> bool:
     """Refuse to serve a half-restored index; hold the serve lock while serving.
 
     A restore that stopped part way leaves its journal: some files are new
@@ -1839,6 +1841,15 @@ def _claim_index_for_serve(ctx: click.Context, library_dir: Path) -> None:
     except BackupError as exc:
         raise click.ClickException(str(exc)) from exc
     ctx.call_on_close(serve_lock.release)
+    if cfg is None or not cfg.station_deletion_recovery_problem:
+        return False
+    from autodj.station_deletion import recover_station_deletions
+
+    try:
+        recover_station_deletions(cfg)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise click.ClickException(f"Station deletion recovery could not finish: {exc}") from exc
+    return True
 
 
 @cli.command("serve", cls=_ServeCommand)
@@ -2029,9 +2040,13 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         raise click.ClickException(str(exc)) from exc
 
     preflight = ServePreflight(tls_context, origin)
-    _claim_index_for_serve(ctx, cfg.index.library_dir)
+    recovered_station_deletion = _claim_index_for_serve(ctx, cfg.index.library_dir, cfg=cfg)
     # Only a safe preflight and successful claim may migrate layouts, open logs, or save a LAN token.
-    cfg = _load_cfg_or_exit(ctx.obj["config_path"], log_file=True, loaded=cfg)
+    cfg = _load_cfg_or_exit(
+        ctx.obj["config_path"],
+        log_file=True,
+        loaded=None if recovered_station_deletion else cfg,
+    )
     staged_server = _stage_serve_server(
         cfg,
         host=host,
@@ -2055,6 +2070,19 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         and not is_loopback_bind(staged_server.host)
     ):
         console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
+    if recovered_station_deletion:
+        from autodj.catalog import LibraryCatalog
+        from autodj.station_deletion import cleanup_completed_station_deletions
+
+        try:
+            with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
+                cleanup_completed_station_deletions(cfg, (catalog,))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise click.ClickException(
+                f"Station deletion catalog cleanup could not finish: {exc}"
+            ) from exc
+        cfg.station_deletion_recovery_problem = None
+
     from autodj.library import LibraryManager
 
     library = LibraryManager(cfg, sim, compatibility_checked=True)

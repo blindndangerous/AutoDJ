@@ -61,6 +61,7 @@ import { confirmAction } from "./modules/confirm-dialog.js";
 import { installSecureConnections } from "./modules/secure-connections.js";
 import {
   DEFAULT_STATION,
+  availableStations,
   controllingText,
   currentStation,
   installStationSwitcher,
@@ -1756,11 +1757,17 @@ const stationSwitcher = installStationSwitcher({
   onChoose: (slug) => switchStation(slug),
 });
 
-// Settings > Station > Stations (#233): the list and New station.  A created station
+// Settings > Global > Stations (#797): the list and New station.  A created station
 // joins the list at once; Switch to it puts focus on the Station button.
 const stationCreator = installStationCreator({
   onCreated: () => refreshStationList(),
-  onChanged: () => refreshStationList(),
+  onChanged: async (entry, action) => {
+    await refreshStationList();
+    if (action === "archive" && entry?.slug === currentStation()) {
+      const fallback = availableStations()[0]?.slug;
+      if (fallback && fallback !== currentStation()) await switchStation(fallback);
+    }
+  },
   onSwitch: async (slug) => {
     await switchStation(slug);
     if (currentStation() !== slug) return false;
@@ -2075,7 +2082,7 @@ async function switchStation(slug) {
     return;
   }
   const entry = knownStations().find((item) => item.slug === slug);
-  if (!entry) return;
+  if (!entry || entry.archived) return;
   if (!await confirmSettingsNavigation()) return;
   if (!await confirmLeavingStation(entry.name)) return;
   if (slug === currentStation()) return;
@@ -2816,7 +2823,7 @@ installHotkeys({
       .replace(/^Now controlling/, "Controlling")
     : `This server has one station, ${stationName()}.`),
   stepStation: (by) => {
-    const all = knownStations();
+    const all = availableStations();
     if (all.length < 2) return false;
     const at = all.findIndex((item) => item.slug === currentStation());
     void switchStation(all[(at + by + all.length) % all.length].slug);
@@ -3518,18 +3525,29 @@ async function initialStationState() {
   const asked = fromAddress || lastStation();
   if (asked && asked !== DEFAULT_STATION) {
     if (!loaded) loaded = await refreshStationList();
-    if (stationEntry(asked) || !loaded) {
+    const askedEntry = stationEntry(asked);
+    if (!loaded || (askedEntry && !askedEntry.archived)) {
       selectStation(asked);
       if (!fromAddress) rememberStationInAddress(asked);
       if (!loaded) retryStationList();
     } else {
-      rememberLastStation(DEFAULT_STATION);
+      const fallback = availableStations()[0]?.slug || DEFAULT_STATION;
+      selectStation(fallback);
+      rememberLastStation(fallback);
       if (fromAddress) {
-        rememberStationInAddress(DEFAULT_STATION);
+        rememberStationInAddress(fallback);
         announceStatus(document.getElementById("sr-status"),
-          `No station is called ${asked}. Showing ${stationName(DEFAULT_STATION)}.`,
+          `${askedEntry?.archived ? `${stationName(asked)} is archived.` : `No station is called ${asked}.`} Showing ${stationName(fallback)}.`,
           { dwellMs: 8000, force: true, tone: "error" });
       }
+    }
+  }
+  if (stationEntry(currentStation())?.archived) {
+    const fallback = availableStations()[0]?.slug;
+    if (fallback) {
+      selectStation(fallback);
+      rememberLastStation(fallback);
+      if (fromAddress) rememberStationInAddress(fallback);
     }
   }
   renderStationContext();

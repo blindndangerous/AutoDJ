@@ -2014,7 +2014,7 @@ describe("static accessibility contracts", () => {
     expect(globalTabs.hidden).toBe(false);
     expect(profileTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect(stationTabs.querySelectorAll('[role="tab"]')).toHaveLength(5);
-    expect(globalTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
+    expect(globalTabs.querySelectorAll('[role="tab"]')).toHaveLength(5);
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)
       ?.textContent.replace(/\s+/g, " ").trim();
     const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
@@ -2055,7 +2055,7 @@ describe("static accessibility contracts", () => {
     const name = document.querySelector("#stream-station-name");
     expect(name.getAttribute("type")).toBe("text");
     expect(name.getAttribute("maxlength")).toBe("100");
-    expect(labelText("stream-station-name")).toBe("Station name");
+    expect(labelText("stream-station-name")).toBe("Station display name");
     // Long help stays visible and is not announced.
     expect(name.hasAttribute("aria-describedby")).toBe(false);
     expect(document.getElementById("stream-station-name-desc").hidden).toBe(false);
@@ -2105,7 +2105,8 @@ describe("static accessibility contracts", () => {
     // More formats and now-playing cards, then the Listeners and Bans
     // sections and the Listener statistics card close the fieldset, so
     // heading navigation never puts a general setting under one of them.
-    const order = ["#stream-relays", "#stream-station-name", "#stream-bitrate",
+    expect(document.getElementById("stream-station-name").closest("[role=tabpanel]").id).toBe("spanel-stations");
+    const order = ["#stream-relays", "#stream-bitrate",
       "#stream-continuous", "#recording-controls", "#stream-relay-settings",
       "#stream-formats", "#np-settings",
       "#listener-control-title", "#listener-bans-title", "#listener-stats-title"]
@@ -3933,19 +3934,29 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(help.contains(document.getElementById("station-log-label-id"))).toBe(true);
   });
 
-  it("gives New station labelled native fields, one polite status and an error to link (#233)", () => {
+  it("gives Global > Stations labelled native fields, status and linked errors (#797)", () => {
     installDocument();
-    const panel = document.getElementById("spanel-stations");
+    const panel = document.getElementById("spanel-station-management");
     expect(panel.getAttribute("role")).toBe("tabpanel");
-    expect(panel.getAttribute("aria-labelledby")).toBe("stab-stations");
+    expect(panel.getAttribute("aria-labelledby")).toBe("stab-station-management");
+    expect(document.getElementById("stab-station-management").textContent).toBe("Stations");
+    const general = document.getElementById("spanel-stations");
+    expect(general.getAttribute("aria-labelledby")).toBe("stab-stations");
+    expect(document.getElementById("stab-stations").textContent).toBe("General");
+    for (const id of ["time-settings", "station-output", "station-log-label"]) {
+      expect(general.contains(document.getElementById(id)), id).toBe(true);
+    }
     expect(document.getElementById("spanel-live").closest('[role="tabpanel"]').id).toBe("spanel-stream");
     const table = document.getElementById("stations-table");
+    expect(panel.contains(table)).toBe(true);
+    expect(panel.contains(document.getElementById("station-create-form"))).toBe(true);
+    expect(panel.contains(document.getElementById("stations-status"))).toBe(true);
     expect(document.getElementById("stations-list").parentElement).toBe(table);
     expect(table.getAttribute("role")).toBe("grid");
     expect(table.caption.textContent).toBe(document.getElementById("stations-list-heading").textContent);
     expect(document.getElementById("stations-list-heading").tagName).toBe("H4");
     expect([...table.querySelectorAll("th[scope=col]")].map((th) => th.textContent))
-      .toEqual(["Station", "Now playing", "Listeners", "Start with the server", "Start or stop"]);
+      .toEqual(["Station", "Now playing", "Listeners", "Start with the server", "Start or stop", "Archive and delete"]);
     const form = document.getElementById("station-create-form");
     expect(form.querySelector("legend").textContent.trim()).toBe("New station");
     // Short visible labels of their own, no aria-label in their place.
@@ -3968,17 +3979,13 @@ describe("station switcher and station context contracts (#70)", () => {
       "station-create-clockwheels", "station-create-schedule", "station-create-carts"]) {
       expect(document.getElementById(id).hasAttribute("aria-describedby"), id).toBe(false);
     }
-    // What stays shared and what a copy never takes are said on the page.
-    expect(panel.querySelector(".card-desc").textContent)
-      .toMatch(/song cue points and Stereo Tool preset files/);
     expect(document.getElementById("station-create-source-help").textContent)
-      .toMatch(/never takes its relays, listener password, webhooks, recording folder, log label, queue, history/);
-    // Also copy is a fieldset hidden in the markup with its help inside it.
+      .toMatch(/copies saved settings/i);
+    // Also copy is a fieldset hidden in the markup with three optional items.
     const copies = document.getElementById("station-create-copies");
     expect(copies.tagName).toBe("FIELDSET");
     expect(copies.hidden).toBe(true);
     expect(copies.querySelector("legend").textContent.trim()).toBe("Also copy");
-    expect(copies.contains(document.getElementById("station-create-copies-help"))).toBe(true);
     for (const checkbox of copies.querySelectorAll('input[type="checkbox"]')) {
       expect(checkbox.parentElement.classList.contains("settings-check")).toBe(true);
     }
@@ -3989,10 +3996,11 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(document.getElementById("station-create-submit").getAttribute("type")).toBe("submit");
     expect(document.getElementById("station-create-switch").getAttribute("type")).toBe("button");
     // One polite status, not nested in another live region.
-    const live = [...panel.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
+    const live = [...panel.querySelectorAll("#stations-status")];
     expect(live.map((node) => node.id)).toEqual(["stations-status"]);
     expect(live[0].getAttribute("aria-live")).toBe("polite");
     expect(live[0].getAttribute("aria-atomic")).toBe("true");
+    expect(live[0].parentElement.closest("[aria-live], [role='status'], [role='alert']")).toBeNull();
     // Reading order: where from, name, ID, copies, start, then the button.
     const order = [...form.querySelectorAll("input, select, button")].map((node) => node.id);
     expect(order).toEqual(["station-create-source", "station-create-name", "station-create-slug",

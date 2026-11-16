@@ -154,7 +154,7 @@ Some things to know:
 - Shared server settings, such as HTTPS certificates, go in `config.toml` or
   `config.local.toml` beside `compose.yaml`. Give paths inside that folder as relative paths,
   such as `ssl_certfile = "certs/fullchain.pem"`. Restart with `docker compose restart autodj` after a change.
-  Set a station's **Playback output** in **Settings**, **Station**, **Stations**.
+  Set a station's **Playback output** in **Settings**, **Station**, **General**.
 - The image includes FFmpeg, and its analysis runs on the processor. On a computer with an
   NVIDIA graphics card, the `-cuda` image can analyse on the card instead; see
   [Use an NVIDIA GPU](operations/containers-and-windows.md#use-an-nvidia-gpu).

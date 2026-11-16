@@ -87,6 +87,9 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0010-06` | Every consolidated JSON store keeps the old file and removes temporary output when writing or replacing fails. | automated | `tests/unit/test_store_writes.py::test_failed_store_write_keeps_old_file_and_cleans_temporary` |
 | `ADR-0010-07` | Shared recovery retains operator-visible filename styles and preserves partially usable schedules at their original path. | automated | `tests/unit/test_fsutil.py::test_set_aside_preserves_recovery_filename_styles`; `tests/unit/test_fsutil.py::test_set_aside_copy_preserves_the_live_schedule` |
 | `ADR-0010-08` | After replacement, a refused directory flush logs a warning without reporting the committed save as failed; stores update in-memory state. | automated | `tests/unit/test_fsutil.py::test_directory_flush_failure_keeps_committed_write_and_warns`; `tests/unit/test_store_writes.py::test_time_checks_publish_saved_state_when_directory_flush_is_refused` |
+| `ADR-0010-09` | Archive state is atomically recorded without changing the station's saved autostart setting; restore does not start the station. | automated | `tests/unit/test_station_deletion.py::test_archive_restore_preserves_autostart_without_starting`; `tests/unit/test_station_deletion.py::test_archive_stops_the_station_before_writing_its_marker`; `tests/unit/test_station_deletion.py::test_archive_refuses_a_stop_with_warnings_or_a_stuck_player`; `tests/unit/test_station_deletion.py::test_archive_marker_is_loaded_after_configuration_reload`; `tests/integration/test_station_routes.py::test_archived_default_cannot_start_or_delete_and_restore_does_not_start`; `tests/integration/test_station_routes.py::test_archive_unknown_station_is_404_and_maintenance_blocks_named_routes`; `tests/jsmodules/station-create.test.js::archives and restores from the same row, preserving focus and the stopped state` |
+| `ADR-0010-10` | Before deletion commit a station remains recoverable as a whole; after commit recovery completes forward and retains station-owned audio by default. | automated | `tests/unit/test_station_deletion.py::test_delete_quarantines_then_retains_station_audio_and_journal`; `tests/unit/test_station_deletion.py::test_completed_journal_recovery_is_forward_only_and_repeatable`; `tests/unit/test_station_deletion.py::test_read_only_config_and_doctor_leave_pending_deletion_untouched`; `tests/unit/test_station_deletion.py::test_backup_and_deletion_serialize_station_audio_snapshot`; `tests/integration/test_station_routes.py::test_committed_delete_cleanup_failure_unregisters_station`; `tests/unit/test_backup.py::test_station_archive_marker_and_retained_audio_round_trip`; `tests/unit/test_backup.py::test_backup_refuses_unknown_retained_station_audio_children`; `tests/jsmodules/station-create.test.js::requires exact deletion confirmation, defaults voice removal off, and returns focus after removal`; `tests/jsmodules/station-create.test.js::ignores a lifecycle reply from an old login without losing the active control` |
+| `ADR-0010-11` | Permanent deletion refuses the default station and station folders overlapping registered or configured music roots. | automated | `tests/unit/test_station_deletion.py::test_default_station_cannot_be_permanently_deleted`; `tests/unit/test_station_deletion.py::test_delete_refuses_music_source_overlap_without_moving_station` |
 
 ## Amendment 2026-10-31: shared persistence helpers
 
@@ -110,6 +113,23 @@ uses its copy option because a partially valid schedule must remain on disk
 until its usable events are saved. Stores that previously refused to continue
 after set-aside failure still propagate that failure. See the
 [station file reference](../reference/operations/stations.md) for names.
+
+## Proposed amendment, 2026-11-15: station deletion recovery (#800)
+
+This proposal extends the recovery boundary to permanent station deletion. The
+station directory is renamed into a same-volume quarantine only after a durable
+prepared journal exists. That rename is the logical deletion commit; before it,
+failure restores the complete station, and after it, recovery only finishes
+forward. Recovery validates journal files and path components, rejects links
+and shared-file hard links, and does not follow configured external media paths.
+Operator-owned station audio is retained outside the deleted station folder by
+default, with a manifest, and backups preserve that retained tree. Catalog
+cleanup follows the commit and leaves a completion journal until every catalog
+has removed the station's exact owned source and history.
+
+This amendment keeps the record's Proposed status. The mapped tests provide
+implementation evidence, not an acceptance decision or a claim of power-loss
+durability on every filesystem.
 
 ## Verification
 

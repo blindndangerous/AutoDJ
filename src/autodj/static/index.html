@@ -745,7 +745,7 @@
   </div>
   <h3 id="settings-station-heading">Station</h3>
   <div role="tablist" class="subtabs" aria-labelledby="settings-station-heading" aria-orientation="horizontal">
-    <button type="button" role="tab" id="stab-stations" data-settings-kind="station" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1">Stations</button>
+    <button type="button" role="tab" id="stab-stations" data-settings-kind="station" data-subview="general" data-panel="spanel-stations" aria-selected="false" tabindex="-1">General</button>
     <button type="button" role="tab" id="stab-access" data-settings-kind="station" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles</button>
     <button type="button" role="tab" id="stab-stream" data-settings-kind="station" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1">Broadcasting</button>
     <button type="button" role="tab" id="stab-requests" data-settings-kind="station" data-subview="requests" data-panel="spanel-requests" aria-selected="false" tabindex="-1">Requests</button>
@@ -754,6 +754,7 @@
   <h3 id="settings-global-heading">Global</h3>
   <div role="tablist" class="subtabs" aria-labelledby="settings-global-heading" aria-orientation="horizontal">
     <button type="button" role="tab" id="stab-server" data-settings-kind="server" data-subview="server" data-panel="spanel-server" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Server</button>
+    <button type="button" role="tab" id="stab-station-management" data-settings-kind="server" data-subview="station-management" data-panel="spanel-station-management" aria-selected="false" tabindex="-1">Stations</button>
     <button type="button" role="tab" id="stab-workers" data-settings-kind="server" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
     <button type="button" role="tab" id="stab-updates" data-settings-kind="server" data-subview="updates" data-panel="spanel-updates" aria-selected="false" tabindex="-1">Update and restart</button>
     <button type="button" role="tab" id="stab-display" data-settings-kind="browser" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Browser preferences</button>
@@ -1903,12 +1904,7 @@
   </div>
 
   <div class="card" role="tabpanel" id="spanel-stations" data-settings-kind="station" aria-labelledby="stab-stations" hidden>
-    <h3>Stations</h3>
-    <p class="card-desc">
-      Every station on this server shares the music library, song analysis, song cue points and Stereo Tool preset files. Each has its own settings, queue, history, schedule, carts and stream.
-    </p>
-
-    <div id="stations-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <h3>General</h3>
     <!-- Time for every station (#282, #286): time-settings.js. -->
     <fieldset id="time-settings">
       <legend>Time for the selected station</legend>
@@ -1945,87 +1941,15 @@
         Shown at the start of this station's log lines: up to 16 letters, digits, hyphens, underscores or dots, different from other stations' labels and IDs. Leave empty to use the station ID, <span id="station-log-label-id">default</span>.
       </p>
     </fieldset>
-    <h4 id="stations-list-heading">Stations on this server</h4>
-    <div class="data-table-scroll">
-      <table id="stations-table" role="grid">
-        <caption class="visually-hidden">Stations on this server</caption>
-        <thead>
-          <tr>
-            <th scope="col">Station</th>
-            <th scope="col">Now playing</th>
-            <th scope="col">Listeners</th>
-            <th scope="col">Start with the server</th>
-            <th scope="col">Start or stop</th>
-          </tr>
-        </thead>
-        <tbody id="stations-list"></tbody>
-      </table>
-    </div>
-    <form id="station-create-form" novalidate>
-      <fieldset>
-        <legend>New station</legend>
-        <p id="station-create-error" class="field-error" hidden></p>
-        <div class="settings-row">
-          <label for="station-create-source">Start from</label>
-          <select id="station-create-source">
-            <option value="">AutoDJ defaults</option>
-          </select>
-        </div>
-        <span class="setting-desc" id="station-create-source-help">
-          A copy takes the station's saved settings, including changes made on this page. It never takes its relays, listener password, webhooks, recording folder, log label, queue, history, requests, listeners, bans, statistics, ads, shows, intros, profiles or liners.
-        </span>
-        <div class="settings-row">
-          <label for="station-create-name">Name</label>
-          <input type="text" id="station-create-name" maxlength="80" autocomplete="off" aria-required="true">
-        </div>
-        <div class="settings-row">
-          <label for="station-create-slug">Station ID</label>
-          <input type="text" id="station-create-slug" maxlength="32" autocomplete="off"
-                 autocapitalize="off" spellcheck="false" aria-required="true"
-                 aria-describedby="station-create-slug-help">
-        </div>
-        <span class="setting-desc" id="station-create-slug-help">
-          Lower-case letters, digits and hyphens, up to 32, such as nightowl.
-        </span>
-        <span class="setting-desc" id="station-create-slug-more">
-          The ID names the station's addresses and folder, and cannot be changed later. Left empty, it is made from the name.
-        </span>
-        <fieldset id="station-create-copies" hidden>
-          <legend>Also copy</legend>
-          <div class="settings-check">
-            <input type="checkbox" id="station-create-clockwheels">
-            <label for="station-create-clockwheels">Clockwheels</label>
-          </div>
-          <div class="settings-check">
-            <input type="checkbox" id="station-create-schedule">
-            <label for="station-create-schedule">Schedule</label>
-          </div>
-          <div class="settings-check">
-            <input type="checkbox" id="station-create-carts">
-            <label for="station-create-carts">Carts</label>
-          </div>
-          <span class="setting-desc" id="station-create-copies-help">
-            The copies belong to the new station: changing them never changes the station they came from. A scheduled event that needs a profile, show or liner the new station does not have reports an error when it runs.
-          </span>
-        </fieldset>
-        <div class="settings-check">
-          <input type="checkbox" id="station-create-autostart">
-          <label for="station-create-autostart">Start with the server</label>
-        </div>
-        <span class="setting-desc" id="station-create-autostart-help">
-          Creating a station never starts it, and no other station stops. It has no relays until you add them in its Stream settings, and records into its own folder.
-        </span>
-        <button type="submit" id="station-create-submit">Create station</button>
-      </fieldset>
-    </form>
-    <!-- After a create: what was made, and the way to it.  Focus moves to
-         the Switch button; #stations-status says what was created. -->
-    <div id="station-create-done" class="flow-form" hidden>
-      <p id="station-create-done-text"></p>
-      <button type="button" id="station-create-switch">Switch to the new station</button>
-    </div>
     <fieldset>
       <legend>Station display</legend>
+      <div class="settings-row">
+        <label for="stream-station-name">Station display name</label>
+        <input type="text" id="stream-station-name" maxlength="100" autocomplete="off">
+      </div>
+      <span class="setting-desc" id="stream-station-name-desc">
+        The name players such as Sonos and VLC show for this station. A clockwheel or show can set another name while it is on the air.
+      </span>
       <div class="settings-check">
         <input type="checkbox" id="pb-show-lyrics">
         <label for="pb-show-lyrics">Show lyrics</label>
@@ -2100,14 +2024,6 @@
       <div id="stream-relays" hidden>
         <ul class="stream-detail" id="stream-relays-list" aria-label="Relays to other servers"></ul>
       </div>
-      <div class="settings-row">
-        <label for="stream-station-name">Station name</label>
-        <input type="text" id="stream-station-name" maxlength="100" autocomplete="off"
-              >
-      </div>
-      <span class="setting-desc" id="stream-station-name-desc">
-        The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.  A clockwheel or show can set another name while it is on the air.
-      </span>
       <div class="settings-row"><label for="stream-station-genre">Genre</label><input id="stream-station-genre" maxlength="255" autocomplete="off"></div>
       <div class="settings-row"><label for="stream-station-description">Description</label><input id="stream-station-description" maxlength="255" autocomplete="off"></div>
       <div class="settings-row"><label for="stream-station-url">Website URL</label><input id="stream-station-url" type="url" maxlength="2048" autocomplete="url"></div>
@@ -2760,6 +2676,86 @@
           <button type="button" id="pair-refresh">Refresh code</button>
         </div>
       </div>
+    </div>
+  </div>
+
+
+  <div class="card" role="tabpanel" id="spanel-station-management" data-settings-kind="server" aria-labelledby="stab-station-management" hidden>
+    <h3>Stations</h3>
+    <div id="stations-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <h4 id="stations-list-heading">Stations on this server</h4>
+    <div class="data-table-scroll">
+      <table id="stations-table" role="grid">
+        <caption class="visually-hidden">Stations on this server</caption>
+        <thead>
+          <tr>
+            <th scope="col">Station</th>
+            <th scope="col">Now playing</th>
+            <th scope="col">Listeners</th>
+            <th scope="col">Start with the server</th>
+            <th scope="col">Start or stop</th>
+            <th scope="col">Archive and delete</th>
+          </tr>
+        </thead>
+        <tbody id="stations-list"></tbody>
+      </table>
+    </div>
+    <form id="station-create-form" novalidate>
+      <fieldset>
+        <legend>New station</legend>
+        <p id="station-create-error" class="field-error" hidden></p>
+        <div class="settings-row">
+          <label for="station-create-source">Start from</label>
+          <select id="station-create-source">
+            <option value="">AutoDJ defaults</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="station-create-source-help">
+          Copies saved settings.
+        </span>
+        <div class="settings-row">
+          <label for="station-create-name">Name</label>
+          <input type="text" id="station-create-name" maxlength="80" autocomplete="off" aria-required="true">
+        </div>
+        <div class="settings-row">
+          <label for="station-create-slug">Station ID</label>
+          <input type="text" id="station-create-slug" maxlength="32" autocomplete="off"
+                 autocapitalize="off" spellcheck="false" aria-required="true"
+                 aria-describedby="station-create-slug-help">
+        </div>
+        <span class="setting-desc" id="station-create-slug-help">
+          Up to 32 lowercase letters, digits or hyphens.
+        </span>
+        <span class="setting-desc" id="station-create-slug-more">
+          Cannot be changed later. Blank uses the station name.
+        </span>
+        <fieldset id="station-create-copies" hidden>
+          <legend>Also copy</legend>
+          <div class="settings-check">
+            <input type="checkbox" id="station-create-clockwheels">
+            <label for="station-create-clockwheels">Clockwheels</label>
+          </div>
+          <div class="settings-check">
+            <input type="checkbox" id="station-create-schedule">
+            <label for="station-create-schedule">Schedule</label>
+          </div>
+          <div class="settings-check">
+            <input type="checkbox" id="station-create-carts">
+            <label for="station-create-carts">Carts</label>
+          </div>
+        </fieldset>
+        <div class="settings-check">
+          <input type="checkbox" id="station-create-autostart">
+          <label for="station-create-autostart">Start with the server</label>
+        </div>
+        <button type="submit" id="station-create-submit">Create station</button>
+      </fieldset>
+    </form>
+    <!-- After a create: what was made, and the way to it.  Focus moves to
+         the Switch button; #stations-status says what was created. -->
+    <div id="station-create-done" class="flow-form" hidden>
+      <p id="station-create-done-text"></p>
+      <button type="button" id="station-create-switch">Switch to the new station</button>
     </div>
   </div>
 

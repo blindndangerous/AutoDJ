@@ -157,6 +157,29 @@ and start/stop remain unchanged: choosing only the sound card does not create
 stream encoders, public listener endpoints or listener-driven sets. The output
 and dependency change is recorded in [ADR 4](0004-server-mix-bus-and-stream-mode.md).
 
+## Amendment, 2026-11-15: archive and delete station state (#800)
+
+Archiving a station stops it fully before marking it unavailable. Its saved
+settings, history and station-owned assets remain at their existing station
+paths; the saved autostart preference is retained but suppressed while
+archived. Restore makes the station available without starting it. The default
+station may be archived and restored but is protected from permanent deletion.
+
+Permanent deletion is limited to archived, fully stopped stations and uses a
+same-volume quarantine plus a durable journal. Before the commit record, a
+failed operation restores the station directory. After commit, recovery moves
+forward and never re-exposes a partially purged station. By default, the
+station-owned audio folders are moved to an index-level retained area with a
+recovery manifest. Shared music roots and configured external recording and
+time-check folders remain outside the deletion boundary. The default station
+replacement workflow remains deferred; there is no operation that creates or
+selects a replacement default as part of deletion.
+
+The lifecycle routes and implementation are in [server.py](../../src/autodj/server.py),
+[stations.py](../../src/autodj/stations.py), and
+[station_deletion.py](../../src/autodj/station_deletion.py). Operator steps and
+retention behavior are in [station operations](../guides/operations/stations.md).
+
 ## Current contracts
 
 IDs are stable and are never recycled. Automated means an existing regression
@@ -171,6 +194,8 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0005-03` | Stopped settings load/edit/save without a Player and retain running-setter validation. | automated | `tests/unit/test_station_settings.py::test_offline_settings_load_edit_save_without_player`; `tests/unit/test_station_settings.py::test_offline_settings_use_running_setter_validation` |
 | `ADR-0005-04` | Every route declares shared/station ownership and named station operations target that station. | automated | `tests/integration/test_station_routes.py::test_every_route_is_classified_as_shared_or_station`; `tests/integration/test_station_routes.py::test_a_named_station_route_acts_on_that_station` |
 | `ADR-0005-05` | A station whose Player will not stop retains ownership of its mastering process and licence. | automated | `tests/unit/test_station_runtime.py::test_a_station_whose_player_will_not_stop_keeps_its_master_and_licence` |
+| `ADR-0005-06` | Archive stops a station before it becomes unavailable, preserves its autostart setting, and restore does not start it; the default remains protected from deletion. | automated | `tests/unit/test_station_deletion.py::test_archive_restore_preserves_autostart_without_starting`; `tests/unit/test_station_deletion.py::test_archive_stops_the_station_before_writing_its_marker`; `tests/unit/test_station_deletion.py::test_archive_refuses_a_stop_with_warnings_or_a_stuck_player`; `tests/unit/test_station_deletion.py::test_default_station_cannot_be_permanently_deleted`; `tests/integration/test_station_routes.py::test_archived_default_cannot_start_or_delete_and_restore_does_not_start`; `tests/integration/test_station_routes.py::test_archive_unknown_station_is_404_and_maintenance_blocks_named_routes`; `tests/jsmodules/station-create.test.js::archives and restores from the same row, preserving focus and the stopped state`; `tests/jsmodules/station-create.test.js::cancels archive cleanly and does not send a confirmation from an old login`; `tests/jsmodules/station-create.test.js::requires exact deletion confirmation, defaults voice removal off, and returns focus after removal`; `tests/jsmodules/stations.test.js::omits archived stations from the normal station switcher` |
+| `ADR-0005-07` | A committed deletion unregisters the station even when post-commit cleanup is pending; its owned station data follows the recovery boundary. | automated | `tests/integration/test_station_routes.py::test_committed_delete_cleanup_failure_unregisters_station`; `tests/unit/test_station_deletion.py::test_delete_quarantines_then_retains_station_audio_and_journal`; `tests/unit/test_station_deletion.py::test_completed_journal_recovery_is_forward_only_and_repeatable`; `tests/unit/test_station_deletion.py::test_backup_and_deletion_serialize_station_audio_snapshot`; `tests/unit/test_backup.py::test_station_archive_marker_and_retained_audio_round_trip` |
 
 ## Related proposal — 2026-10-17
 
