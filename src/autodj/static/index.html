@@ -3081,13 +3081,18 @@
     <h2 id="carts-heading">Carts</h2>
     <div id="cart-wall">
       <p id="cart-keys-help">
-        Press a cart to play it; an empty cart opens in the editor below.
+        Press a cart to play it; an empty cart opens the editor.
         With focus on a cart, keys 1 to 9 and 0, minus and equals play carts 1 to 12 on this page,
         and Page Up and Page Down change the page.
       </p>
       <div class="settings-row">
         <label for="cart-page">Cart page</label>
         <select id="cart-page"></select>
+      </div>
+      <div class="settings-row">
+        <label for="cart-edit-slot">Cart to edit</label>
+        <select id="cart-edit-slot"></select>
+        <button type="button" id="cart-edit-open">Edit cart</button>
       </div>
       <!-- role="list": list-style none drops the list role in Safari. -->
       <ol id="cart-slots" role="list" aria-label="Carts"></ol>
@@ -3096,14 +3101,11 @@
            #sr-status, so they are heard on every tab. -->
       <div id="cart-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 
-      <details class="card" id="cart-editor-card">
-        <summary><h3 id="cart-editor-heading">Edit a cart</h3></summary>
+      <form id="cart-edit-form" novalidate hidden>
+        <fieldset>
+          <legend><h1 id="cart-editor-heading">Edit cart</h1></legend>
         <!-- A refused field is named here, linked to the field and focused. -->
         <p id="cart-edit-error" class="field-error" hidden></p>
-        <div class="settings-row">
-          <label for="cart-edit-slot">Cart to edit</label>
-          <select id="cart-edit-slot"></select>
-        </div>
         <div class="settings-row">
           <label for="cart-name">Cart name</label>
           <input type="text" id="cart-name" maxlength="80" autocomplete="off">
@@ -3142,18 +3144,8 @@
         <span class="setting-desc" id="cart-dates-desc">
           Optional play dates, both days included, in the station time zone. They restrict scheduled cart events; manual presses override these dates. Leave both empty to allow scheduled play on any day.
         </span>
-        <div>
-          <button type="button" id="cart-save">Save cart</button>
-          <button type="button" id="cart-clear">Clear cart</button>
-        </div>
-      </details>
-
-      <!-- Clips are uploaded now and then, so this is a card closed by
-           default; the editor above stays open. -->
-      <details class="card" id="cart-uploads-card">
-        <summary><h3 id="cart-upload-heading">Uploaded clips</h3></summary>
         <div class="settings-row">
-          <label for="cart-upload-file">Audio clip</label>
+          <label for="cart-upload-file">Upload a clip</label>
           <input type="file" id="cart-upload-file" aria-describedby="cart-upload-desc"
                  accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,audio/*">
           <button type="button" id="cart-upload">Upload clip</button>
@@ -3161,14 +3153,21 @@
         <span class="setting-desc" id="cart-upload-desc">
           MP3, WAV, OGG, M4A, FLAC or AAC, up to the voice liner upload size. A clip with the same file name is never replaced.
         </span>
-        <button type="button" id="cart-delete-upload" aria-describedby="cart-delete-desc" disabled>Delete uploaded clip</button>
+        <button type="button" id="cart-delete-upload" aria-describedby="cart-delete-desc" disabled>Delete selected uploaded clip</button>
         <span class="setting-desc" id="cart-delete-desc">
-          Deletes the uploaded clip chosen under Clip in the editor. A clip still on a cart cannot be deleted.
+          Deletes the uploaded clip selected above. A clip still on a cart cannot be deleted.
         </span>
-      </details>
+        <div>
+          <button type="submit" id="cart-save">Save cart</button>
+          <button type="button" id="cart-clear">Clear cart</button>
+          <button type="button" id="cart-cancel">Cancel</button>
+        </div>
+        </fieldset>
+      </form>
 
       <details class="card" id="cart-page-card">
         <summary><h3 id="cart-page-heading">Rename this page</h3></summary>
+        <p id="cart-page-error" class="field-error" hidden></p>
         <div class="settings-row">
           <label for="cart-page-name">Page name</label>
           <input type="text" id="cart-page-name" maxlength="80" autocomplete="off">

@@ -191,7 +191,7 @@ it("gives every collapsible card a unique stable ID and puts Requests below Brow
   const browse = root.querySelector("#search-library-heading").closest(".card");
   expect(browse.nextElementSibling.id).toBe("requests-card");
   expect(browse.nextElementSibling.tagName).toBe("DETAILS");
-  for (const id of ["history-export-card", "cart-editor-card", "cart-page-card"]) {
+  for (const id of ["history-export-card", "cart-page-card"]) {
     const card = root.getElementById(id);
     expect(card.tagName).toBe("DETAILS");
     expect(card.open).toBe(false);
