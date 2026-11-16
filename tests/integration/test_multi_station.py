@@ -527,6 +527,7 @@ def test_two_stations_run_side_by_side(rig: Any) -> None:
         "embed_path": "/stations/nightowl/embed",
         "autostart": True,
         "autostart_locked": False,
+        "archived": False,
     }
     assert listing["default"]["player_path"] is None
     assert listing["default"]["embed_path"] is None
