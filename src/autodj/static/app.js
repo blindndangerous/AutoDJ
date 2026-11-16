@@ -2814,7 +2814,7 @@ installHotkeys({
   bracketSeekToggle: document.getElementById("hotkeys-bracket-seek"),
   focusStationSwitcher: () => {
     if (!severalStations()) return false;
-    stationSwitcher?.focus();
+    stationSwitcher?.open();
     return true;
   },
   getStationText: () => (severalStations()

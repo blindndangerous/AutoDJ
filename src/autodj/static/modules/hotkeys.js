@@ -25,7 +25,7 @@ import { registerSettingsGroup } from "./settings-drafts.js";
 // Shift+L speaks the current lyric line; lowercase l is unused.
 // s/S and m/M are shuffle and mute in either case, so no status key may
 // use them.  Status keys: T N R B K L E V Q J H U.
-// Stations (#70): lowercase c moves focus to the station switcher while
+// Stations (#70): lowercase c opens the station switcher while
 // the server has several stations; Shift+C says which station the page
 // controls.  With several stations the status keys about the station
 // (T N R B K L E Q) start with its name.

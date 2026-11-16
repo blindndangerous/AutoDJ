@@ -58,7 +58,7 @@ known behavior also occurs on the baseline; see the
 - `Alt+1` to `Alt+9`: open the tab at that position.
 - `[` and `]`: announce previous or next song landmark. In **Track info**, they move the cue preview. On other tabs, they seek the song on air only if **Bracket keys seek the song on air** is on; that setting is off by default and seeking never works in stream mode.
 - `Shift+U`: speak the upcoming landmark on air.
-- `c`: focus the station switcher when several stations exist. `Shift+C`: speak the selected station and its state. `Shift+[` and `Shift+]`: switch stations.
+- `c`: open the station picker when several stations exist. `Shift+C`: speak the selected station and its state. `Shift+[` and `Shift+]`: switch stations.
 - `Alt+M`: talk over music while held, when live talk is available. Releasing the keys stops talk.
 - `Alt+R`: start or stop recording while **Voice tracks** is open.
 

@@ -4274,6 +4274,18 @@ describe("several stations (#70)", () => {
     expect(said.filter((text) => text.startsWith("Night Owl Radio."))).toHaveLength(1);
   });
 
+  it("opens the station picker on C and focuses the current station", async () => {
+    await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+    const { installHotkeys } = await import("../../src/autodj/static/modules/hotkeys.js");
+    const hotkeys = installHotkeys.mock.calls[0][0];
+    expect(hotkeys.focusStationSwitcher()).toBe(true);
+    expect(document.getElementById("station-button").getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById("station-list").hidden).toBe(false);
+    expect(document.activeElement.dataset.station).toBe("default");
+    expect(hotkeys.focusStationSwitcher()).toBe(true);
+    expect(document.getElementById("station-list").hidden).toBe(false);
+  });
+
   it("only closes the list when the current station is chosen (#576)", async () => {
     const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
     const sockets = trackSockets(app.WebSocketImpl);
