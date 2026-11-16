@@ -311,6 +311,7 @@ def test_a_stopped_station_has_a_stand_in(tmp_path: Path) -> None:
         "embed_path": None,
         "autostart": True,
         "autostart_locked": True,
+        "archived": False,
     }
     with pytest.raises(KeyError):
         registry.get("daybreak")
