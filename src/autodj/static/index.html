@@ -1763,18 +1763,17 @@
     <span class="setting-desc" id="tc-recorded-folder-desc">
       Where the clips named 00_00 to 23_59 are, such as 15_05.wav for 3:05 in the afternoon. A folder chosen here is not a voice pack.
     </span>
-    <!-- Each clip has its own help; the shared note on where the choices
-         come from is read by browsing, not on each focus. -->
+    <!-- Clip help stays available when browsing, without repeating on focus. -->
     <div class="settings-row">
       <label for="tc-intro">Intro clip</label>
-      <select id="tc-intro" aria-describedby="tc-intro-desc">
+      <select id="tc-intro">
         <option value="">None</option>
       </select>
     </div>
     <span class="setting-desc" id="tc-intro-desc">Played before every time check.</span>
     <div class="settings-row">
       <label for="tc-outro">Outro clip</label>
-      <select id="tc-outro" aria-describedby="tc-outro-desc">
+      <select id="tc-outro">
         <option value="">None</option>
       </select>
     </div>
@@ -1803,7 +1802,7 @@
     <span class="setting-desc" id="tc-test-voice-desc">
       Choose one voice pack to hear it even when it is not ticked. When it has no files for this minute, the next source plays; when the server plays it, the result names the source.
     </span>
-    <button type="button" id="tc-test" aria-describedby="tc-test-desc">Play a time check now</button>
+    <button type="button" id="tc-test">Play a time check now</button>
     <span class="setting-desc" id="tc-test-desc">
       Plays the current time on the stream or server audio when the server mixes the music; otherwise in this browser.
     </span>
@@ -1843,31 +1842,28 @@
           For a DJ break that leaves its placement to the station.  News, weather and music news always play between the songs.
         </p>
         <div class="settings-check">
-          <input type="radio" name="brk-placement" id="brk-placement-auto" value="auto" checked aria-describedby="brk-placement-auto-help brk-placement-help">
+          <input type="radio" name="brk-placement" id="brk-placement-auto" value="auto" checked aria-describedby="brk-placement-auto-help">
           <label for="brk-placement-auto">Automatic</label>
         </div>
         <span class="setting-desc" id="brk-placement-auto-help">
           Talks up the next song when its intro is at least as long as the shortest intro below, and otherwise plays the break between the songs.
         </span>
         <div class="settings-check">
-          <input type="radio" name="brk-placement" id="brk-placement-talk-up" value="talk_up" aria-describedby="brk-placement-talk-up-help brk-placement-help">
+          <input type="radio" name="brk-placement" id="brk-placement-talk-up" value="talk_up" aria-describedby="brk-placement-talk-up-help">
           <label for="brk-placement-talk-up">Talk up the next song</label>
         </div>
         <span class="setting-desc" id="brk-placement-talk-up-help">
           Talks up any intro.  With no intro point the break still plays between the songs.
         </span>
         <div class="settings-check">
-          <input type="radio" name="brk-placement" id="brk-placement-standalone" value="standalone" aria-describedby="brk-placement-standalone-help brk-placement-help">
+          <input type="radio" name="brk-placement" id="brk-placement-standalone" value="standalone">
           <label for="brk-placement-standalone">Between the songs</label>
         </div>
-        <span class="setting-desc" id="brk-placement-standalone-help">
-          Always plays the break between the songs.
-        </span>
       </fieldset>
       <div class="settings-row tag-field">
         <label for="brk-min-intro">Shortest intro to talk up (seconds)</label>
         <input type="text" id="brk-min-intro" inputmode="decimal" autocomplete="off" spellcheck="false" aria-describedby="brk-min-intro-help">
-        <span class="setting-desc" id="brk-min-intro-help">From 0 to 60, 2 by default.  Automatic placement talks up an intro at least this long, from the song's Start to its Intro point.</span>
+        <span class="setting-desc" id="brk-min-intro-help">0 to 60 seconds; default 2.</span>
         <p id="brk-min-intro-error" class="field-error" hidden></p>
       </div>
       <div class="settings-row tag-field">
@@ -1914,10 +1910,10 @@
       <legend>Time for the selected station</legend>
       <div class="settings-row">
         <label for="time-zone">Time zone</label>
-        <select id="time-zone" aria-describedby="time-zone-help"></select>
+        <select id="time-zone"></select>
       </div>
       <span class="setting-desc" id="time-zone-help">
-        Changing it moves when scheduled events, ad breaks and clockwheel restarts happen, from the next time this station starts.
+        Takes effect when the station restarts.
       </span>
 
     </fieldset>
@@ -2595,11 +2591,11 @@
           </div>
           <div class="settings-row">
             <label for="schedule-window-start">Active from</label>
-            <input type="time" id="schedule-window-start" aria-describedby="schedule-window-desc">
+            <input type="time" id="schedule-window-start">
           </div>
           <div class="settings-row">
             <label for="schedule-window-end">Active until</label>
-            <input type="time" id="schedule-window-end" aria-describedby="schedule-window-desc">
+            <input type="time" id="schedule-window-end">
           </div>
           <span class="setting-desc" id="schedule-window-desc">
             Optional.  Leave both empty to run all day.  The window may cross midnight, such as 22:00 until 02:00.
@@ -2623,15 +2619,15 @@
           <legend>Date range</legend>
           <div class="settings-row">
             <label for="schedule-start-date">Start date</label>
-            <input type="date" id="schedule-start-date" aria-describedby="schedule-dates-repeat-desc">
+            <input type="date" id="schedule-start-date">
           </div>
           <div class="settings-row">
             <label for="schedule-end-date">End date</label>
-            <input type="date" id="schedule-end-date" aria-describedby="schedule-dates-repeat-desc">
+            <input type="date" id="schedule-end-date">
           </div>
           <div class="settings-row">
             <label for="schedule-dates-repeat">Repeat dates</label>
-            <select id="schedule-dates-repeat" aria-describedby="schedule-dates-repeat-desc">
+            <select id="schedule-dates-repeat">
               <option value="none">Don't repeat</option>
               <option value="yearly">Every year</option>
             </select>
@@ -2641,7 +2637,7 @@
         </fieldset>
         <div class="settings-row">
           <label for="schedule-timing">Timing</label>
-          <select id="schedule-timing" aria-describedby="schedule-timing-desc">
+          <select id="schedule-timing">
             <option value="soft">Soft</option>
             <option value="hard">Hard</option>
           </select>
@@ -2649,7 +2645,6 @@
         <span class="setting-desc" id="schedule-timing-desc">
           Soft waits for the current song to end. Hard runs on time and, except for stream events, fades the current song out, unless the song ends within Wait up to seconds.
         </span>
-        <p class="setting-desc">Hard starts the show at once. Soft waits for the next song change.</p>
         <div class="settings-row" data-show-when="schedule-timing=hard">
           <label for="schedule-wait">Wait up to seconds</label>
           <input type="number" id="schedule-wait" min="0" max="300" step="1" value="0"
@@ -3717,15 +3712,15 @@
             </div>
             <div class="settings-row">
               <label for="categories-not-before">Not before</label>
-              <input type="date" id="categories-not-before" aria-describedby="categories-dates-repeat-help">
+              <input type="date" id="categories-not-before">
             </div>
             <div class="settings-row">
               <label for="categories-not-after">Do not play after</label>
-              <input type="date" id="categories-not-after" aria-describedby="categories-dates-repeat-help">
+              <input type="date" id="categories-not-after">
             </div>
             <div class="settings-row">
               <label for="categories-dates-repeat">Repeat dates</label>
-              <select id="categories-dates-repeat" aria-describedby="categories-dates-repeat-help">
+              <select id="categories-dates-repeat">
                 <option value="none">Don't repeat</option>
                 <option value="weekly">Every week</option>
                 <option value="yearly">Every year</option>

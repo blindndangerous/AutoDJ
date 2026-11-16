@@ -91,6 +91,10 @@ describe("Breaks panel markup", () => {
       "brk-placement-standalone", "brk-min-intro", "brk-duck"]) {
       const label = panel.querySelector(`label[for="${id}"]`);
       expect(label?.textContent.trim(), id).toBeTruthy();
+      if (id === "brk-placement-standalone") {
+        expect(byId(id).hasAttribute("aria-describedby")).toBe(false);
+        continue;
+      }
       const help = byId(byId(id).getAttribute("aria-describedby").split(" ")[0]);
       expect(help?.textContent.trim(), id).toBeTruthy();
     }
