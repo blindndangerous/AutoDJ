@@ -2087,19 +2087,19 @@ describe("app request behavior", () => {
     }
   });
 
-  it("shows liners in History when asked, keeping focus and the place in the list", async () => {
+  it("shows nonmusic items in filtered History and keeps focus", async () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     window.location.hash = "#history";
     await new Promise((resolve) => setTimeout(resolve, 0));
     const params = (url) => new URL(url, "http://x").searchParams;
     const music = {
-      total: 60, page: 2, pages: 2, items: [
+      total: 60, page: 1, pages: 2, items: [
         { event_id: "song-2", kind: "song", path: "M:/two.flac", played_at: "2026-01-01T00:02:00Z",
           title: "Two", artist: "A", duration: 60 },
       ],
     };
     const everything = {
-      total: 75, page: 2, pages: 2, items: [
+      total: 75, page: 1, pages: 2, items: [
         { event_id: "song-2", kind: "song", path: "M:/two.flac", played_at: "2026-01-01T00:02:00Z",
           title: "Two", artist: "A", duration: 60 },
         { event_id: "liner-1", kind: "liner", path: "L:/id.wav", played_at: "2026-01-01T00:01:59Z",
@@ -2111,7 +2111,7 @@ describe("app request behavior", () => {
     try {
       const { fetchImpl } = await setupApp({
         onRequest: (url) => url.startsWith("/api/history")
-          ? jsonResponse(params(url).get("liners") === "true" ? everything : music)
+          ? jsonResponse(params(url).get("nonmusic") === "true" ? everything : music)
           : jsonResponse({ ok: true }),
       });
       const historyCalls = () => fetchImpl.mock.calls
@@ -2124,7 +2124,10 @@ describe("app request behavior", () => {
       expect(box.hasAttribute("aria-describedby")).toBe(false);
       expect(box.checked).toBe(false);
       await vi.waitFor(() => expect(historyCalls()).toHaveLength(1));
-      expect(params(historyCalls()[0]).get("liners")).toBeNull();
+      const initial = params(historyCalls()[0]);
+      expect(Date.parse(initial.get("to")) - Date.parse(initial.get("from"))).toBe(24 * 60 * 60 * 1000);
+      expect(initial.get("nonmusic")).toBe("false");
+      expect(initial.get("q")).toBeNull();
       const headings = () => [...document.querySelectorAll("#history-table thead th")]
         .map((cell) => cell.textContent);
       await vi.waitFor(() => expect(document.querySelectorAll("#history-tbody tr[data-played-at]"))
@@ -2137,10 +2140,12 @@ describe("app request behavior", () => {
 
       box.focus();
       box.click();
-      await vi.waitFor(() => expect(status.textContent).toBe("Liners shown.  75 items, page 2 of 2."));
+      await vi.waitFor(() => expect(status.textContent).toBe("75 plays."));
       const asked = params(historyCalls().at(-1));
-      expect(asked.get("liners")).toBe("true");
-      expect(asked.get("anchor")).toBe("song-2");
+      expect(Date.parse(asked.get("to")) - Date.parse(asked.get("from"))).toBe(24 * 60 * 60 * 1000);
+      expect(asked.get("nonmusic")).toBe("true");
+      expect(asked.get("page")).toBe("1");
+      expect(asked.get("anchor")).toBeNull();
       expect(document.activeElement).toBe(box);
       expect(headings()).toEqual(["Played", "Title", "Artist", "Duration", "Type", "Track info"]);
       const rows = [...document.querySelectorAll("#history-tbody tr[data-played-at]")];
@@ -2157,16 +2162,18 @@ describe("app request behavior", () => {
       expect(window.localStorage.getItem("autodj.history.showLiners")).toBe("true");
 
       box.click();
-      await vi.waitFor(() => expect(status.textContent).toBe("Liners hidden.  60 items, page 2 of 2."));
-      expect(params(historyCalls().at(-1)).get("liners")).toBeNull();
-      expect(params(historyCalls().at(-1)).get("anchor")).toBe("song-2");
+      await vi.waitFor(() => expect(status.textContent).toBe("60 plays."));
+      expect(params(historyCalls().at(-1)).get("nonmusic")).toBe("false");
+      expect(Date.parse(params(historyCalls().at(-1)).get("to"))
+        - Date.parse(params(historyCalls().at(-1)).get("from"))).toBe(24 * 60 * 60 * 1000);
+      expect(params(historyCalls().at(-1)).get("page")).toBe("1");
       expect(headings()).not.toContain("Type");
       expect(document.activeElement).toBe(box);
       expect(window.localStorage.getItem("autodj.history.showLiners")).toBe("false");
       // Each change was said once, and nothing else was.
       expect(said.map((text) => text.trim())).toEqual([
-        "Liners shown.  75 items, page 2 of 2.",
-        "Liners hidden.  60 items, page 2 of 2.",
+        "75 plays.",
+        "60 plays.",
       ]);
     } finally {
       window.location.hash = "";
@@ -2174,7 +2181,130 @@ describe("app request behavior", () => {
     }
   });
 
-  it("opens History with liners shown when this browser chose them", async () => {
+  it("uses rolling Last day by default and reveals custom date fields", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      const { fetchImpl } = await setupApp({
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse({ total: 0, page: 1, pages: 1, items: [] })
+          : jsonResponse({ ok: true }),
+      });
+      const historyCalls = () => fetchImpl.mock.calls.filter(([url]) => url.startsWith("/api/history"));
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+      await vi.waitFor(() => expect(historyCalls()).toHaveLength(1));
+      const preset = document.querySelector("#hist-date-preset");
+      const custom = document.querySelector("#hist-custom-date-range");
+      expect(preset.value).toBe("last-day");
+      expect(custom.hidden).toBe(true);
+
+      preset.value = "custom";
+      preset.dispatchEvent(new Event("change", { bubbles: true }));
+      expect(custom.hidden).toBe(false);
+      const from = document.querySelector("#hist-export-from");
+      const to = document.querySelector("#hist-export-to");
+      from.value = "2026-10-01";
+      to.value = "2026-10-03";
+      from.dispatchEvent(new Event("change", { bubbles: true }));
+      await vi.waitFor(() => expect(historyCalls()).toHaveLength(3));
+      const query = new URL(historyCalls().at(-1)[0], "http://x").searchParams;
+      expect(query.get("from")).toBe("2026-10-01");
+      expect(query.get("to")).toBe("2026-10-03");
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("removes plays that expire from Last day on a passive refresh and exports the refreshed range", async () => {
+    const now = new Date("2026-11-16T12:00:00.000Z");
+    const oldPlay = {
+      event_id: "old-play", kind: "song", path: "old.mp3", title: "Old", artist: "Artist",
+      played_at: new Date(now.getTime() - 23 * 60 * 60 * 1000).toISOString(), duration: 60,
+    };
+    const historyCalls = [];
+    const exportCalls = [];
+    let createObjectUrl;
+    let revokeObjectUrl;
+    let downloadClick;
+    window.history.replaceState(null, "", "/");
+    window.location.hash = "#history";
+    const pageHref = window.location.href;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      const { webSocket } = await setupApp({
+        initialState: { current_track: { path: "old.mp3", title: "Old" } },
+        onRequest: (url) => {
+          if (url.startsWith("/api/history/export")) {
+            exportCalls.push(url);
+            return new globalThis.Response("start\r\n", { headers: { "Content-Type": "text/csv" } });
+          }
+          if (url.startsWith("/api/history")) {
+            historyCalls.push(url);
+            return jsonResponse(historyCalls.length <= 2
+              ? { total: 1, page: 1, pages: 1, items: [oldPlay] }
+              : { total: 0, page: 1, pages: 1, items: [] });
+          }
+          return jsonResponse({ ok: true });
+        },
+      });
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(now);
+      const preset = document.querySelector("#hist-date-preset");
+      preset.value = "last-day";
+      preset.dispatchEvent(new Event("change", { bubbles: true }));
+      await vi.waitFor(() => expect(historyCalls.length).toBeGreaterThan(0));
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+      await vi.waitFor(() => expect(document.querySelectorAll("#history-tbody tr[data-played-at]")).toHaveLength(1));
+      const initialRange = new URL(historyCalls.at(-1), "http://x").searchParams;
+      expect(initialRange.get("from")).toBe(new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString());
+
+      const later = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+      vi.setSystemTime(later);
+      const priorCalls = historyCalls.length;
+      webSocket.onmessage({ data: JSON.stringify({
+        browser_playback: false,
+        current_track: { path: "new.mp3", title: "New" },
+        discovery_available: false,
+        duration: 120,
+        elapsed: 1,
+        eq: {},
+        is_muted: false,
+        is_paused: false,
+        next_track: null,
+        queue: [],
+        settings: null,
+        volume: 1,
+      }) });
+      await vi.waitFor(() => expect(historyCalls.length).toBeGreaterThan(priorCalls));
+      await vi.waitFor(() => expect(document.querySelectorAll("#history-tbody tr[data-played-at]")).toHaveLength(0));
+      expect(document.querySelector("#history-empty").textContent).toBe("No plays match these filters.");
+
+      createObjectUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:history-export");
+      revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+      downloadClick = vi.spyOn(globalThis.HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+      const exportButton = document.querySelector("#hist-export-button");
+      exportButton.click();
+      await vi.waitFor(() => expect(exportCalls).toHaveLength(1));
+      await vi.waitFor(() => expect(downloadClick).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(exportButton.disabled).toBe(false));
+      const displayedRange = new URL(historyCalls.at(-1), "http://x").searchParams;
+      const exportedRange = new URL(exportCalls[0], "http://x").searchParams;
+      expect(exportedRange.get("from")).toBe(displayedRange.get("from"));
+      expect(exportedRange.get("to")).toBe(displayedRange.get("to"));
+      expect(displayedRange.get("from")).toBe(new Date(later.getTime() - 24 * 60 * 60 * 1000).toISOString());
+      expect(window.location.href).toBe(pageHref);
+    } finally {
+      downloadClick?.mockRestore();
+      createObjectUrl?.mockRestore();
+      revokeObjectUrl?.mockRestore();
+      window.history.replaceState(null, "", "/");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("opens History with nonmusic items shown when this browser chose them", async () => {
     window.localStorage.setItem("autodj.history.showLiners", "true");
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     window.location.hash = "#history";
@@ -2187,8 +2317,42 @@ describe("app request behavior", () => {
       });
       document.dispatchEvent(new Event("DOMContentLoaded"));
       await vi.waitFor(() => expect(fetchImpl.mock.calls
-        .some(([url]) => url.startsWith("/api/history") && url.includes("liners=true"))).toBe(true));
+        .some(([url]) => url.startsWith("/api/history")
+          && new URL(url, "http://x").searchParams.get("nonmusic") === "true"
+          && new URL(url, "http://x").searchParams.has("from")
+          && new URL(url, "http://x").searchParams.has("to"))).toBe(true));
       expect(document.querySelector("#hist-show-liners").checked).toBe(true);
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("reports an invalid History date range without stealing focus during selection", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      const { fetchImpl } = await setupApp({
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse({ total: 0, page: 1, pages: 1, items: [] })
+          : jsonResponse({ ok: true }),
+      });
+      const historyCalls = () => fetchImpl.mock.calls.filter(([url]) => url.startsWith("/api/history"));
+      await vi.waitFor(() => expect(historyCalls()).toHaveLength(1));
+      const from = document.querySelector("#hist-export-from");
+      const to = document.querySelector("#hist-export-to");
+      from.value = "2026-09-10";
+      to.value = "2026-09-01";
+      to.focus();
+      to.dispatchEvent(new Event("change", { bubbles: true }));
+      await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+        .toBe("The From date is after the To date."));
+      expect(document.activeElement).toBe(to);
+      expect(historyCalls()).toHaveLength(1);
+
+      to.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      expect(document.activeElement).toBe(from);
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2521,16 +2685,24 @@ describe("app request behavior", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     window.location.hash = "#history";
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const first = { played_at: new Date(2026, 0, 1, 23, 58).toISOString(), title: "First", artist: "A", duration: 60 };
-    const second = { played_at: new Date(2026, 0, 2, 0, 1).toISOString(), title: "Second", artist: "B", duration: 60 };
+    const first = { event_id: "first", path: "first.flac", played_at: new Date(2026, 0, 1, 23, 58).toISOString(), title: "First", artist: "A", duration: 60 };
+    const second = { event_id: "second", path: "second.flac", played_at: new Date(2026, 0, 2, 0, 1).toISOString(), title: "Second", artist: "B", duration: 60 };
     let items = [first];
+    let pages = 1;
     try {
-      const { webSocket } = await setupApp({
+      const { fetchImpl, webSocket } = await setupApp({
         initialState: { current_track: { path: "first.flac", title: "First" } },
         onRequest: (url) => url.startsWith("/api/history")
-          ? jsonResponse({ total: items.length, page: 1, pages: 1, items })
+          ? jsonResponse({ total: items.length, page: 1, pages, items })
           : jsonResponse({ ok: true }),
       });
+      document.querySelector("#hist-export-from").value = "2026-01-01";
+      document.querySelector("#hist-export-to").value = "2026-01-03";
+      const preset = document.querySelector("#hist-date-preset");
+      preset.value = "custom";
+      preset.dispatchEvent(new Event("change", { bubbles: true }));
+      await vi.waitFor(() => expect(fetchImpl.mock.calls
+        .filter(([url]) => url.startsWith("/api/history")).length).toBeGreaterThan(1));
       const tbody = document.querySelector("#history-tbody");
       const trackRows = () => [...tbody.querySelectorAll("tr[data-played-at]")];
       await vi.waitFor(() => expect(trackRows()).toHaveLength(1));
@@ -2552,11 +2724,25 @@ describe("app request behavior", () => {
       expect(trackRows()[1]).toBe(firstRow);
       expect(document.activeElement).toBe(firstRow.cells[2]);
       expect(tbody.querySelectorAll(".history-date")).toHaveLength(2);
-      const sameDay = { ...second, played_at: new Date(2026, 0, 2, 0, 4).toISOString(), title: "Third" };
-      items = [sameDay, second, first];
-      pushTrack("third.flac", "Third");
+      const sameTime = { ...second, event_id: "same-time", path: "same-time.flac", title: "Same time" };
+      items = [sameTime, second, first];
+      pushTrack("same-time.flac", "Same time");
       await vi.waitFor(() => expect(trackRows()).toHaveLength(3));
+      expect(trackRows()[0].dataset.historyId).toBe("same-time");
+      expect(trackRows()[1].dataset.historyId).toBe("second");
+      expect(trackRows()[2]).toBe(firstRow);
+      const sameDay = { ...second, event_id: "third", path: "third.flac",
+        played_at: new Date(2026, 0, 2, 0, 4).toISOString(), title: "Third" };
+      items = [sameDay, sameTime, second, first];
+      pushTrack("third.flac", "Third");
+      await vi.waitFor(() => expect(trackRows()).toHaveLength(4));
       expect(tbody.querySelectorAll(".history-date")).toHaveLength(2);
+
+      // A passive page-one result can change the total without adding a new
+      // visible row; refresh the pager quietly in that case too.
+      pages = 2;
+      pushTrack("still-third.flac", "Still third");
+      await vi.waitFor(() => expect(document.querySelector("#hist-page-info").textContent).toBe("Page 1 of 2"));
       expect(status.textContent).toBe("");
     } finally {
       window.location.hash = "";
@@ -2577,11 +2763,18 @@ describe("app request behavior", () => {
       title: "New", artist: "B", duration: 60 };
     let items = old;
     try {
-      const { webSocket } = await setupApp({
+      const { fetchImpl, webSocket } = await setupApp({
         initialState: { current_track: { path: "M:/old.flac" } },
         onRequest: (url) => url.startsWith("/api/history")
           ? jsonResponse({ total: items.length, page: 1, pages: 1, items }) : jsonResponse({ ok: true }),
       });
+      document.querySelector("#hist-export-from").value = "2026-01-01";
+      document.querySelector("#hist-export-to").value = "2026-01-03";
+      const preset = document.querySelector("#hist-date-preset");
+      preset.value = "custom";
+      preset.dispatchEvent(new Event("change", { bubbles: true }));
+      await vi.waitFor(() => expect(fetchImpl.mock.calls
+        .filter(([url]) => url.startsWith("/api/history")).length).toBeGreaterThan(1));
       const tbody = document.querySelector("#history-tbody");
       const trackRows = () => [...tbody.querySelectorAll("tr[data-played-at]")];
       await vi.waitFor(() => expect(trackRows()).toHaveLength(50));

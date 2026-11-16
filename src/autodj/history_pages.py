@@ -54,6 +54,7 @@ def history_page(
     per_page: int,
     liners: bool,
     anchor: str | None = None,
+    max_rows: int | None = VIEW_ROWS,
 ) -> dict:
     """One page of History, newest first, as ``/api/history`` returns it.
 
@@ -63,7 +64,8 @@ def history_page(
     kept leaves *page* as asked; one older than the whole view gives its
     last page.
     """
-    newest = list(islice(newest_rows(songs, aired, liners), VIEW_ROWS))
+    rows = newest_rows(songs, aired, liners)
+    newest = list(rows if max_rows is None else islice(rows, max_rows))
     total = len(newest)
     pages = max(1, (total + per_page - 1) // per_page)
     if anchor is not None:
