@@ -1846,10 +1846,14 @@ async function historyFilterProblems(page) {
       }, body: "Title\nNeedle\n" });
       return;
     }
-    displayQueries.push(Object.fromEntries(url.searchParams));
+    const query = Object.fromEntries(url.searchParams);
+    displayQueries.push(query);
+    const filtered = query.q === "Needle Artist";
     await route.fulfill({ json: { total: 1, page: 1, pages: 1, per_page: 50,
-      items: [{ event_id: "filter-check", path: "needle.mp3", title: "Needle",
-        artist: "Artist", duration: 120, played_at: new Date().toISOString(), kind: "song" }] } });
+      items: [{ event_id: filtered ? "filter-check" : "initial-check",
+        path: filtered ? "needle.mp3" : "initial.mp3",
+        title: filtered ? "Needle" : "Initial", artist: filtered ? "Artist" : "Track",
+        duration: 120, played_at: new Date().toISOString(), kind: "song" }] } });
   };
   await page.route(pattern, handler);
   try {
@@ -1857,8 +1861,20 @@ async function historyFilterProblems(page) {
     const query = page.locator("#hist-filter-q");
     await query.fill("Needle Artist");
     await query.press("Enter");
-    await page.waitForFunction(() => document.querySelector("#history-tbody")?.textContent.includes("Needle"));
-    await page.waitForFunction(() => document.querySelector("#sr-status")?.textContent === "1 play.");
+    try {
+      await page.waitForFunction(() => document.querySelector("#history-tbody")?.textContent.includes("Needle")
+        && !document.querySelector("#history-tbody")?.textContent.includes("Initial"));
+      await page.waitForFunction(() => document.querySelector("#sr-status")?.textContent === "1 play.");
+    } catch {
+      const state = await page.evaluate(() => ({
+        hash: location.hash,
+        visibility: document.visibilityState,
+        activeId: document.activeElement?.id || "",
+        rows: document.querySelector("#history-tbody")?.textContent || "",
+        status: document.querySelector("#sr-status")?.textContent || "",
+      }));
+      problems.push(`filtered result or announcement did not arrive: ${JSON.stringify({ state, displayQueries })}`);
+    }
     if (!await query.evaluate((input) => input === document.activeElement)) problems.push("filter moved focus");
     if (exports.length) problems.push("Enter in filter started an export");
     const download = page.waitForEvent("download");
@@ -1874,6 +1890,16 @@ async function historyFilterProblems(page) {
     await page.unroute(pattern, handler);
     await page.locator("#hist-filter-q").fill("");
     await page.locator("#hist-refresh").click();
+  }
+  if (!displayQueries.some((query) => query.q === "Needle Artist")) {
+    const state = await page.evaluate(() => ({
+      hash: location.hash,
+      visibility: document.visibilityState,
+      activeId: document.activeElement?.id || "",
+      rows: document.querySelector("#history-tbody")?.textContent || "",
+      status: document.querySelector("#sr-status")?.textContent || "",
+    }));
+    problems.push(`filtered History request was not observed: ${JSON.stringify({ state, displayQueries })}`);
   }
   return problems;
 }

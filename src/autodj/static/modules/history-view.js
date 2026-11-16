@@ -55,6 +55,45 @@ export function historyResultsMessage(data) {
   return `${total} ${total === 1 ? "play" : "plays"}.`;
 }
 
+export function historyFiltersKey({ from = "", to = "", q = "", nonmusic = false }) {
+  return JSON.stringify([from, to, q.trim(), Boolean(nonmusic)]);
+}
+
+// A filter result may be followed by a passive track refresh before its
+// delayed announcement is spoken. Carry one pending result across those
+// refreshes; a new user action cancels it.
+export function createHistoryFilterFeedback(selection, say) {
+  let pending = null;
+
+  function cancel() {
+    pending = null;
+    selection.cancel();
+  }
+
+  function start(filtersKey) {
+    cancel();
+    const token = {};
+    pending = { filtersKey, token, finish: selection.start() };
+    return token;
+  }
+
+  function complete(filtersKey, data) {
+    if (!pending || pending.filtersKey !== filtersKey) return false;
+    pending.finish(historyResultsMessage(data), pending.token);
+    return true;
+  }
+
+  function deliver(message, token) {
+    if (!pending || pending.token !== token) return false;
+    pending = null;
+    selection.cancel();
+    say(message);
+    return true;
+  }
+
+  return { cancel, start, complete, deliver };
+}
+
 export function applyHistoryFilterOnEnter(event, apply) {
   if (event.isComposing || event.keyCode === 229 || event.key !== "Enter") return false;
   event.preventDefault();

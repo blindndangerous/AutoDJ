@@ -2983,8 +2983,8 @@ import { formatPlayedAt, updateHistoryDateHeadings } from "./modules/history-for
 import { installHistoryExport } from "./modules/history-export.js";
 import { createSelectionAnnouncer } from "./modules/live-region.js";
 import {
-  applyHistoryFilterOnEnter, historyKindLabel, historyQuery, historyResultsMessage, readShowLiners,
-  setHistoryTypeColumn, writeShowLiners,
+  applyHistoryFilterOnEnter, createHistoryFilterFeedback, historyFiltersKey, historyKindLabel,
+  historyQuery, readShowLiners, setHistoryTypeColumn, writeShowLiners,
 } from "./modules/history-view.js";
 import { defaultStorage } from "./modules/safe-storage.js";
 
@@ -2995,8 +2995,11 @@ const historyNavigation = installTableNavigation(document.getElementById("histor
 // The history request in flight: a newer one aborts it.
 let historyRequest = null;
 let historyFilterTimer = null;
-const historySelection = createSelectionAnnouncer((message, request) => {
-  if (request.signal.aborted || !historyViewShown() || document.visibilityState === "hidden") return;
+const historySelection = createSelectionAnnouncer((message, token) => {
+  historyFeedback.deliver(message, token);
+});
+const historyFeedback = createHistoryFilterFeedback(historySelection, (message) => {
+  if (!historyViewShown() || document.visibilityState === "hidden") return;
   announceStatus(document.getElementById("sr-status"), message,
     { dwellMs: 3000, force: true, mirror: false });
 });
@@ -3061,7 +3064,7 @@ function applyHistoryFilters({ announce = "filters", focusInvalid = false } = {}
   else if (from > to) invalid = { input: fromInput, message: "The From date is after the To date." };
   if (invalid) {
     historyRequest?.abort();
-    historySelection.cancel();
+    historyFeedback.cancel();
     announceStatus(document.getElementById("sr-status"), invalid.message,
       { dwellMs: 6000, force: true, tone: "error" });
     if (focusInvalid) {
@@ -3074,7 +3077,7 @@ function applyHistoryFilters({ announce = "filters", focusInvalid = false } = {}
 
 function scheduleHistoryTextFilter() {
   historyRequest?.abort();
-  historySelection.cancel();
+  historyFeedback.cancel();
   if (historyFilterTimer !== null) clearTimeout(historyFilterTimer);
   historyFilterTimer = setTimeout(() => {
     historyFilterTimer = null;
@@ -3120,13 +3123,14 @@ function focusRemainingHistoryRow(tbody, index, message, column = null) {
 
 // announce: "page" says where paging landed; "refresh" confirms a
 // Refresh press; "filters" says the result count after a selection change.
-async function fetchHistory(page, { announce = false, anchor = null } = {}) {
+async function fetchHistory(page, { announce = false, anchor = null, passive = false } = {}) {
   if (historyFilterTimer !== null) {
     clearTimeout(historyFilterTimer);
     historyFilterTimer = null;
   }
   const filters = historyFilters();
   if (!filters.from || !filters.to || filters.from > filters.to) {
+    historyFeedback.cancel();
     if (announce) {
       const input = !filters.from ? document.getElementById("hist-export-from")
         : filters.from > filters.to ? document.getElementById("hist-export-from")
@@ -3136,12 +3140,11 @@ async function fetchHistory(page, { announce = false, anchor = null } = {}) {
       { dwellMs: 6000, force: true, tone: "error" });
       input?.focus();
     }
-    historySelection.cancel();
     return;
   }
   _histPage = page;
-  historySelection.cancel();
-  const finishSelection = announce === "filters" ? historySelection.start() : null;
+  if (!passive) historyFeedback.cancel();
+  if (announce === "filters") historyFeedback.start(historyFiltersKey(filters));
   historyRequest?.abort();
   const request = historyRequest = new AbortController();
   const nonmusic = filters.nonmusic;
@@ -3185,7 +3188,7 @@ async function fetchHistory(page, { announce = false, anchor = null } = {}) {
           "History refreshed.  No plays match these filters.",
           { dwellMs: 3000, force: true, mirror: false });
       }
-      if (finishSelection && !focusLost) finishSelection(historyResultsMessage(data), request);
+      if (!focusLost) historyFeedback.complete(historyFiltersKey(filters), data);
       return;
     }
     empty.setAttribute("hidden", "");
@@ -3214,16 +3217,15 @@ async function fetchHistory(page, { announce = false, anchor = null } = {}) {
     pag.removeAttribute("hidden");
     // Prev / Next / Go leave focus where it was, so say where they landed.
     // The page label is already on screen, hence no visible mirror.
-    if (finishSelection && !focusLost) {
-      finishSelection(historyResultsMessage(data), request);
-    } else if (announce && !focusLost && announce !== "filters") {
+    if (!focusLost) historyFeedback.complete(historyFiltersKey(filters), data);
+    if (announce && !focusLost && announce !== "filters") {
       const message = announce === "refresh" ? `History refreshed.  ${pageText}.` : pageText;
       announceStatus(document.getElementById("sr-status"), message,
         { dwellMs: 3000, force: true, mirror: false });
     }
   } catch (err) {
     if (request.signal.aborted) return;
-    historySelection.cancel();
+    historyFeedback.cancel();
     _histNewestAt = null;
     const tbody = document.getElementById("history-tbody");
     const table = document.getElementById("history-table");
@@ -3268,7 +3270,7 @@ async function addNewHistoryRows() {
   const filters = historyFilters();
   if (!filters.from || !filters.to || filters.from > filters.to) return;
   if (_histNewestAt === null) {
-    await fetchHistory(1);
+    await fetchHistory(1, { passive: true });
     return;
   }
   const newestShown = _histNewestAt;
@@ -3280,10 +3282,12 @@ async function addNewHistoryRows() {
     data = await requestJson(`/api/history?${historyQuery({ page: 1, ...filters })}`,
       { signal: request.signal });
   } catch (_) {
+    if (!request.signal.aborted) historyFeedback.cancel();
     return;  // The next track change or Refresh tries again.
   }
   if (request.signal.aborted || _histPage !== 1 || _histNewestAt !== newestShown
     || JSON.stringify(filters) !== JSON.stringify(historyFilters())) return;
+  historyFeedback.complete(historyFiltersKey(filters), data);
   const tbody = document.getElementById("history-tbody");
   const newestShownTime = Date.parse(newestShown);
   const seenIds = new Set([...tbody.querySelectorAll("tr[data-played-at]")]
@@ -3327,7 +3331,7 @@ function noteTrackForHistory(s) {
   if (was === null || key === null || !historyViewShown() || _histPage !== 1) return;
   if (historyFilterTimer !== null) return;
   const liveChanged = !was.endsWith(`\u0000${liveSince}`);
-  if (liveChanged) void fetchHistory(1);
+  if (liveChanged) void fetchHistory(1, { passive: true });
   else void addNewHistoryRows();
 }
 
@@ -3335,7 +3339,7 @@ function noteTrackForHistory(s) {
   document.addEventListener("click", (event) => {
     const button = event.target.closest?.(".history-info");
     if (!button || !document.getElementById("history-tbody").contains(button)) return;
-    historySelection.cancel();
+    historyFeedback.cancel();
     if (!button.dataset.path) {
       announceStatus(document.getElementById("sr-status"),
         "Track info is unavailable because this history entry has no saved recording path.",
@@ -3409,13 +3413,13 @@ function noteTrackForHistory(s) {
     }
   });
   const sayHistoryExport = makeSay(document.getElementById("sr-status"), { dwellMs: 3000, errorDwellMs: 6000 });
-  installHistoryExport({ announce: (...args) => { historySelection.cancel(); sayHistoryExport(...args); } });
+  installHistoryExport({ announce: (...args) => { historyFeedback.cancel(); sayHistoryExport(...args); } });
 }
 
 window.addEventListener("hashchange", (event) => {
   if (event.newURL && new URL(event.newURL).hash !== location.hash) return;
   if (!historyViewShown()) {
-    historySelection.cancel();
+    historyFeedback.cancel();
     if (historyFilterTimer !== null) clearTimeout(historyFilterTimer);
     historyFilterTimer = null;
   }

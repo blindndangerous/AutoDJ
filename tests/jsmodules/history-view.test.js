@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   applyHistoryFilterOnEnter,
+  createHistoryFilterFeedback,
   SHOW_LINERS_KEY,
+  historyFiltersKey,
   historyKindLabel,
   historyQuery,
   historyResultsMessage,
@@ -69,6 +71,89 @@ describe("History filters", () => {
     expect(historyResultsMessage({ total: 12, page: 1, pages: 3 })).toBe("12 plays.");
     expect(historyResultsMessage({ total: 1, page: 1, pages: 1 })).toBe("1 play.");
     expect(historyResultsMessage({ total: 0 })).toBe("No plays match these filters.");
+  });
+
+  it("keys pending feedback by the selected filters", () => {
+    expect(historyFiltersKey({
+      from: "2026-09-01", to: "2026-09-17", q: "  artist title  ", nonmusic: false,
+    })).toBe(historyFiltersKey({
+      from: "2026-09-01", to: "2026-09-17", q: "artist title", nonmusic: false,
+    }));
+    expect(historyFiltersKey({
+      from: "2026-09-01", to: "2026-09-17", q: "artist title", nonmusic: true,
+    })).not.toBe(historyFiltersKey({
+      from: "2026-09-01", to: "2026-09-17", q: "artist title", nonmusic: false,
+    }));
+  });
+
+  it("carries filter feedback across a passive refresh before the filtered response", () => {
+    const completions = [];
+    const selection = {
+      cancel: vi.fn(),
+      start: vi.fn(() => (message, token) => completions.push({ message, token })),
+    };
+    const say = vi.fn();
+    const feedback = createHistoryFilterFeedback(selection, say);
+    const key = "range-and-query";
+
+    const token = feedback.start(key);
+    // A passive response arrives first, then the selected filter response.
+    expect(feedback.complete(key, { total: 1 })).toBe(true);
+    expect(feedback.complete(key, { total: 2 })).toBe(true);
+    expect(feedback.complete("other-filters", { total: 20 })).toBe(false);
+
+    const latest = completions.at(-1);
+    expect(feedback.deliver(latest.message, latest.token)).toBe(true);
+    expect(feedback.deliver("1 play.", token)).toBe(false);
+    expect(feedback.complete(key, { total: 3 })).toBe(false);
+    expect(say).toHaveBeenCalledOnce();
+    expect(say).toHaveBeenCalledWith("2 plays.");
+    expect(selection.cancel).toHaveBeenCalled();
+  });
+
+  it("updates pending filter feedback when a passive refresh follows the filtered response", () => {
+    const completions = [];
+    const selection = {
+      cancel: vi.fn(),
+      start: vi.fn(() => (message, token) => completions.push({ message, token })),
+    };
+    const say = vi.fn();
+    const feedback = createHistoryFilterFeedback(selection, say);
+    const key = "range-and-query";
+
+    feedback.start(key);
+    expect(feedback.complete(key, { total: 1 })).toBe(true);
+    // The first 500 ms announcement is replaced by the latest passive count.
+    expect(feedback.complete(key, { total: 2 })).toBe(true);
+    const latest = completions.at(-1);
+    expect(feedback.deliver(latest.message, latest.token)).toBe(true);
+    expect(feedback.deliver(latest.message, latest.token)).toBe(false);
+    expect(say).toHaveBeenCalledOnce();
+    expect(say).toHaveBeenCalledWith("2 plays.");
+  });
+
+  it("cancels stale feedback when a new filter or another explicit action starts", () => {
+    const completions = [];
+    const selection = {
+      cancel: vi.fn(),
+      start: vi.fn(() => (message, token) => completions.push({ message, token })),
+    };
+    const say = vi.fn();
+    const feedback = createHistoryFilterFeedback(selection, say);
+    const previous = feedback.start("old-filter");
+    feedback.complete("old-filter", { total: 1 });
+
+    const current = feedback.start("new-filter");
+    const stale = completions[0];
+    expect(feedback.deliver(stale.message, stale.token)).toBe(false);
+    feedback.complete("new-filter", { total: 2 });
+    feedback.cancel(); // explicit paging, refresh, export, or leaving History
+    const cancelled = completions.at(-1);
+    expect(feedback.deliver(cancelled.message, cancelled.token)).toBe(false);
+    expect(feedback.deliver("No plays match these filters.", previous)).toBe(false);
+    expect(say).not.toHaveBeenCalled();
+    expect(selection.cancel).toHaveBeenCalled();
+    expect(current).not.toBe(previous);
   });
 
   it("applies filters on Enter without submitting the export form or accepting IME Enter", () => {
