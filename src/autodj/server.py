@@ -1203,54 +1203,79 @@ def create_app(
     app.state.listener_access = None
     app.state.stations = stations
 
-    @app.middleware("http")
-    async def drain_station_mutations(request: Request, call_next: Callable) -> Response:
-        """Drain named requests and reject new writes during a station transition."""
-        nonlocal active_api_mutations
-        parts = [part for part in request.url.path.split("/") if part]
-        station_api = len(parts) >= 3 and parts[:2] == ["api", "stations"]
-        station_suffix = parts[3:] if station_api else []
-        lifecycle_request = station_api and (
-            (request.method == "DELETE" and not station_suffix)
-            or (request.method == "POST" and station_suffix in (["archive"], ["restore"]))
-        )
-        if lifecycle_request:
-            return await call_next(request)
-        station_slug = parts[2] if len(parts) >= 4 and parts[:2] == ["api", "stations"] else None
-        mutation = (
-            parts[:1] == ["api"]
-            and request.method not in {"GET", "HEAD", "OPTIONS"}
-            and not (parts == ["api", "stations"] and request.method == "POST")
-        )
-        counted = False
-        station_counted = False
-        async with station_request_condition:
-            if station_slug in stations._deleting or (mutation and station_mutations_blocked):
-                return JSONResponse(
+    class StationMutationMiddleware:
+        """Drain named requests and reject new writes during a station transition.
+
+        This is pure ASGI so exceptions from the outer security middleware's
+        capped request receiver retain their status instead of being converted
+        into a body-parsing error by Starlette's BaseHTTPMiddleware bridge.
+        """
+
+        def __init__(self, app: ASGIApp) -> None:
+            self.app = app
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            nonlocal active_api_mutations
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+
+            parts = [part for part in str(scope.get("path", "")).split("/") if part]
+            method = str(scope.get("method", "")).upper()
+            station_api = len(parts) >= 3 and parts[:2] == ["api", "stations"]
+            station_suffix = parts[3:] if station_api else []
+            lifecycle_request = station_api and (
+                (method == "DELETE" and not station_suffix)
+                or (method == "POST" and station_suffix in (["archive"], ["restore"]))
+            )
+            if lifecycle_request:
+                await self.app(scope, receive, send)
+                return
+            station_slug = (
+                parts[2] if len(parts) >= 4 and parts[:2] == ["api", "stations"] else None
+            )
+            mutation = (
+                parts[:1] == ["api"]
+                and method not in {"GET", "HEAD", "OPTIONS"}
+                and not (parts == ["api", "stations"] and method == "POST")
+            )
+            counted = False
+            station_counted = False
+            rejected = False
+            async with station_request_condition:
+                if station_slug in stations._deleting or (mutation and station_mutations_blocked):
+                    rejected = True
+                else:
+                    if mutation:
+                        active_api_mutations += 1
+                        counted = True
+                    if station_slug in stations._extras:
+                        active_station_requests[station_slug] = (
+                            active_station_requests.get(station_slug, 0) + 1
+                        )
+                        station_counted = True
+            if rejected:
+                response = JSONResponse(
                     {"detail": "Station maintenance is in progress."}, status_code=409
                 )
-            if mutation:
-                active_api_mutations += 1
-                counted = True
-            if station_slug in stations._extras:
-                active_station_requests[station_slug] = (
-                    active_station_requests.get(station_slug, 0) + 1
-                )
-                station_counted = True
-        try:
-            return await call_next(request)
-        finally:
-            if counted or station_counted:
-                async with station_request_condition:
-                    if counted:
-                        active_api_mutations -= 1
-                    if station_counted and station_slug is not None:
-                        remaining = active_station_requests[station_slug] - 1
-                        if remaining:
-                            active_station_requests[station_slug] = remaining
-                        else:
-                            active_station_requests.pop(station_slug, None)
-                    station_request_condition.notify_all()
+                await response(scope, receive, send)
+                return
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                if counted or station_counted:
+                    async with station_request_condition:
+                        if counted:
+                            active_api_mutations -= 1
+                        if station_counted and station_slug is not None:
+                            remaining = active_station_requests[station_slug] - 1
+                            if remaining:
+                                active_station_requests[station_slug] = remaining
+                            else:
+                                active_station_requests.pop(station_slug, None)
+                        station_request_condition.notify_all()
+
+    app.add_middleware(StationMutationMiddleware)
 
     from autodj.cue_rescan import CueRescan
 
