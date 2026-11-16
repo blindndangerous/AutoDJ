@@ -59,8 +59,16 @@ export function historyResultsMessage(data) {
   return `${total} ${total === 1 ? "play" : "plays"}.`;
 }
 
-export function historyFiltersKey({ from = "", to = "", q = "", nonmusic = false }) {
-  return JSON.stringify([from, to, q.trim(), Boolean(nonmusic)]);
+export function historyFiltersKey({ from = "", to = "", q = "", nonmusic = false, preset = "" }) {
+  // Rolling ranges advance on every refresh. Their feedback identity is the
+  // chosen preset; custom ranges remain keyed by their exact dates.
+  const rollingPreset = ["last-day", "last-7-days", "last-30-days", "last-90-days"].includes(preset);
+  return JSON.stringify([
+    rollingPreset ? preset : from,
+    rollingPreset ? preset : to,
+    q.trim(),
+    Boolean(nonmusic),
+  ]);
 }
 
 // A filter result may be followed by a passive track refresh before its

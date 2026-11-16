@@ -95,6 +95,22 @@ describe("History filters", () => {
     }));
   });
 
+  it("keeps rolling-range feedback keyed to its preset as timestamps advance", () => {
+    const keyAtStart = historyFiltersKey({
+      from: "2026-11-15T07:27:24.277Z", to: "2026-11-16T07:27:24.277Z",
+      q: "Needle Artist", nonmusic: false, preset: "last-day",
+    });
+    const keyAfterPassiveRefresh = historyFiltersKey({
+      from: "2026-11-15T07:27:24.278Z", to: "2026-11-16T07:27:24.278Z",
+      q: "Needle Artist", nonmusic: false, preset: "last-day",
+    });
+    expect(keyAfterPassiveRefresh).toBe(keyAtStart);
+    expect(historyFiltersKey({
+      from: "2026-11-09T07:27:24.278Z", to: "2026-11-16T07:27:24.278Z",
+      q: "Needle Artist", nonmusic: false, preset: "last-7-days",
+    })).not.toBe(keyAtStart);
+  });
+
   it("carries filter feedback across a passive refresh before the filtered response", () => {
     const completions = [];
     const selection = {

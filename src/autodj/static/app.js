@@ -3054,6 +3054,13 @@ function historyFilters() {
   };
 }
 
+function historyFeedbackKey(filters) {
+  return historyFiltersKey({
+    ...filters,
+    preset: document.getElementById("hist-date-preset")?.value || "",
+  });
+}
+
 function applyHistoryFilters({ announce = "filters", focusInvalid = false } = {}) {
   if (historyFilterTimer !== null) {
     clearTimeout(historyFilterTimer);
@@ -3149,7 +3156,7 @@ async function fetchHistory(page, { announce = false, anchor = null, passive = f
   }
   _histPage = page;
   if (!passive) historyFeedback.cancel();
-  if (announce === "filters") historyFeedback.start(historyFiltersKey(filters));
+  if (announce === "filters") historyFeedback.start(historyFeedbackKey(filters));
   historyRequest?.abort();
   const request = historyRequest = new AbortController();
   const nonmusic = filters.nonmusic;
@@ -3193,7 +3200,7 @@ async function fetchHistory(page, { announce = false, anchor = null, passive = f
           "History refreshed.  No plays match these filters.",
           { dwellMs: 3000, force: true, mirror: false });
       }
-      if (!focusLost) historyFeedback.complete(historyFiltersKey(filters), data);
+      if (!focusLost) historyFeedback.complete(historyFeedbackKey(filters), data);
       return;
     }
     empty.setAttribute("hidden", "");
@@ -3222,7 +3229,7 @@ async function fetchHistory(page, { announce = false, anchor = null, passive = f
     pag.removeAttribute("hidden");
     // Prev / Next / Go leave focus where it was, so say where they landed.
     // The page label is already on screen, hence no visible mirror.
-    if (!focusLost) historyFeedback.complete(historyFiltersKey(filters), data);
+    if (!focusLost) historyFeedback.complete(historyFeedbackKey(filters), data);
     if (announce && !focusLost && announce !== "filters") {
       const message = announce === "refresh" ? `History refreshed.  ${pageText}.` : pageText;
       announceStatus(document.getElementById("sr-status"), message,
@@ -3303,7 +3310,7 @@ async function addNewHistoryRows() {
   }
   if (request.signal.aborted || _histPage !== 1 || _histNewestAt !== newestShown
     || JSON.stringify(filters) !== JSON.stringify(historyFilters())) return;
-  historyFeedback.complete(historyFiltersKey(filters), data);
+  historyFeedback.complete(historyFeedbackKey(filters), data);
   const newestShownTime = Date.parse(newestShown);
   const seenIds = new Set([...tbody.querySelectorAll("tr[data-played-at]")]
     .map((row) => row.dataset.historyId));
