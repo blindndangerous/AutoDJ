@@ -203,6 +203,51 @@ def test_owned_play_next_stamps_an_unidentified_catalog_entry(station):
     assert not hasattr(song, "occurrence_id")
 
 
+def test_play_next_prepend_confirms_voice_conflict_without_losing_old_occurrence(station):
+    """ADR-0004-30: voice conflict confirmation keeps the prepended queue occurrence."""
+    from autodj._bridge import PlayerBridge
+    from autodj.live_queue import VoiceQueueConflict
+    from tests.unit.test_breaks_api import install_live_pair
+
+    old_occurrence = station.entries[1]
+    station.player._state.queued_next = old_occurrence
+    install_live_pair(station)
+    bridge = PlayerBridge(station.player, station.player._sim, library=station.player._library)
+    new_next = station.entries[2]
+    slot = voice(station)["slot"]
+    assert slot is not None
+    booking = book(station, slot, transition_revision=slot["transition_revision"])
+    assert booking.status_code == 201, booking.text
+    booked = booking.json()
+    assert any(
+        item.break_id == booked["break_id"] for item in station.player._playing_render.voice_breaks
+    )
+    before_queue = list(station.player._state.queue)
+
+    with pytest.raises(VoiceQueueConflict) as refused:
+        bridge.play_next_entry(new_next, new_placement=True)
+    detail = refused.value.detail
+    assert detail["code"] == "voice_track_conflict"
+    assert station.player._state.queued_next is old_occurrence
+    assert station.player._state.queue == before_queue
+    assert station.desk.get(booked["break_id"]).state == RENDERED
+
+    assert bridge.play_next_entry(
+        new_next,
+        new_placement=True,
+        voice_action="discard",
+        voice_revision=detail["revision"],
+    )
+    state = station.player._state
+    assert state.queued_next.path == new_next.path
+    assert state.queue[0] is old_occurrence
+    assert state.queue[0].path == old_occurrence.path
+    # Near-air edits are applied by the render worker after confirmation.
+    decision = station.player._live_queue_edits[id(station.player._playing_render.entry)]
+    assert decision.voice_action == "discard"
+    assert booked["break_id"] not in {item.break_id for item in decision.breaks}
+
+
 def test_browser_reseed_stamps_a_distinct_queue_occurrence(station, monkeypatch):
     from autodj._bridge import PlayerBridge
 

@@ -276,6 +276,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0004-27` | Eligible targets are bounded near-air adjacent music occurrences with known timing and ownership; selection certainty, estimated airtime and unavailability are independent fields. | automated | `tests/unit/test_hour_preview.py::test_future_target_horizon_and_programme_boundaries`; `tests/unit/test_hour_preview.py::test_ineligible_future_row_remains_inspectable_with_reason`; `tests/unit/test_live_voice.py::test_pause_past_future_expiry_drops_speech_without_replay`; `tests/unit/test_voice_tracks_api.py::test_paused_future_target_retains_selection_with_unknown_airtime`; `tests/unit/test_voice_tracks_api.py::test_future_target_cannot_be_confirmed_or_uploaded_during_takeover_or_stop`; `tests/unit/test_live_queue_replan.py::test_confirmation_refuses_missing_duration_without_type_error`; `tests/unit/test_voice_tracks_api.py::test_confirmation_missing_duration_returns_conflict`; `tests/unit/test_live_voice.py::test_future_booking_refuses_unplayable_liner_without_partial_changes`. |
 | `ADR-0004-28` | Target refresh preserves the selected identity and focus; a vanished target never selects another implicitly, and actions have one announcement path. | automated | `tests/jsmodules/voice-tracker.test.js::confirms explicitly with a labelled native select and preserves focus on refresh`; `tests/jsmodules/voice-tracker.test.js::retains an unavailable selected occurrence and take without choosing a replacement`; `tests/jsmodules/voice-tracker.test.js::moves focus to the target selector when a transition control disappears`; `tests/jsmodules/voice-tracker.test.js::announces confirmation once and keeps passive airtime refresh quiet`; `tests/jsmodules/voice-tracker.test.js::keeps song selection speech quiet while updating the visible selection`; `tests/jsmodules/voice-tracker.test.js::explains every disabled confirmation state and counts only the supplied new songs`. |
 | `ADR-0004-29` | Future-target selection, confirmation, recording, conflict resolution and cancellation work with keyboard and screen reader and retain audible handoff continuity on the candidate. | manual | Focused Chromium keyboard/axe fixture audit: `tests/playwright/voice_target_audit.mjs`, both themes. Pending #524: rehearse the five actions, repeated songs, refresh, expiry, promotion and takeover on Windows with NVDA in Chrome and Firefox; record revision, versions, focus, speech and audible joins using docs/accessibility-testing.md. Fixture browser tests and structural validation do not establish real speech or output continuity. |
+| `ADR-0004-30` | Play next prepends a new occurrence while preserving the order and identities of tracks already queued. | automated | `tests/integration/test_server.py::TestPlayNext::test_play_next_prepends_without_losing_queued_occurrences`, `tests/unit/test_voice_tracks_api.py::test_play_next_prepend_confirms_voice_conflict_without_losing_old_occurrence` |
 
 ## Related proposal — 2026-10-17
 
@@ -803,3 +804,17 @@ restart and crash history is uncertain by design; durable advance production
 continues to use prepared editions. Concurrency tests must cover duplicate
 paths, two editors, upload/cancel/promotion races and hard-show cleanup before
 the implementation is considered complete.
+
+
+## Amendment 2026-11-16: Play next preserves queued tracks
+
+The operator requested [#811](https://github.com/blindndangerous/AutoDJ/issues/811)
+after finding that a second Play next discarded the previous choice. Play next
+now inserts a new occurrence before the waiting queue. The previous next track
+keeps its occurrence identity and moves to the front of the ordinary queue.
+Live queue preflight uses that full resulting order, preserving the existing
+voice-association conflict checks. Play now keeps its existing behavior.
+
+This replaces the single replaceable Play next slot behavior introduced with
+#519; it does not change the handoff or speech safety rules above. The API and
+UI no longer report that a track was replaced.
