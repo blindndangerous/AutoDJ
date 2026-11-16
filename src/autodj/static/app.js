@@ -3525,7 +3525,8 @@ async function initialStationState() {
   const asked = fromAddress || lastStation();
   if (asked && asked !== DEFAULT_STATION) {
     if (!loaded) loaded = await refreshStationList();
-    if (!stationEntry(asked)?.archived || !loaded) {
+    const askedEntry = stationEntry(asked);
+    if (!loaded || (askedEntry && !askedEntry.archived)) {
       selectStation(asked);
       if (!fromAddress) rememberStationInAddress(asked);
       if (!loaded) retryStationList();
@@ -3536,7 +3537,7 @@ async function initialStationState() {
       if (fromAddress) {
         rememberStationInAddress(fallback);
         announceStatus(document.getElementById("sr-status"),
-          `${stationEntry(asked)?.archived ? `${stationName(asked)} is archived.` : `No station is called ${asked}.`} Showing ${stationName(fallback)}.`,
+          `${askedEntry?.archived ? `${stationName(asked)} is archived.` : `No station is called ${asked}.`} Showing ${stationName(fallback)}.`,
           { dwellMs: 8000, force: true, tone: "error" });
       }
     }
