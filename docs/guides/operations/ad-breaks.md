@@ -53,11 +53,12 @@ the spot and its audio. A booked spot's Delete action explains that it must air 
 ## Ad breaks and when they run
 
 Choose **Add ad break** and give a **Break name** and the **Minutes past the hour** it runs at,
-such as `15, 45` for quarter past and quarter to. **From hour** and **Until hour** keep it to part
-of the day, **Days** to chosen weekdays (none checked is every day), and **First day** and **Last
-day** to a date range. **Spots in the break** (1 to 10) and **Longest break in seconds** (0 for no
-limit) cap what it holds. Leave the minutes empty for a break that runs only from a Schedule event
-or **Run now**.
+such as `15, 45` for quarter past and quarter to. Use one or more minutes from 0 to 59, separated
+by commas; leave them blank for a break that runs only from a Schedule event or **Run now**.
+**From hour** is included and **Until hour** is excluded. **Days** selects weekdays; no days
+selected means every day. Optional **First day** and **Last day** set an inclusive date range for
+scheduled runs. **Spots in the break** (1 to 10) and **Longest break in seconds** (0 for no limit,
+otherwise 10 to 900 seconds) cap what it holds.
 
 For anything the minutes cannot say, add a **Schedule** event (Settings, Station, Schedule) with the action
 **Ad break** and the break's name: once on a date, daily, on chosen days or every few minutes, with

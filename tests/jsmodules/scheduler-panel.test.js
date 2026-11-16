@@ -406,7 +406,7 @@ describe("Schedule panel", () => {
     expect(repeat.labels[0].textContent).toBe("Repeat dates");
     expect([...repeat.options].map((item) => item.textContent)).toEqual(["Don't repeat", "Every year"]);
     for (const id of ["schedule-dates-repeat", "schedule-start-date", "schedule-end-date"]) {
-      expect(byId(id).getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc");
+      expect(byId(id).getAttribute("aria-describedby")).toBe(null);
     }
     expect(help.textContent).toBe("The event runs only between these dates, both included.");
     repeat.value = "yearly";
@@ -454,14 +454,14 @@ describe("Schedule panel", () => {
     const end = byId("schedule-end-date");
     expect(document.activeElement).toBe(end);
     expect(end.getAttribute("aria-invalid")).toBe("true");
-    // The error is read before the long repeat help.
-    expect(end.getAttribute("aria-describedby")).toBe("schedule-form-error schedule-dates-repeat-desc");
+    // Focus reads the field error without repeating the help below it.
+    expect(end.getAttribute("aria-describedby")).toBe("schedule-form-error");
     expect(byId("schedule-form-error").textContent).toBe("End date must be on or after the start date");
     end.value = "2026-12-31";
     end.dispatchEvent(new Event("input", { bubbles: true }));
     expect(end.hasAttribute("aria-invalid")).toBe(false);
-    // The error leaves; the help about the dates stays.
-    expect(end.getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc");
+    // Clearing the error also clears its description link.
+    expect(end.getAttribute("aria-describedby")).toBe(null);
 
     byId("schedule-repeat").value = "once";
     byId("schedule-repeat").dispatchEvent(new Event("change", { bubbles: true }));

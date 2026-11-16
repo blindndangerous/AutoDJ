@@ -212,6 +212,7 @@ describe("talk", () => {
     try {
       const { log } = install();
       const button = byId("btn-talk");
+      expect(button.hasAttribute("aria-describedby")).toBe(false);
       button.focus();
       clockNow = 1000;
       key("keydown", { key: "Enter" });
@@ -223,13 +224,13 @@ describe("talk", () => {
       expect(button.getAttribute("aria-pressed")).toBe("true");
       expect(byId("sr-status").textContent)
         .toBe("Talking. Press Talk again to stop. Talk turns off by itself after 2 minutes.");
-      // Shown in words under the button too, and describing it.
+      // Shown below the button without repeating the full note on focus.
       const note = byId("talk-latched");
       expect(note.hidden).toBe(false);
       expect(note.textContent).toBe(LATCHED_NOTE);
       expect(note.textContent).toBe("Talking until you press Talk again, for 2 minutes at most.");
       expect(note.closest("[aria-live], [role=status]")).toBeNull();
-      expect(button.getAttribute("aria-describedby").split(" ")).toContain("talk-latched");
+      expect((button.getAttribute("aria-describedby") || "").split(" ")).not.toContain("talk-latched");
       clockNow = 5000;
       key("keydown", { key: "Enter" });
       expect(button.getAttribute("aria-pressed")).toBe("false");
@@ -238,7 +239,7 @@ describe("talk", () => {
       expect(log.stopped).toBe(1);
       expect(log.sockets).toHaveLength(1);
       expect(byId("talk-latched").hidden).toBe(true);
-      expect(button.getAttribute("aria-describedby").split(" ")).not.toContain("talk-latched");
+      expect((button.getAttribute("aria-describedby") || "").split(" ")).not.toContain("talk-latched");
     } finally {
       vi.useRealTimers();
     }

@@ -122,7 +122,7 @@ as Browse… in an editor or the discard question over an editor, sits above it,
 and only the top one keeps the keys. Check each with NVDA in browse mode, in
 Chrome and Firefox:
 
-- **Browse…**: in **Library tools**, **Music folders and Voice liner folders**,
+- **Browse…**: in **Library tools**, **Folders**,
   press Browse… after **Folder path**. Select this folder comes before Cancel.
   Enter straight after NVDA reads the dialog must not choose a folder or change
   the field. Escape and Cancel return to Browse…. Also try Browse… on a
