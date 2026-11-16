@@ -3435,8 +3435,8 @@ describe("static accessibility contracts", () => {
     expect(talk.textContent).toBe("Talk");
     expect(talk.hasAttribute("aria-label")).toBe(false);
     expect(talk.getAttribute("aria-pressed")).toBe("false");
-    expect(idsOf(talk)).toEqual(["talk-help"]);
-    expect(document.getElementById("talk-help").textContent).toMatch(/press and hold Alt\+M/);
+    expect(idsOf(talk)).toEqual([]);
+    expect(document.getElementById("talk-help").textContent).toMatch(/2 minutes/);
     for (const id of ["talk-help", "talk-latched", "talk-note", "talk-error"]) {
       expect(quiet(document.getElementById(id)), id).toBe(true);
     }
@@ -3445,9 +3445,10 @@ describe("static accessibility contracts", () => {
     expect(latched.tagName).toBe("P");
     expect(latched.hidden).toBe(true);
     expect(latched.classList.contains("talk-latched")).toBe(true);
-    // Without sign-in anyone who can open the page can talk: said plainly.
-    expect(document.getElementById("talk-help").textContent)
-      .toMatch(/no sign-in \(pairing is off\), anyone who can open this page can talk on the air/);
+    // The security warning stays readable, but is not repeated whenever Talk is focused.
+    expect(document.getElementById("talk-sign-in-warning").textContent)
+      .toMatch(/without server sign-in.*anyone who can open this page can talk on the air/i);
+    expect(idsOf(talk)).not.toContain("talk-sign-in-warning");
     expect(document.getElementById("live-intro").textContent)
       .toContain("Without server sign-in, anyone with page access can broadcast and change settings.");
     expect(document.getElementById("talk-error").classList.contains("field-error")).toBe(true);

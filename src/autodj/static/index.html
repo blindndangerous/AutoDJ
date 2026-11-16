@@ -269,13 +269,13 @@
         <p id="local-programme-status">Automation</p>
       </div>
       <!-- Browser talkover (#48), shown while the station can go live.
-           Hold to talk; a quick press latches it on until the next press.
            A fixed name: aria-pressed says whether this page is talking.
-           The help, the note (busy, unavailable) and the error are plain
-           text, linked by live-talk.js only while they have words. -->
+           The time limit and sign-in warning stay readable without being
+           repeated on focus; live-talk.js links current notes and errors. -->
       <div id="talk-desk" class="talk-desk" hidden>
-        <button type="button" id="btn-talk" aria-pressed="false" aria-describedby="talk-help">Talk</button>
-        <p id="talk-help" class="stream-detail">Press and hold to talk over the music, or press and hold Alt+M. 2 minutes max. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air.</p>
+        <button type="button" id="btn-talk" aria-pressed="false">Talk</button>
+        <p id="talk-help" class="stream-detail">Talk turns off by itself after 2 minutes.</p>
+        <p id="talk-sign-in-warning" class="stream-detail">Without server sign-in (pairing off), anyone who can open this page can talk on the air.</p>
         <!-- Shown while talk is latched on.  Plain text: the latch is said once. -->
         <p id="talk-latched" class="talk-latched" hidden></p>
         <p id="talk-note" class="stream-detail" hidden></p>
@@ -804,7 +804,7 @@
         <input type="number" id="pb-fade-in" min="0" max="20" step="0.5" value="3" data-help="pb-fade-in-desc">
       </div>
       <span class="setting-desc" id="pb-fade-in-desc">
-        How long the incoming track takes to reach full volume.  0 <span aria-hidden="true">=</span><span class="visually-hidden">means</span> incoming track starts at full volume immediately when the crossfade begins (no ramp-up).  Capped at crossfade length.
+        0 starts at full volume; capped at the crossfade length.
       </span>
       <div class="settings-check">
         <input type="checkbox" id="pb-eq-duck" data-help="pb-eq-duck-desc">
@@ -1835,7 +1835,7 @@
         <label for="brk-enabled">Accept announcer uploads</label>
       </div>
       <span class="setting-desc" id="brk-enabled-help">
-        Off, new announcer uploads are refused. Voice tracks can still be booked with server playback and saved-point transitions. Turning breaks off drops waiting announcer uploads; manual voice tracks and ad spots stay booked. Off by default.
+        Turning breaks off drops waiting announcer uploads.
       </span>
       <fieldset id="brk-placement">
         <legend>Where a DJ break goes</legend>
@@ -4268,7 +4268,7 @@
      while showModal() still made the rest of the page inert. -->
 <dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
   <h1 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h1>
-  <p>Space and the Up and Down Arrow keys work on the Now Playing tab only, because on other tabs they scroll the page. Every other shortcut works from any tab.</p>
+  <p>Space and Up/Down: Now Playing only.</p>
   <p>You can toggle keyboard shortcuts under Settings.</p>
   <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
     <dt><kbd>Space</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>k</kbd></dt><dd>Play or pause. In stream mode, start or stop listening on this page.</dd>
@@ -4303,7 +4303,7 @@
     <dt><kbd>Shift+[</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Shift+]</kbd></dt><dd>Switch to the previous or next station</dd>
   </dl>
   <p style="margin-top:1rem;color:var(--text-dim);font-size:0.9em">
-    NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first, or press NVDA+F2 and then the shortcut to pass that one key through.
+    NVDA: NVDA+Space switches focus mode; NVDA+F2 passes one key.
   </p>
   <div style="margin-top:1rem;text-align:right">
     <button id="btn-shortcuts-close" type="button">Close</button>
