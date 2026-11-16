@@ -2981,10 +2981,11 @@ const _libEls = {
 // ----------------------------------------------------------------
 import { formatPlayedAt, updateHistoryDateHeadings } from "./modules/history-format.js";
 import { installHistoryExport } from "./modules/history-export.js";
+import { historyDateRange, refreshHistoryRange, setHistoryRangePreset } from "./modules/history-range.js";
 import { createSelectionAnnouncer } from "./modules/live-region.js";
 import {
   applyHistoryFilterOnEnter, createHistoryFilterFeedback, historyFiltersKey, historyKindLabel,
-  historyQuery, readShowLiners, setHistoryTypeColumn, writeShowLiners,
+  historyQuery, readShowLiners, setHistoryTypeColumn, showHistoryCustomDateRange, writeShowLiners,
 } from "./modules/history-view.js";
 import { defaultStorage } from "./modules/safe-storage.js";
 
@@ -3042,9 +3043,12 @@ function historyRowHtml(it, withType = false) {
 }
 
 function historyFilters() {
+  const range = historyDateRange(
+    document.getElementById("hist-export-from")?.value || "",
+    document.getElementById("hist-export-to")?.value || "",
+  );
   return {
-    from: document.getElementById("hist-export-from")?.value || "",
-    to: document.getElementById("hist-export-to")?.value || "",
+    ...range,
     q: document.getElementById("hist-filter-q")?.value || "",
     nonmusic: Boolean(document.getElementById("hist-show-liners")?.checked),
   };
@@ -3128,6 +3132,7 @@ async function fetchHistory(page, { announce = false, anchor = null, passive = f
     clearTimeout(historyFilterTimer);
     historyFilterTimer = null;
   }
+  if (page === 1) refreshHistoryRange();
   const filters = historyFilters();
   if (!filters.from || !filters.to || filters.from > filters.to) {
     historyFeedback.cancel();
@@ -3267,9 +3272,20 @@ function historyViewShown() {
 // keeps its place, and nothing is said: the table is not a live region.
 async function addNewHistoryRows() {
   if (historyFilterTimer !== null) return;
+  if (_histNewestAt === null) {
+    await fetchHistory(1, { passive: true });
+    return;
+  }
+  const rollingRange = refreshHistoryRange();
   const filters = historyFilters();
   if (!filters.from || !filters.to || filters.from > filters.to) return;
-  if (_histNewestAt === null) {
+  const fromMs = Date.parse(filters.from);
+  const tbody = document.getElementById("history-tbody");
+  if (rollingRange && [...tbody.querySelectorAll("tr[data-played-at]")]
+    .some((row) => Date.parse(row.dataset.playedAt) < fromMs)) {
+    // A rolling preset can age visible plays out even when no new row fills
+    // their place. Reload the page so expired rows and its count are removed;
+    // fetchHistory restores focus to the same row when it is still present.
     await fetchHistory(1, { passive: true });
     return;
   }
@@ -3288,7 +3304,6 @@ async function addNewHistoryRows() {
   if (request.signal.aborted || _histPage !== 1 || _histNewestAt !== newestShown
     || JSON.stringify(filters) !== JSON.stringify(historyFilters())) return;
   historyFeedback.complete(historyFiltersKey(filters), data);
-  const tbody = document.getElementById("history-tbody");
   const newestShownTime = Date.parse(newestShown);
   const seenIds = new Set([...tbody.querySelectorAll("tr[data-played-at]")]
     .map((row) => row.dataset.historyId));
@@ -3300,7 +3315,10 @@ async function addNewHistoryRows() {
     seenIds.add(id);
     return true;
   });
-  if (!fresh.length) return;
+  if (!fresh.length) {
+    showHistoryPaging(data);
+    return;
+  }
   const active = tbody.contains(document.activeElement) ? document.activeElement : null;
   const focusedCell = active?.matches("td[role=gridcell], td[role=rowheader]") ? active : null;
   const focusedButton = active?.closest(".history-info") || null;
@@ -3364,10 +3382,24 @@ function noteTrackForHistory(s) {
   const historyQ = document.getElementById("hist-filter-q");
   historyQ?.addEventListener("input", scheduleHistoryTextFilter);
   historyQ?.addEventListener("keydown", (event) => applyHistoryFilterOnEnter(event, applyHistoryFilters));
+  const datePreset = document.getElementById("hist-date-preset");
+  const customDateRange = document.getElementById("hist-custom-date-range");
+  setHistoryRangePreset(datePreset?.value);
+  showHistoryCustomDateRange(datePreset?.value, customDateRange);
+  datePreset?.addEventListener("change", () => {
+    setHistoryRangePreset(datePreset.value);
+    showHistoryCustomDateRange(datePreset.value, customDateRange);
+    applyHistoryFilters();
+  });
   for (const input of [
     document.getElementById("hist-export-from"), document.getElementById("hist-export-to"),
   ]) {
-    input?.addEventListener("change", () => applyHistoryFilters());
+    input?.addEventListener("change", () => {
+      if (datePreset) datePreset.value = "custom";
+      setHistoryRangePreset("custom");
+      showHistoryCustomDateRange("custom", customDateRange);
+      applyHistoryFilters();
+    });
     input?.addEventListener("keydown", (event) => applyHistoryFilterOnEnter(
       event, () => applyHistoryFilters({ focusInvalid: true }),
     ));

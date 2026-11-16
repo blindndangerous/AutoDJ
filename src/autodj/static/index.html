@@ -643,10 +643,20 @@
   <section data-view="history" id="panel-history" role="tabpanel" hidden aria-labelledby="tab-history">
     <h2>History</h2>
     <div class="history-filters">
-      <label for="hist-export-from">From</label>
-      <input type="date" id="hist-export-from" aria-required="true">
-      <label for="hist-export-to">To</label>
-      <input type="date" id="hist-export-to" aria-required="true">
+      <label for="hist-date-preset">Date range</label>
+      <select id="hist-date-preset">
+        <option value="last-day">Last day</option>
+        <option value="last-7-days">Last 7 days</option>
+        <option value="last-30-days">Last 30 days</option>
+        <option value="last-90-days">Last 90 days</option>
+        <option value="custom">Custom date range</option>
+      </select>
+      <div id="hist-custom-date-range" hidden>
+        <label for="hist-export-from">From</label>
+        <input type="date" id="hist-export-from" aria-required="true">
+        <label for="hist-export-to">To</label>
+        <input type="date" id="hist-export-to" aria-required="true">
+      </div>
       <label for="hist-filter-q">Text filter</label>
       <input type="search" id="hist-filter-q" autocomplete="off" maxlength="500">
       <div class="settings-check">

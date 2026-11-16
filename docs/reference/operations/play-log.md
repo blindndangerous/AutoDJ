@@ -8,6 +8,12 @@ In the History page, **Show nonmusic items** controls both the list and CSV
 export. Off includes songs only; on includes aired nonmusic items. The CLI
 and older API calls retain their existing export options.
 
+History's **Date range** defaults to **Last day**, the past 24 hours. **Last 7
+days**, **Last 30 days** and **Last 90 days** are rolling periods. **Custom date
+range** reveals **From** and **To** date fields; both dates are included and
+interpreted in the server's time zone. The selected date range applies to the
+list and export.
+
 The CSV has one row per play, in this column order:
 
 - `start` and `end`: local time with its UTC offset, for example `2026-09-01T14:03:00+02:00`.

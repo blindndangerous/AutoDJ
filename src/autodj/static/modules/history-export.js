@@ -8,6 +8,7 @@
 import { failureText, requestFile, withDisabled } from "./api-client.js";
 import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
 import { stationEpoch } from "./stations.js";
+import { historyDateRange } from "./history-range.js";
 
 const FALLBACK_NAME = "autodj-plays.csv";
 const SERVICE_KEY = "autodj.historyExport.service";
@@ -100,17 +101,18 @@ export function installHistoryExport({
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (busy) return;
-    if (!from.value || !to.value) {
+    const range = historyDateRange(from.value, to.value);
+    if (!range.from || !range.to) {
       announce("Choose both a From date and a To date.", "error");
-      (from.value ? to : from).focus();
+      (range.from ? to : from).focus();
       return;
     }
-    if (from.value > to.value) {
+    if (range.from > range.to) {
       announce("The From date is after the To date.", "error");
       from.focus();
       return;
     }
-    const query = new URLSearchParams({ from: from.value, to: to.value });
+    const query = new URLSearchParams({ from: range.from, to: range.to });
     if (textFilter?.value.trim()) query.set("q", textFilter.value.trim());
     query.set("nonmusic", String(Boolean(nonmusic?.checked)));
     let what = "Play log";

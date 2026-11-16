@@ -7,10 +7,12 @@ Read what played in History, export a date range from History or the CLI, review
 ## Read History
 
 Open **History** to see plays for the selected station, newest first, 50 to a
-page. The date range starts at the beginning of this month and ends today.
-Change **From**, **To**, **Text filter** or **Show nonmusic items** to update the list.
-Dates include both days and use the server's time zone. Each word in Text filter must
-match the historical title, artist or album; matching ignores case.
+page. **Date range** defaults to **Last day**, the past 24 hours. Choose **Last
+7 days**, **Last 30 days** or **Last 90 days** for a longer rolling period, or
+choose **Custom date range** to reveal **From** and **To** dates. Custom dates
+include both days and use the server's time zone. Change the date range,
+**Text filter** or **Show nonmusic items** to update the list. Each word in Text
+filter must match the historical title, artist or album; matching ignores case.
 
 The same filters apply to the display and export. **Previous page**, **Next page**
 and **Go to page** move through all matching plays, including those older than

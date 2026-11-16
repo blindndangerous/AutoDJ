@@ -6,6 +6,10 @@ import {
   localDate,
 } from "../../src/autodj/static/modules/history-export.js";
 import { requestFile } from "../../src/autodj/static/modules/api-client.js";
+import {
+  refreshHistoryRange,
+  setHistoryRangePreset,
+} from "../../src/autodj/static/modules/history-range.js";
 import { selectStation } from "../../src/autodj/static/modules/stations.js";
 
 function mount() {
@@ -50,6 +54,7 @@ describe("history export control", () => {
   });
   afterEach(() => {
     selectStation("default");
+    setHistoryRangePreset("custom");
     vi.unstubAllGlobals();
   });
 
@@ -100,6 +105,19 @@ describe("history export control", () => {
       ["Exporting play log", "info"],
       ["Play log saved: 12 plays.  3 songs lack ISRC, label, listener count or other reporting fields.", "info"],
     ]);
+  });
+
+  it("exports the same rolling range selected for the History table", async () => {
+    setHistoryRangePreset("last-day", new Date("2026-09-17T15:30:00.000Z"));
+    refreshHistoryRange(new Date("2026-09-17T15:35:00.000Z"));
+    request.mockResolvedValue(csvResponse("start\r\n"));
+    install();
+    submit();
+    await settle();
+    expect(request).toHaveBeenCalledWith(
+      "/api/history/export?from=2026-09-16T15%3A35%3A00.000Z&to=2026-09-17T15%3A35%3A00.000Z&nonmusic=false",
+      ["text/csv", "text/plain"],
+    );
   });
 
   it("is busy while exporting and ready again afterwards", async () => {

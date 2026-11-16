@@ -30,6 +30,10 @@ export function writeShowLiners(storage, value) {
   writeStorage(storage, SHOW_LINERS_KEY, value ? "true" : "false");
 }
 
+export function showHistoryCustomDateRange(preset, range) {
+  if (range) range.hidden = preset !== "custom";
+}
+
 export function historyKindLabel(kind) {
   if (!kind) return KIND_LABELS.song;
   if (KIND_LABELS[kind]) return KIND_LABELS[kind];

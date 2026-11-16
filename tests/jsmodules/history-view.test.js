@@ -9,6 +9,7 @@ import {
   historyResultsMessage,
   readShowLiners,
   setHistoryTypeColumn,
+  showHistoryCustomDateRange,
   writeShowLiners,
 } from "../../src/autodj/static/modules/history-view.js";
 
@@ -38,6 +39,14 @@ function mountTable() {
 }
 
 describe("History filters", () => {
+  it("shows custom dates only when the custom range is selected", () => {
+    const range = document.createElement("div");
+    showHistoryCustomDateRange("last-day", range);
+    expect(range.hidden).toBe(true);
+    showHistoryCustomDateRange("custom", range);
+    expect(range.hidden).toBe(false);
+  });
+
   it("is off until chosen and is remembered in this browser", () => {
     const storage = memoryStorage();
     expect(readShowLiners(storage)).toBe(false);
