@@ -4041,7 +4041,7 @@ describe("station switcher and station context contracts (#70)", () => {
   it("lists the station keys in the shortcut help", () => {
     installDocument();
     const help = document.getElementById("hotkey-help-modal").textContent.replace(/\s+/g, " ");
-    expect(help).toMatch(/\bc ?Move to the station switcher\. Only when the server has several stations\./);
+    expect(help).toMatch(/\bc ?Open the station picker\./);
     expect(help).toMatch(/Shift\+C ?Speak which station this page controls/);
   });
 });

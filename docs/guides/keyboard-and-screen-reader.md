@@ -4,8 +4,8 @@ The control page has named tabs, headings, lists, buttons, and status messages. 
 
 Buttons show their single-key shortcuts while that preference is enabled. The
 **Keyboard shortcuts** button still opens the list when shortcuts are off, and
-the dialog shows the current setting. Space and `k` appear beside **Listen here**
-when they control listening rather than local playback.
+the dialog shows the current setting. `k` appears beside **Listen here**
+when it controls listening rather than local playback.
 
 ## Move around the page
 
@@ -49,10 +49,9 @@ known behavior also occurs on the baseline; see the
 
 ## Playback and navigation shortcuts
 
-- `Space` or `k`: play or pause. In stream mode, start or stop listening in this browser.
+- `k`: play or pause. In stream mode, start or stop listening in this browser.
 - `n`: skip to the next track. `s` or `S`: shuffle to a random track. `m` or `M`: mute or unmute.
-- Up Arrow and Down Arrow: raise or lower volume by 5 percent.
-- Comma and Period: seek back or forward one measure from BPM, or five seconds if BPM is unknown. Seeking is unavailable in stream mode.
+- Period and Comma: raise or lower volume by 5 percent.
 - `?`: open or close the shortcut dialog. Escape closes it.
 - `t`: open **Track info** for the current track, with the same unsaved-change prompt as its Now Playing button. If nothing is playing, the page says “No track currently playing”.
 - `Alt+1` to `Alt+9`: open the tab at that position.
@@ -62,7 +61,7 @@ known behavior also occurs on the baseline; see the
 - `Alt+M`: talk over music while held, when live talk is available. Releasing the keys stops talk.
 - `Alt+R`: start or stop recording while **Voice tracks** is open.
 
-Space and the volume arrows act as page shortcuts only on **Now Playing**. On other tabs, they scroll. Playback letters and punctuation work on other tabs when focus is not inside a text field or dropdown.
+Playback letters and punctuation work on every tab when focus is not inside a text field or dropdown.
 
 ## Speak station status
 

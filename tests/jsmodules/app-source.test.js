@@ -1353,10 +1353,8 @@ describe("app request behavior", () => {
     await hotkeys.jumpLandmark(1);
     await vi.waitFor(() => expect(status.textContent)
       .toBe("On air: No more landmarks after this point in the song."));
-    // Comma / Period: no position to move from or to say.
-    hotkeys.seekDelta(5);
-    await vi.waitFor(() => expect(status.textContent).toBe("Position unknown"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Comma and period are volume controls, so this landmark action is the
+    // only operation here that could have requested a seek.
     expect(seeks()).toEqual([]);
   });
 
@@ -3290,29 +3288,26 @@ describe("stream mode", () => {
     expect(audio.getAttribute("src")).toBeNull();
   });
 
-  it("refuses seeking and answers status keys from the server clock", async () => {
-    const { fetchImpl } = await setupApp({
-      initialState: streamState,
-      onRequest: () => lyricsFor("a.mp3"),
-    });
-    const options = await hotkeyOptions();
-
-    options.seekDelta(5);
-    await vi.waitFor(() => expect(document.getElementById("sr-status").textContent)
-      .toBe("Seeking is not available while streaming."));
-    expect(fetchImpl.mock.calls.some(([url]) => url === "/api/seek")).toBe(false);
-
-    expect(options.getBpm()).toBe(128);
-    expect(options.getRemaining()).toBe(153);
-  });
-
-  it("routes Space and K to Listen here in stream mode", async () => {
+  it("passes volume and server-clock inputs without a keyboard seek binding", async () => {
     await setupApp({
       initialState: streamState,
       onRequest: () => lyricsFor("a.mp3"),
     });
     const options = await hotkeyOptions();
-    expect(document.getElementById("btn-listen").dataset.shortcut).toBe("Space / k");
+
+    expect(options).not.toHaveProperty("seekDelta");
+    expect(options.volSlider).toBe(document.querySelector("#vol"));
+    expect(options.getBpm()).toBe(128);
+    expect(options.getRemaining()).toBe(153);
+  });
+
+  it("shows k for Listen here in stream mode", async () => {
+    await setupApp({
+      initialState: streamState,
+      onRequest: () => lyricsFor("a.mp3"),
+    });
+    const options = await hotkeyOptions();
+    expect(document.getElementById("btn-listen").dataset.shortcut).toBe("k");
     expect(document.getElementById("btn-pause").dataset.shortcut).toBe("");
     const listenClick = vi.spyOn(document.getElementById("btn-listen"), "click")
       .mockImplementation(() => {});
@@ -3323,11 +3318,11 @@ describe("stream mode", () => {
     expect(pauseClick).not.toHaveBeenCalled();
   });
 
-  it("keeps Space and K on Play / Pause outside stream mode", async () => {
+  it("shows k for Play / Pause outside stream mode", async () => {
     await setupApp({ initialState: { current_track: { path: "a.mp3", title: "A" } },
       onRequest: () => jsonResponse({ paused: true }) });
     const options = await hotkeyOptions();
-    expect(document.getElementById("btn-pause").dataset.shortcut).toBe("Space / k");
+    expect(document.getElementById("btn-pause").dataset.shortcut).toBe("k");
     expect(document.getElementById("btn-listen").dataset.shortcut).toBe("");
     const pauseClick = vi.spyOn(document.getElementById("btn-pause"), "click")
       .mockImplementation(() => {});

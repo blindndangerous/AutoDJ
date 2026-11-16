@@ -15,9 +15,8 @@ import { registerSettingsGroup } from "./settings-drafts.js";
 // second keydown for the same key is suppressed regardless of the
 // repeat flag.
 //
-// Scope: every shortcut works from any tab except Space and the Up and
-// Down arrows, which scroll the page on the other tabs and so only act
-// while Now Playing is showing.  Text fields and dropdowns keep all keys.
+// Every shortcut works from any tab. Text fields and dropdowns keep their
+// typing keys.
 //
 // Key conflicts: lowercase k = pause, lowercase t = open current Track info,
 // uppercase K (Shift+K) = speak key.
@@ -83,29 +82,6 @@ import {
 } from "./dom-helpers.js";
 import { defaultStorage, readStorage } from "./safe-storage.js";
 
-const NATIVE_KEYBOARD_SELECTOR = [
-  "button",
-  "input",
-  "select",
-  "textarea",
-  "a[href]",
-  "summary",
-  '[contenteditable="true"]',
-  '[role="button"]',
-  '[role="slider"]',
-  '[role="spinbutton"]',
-  '[role="combobox"]',
-  '[role="listbox"]',
-  '[role="menuitem"]',
-  '[role="option"]',
-  '[role="switch"]',
-  '[role="tab"]',
-  // Table cells: arrows move between rows and cells (table-navigation.js).
-  "td",
-  '[role="gridcell"]',
-  '[role="rowheader"]',
-].join(",");
-
 const TYPEAHEAD_SELECTOR = [
   "select",
   '[role="combobox"]',
@@ -116,12 +92,10 @@ const TYPEAHEAD_SELECTOR = [
 ].join(",");
 
 // Whether the element a key was pressed on keeps that key.  Select-like
-// widgets own printable-key typeahead as well as their navigation keys;
-// other controls own Space and the arrows.
-function _shouldDeferToNativeKeyboard(el, key) {
+// widgets own printable-key typeahead.
+function _shouldDeferToNativeKeyboard(el) {
   if (!el) return false;
-  if (el.closest(TYPEAHEAD_SELECTOR)) return true;
-  return (key === " " || key.startsWith("Arrow")) && el.closest(NATIVE_KEYBOARD_SELECTOR) !== null;
+  return el.closest(TYPEAHEAD_SELECTOR) !== null;
 }
 
 // "Artist, Title": a comma, because NVDA with punctuation off says
@@ -286,7 +260,7 @@ const _pressed = new Set();
 
 export function installHotkeys({
   btnSkip, btnShuffle, btnMute, btnTrackInfo, volSlider,
-  seekDelta, getBpm,
+  getBpm,
   getTrack, getNextTrack, getRemaining, getLyricLine,
   getPosition, getQueue, getJobStatus,
   // Shift+H: says how the hour lands, from the hour preview (#126).
@@ -298,7 +272,7 @@ export function installHotkeys({
   focusStationSwitcher = () => false,
   getStationText = null,
   stepStation = () => false,
-  // What Space / k do: Play / Pause, or in stream mode start or stop
+  // What k does: Play / Pause, or in stream mode start or stop
   // listening on this page.
   togglePlay,
   // Landmarks (#60): the brackets move by one (+1 or -1) and say it;
@@ -348,21 +322,16 @@ export function installHotkeys({
       return;
     }
 
-    if (_shouldDeferToNativeKeyboard(el, e.key || "")) return;
+    if (_shouldDeferToNativeKeyboard(el)) return;
     if (_pressed.has(e.key)) return;
     _pressed.add(e.key);
     if (!active()) return;
 
-    const nowPanel = document.getElementById("panel-now");
-    const nowVisible = nowPanel && !nowPanel.hasAttribute("hidden");
     const key = e.key;
     const altGraphBracket = (key === "[" || key === "]")
       && typeof e.getModifierState === "function" && e.getModifierState("AltGraph")
       && e.code !== "BracketLeft" && e.code !== "BracketRight";
     if (e.metaKey || ((e.ctrlKey || e.altKey) && !altGraphBracket)) return;
-
-    const scrollsPage = key === " " || key === "ArrowUp" || key === "ArrowDown";
-    if (!nowVisible && scrollsPage) return;
 
     let bumpVol = 0;
     // Shift+[ and Shift+] switch to the previous and next station, by the
@@ -373,7 +342,6 @@ export function installHotkeys({
       return;
     }
     switch (key) {
-      case " ":
       case "k":
         togglePlay();
         break;
@@ -397,26 +365,12 @@ export function installHotkeys({
       case "M":
         if (btnMute) btnMute.click();
         break;
-      case "ArrowUp":
+      case ".":
         bumpVol = +5;
         break;
-      case "ArrowDown":
+      case ",":
         bumpVol = -5;
         break;
-      case ",": {
-        if (!seekDelta) return;
-        const bpm = getBpm ? getBpm() : 0;
-        const measureSec = bpm > 0 ? (4 * 60) / bpm : 5.0;
-        seekDelta(-measureSec);
-        break;
-      }
-      case ".": {
-        if (!seekDelta) return;
-        const bpm2 = getBpm ? getBpm() : 0;
-        const measureSec2 = bpm2 > 0 ? (4 * 60) / bpm2 : 5.0;
-        seekDelta(measureSec2);
-        break;
-      }
       // Status keys -- Shift+letter, speak via aria live region.
       case "T": {
         const t = getTrack && getTrack();

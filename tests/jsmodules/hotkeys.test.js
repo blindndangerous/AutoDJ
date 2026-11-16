@@ -19,81 +19,28 @@ function keyEvent(target, key, options = {}) {
 }
 
 describe("native keyboard ownership", () => {
-  let togglePlay;
   let keydown;
-  let keyup;
-
   beforeAll(() => {
     document.body.innerHTML = '<section id="panel-now"></section>';
-    togglePlay = vi.fn();
-    // Capture the handlers without registering them, so they cannot latch
-    // keys for the installs in later blocks.
-    const addEventListener = vi
-      .spyOn(window, "addEventListener")
-      .mockImplementation(() => {});
-    installHotkeys({ togglePlay });
-    const handler = (type) => addEventListener.mock.calls.find(([t]) => t === type)[1];
-    keydown = handler("keydown");
-    keyup = handler("keyup");
+    const addEventListener = vi.spyOn(window, "addEventListener").mockImplementation(() => {});
+    installHotkeys({ togglePlay: vi.fn() });
+    keydown = addEventListener.mock.calls.find(([type]) => type === "keydown")[1];
     addEventListener.mockRestore();
   });
 
-  // Whether Space pressed on *target* reaches the Play / Pause shortcut
-  // (false when the target owns Space natively).
-  function spaceReachesShortcut(target) {
-    togglePlay.mockClear();
-    keydown({
-      key: " ",
-      repeat: false,
-      target,
-      composedPath: () => [target],
-      preventDefault: vi.fn(),
-    });
-    keyup({ key: " " });
-    return togglePlay.mock.calls.length === 1;
-  }
-
-  it("recognizes native controls and their nested content", () => {
-    const examples = [
-      '<button><span data-target>Button label</span></button>',
-      '<input data-target type="range">',
-      '<select data-target><option>Choice</option></select>',
-      '<textarea data-target></textarea>',
-      '<a href="/library"><span data-target>Library</span></a>',
-      '<details><summary><span data-target>More</span></summary></details>',
-      '<div contenteditable="true"><span data-target>Edit</span></div>',
+  it("never prevents native Space or arrow keys on controls or page content", () => {
+    const targets = [
+      document.createElement("button"), document.createElement("input"),
+      document.createElement("select"), document.createElement("td"),
+      document.createElement("div"),
     ];
-
-    for (const html of examples) {
-      const host = document.createElement("div");
-      host.innerHTML = html;
-      expect(spaceReachesShortcut(host.querySelector("[data-target]"))).toBe(false);
+    for (const target of targets) {
+      for (const key of [" ", "ArrowUp", "ArrowDown"]) {
+        const event = { key, repeat: false, target, preventDefault: vi.fn() };
+        keydown(event);
+        expect(event.preventDefault).not.toHaveBeenCalled();
+      }
     }
-  });
-
-  it("recognizes nested content in supported ARIA widgets", () => {
-    const roles = [
-      "button", "slider", "spinbutton", "combobox", "listbox",
-      "menuitem", "option", "switch", "tab",
-    ];
-
-    for (const role of roles) {
-      const widget = document.createElement("div");
-      widget.setAttribute("role", role);
-      const child = document.createElement("span");
-      widget.appendChild(child);
-      expect(spaceReachesShortcut(child)).toBe(false);
-    }
-  });
-
-  it("treats non-elements and plain content as the page's", () => {
-    const plain = document.createElement("div");
-    expect(spaceReachesShortcut(null)).toBe(true);
-    expect(spaceReachesShortcut(document)).toBe(true);
-    expect(spaceReachesShortcut(document.createTextNode("text"))).toBe(true);
-    expect(spaceReachesShortcut(plain)).toBe(true);
-    expect(spaceReachesShortcut(document.createElement("a"))).toBe(true);
-    expect(spaceReachesShortcut({ closest: () => plain })).toBe(true);
   });
 });
 
@@ -242,51 +189,23 @@ describe("page shortcut scope", () => {
     expect(plainSkip.defaultPrevented).toBe(true);
     expect(skipClick).toHaveBeenCalledOnce();
     expect(tabEvent.defaultPrevented).toBe(false);
-    expect(plainVolume.defaultPrevented).toBe(true);
-    expect(document.querySelector("#volume").value).toBe("55");
-    expect(volumeInput).toHaveBeenCalledOnce();
+    expect(plainVolume.defaultPrevented).toBe(false);
+    expect(document.querySelector("#volume").value).toBe("50");
+    expect(volumeInput).not.toHaveBeenCalled();
   });
 
-  it("allows skip and seek shortcuts while a native button has focus", () => {
+  it("changes volume with comma and period from focused controls", () => {
     document.querySelector("#hotkey-help-modal").close();
     const button = document.querySelector("#native-button");
     button.focus();
-
-    const skipEvent = keyEvent(document.activeElement, "n");
-    window.dispatchEvent(new KeyboardEvent("keyup", { key: "n" }));
-    const seekBack = keyEvent(document.activeElement, ",");
+    const down = keyEvent(document.activeElement, ",");
     window.dispatchEvent(new KeyboardEvent("keyup", { key: "," }));
-    const seekForward = keyEvent(document.activeElement, ".");
-    window.dispatchEvent(new KeyboardEvent("keyup", { key: "." }));
-
-    expect(skipEvent.defaultPrevented).toBe(true);
-    expect(seekBack.defaultPrevented).toBe(true);
-    expect(seekForward.defaultPrevented).toBe(true);
-    expect(skipClick).toHaveBeenCalledOnce();
-    expect(seekDelta.mock.calls).toEqual([[-2], [2]]);
-  });
-
-  it("allows seek shortcuts from a custom ARIA slider while preserving its arrows", () => {
-    document.querySelector("#hotkey-help-modal").close();
-    const slider = document.querySelector("#custom-seek-slider");
-    slider.focus();
-
-    const skipEvent = keyEvent(document.activeElement, "n");
-    window.dispatchEvent(new KeyboardEvent("keyup", { key: "n" }));
-    const seekBack = keyEvent(document.activeElement, ",");
-    window.dispatchEvent(new KeyboardEvent("keyup", { key: "," }));
-    const seekForward = keyEvent(document.activeElement, ".");
-    window.dispatchEvent(new KeyboardEvent("keyup", { key: "." }));
-    const arrowUp = keyEvent(document.activeElement, "ArrowUp");
-
-    expect(skipEvent.defaultPrevented).toBe(true);
-    expect(seekBack.defaultPrevented).toBe(true);
-    expect(seekForward.defaultPrevented).toBe(true);
-    expect(arrowUp.defaultPrevented).toBe(false);
-    expect(skipClick).toHaveBeenCalledOnce();
-    expect(seekDelta.mock.calls).toEqual([[-2], [2]]);
+    const up = keyEvent(document.activeElement, ".");
+    expect(down.defaultPrevented).toBe(true);
+    expect(up.defaultPrevented).toBe(true);
     expect(document.querySelector("#volume").value).toBe("50");
-    expect(volumeInput).not.toHaveBeenCalled();
+    expect(volumeInput).toHaveBeenCalledTimes(2);
+    expect(seekDelta).not.toHaveBeenCalled();
   });
 
   it("allows mute from a focused range without taking over its arrow keys", () => {
@@ -390,7 +309,7 @@ describe("page shortcut scope", () => {
     expect(lower.defaultPrevented).toBe(false);
   });
 
-  it("works from any tab except Space and the volume arrows", () => {
+  it("works from every tab, including comma and period volume controls", () => {
     document.querySelector("#hotkey-help-modal").close();
     document.querySelector("#panel-now").setAttribute("hidden", "");
     const settingsTabLabel = document.querySelector("#native-tab-label");
@@ -402,19 +321,16 @@ describe("page shortcut scope", () => {
     }
 
     const skipEvent = keyEvent(settingsTabLabel, "n");
-    const seekEvent = keyEvent(settingsTabLabel, ",");
-    expect(skipEvent.defaultPrevented).toBe(true);
-    expect(seekEvent.defaultPrevented).toBe(true);
-    expect(skipClick).toHaveBeenCalledOnce();
-    expect(seekDelta).toHaveBeenCalledOnce();
-
-    // Off Now Playing these scroll the page, so they stay the page's.
     const plain = document.querySelector("#plain");
-    const arrowEvent = keyEvent(plain, "ArrowDown");
-    const spaceEvent = keyEvent(plain, " ");
-    expect(arrowEvent.defaultPrevented).toBe(false);
-    expect(spaceEvent.defaultPrevented).toBe(false);
-    expect(volumeInput).not.toHaveBeenCalled();
+    const down = keyEvent(plain, ",");
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "," }));
+    const up = keyEvent(plain, ".");
+    expect(skipEvent.defaultPrevented).toBe(true);
+    expect(down.defaultPrevented).toBe(true);
+    expect(up.defaultPrevented).toBe(true);
+    expect(skipClick).toHaveBeenCalledOnce();
+    expect(document.querySelector("#volume").value).toBe("50");
+    expect(volumeInput).toHaveBeenCalledTimes(2);
     expect(togglePlay).not.toHaveBeenCalled();
   });
 
@@ -461,7 +377,7 @@ describe("page shortcut scope", () => {
     expect(skipClick).toHaveBeenCalledOnce();
   });
 
-  it("sends Space and k to togglePlay", () => {
+  it("sends k to togglePlay and leaves Space native", () => {
     const togglePlay = vi.fn();
     const addEventListener = vi.spyOn(window, "addEventListener");
     installHotkeys({ togglePlay });
@@ -471,7 +387,7 @@ describe("page shortcut scope", () => {
     addEventListener.mockRestore();
     const plain = document.querySelector("#plain");
 
-    for (const key of [" ", "k"]) {
+    for (const key of ["k"]) {
       const event = {
         key,
         repeat: false,
@@ -484,7 +400,7 @@ describe("page shortcut scope", () => {
       expect(event.preventDefault).toHaveBeenCalledOnce();
     }
 
-    expect(togglePlay).toHaveBeenCalledTimes(2);
+    expect(togglePlay).toHaveBeenCalledOnce();
   });
 
   it("registers the page keydown handler in capture phase", () => {
@@ -632,7 +548,7 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
     document.body.innerHTML = `
       <button id="hotkey-shortcuts-toggle" type="button">Disable keyboard shortcuts</button>
       <p id="hotkey-shortcuts-error" role="status" aria-live="polite" hidden></p>
-      <button id="play" data-shortcut="Space / k" aria-label="Play or Pause">Play or Pause</button>
+      <button id="play" data-shortcut="k" aria-label="Play or Pause">Play or Pause</button>
       <button id="shuffle" data-shortcut="s">Shuffle</button>`;
     const storage = memoryStorage();
     vi.stubGlobal("localStorage", storage);
@@ -643,7 +559,7 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
     const shuffle = document.querySelector("#shuffle");
     hotkeys.installHotkeys({ isEnabled: () => false });
     expect(toggle.textContent).toBe("Disable keyboard shortcuts");
-    expect(play.getAttribute("aria-label")).toBe("Play or Pause (Space / k)");
+    expect(play.getAttribute("aria-label")).toBe("Play or Pause (k)");
     expect(shuffle.dataset.shortcutVisible).toBe("s");
     const writes = vi.spyOn(play, "setAttribute");
     hotkeys.updateShortcutHints();
@@ -659,7 +575,7 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
     toggle.click();
     expect(storage.setItem).toHaveBeenLastCalledWith(STORAGE_KEY, "on");
     expect(toggle.textContent).toBe("Disable keyboard shortcuts");
-    expect(play.getAttribute("aria-label")).toBe("Play or Pause (Space / k)");
+    expect(play.getAttribute("aria-label")).toBe("Play or Pause (k)");
     expect(shuffle.dataset.shortcutVisible).toBe("s");
   });
 
