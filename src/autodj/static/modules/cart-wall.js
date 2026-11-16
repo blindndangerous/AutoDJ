@@ -7,7 +7,7 @@
 // Keys: with focus on the wall (a cart button, Stop carts or another
 // button in it), 1 to 9, 0, minus and equals play carts 1 to 12, and
 // Page Up and Page Down change the page.  Text fields and dropdowns keep
-// their keys, and the Enable keyboard shortcuts checkbox turns these keys
+// their keys, and the Keyboard shortcuts dialog button turns these keys
 // off with the other single-key shortcuts (modules/hotkeys.js, which
 // reserves them for the wall).
 //
@@ -19,9 +19,10 @@
 // open past midnight relabels the carts in place, without a sound or a
 // move of focus, when the day changes.
 
-import { failureText, requestBinary, requestJson, withDisabled } from "./api-client.js";
+import { failureText, requestBinary, requestJson, withDisabled, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { applyServerFieldError, clearFieldError, showFieldError, focusRevealed, srSpeak, stationDay } from "./dom-helpers.js";
+import { createEditorDialog } from "./editor-dialog.js";
+import { applyServerFieldError, clearFieldError, showFieldError, focusAfterDialog, srSpeak, stationDay } from "./dom-helpers.js";
 import { shortcutsEnabled } from "./hotkeys.js";
 import { createSelectionAnnouncer, makeSay } from "./live-region.js";
 
@@ -82,6 +83,15 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   const status = el("cart-status");
   const pageName = el("cart-page-name");
   const slotSelect = el("cart-edit-slot");
+  const editButton = el("cart-edit-open");
+  const editForm = el("cart-edit-form");
+  const editHeading = el("cart-editor-heading");
+  const clearButton = el("cart-clear");
+  const cancelButton = el("cart-cancel");
+  const uploadButton = el("cart-upload");
+  const renameButton = el("cart-rename");
+  const stopButton = el("cart-stop");
+  const renameError = el("cart-page-error");
   const name = el("cart-name");
   const source = el("cart-source");
   const clip = el("cart-clip");
@@ -92,11 +102,16 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   const notAfter = el("cart-not-after");
   const editError = el("cart-edit-error");
   let data = null;
+  let editingPage = null;
+  let editingSlot = null;
+  let editingPageName = "";
+  let editorGeneration = 0;
   let requestEpoch = 0;
   let playEpoch = 0;
   const held = new Set();
 
-  const rawSay = makeSay(status, { dwellMs: 5000 });
+  let editor = null;
+  const rawSay = makeSay(() => editor?.region(status) || status, { dwellMs: 5000 });
   const selectionAnnouncer = createSelectionAnnouncer((...args) => {
     if (root.isConnected && !root.closest("[hidden]") && !root.closest("details:not([open])")
       && root.ownerDocument.visibilityState !== "hidden") rawSay(...args);
@@ -104,6 +119,8 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   const say = (...args) => { selectionAnnouncer.cancel(); rawSay(...args); };
   const page = () => data?.wall.pages[data.wall.active_page - 1];
   const editing = () => Number(slotSelect.value) || 1;
+  const editorCurrent = (epoch, mine) => editor.dialog.open && editorGeneration === mine
+    && isAuthenticatedRequestCurrent(epoch);
 
   // The buttons are made once and relabelled, so focus stays on the same
   // cart number when the page changes or another page edits the wall.
@@ -115,7 +132,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     button.textContent = cartLabel(i + 1, null);
     button.addEventListener("click", () => {
       if (page()?.slots[i]) void play(i + 1);
-      else openEditor(i + 1);
+      else openEditor(i + 1, button);
     });
     const item = document.createElement("li");
     item.append(button);
@@ -147,25 +164,47 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     if (notBefore) notBefore.value = assigned?.not_before || "";
     if (notAfter) notAfter.value = assigned?.not_after || "";
     fillClips(assigned?.clip || "");
+    clearButton.disabled = !assigned;
     clearEditError();
   }
 
   function unmark(field) {
-    if (field.getAttribute("aria-invalid") === "true") clearFieldError(field, editError);
+    if (field.getAttribute("aria-invalid") === "true") {
+      clearFieldError(field, field === pageName ? renameError : editError);
+    }
   }
   function clearEditError() {
-    clearFieldError([name, clip, pageName, file, notBefore, notAfter].filter(Boolean), editError);
+    clearFieldError([name, clip, file, notBefore, notAfter].filter(Boolean), editError);
   }
 
-  function openEditor(number) {
-    loadEditor(number);
-    say(`Cart ${number} is empty.`);
-    focusRevealed(name);
+  function clearEditorContext() {
+    const pageChanged = editingPage !== null && data?.wall.active_page !== editingPage;
+    editorGeneration += 1;
+    editingPage = null;
+    editingSlot = null;
+    editingPageName = "";
+    clearEditError();
+    return pageChanged ? pageSelect : null;
   }
+
+  function openEditor(number, opener = editButton) {
+    if (!data || editor?.dialog.open) return;
+    selectionAnnouncer.cancel();
+    editorGeneration += 1;
+    loadEditor(number);
+    editingPage = data.wall.active_page;
+    editingSlot = number;
+    editingPageName = page()?.name || `page ${editingPage}`;
+    editHeading.textContent = `Edit Cart ${number} on ${editingPageName}`;
+    editor.open(name, opener);
+  }
+
+  editor = createEditorDialog({ form: editForm, heading: editHeading, cancel: cancelButton,
+    fallback: editButton, save: saveCart, onCancel: clearEditorContext, describe: false });
 
   // `resetEditor` is false when another page changed the wall, so a cart
   // or page name being edited here keeps what was typed.
-  function render(resetEditor) {
+  function render(resetEditor, { preserveDraft = false } = {}) {
     const current = page();
     if (!current) return;
     pageSelect.replaceChildren(...data.wall.pages.map((item, i) => option(i + 1, item.name)));
@@ -178,7 +217,8 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     slotSelect.value = String(number);
     if (resetEditor) {
       pageName.value = current.name;
-      loadEditor(number);
+      if (!preserveDraft) loadEditor(number);
+      else fillClips();
     } else {
       fillClips();
     }
@@ -202,15 +242,22 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
 
   async function refresh(resetEditor = false) {
     const epoch = ++requestEpoch;
+    const stationEpoch = captureAuthenticatedRequestEpoch();
     try {
       const response = await requestJson("/api/carts");
-      if (epoch !== requestEpoch) return;
+      if (epoch !== requestEpoch || !isAuthenticatedRequestCurrent(stationEpoch)) return;
       // A new page (from another open page or a profile) reloads the editor.
       const moved = data?.wall.active_page !== response.wall.active_page;
       data = response;
-      render(resetEditor || moved);
+      const preserveDraft = Boolean(moved && editor.dialog.open);
+      render(resetEditor || moved, { preserveDraft });
+      if (preserveDraft) {
+        say(`The active page changed to ${page().name}. This edit is still for ${editingPageName}.`);
+      }
     } catch (error) {
-      if (epoch === requestEpoch) say(failureText("load the carts.", error), "error");
+      if (epoch === requestEpoch && isAuthenticatedRequestCurrent(stationEpoch)) {
+        say(failureText("load the carts.", error), "error");
+      }
     }
   }
 
@@ -243,6 +290,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
 
   async function showPage(number, { announce = true } = {}) {
     if (announce) selectionAnnouncer.cancel();
+    if (editor.dialog.open) return;
     if (!data || number === data.wall.active_page) return;
     if (number < 1 || number > data.wall.pages.length) return;
     data.wall.active_page = number;
@@ -257,10 +305,11 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   }
 
   function invalid(field, message) {
-    showFieldError(field, message, editError, status);
+    if (field === pageName) showFieldError(field, message, renameError, status);
+    else showFieldError(field, message, editError, editor.dialog.open ? editor.status : status);
   }
 
-  async function save(button) {
+  async function saveCart(_event, active) {
     selectionAnnouncer.cancel();
     clearEditError();
     if (!name.value.trim()) { invalid(name, "Enter a cart name."); return; }
@@ -271,46 +320,88 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
       invalid(notAfter, "Do not play after must be on or after the Not before date.");
       return;
     }
-    const number = editing();
-    const pageNumber = data.wall.active_page;
-    await withDisabled(button, async () => {
-      try {
-        await requestJson(`/api/carts/pages/${pageNumber}/slots/${number}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: name.value, source: source.value, clip: clip.value, mode: mode.value,
-            ...(from ? { not_before: from } : {}), ...(until ? { not_after: until } : {}),
-          }),
-        });
-        await refresh(true);
-        say(`Saved. ${cartLabel(number, page()?.slots[number - 1], data?.today)}.`);
-      } catch (error) {
-        // A refusal that names its field is shown and linked there, as the
-        // page's own checks are.
-        const message = failureText(`save cart ${number}.`, error);
-        if (!applyServerFieldError({ field: error.field, message },
-          { name, clip, not_before: notBefore, not_after: notAfter }, editError, status)) say(message, "error");
-      }
-    });
+    const number = editingSlot ?? editing();
+    const pageNumber = editingPage ?? data.wall.active_page;
+    const pageLabel = editingPageName || data.wall.pages[pageNumber - 1]?.name || `page ${pageNumber}`;
+    let saved;
+    try {
+      saved = await requestJson(`/api/carts/pages/${pageNumber}/slots/${number}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.value, source: source.value, clip: clip.value, mode: mode.value,
+          ...(from ? { not_before: from } : {}), ...(until ? { not_after: until } : {}),
+        }),
+      });
+    } catch (error) {
+      if (!active()) return;
+      // A refusal that names its field is shown and linked there, as the
+      // page's own checks are.
+      const message = failureText(`save cart ${number}.`, error);
+      if (!applyServerFieldError({ field: error.field, message },
+        { name, clip, not_before: notBefore, not_after: notAfter }, editError, editor.status)) say(message, "error");
+      return;
+    }
+    if (!active()) return;
+    await refresh(false);
+    if (!active()) return;
+    const currentPage = data?.wall.active_page;
+    const assigned = saved?.slot ?? data?.wall.pages[pageNumber - 1]?.slots[number - 1];
+    editor.close();
+    clearEditorContext();
+    focusAfterDialog(currentPage === pageNumber ? buttons[number - 1].firstElementChild : pageSelect);
+    say(currentPage === pageNumber
+      ? `Saved. ${cartLabel(number, assigned, data?.today)}.`
+      : `Saved Cart ${number} on ${pageLabel}. The wall is showing ${page()?.name}.`);
   }
 
-  async function clearSlot(button) {
+  async function clearSlot() {
     selectionAnnouncer.cancel();
-    const number = editing();
-    await withDisabled(button, async () => {
-      try {
-        await requestJson(`/api/carts/pages/${data.wall.active_page}/slots/${number}`, { method: "DELETE" });
-        await refresh(true);
-        say(`Cart ${number} cleared.`);
-      } catch (error) {
-        say(failureText(`clear cart ${number}.`, error), "error");
-      }
+    const number = editingSlot ?? editing();
+    const pageNumber = editingPage ?? data.wall.active_page;
+    const pageLabel = editingPageName || data.wall.pages[pageNumber - 1]?.name || `page ${pageNumber}`;
+    const stationEpoch = captureAuthenticatedRequestEpoch();
+    const mine = editorGeneration;
+    const current = () => editorCurrent(stationEpoch, mine);
+    let result = null;
+    const confirmed = await confirmAction(root.ownerDocument, {
+      title: `Clear Cart ${number}?`,
+      message: "This removes the clip from the cart. Unsaved changes in the editor will be discarded.",
+      confirmLabel: "Clear cart",
+      onConfirm: async () => {
+        try {
+          await requestJson(`/api/carts/pages/${pageNumber}/slots/${number}`, { method: "DELETE" });
+          if (!current()) return null;
+          result = ["cleared", "info"];
+          return clearButton;
+        } catch (error) {
+          if (!current()) return null;
+          result = [failureText(`clear Cart ${number}`, error), "error"];
+          return clearButton;
+        }
+      },
     });
+    if (!current()) return;
+    if (!confirmed) {
+      clearButton.focus();
+      return;
+    }
+    if (result?.[0] !== "cleared") {
+      if (result) say(...result);
+      return;
+    }
+    await refresh(false);
+    if (!current()) return;
+    editor.close();
+    clearEditorContext();
+    focusAfterDialog(data?.wall.active_page === pageNumber ? buttons[number - 1].firstElementChild : pageSelect);
+    say(data?.wall.active_page === pageNumber ? `Cart ${number} cleared.`
+      : `Cart ${number} cleared on ${pageLabel}. The wall is showing ${page()?.name}.`);
   }
 
   async function rename(button) {
     selectionAnnouncer.cancel();
+    clearFieldError(pageName, renameError);
     if (!pageName.value.trim()) { invalid(pageName, "Enter a page name."); return; }
     await withDisabled(button, async () => {
       try {
@@ -331,18 +422,24 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     selectionAnnouncer.cancel();
     const chosen = file.files?.[0];
     if (!chosen) { invalid(file, "Choose an audio file first."); return; }
+    const stationEpoch = captureAuthenticatedRequestEpoch();
+    const mine = editorGeneration;
+    const current = () => editorCurrent(stationEpoch, mine);
     const form = new FormData();
     form.append("file", chosen);
     await withDisabled(button, async () => {
       try {
         const body = await requestJson("/api/carts/upload", { method: "POST", body: form });
+        if (!current()) return;
         file.value = "";
         clearFieldError(file, editError);
         await refresh(false);
+        if (!current()) return;
         source.value = "upload";
         fillClips(body.name);
-        say(`Uploaded ${body.name}. It is chosen as the clip; Save cart assigns it to cart ${editing()}.`);
+        say(`Uploaded ${body.name}.`);
       } catch (error) {
+        if (!current()) return;
         say(failureText("upload the clip.", error), "error");
       }
     });
@@ -352,6 +449,9 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
     selectionAnnouncer.cancel();
     const chosen = clip.value;
     if (source.value !== "upload" || !chosen) return;
+    const stationEpoch = captureAuthenticatedRequestEpoch();
+    const mine = editorGeneration;
+    const current = () => editorCurrent(stationEpoch, mine);
     let result = null;
     const confirmed = await confirmAction(root.ownerDocument, {
       title: `Delete uploaded clip ${chosen}?`,
@@ -360,16 +460,20 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
       onConfirm: async () => {
         try {
           await requestJson(`/api/carts/uploads/${encodeURIComponent(chosen)}`, { method: "DELETE" });
+          if (!current()) return null;
           await refresh(false);
+          if (!current()) return null;
           result = [`Deleted ${chosen}.`, "info"];
           return clip;
         } catch (error) {
+          if (!current()) return null;
           result = [failureText(`delete ${chosen}.`, error), "error"];
           return deleteUpload;
         }
       },
     });
-    if (!confirmed) deleteUpload.focus();
+    if (!confirmed && current()) deleteUpload.focus();
+    else if (!current()) return;
     else if (result) say(...result);
   }
 
@@ -404,13 +508,14 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   root.addEventListener("keyup", () => held.clear());
   root.addEventListener("focusout", () => held.clear());
   pageSelect.addEventListener("change", () => {
+    if (editor.dialog.open) return;
     const finish = selectionAnnouncer.start();
     const number = Number(pageSelect.value);
     if (!data || number === data.wall.active_page || number < 1 || number > data.wall.pages.length) return;
     finish(cartCount(data.wall.pages[number - 1].slots));
     void showPage(number, { announce: false });
   });
-  slotSelect.addEventListener("change", () => loadEditor());
+  editButton.addEventListener("click", () => openEditor(editing(), editButton));
   source.addEventListener("change", () => fillClips(""));
   clip.addEventListener("change", () => {
     unmark(clip);
@@ -419,12 +524,11 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   for (const field of [name, pageName, file, notBefore, notAfter].filter(Boolean)) {
     field.addEventListener("input", () => unmark(field));
   }
-  el("cart-save").addEventListener("click", (event) => void save(event.currentTarget));
-  el("cart-clear").addEventListener("click", (event) => void clearSlot(event.currentTarget));
-  el("cart-rename").addEventListener("click", (event) => void rename(event.currentTarget));
-  el("cart-upload").addEventListener("click", (event) => void upload(event.currentTarget));
+  clearButton.addEventListener("click", () => void clearSlot());
+  renameButton.addEventListener("click", (event) => void rename(event.currentTarget));
+  uploadButton.addEventListener("click", (event) => void upload(event.currentTarget));
   deleteUpload.addEventListener("click", () => void removeUpload());
-  el("cart-stop").addEventListener("click", () => void stop());
+  stopButton.addEventListener("click", () => void stop());
   interval(followStationDay, 60_000);
 
   return {
@@ -433,10 +537,13 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
       selectionAnnouncer.cancel();
       requestEpoch += 1;
       playEpoch += 1;
+      editor.close();
+      clearEditorContext();
       data = null;
       buttons.forEach((item, i) => { item.firstChild.textContent = cartLabel(i + 1, null); });
       for (const select of [pageSelect, slotSelect, clip]) select.replaceChildren();
       for (const field of [pageName, name]) field.value = "";
+      clearFieldError(pageName, renameError);
       status.textContent = "";
       stopAudio();
     },

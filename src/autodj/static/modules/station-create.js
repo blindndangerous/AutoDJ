@@ -1,4 +1,4 @@
-// Settings > Station > Stations (#233): the stations on this server, and New station.
+// Settings > Global > Stations (#797): station management for this server.
 //
 // The table and the Start from choice come from the station list the page
 // already keeps (stations.js), so they follow the switcher; render() is
@@ -105,7 +105,7 @@ export function installStationCreator({
   onSwitch = async () => false,
 } = {}) {
   const get = (id) => doc.getElementById(id);
-  const panel = get("spanel-stations");
+  const panel = get("spanel-station-management");
   const status = get("stations-status");
   const list = get("stations-list");
   const form = get("station-create-form");

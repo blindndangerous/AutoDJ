@@ -83,9 +83,20 @@ describe("station IDs and checks", () => {
   });
 });
 
-describe("Settings > Station > Stations", () => {
+describe("Settings > Global > Stations management", () => {
   beforeEach(() => {
     document.body.replaceChildren();
+  });
+
+  it("keeps station management in Global > Stations and selected-station settings in General", () => {
+    setup({ request: vi.fn(), stations: [AUTODJ, OWL] });
+    expect(byId("stations-list").closest("#spanel-station-management")).not.toBeNull();
+    expect(byId("station-create-form").closest("#spanel-station-management")).not.toBeNull();
+    expect(byId("time-settings").closest("#spanel-stations")).not.toBeNull();
+    expect(byId("station-output").closest("#spanel-stations")).not.toBeNull();
+    expect(byId("station-log-label").closest("#spanel-stations")).not.toBeNull();
+    expect(byId("stab-stations").textContent).toBe("General");
+    expect(byId("stab-station-management").textContent).toBe("Stations");
   });
 
   it("lists the stations and offers a copy of each", () => {

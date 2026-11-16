@@ -88,7 +88,7 @@ If the chosen time has already passed, choose a new future time. Do not change
 the system clock to make an event happen.
 
 If the station time zone itself is wrong, stop here and correct it under
-**Settings**, **Station**, **Stations**, **Time for the selected station**. Save the time
+**Settings**, **Station**, **General**, **Time for the selected station**. Save the time
 setting, then stop and restart AutoDJ with your original launch command so the
 scheduler uses the new zone. Return and recheck **Next events** before
 proceeding; see the [schedule guide](../guides/schedule.md).

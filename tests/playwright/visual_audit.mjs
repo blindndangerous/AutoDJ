@@ -110,7 +110,7 @@
 //         Dismiss button works by mouse and by keyboard, putting focus
 //         back where it was.
 //
-//   - Settings > Stations (#233): New station refused by a stood-in
+//   - Settings > Global > Stations (#797): New station refused by a stood-in
 //     server, its error on the page, linked to Station ID and focused, is
 //     measured like a view in every theme mode and at 320 px and 200 %
 //     text; in the System light mode a refused create keeps nothing said
@@ -909,7 +909,7 @@ async function openHourFit(page, visit) {
 // is saved; Cancel and Discard close the editor.  The editor opens with
 // show() and aria-modal, not showModal() (#631), with the backdrop over
 // the page.
-async function inspectEditorModal(page, formId, visit, target) {
+async function inspectEditorModal(page, formId, visit, target, { describe = true } = {}) {
   const dialog = page.locator(`#${formId}-dialog`);
   await dialog.waitFor({ state: "visible" });
   const name = await dialog.evaluate((element) => {
@@ -917,6 +917,7 @@ async function inspectEditorModal(page, formId, visit, target) {
     return {
       open: element.open, modal: element.matches(":modal"), ariaModal: element.getAttribute("aria-modal"),
       backdrop: document.getElementById("dialog-backdrop")?.hidden === false,
+      described: element.hasAttribute("aria-describedby"),
       labelled: Boolean(heading && element.contains(heading) && heading.textContent.trim()),
     };
   });
@@ -924,7 +925,8 @@ async function inspectEditorModal(page, formId, visit, target) {
     throw new Error(`${formId} is not an accessible dialog kept modal without showModal(): ${JSON.stringify(name)}`);
   }
   await expect(dialog).toHaveAccessibleName(await dialog.evaluate((element) => document.getElementById(element.getAttribute("aria-labelledby")).textContent.trim()));
-  await expect(dialog).toHaveAccessibleDescription("Use Tab to move between fields and actions.");
+  if (describe) await expect(dialog).toHaveAccessibleDescription("Use Tab to move between fields and actions.");
+  else if (name.described) throw new Error(`${formId} has a redundant dialog description`);
   const viewport = page.viewportSize() || { width: 1280, height: 800 };
   await page.setViewportSize({ width: 320, height: 640 });
   await settle(page);
@@ -1735,15 +1737,16 @@ const CREATE_REFUSAL = {
   field: "slug",
 };
 
-// Settings > Stations: New station, a copy, refused on its Station ID.
+// Settings > Global > Stations: New station, a copy, refused on its Station ID.
 async function openStationCreateError(page, visit) {
+  await clickSubtabUnprompted(page, "stab-station-management");
   await page.locator("#station-create-source").selectOption("default");
   await page.locator("#station-create-copies").waitFor({ state: "visible" });
   await page.locator("#station-create-name").fill("Audit Refused Station With A Long Name");
   await page.locator("#station-create-slug").fill("audit-refused");
   await page.locator("#station-create-submit").click();
   await page.locator("#station-create-error").waitFor({ state: "visible" });
-  await visit("settings/stations/refused");
+  await visit("settings/stations/station-create/refused");
 }
 
 function realStations(page) {
@@ -1883,7 +1886,7 @@ async function eachTarget(page, measure) {
         }
         if (id === "stab-schedule") await openScheduleWaitError(page, visit);
         if (id === "stab-announcements") await openPackDatesError(page, visit);
-        if (id === "stab-stations") await openStationCreateError(page, visit);
+        if (id === "stab-station-management") await openStationCreateError(page, visit);
         if (id === "stab-stream") await openLiveDjError(page, visit);
         if (id === "stab-workers") await openWorkerStates(page, visit);
         if (id === "stab-updates") await openRestartConfirm(page, visit);
@@ -2621,9 +2624,21 @@ async function toastBehaviourProblems(page) {
 async function stationCreateProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
-  await clickSubtabUnprompted(page, "stab-stations");
-  await page.locator("#station-create-name").waitFor({ state: "visible" });
   const problems = [];
+  await clickSubtabUnprompted(page, "stab-stations");
+  if (await page.locator("#stab-stations").textContent() !== "General") problems.push("Station tab is not named General");
+  await expect(page.locator("#time-settings")).toBeVisible();
+  for (const id of ["station-output", "station-log-label"]) {
+    if (!await page.locator(`#${id}`).isVisible()) problems.push(`${id} is not in Station > General`);
+  }
+  if (await page.locator("#station-create-form").isVisible()) problems.push("station creation is visible in General");
+  await clickSubtabUnprompted(page, "stab-station-management");
+  if (await page.locator("#stab-station-management").textContent() !== "Stations") problems.push("Global tab is not named Stations");
+  await expect(page.locator("#station-create-name")).toBeVisible();
+  if (await page.locator("#time-settings").isVisible()) problems.push("station-specific settings are visible in Global > Stations");
+  if (await page.locator("#station-create-form").evaluate((form) => form.closest("#spanel-server") !== null)) {
+    problems.push("station creation is still in Server");
+  }
   await page.evaluate(() => {
     window.__stationCreateSaid = [];
     const region = document.getElementById("stations-status");
@@ -2704,6 +2719,87 @@ async function stationCreateProblems(page) {
     if (done.invalid) problems.push("Station ID is still marked invalid after a create");
   } finally {
     await page.unroute("**/api/stations", createdHandler);
+  }
+  return problems;
+}
+
+
+// Verify that key hints follow the active transport, can be switched off,
+// and leave the keyboard-shortcuts help available in that state.
+async function shortcutHintProblems(browser) {
+  const problems = [];
+  async function pageForMode(streamMode) {
+    const context = await browser.newContext({ reducedMotion: "reduce" });
+    const page = await context.newPage();
+    page.routeWebSocket(/\/(ws|api\/stations\/[^/]+\/ws)$/, (socket) => {
+      const server = socket.connectToServer();
+      server.onMessage((message) => {
+        let forwarded = message;
+        try {
+          const state = JSON.parse(message);
+          if (state && typeof state === "object" && !Array.isArray(state) && !state.type) {
+            state.stream_mode = streamMode;
+            forwarded = JSON.stringify(state);
+          }
+        } catch { /* pass non-JSON frames through */ }
+        socket.send(forwarded);
+      });
+      socket.onMessage((message) => server.send(message));
+    });
+    await page.goto(BASE, { waitUntil: "networkidle" });
+    return { context, page };
+  }
+
+  const local = await pageForMode(false);
+  try {
+    const pause = local.page.locator("#btn-pause");
+    await expect(pause).toHaveAttribute("data-shortcut-visible", "Space / k");
+    await expect(pause).toHaveAccessibleName("Play or Pause (Space / k)");
+    const visibleHint = await pause.evaluate((button) => window.getComputedStyle(button, "::after").content);
+    if (!visibleHint.includes("Space / k")) problems.push(`local Play hint is not visible: ${visibleHint}`);
+    const shortcutsButton = local.page.locator("#btn-shortcuts");
+    await expect(shortcutsButton).toHaveAttribute("data-shortcut-visible", "?");
+    if (!(await shortcutsButton.evaluate((button) => window.getComputedStyle(button, "::after").content)).includes("?")) {
+      problems.push("Keyboard shortcuts key hint is not visible while enabled");
+    }
+
+    const helpButton = local.page.locator("#btn-shortcuts");
+    const dialog = local.page.locator("#hotkey-help-modal");
+    const toggle = local.page.locator("#hotkey-shortcuts-toggle");
+    await expect(helpButton).toBeVisible();
+    await expect(helpButton).toHaveAccessibleName("Keyboard shortcuts (?)");
+    await helpButton.click();
+    await expect(dialog).toBeVisible();
+    await expect(toggle).toHaveAccessibleName("Disable keyboard shortcuts");
+    await toggle.focus();
+    await toggle.press("Enter");
+    await expect(toggle).toHaveAccessibleName("Enable keyboard shortcuts");
+    await expect(toggle).toBeFocused();
+    await expect(pause).not.toHaveAttribute("data-shortcut-visible", /.+/);
+    await expect(pause).toHaveAccessibleName("Play or Pause");
+    const hiddenHint = await pause.evaluate((button) => window.getComputedStyle(button, "::after").content);
+    if (hiddenHint !== "none") problems.push(`off setting left a visible Play hint: ${hiddenHint}`);
+    await expect(helpButton).not.toHaveAttribute("data-shortcut-visible", /.+/);
+    await local.page.locator("#btn-shortcuts-close").click();
+    await expect(dialog).toBeHidden();
+    await expect(helpButton).toBeVisible();
+    await helpButton.click();
+    await expect(dialog).toBeVisible();
+    await expect(toggle).toHaveAccessibleName("Enable keyboard shortcuts");
+  } finally {
+    await local.context.close();
+  }
+
+  const stream = await pageForMode(true);
+  try {
+    await expect(stream.page.locator("#btn-listen")).toBeVisible();
+    await expect(stream.page.locator("#btn-listen")).toHaveAttribute("data-shortcut-visible", "Space / k");
+    await expect(stream.page.locator("#btn-pause")).not.toHaveAttribute("data-shortcut-visible", /.+/);
+    const listenHint = await stream.page.locator("#btn-listen")
+      .evaluate((button) => window.getComputedStyle(button, "::after").content);
+    if (!listenHint.includes("Space / k")) problems.push(`stream Listen here hint is not visible: ${listenHint}`);
+  } finally {
+    await stream.context.close();
   }
   return problems;
 }
@@ -2844,6 +2940,88 @@ async function voiceTrackerProblems(page) {
   if (!/^You left the Voice tracks tab/.test(left.said)) problems.push(`leaving the tab said ${JSON.stringify(left.said)}`);
   await page.locator("#tab-voice").click();
   await page.locator("#vt-discard").click();
+  return problems;
+}
+
+// Cart editor: an empty cart opens from the keyboard, the guarded editor
+// keeps focus inside, a dirty Escape offers Keep editing/Discard, and Save
+// returns focus to the cart button.
+async function cartEditorProblems(page) {
+  const state = {
+    wall: {
+      schema_version: 1, active_page: 1,
+      pages: [{ name: "Audit page", slots: Array(12).fill(null) }],
+    },
+    liners: [{ id: "audit-liner", name: "Audit liner" }], uploads: [],
+  };
+  await page.route("**/api/carts**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname === "/api/carts") {
+      return route.fulfill(jsonReply(state, 200));
+    }
+    const slot = url.pathname.match(/^\/api\/carts\/pages\/(\d+)\/slots\/(\d+)$/);
+    if (request.method() === "PUT" && slot) {
+      const body = request.postDataJSON();
+      state.wall.pages[Number(slot[1]) - 1].slots[Number(slot[2]) - 1] = { ...body, duration: 3 };
+      return route.fulfill(jsonReply({ slot: state.wall.pages[Number(slot[1]) - 1].slots[Number(slot[2]) - 1] }, 200));
+    }
+    return route.continue();
+  });
+  // A hash-only navigation reuses the previous page and its cached cart data.
+  await page.goto(`${BASE}/#carts`, { waitUntil: "networkidle", timeout: 20000 });
+  await page.reload({ waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-carts").click();
+  const problems = [];
+  const cart = page.locator('#cart-slots [data-slot="1"]');
+  await expect(cart).toBeVisible();
+  await cart.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.locator("#cart-edit-form-dialog");
+  await dialog.waitFor({ state: "visible" });
+  await inspectEditorModal(page, "cart-edit-form", async () => {}, "carts/editor", { describe: false });
+  if (await page.evaluate(() => document.activeElement?.id) !== "cart-name") {
+    problems.push("opening an empty cart did not focus its name field");
+  }
+  await page.evaluate(() => document.getElementById("cart-stop").focus());
+  if (!(await dialog.evaluate((node) => node.contains(document.activeElement)))) {
+    problems.push("the open cart editor let focus escape to the page");
+  }
+
+  await page.locator("#cart-name").fill("Draft");
+  await page.keyboard.press("Escape");
+  const confirm = page.locator("#confirm-dialog");
+  await confirm.waitFor({ state: "visible" });
+  if (await page.locator("#confirm-title").textContent() !== "Discard changes?") {
+    problems.push("Escape did not ask before discarding the cart draft");
+  }
+  await page.keyboard.press("Enter"); // confirmation opens with Keep editing focused
+  await confirm.waitFor({ state: "hidden" });
+  if (!(await dialog.isVisible()) || await page.locator("#cart-name").inputValue() !== "Draft") {
+    problems.push("keeping the draft did not return to the open editor");
+  }
+  await page.keyboard.press("Escape");
+  await confirm.waitFor({ state: "visible" });
+  await page.locator("#confirm-accept").focus();
+  await page.keyboard.press("Enter");
+  await dialog.waitFor({ state: "hidden" });
+  if (!await cart.evaluate((node) => node === document.activeElement)) {
+    problems.push("discarding the draft did not restore focus to the empty cart");
+  }
+
+  await cart.focus();
+  await page.keyboard.press("Enter");
+  await dialog.waitFor({ state: "visible" });
+  await page.locator("#cart-name").fill("Audit cart");
+  await page.locator("#cart-save").focus();
+  await page.keyboard.press("Enter");
+  await dialog.waitFor({ state: "hidden" });
+  if (!await cart.evaluate((node) => node === document.activeElement)) {
+    problems.push("saving the cart did not return focus to its cart button");
+  }
+  if (state.wall.pages[0].slots[0]?.name !== "Audit cart") {
+    problems.push("keyboard Save did not assign the edited cart");
+  }
   return problems;
 }
 
@@ -3429,7 +3607,7 @@ async function selectedTabEntryProblems(page) {
   for (const [group, selected, first, other] of [
     ["Profile", "stab-sound", "stab-mixing", "stab-stations"],
     ["Station", "stab-schedule", "stab-stations", "stab-sound"],
-    ["Global", "stab-display", "stab-server", "stab-sound"],
+    ["Global", "stab-display", "stab-server", "stab-stations"],
   ]) {
     await page.locator(`#${selected}`).click();
     await page.locator(".skip-link").focus();
@@ -3559,12 +3737,16 @@ export async function audit(name, launcher) {
     if (tokenScope.length) out.behaviour.tokenScope = tokenScope;
     const voiceTracker = await voiceTrackerProblems(page);
     if (voiceTracker.length) out.behaviour.voiceTracker = voiceTracker;
+    const cartEditor = await cartEditorProblems(page);
+    if (cartEditor.length) out.behaviour.cartEditor = cartEditor;
     const liveDj = await liveDjProblems(page);
     if (liveDj.length) out.behaviour.liveDj = liveDj;
     const ads = await adsProblems(page);
     if (ads.length) out.behaviour.ads = ads;
     const speech = await speechStudioProblems(page);
     if (speech.length) out.behaviour.speechStudio = speech;
+    const shortcuts = await shortcutHintProblems(browser);
+    if (shortcuts.length) out.behaviour.shortcutHints = shortcuts;
     const stationCreate = await stationCreateProblems(page);
     if (stationCreate.length) out.behaviour.stationCreate = stationCreate;
     const switcher = await stationSwitcherProblems(page);

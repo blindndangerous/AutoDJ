@@ -14,6 +14,18 @@ import { installCartWall } from "../../src/autodj/static/modules/cart-wall.js";
 
 const byId = (id) => document.getElementById(id);
 const cart = (number) => byId("cart-slots").querySelector(`[data-slot="${number}"]`);
+const cartEditorDialog = () => byId("cart-edit-form-dialog");
+
+function selectCart(number) {
+  byId("cart-edit-slot").value = String(number);
+  byId("cart-edit-slot").dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+async function editCart(number) {
+  selectCart(number);
+  byId("cart-edit-open").click();
+  await vi.waitFor(() => expect(cartEditorDialog().open).toBe(true));
+}
 
 function installIndex() {
   installIndexMarkup();
@@ -54,7 +66,7 @@ function fakeServer() {
     }
     if (match && method === "PUT") {
       server.wall.pages[match[1] - 1].slots[match[2] - 1] = { ...body, duration: 3 };
-      return { slot: body };
+      return { slot: server.wall.pages[match[1] - 1].slots[match[2] - 1] };
     }
     if (match && method === "DELETE") {
       server.wall.pages[match[1] - 1].slots[match[2] - 1] = null;
@@ -98,6 +110,10 @@ async function install(hooks = {}) {
   installIndex();
   const server = fakeServer();
   const controls = installCartWall(undefined, hooks);
+  const editor = cartEditorDialog();
+  editor.show = () => { editor.open = true; };
+  editor.showModal = () => { editor.open = true; };
+  editor.close = () => { editor.open = false; editor.dispatchEvent(new Event("close")); };
   await controls.refresh();
   return { server, controls };
 }
@@ -118,6 +134,23 @@ describe("cart wall markup", () => {
     expect(panel.contains(byId("cart-wall"))).toBe(true);
   });
 
+  it("keeps cart editing and uploads together in one dialog form", () => {
+    installIndex();
+    const form = byId("cart-edit-form");
+    expect(form.tagName).toBe("FORM");
+    expect(form.hidden).toBe(true);
+    expect(form.contains(byId("cart-name"))).toBe(true);
+    expect(form.contains(byId("cart-upload-file"))).toBe(true);
+    expect(form.contains(byId("cart-upload"))).toBe(true);
+    expect(form.contains(byId("cart-delete-upload"))).toBe(true);
+    expect(form.contains(byId("cart-save"))).toBe(true);
+    expect(byId("cart-edit-slot").closest("form")).toBeNull();
+    expect(byId("cart-edit-open").closest("form")).toBeNull();
+    expect(byId("cart-editor-card")).toBeNull();
+    expect(byId("cart-uploads-card")).toBeNull();
+    expect(byId("cart-save").type).toBe("submit");
+  });
+
   it("labels every control and shows the key help as visible text", () => {
     installIndex();
     const wall = byId("cart-wall");
@@ -126,7 +159,7 @@ describe("cart wall markup", () => {
       expect(label?.textContent.trim(), control.id).toBeTruthy();
     }
     for (const button of wall.querySelectorAll("button")) {
-      expect(button.getAttribute("type")).toBe("button");
+      expect(button.getAttribute("type"), button.id).toBe(button.id === "cart-save" ? "submit" : "button");
       expect(button.textContent.trim()).toBeTruthy();
     }
     const help = byId("cart-keys-help");
@@ -209,14 +242,15 @@ describe("cart buttons", () => {
     expect(plays(server)).toHaveLength(0);
   });
 
-  it("opens an empty cart in the editor with focus on its name", async () => {
+  it("opens an empty cart in the modal editor with focus on its name", async () => {
     await install();
     cart(4).click();
-    expect(byId("cart-editor-card").open).toBe(true);
+    expect(cartEditorDialog().open).toBe(true);
     expect(byId("cart-edit-slot").value).toBe("4");
     expect(document.activeElement).toBe(byId("cart-name"));
     expect(byId("cart-name").value).toBe("");
-    await vi.waitFor(() => expect(byId("cart-status").textContent).toMatch(/^Cart 4 is empty/));
+    expect(cartEditorDialog().hasAttribute("aria-describedby")).toBe(false);
+    expect(byId("cart-edit-form-status").textContent).toBe("");
   });
 });
 
@@ -366,7 +400,7 @@ describe("cart editor", () => {
     byId("cart-save").click();
     expect(byId("cart-name").getAttribute("aria-invalid")).toBe("true");
     expect(document.activeElement).toBe(byId("cart-name"));
-    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe("Enter a cart name."));
+    await vi.waitFor(() => expect(byId("cart-edit-form-status").textContent).toBe("Enter a cart name."));
     byId("cart-name").value = "News";
     byId("cart-name").dispatchEvent(new Event("input"));
     expect(byId("cart-name").hasAttribute("aria-invalid")).toBe(false);
@@ -388,9 +422,7 @@ describe("cart editor", () => {
 
   it("saves the name, clip and mode and announces the new cart name", async () => {
     const { server } = await install();
-    const slotSelect = byId("cart-edit-slot");
-    slotSelect.value = "3";
-    slotSelect.dispatchEvent(new Event("change"));
+    await editCart(3);
     expect(byId("cart-name").value).toBe("Station ID");
     expect(byId("cart-clip").value).toBe("rec-1");
     byId("cart-name").value = "News ID";
@@ -398,6 +430,8 @@ describe("cart editor", () => {
     byId("cart-mode").value = "replace";
     byId("cart-save").click();
     await vi.waitFor(() => expect(byId("cart-status").textContent).toBe("Saved. Cart 3, News ID, 0:03."));
+    expect(cartEditorDialog().open).toBe(false);
+    expect(document.activeElement).toBe(cart(3));
     expect(server.calls.find((call) => call.method === "PUT" && call.url.includes("/slots/")).body)
       .toEqual({ name: "News ID", source: "liner", clip: "news.wav", mode: "replace" });
     expect(cart(3).textContent).toBe("Cart 3, News ID, 0:03");
@@ -413,8 +447,7 @@ describe("cart editor", () => {
     expect(cart(1).textContent).toBe("Cart 1, Advent, scheduled: not playable yet");
     expect([...byId("cart-edit-slot").options][2].textContent).toBe("Cart 3, Station ID, 0:07, scheduled: expired");
 
-    byId("cart-edit-slot").value = "3";
-    byId("cart-edit-slot").dispatchEvent(new Event("change"));
+    await editCart(3);
     expect(byId("cart-not-after").value).toBe("2026-12-26");
     expect(byId("cart-not-before").value).toBe("");
     byId("cart-not-before").value = "2026-12-01";
@@ -428,8 +461,7 @@ describe("cart editor", () => {
 
   it("names a backwards date range in the editor and links it to the field", async () => {
     const { server } = await install();
-    byId("cart-edit-slot").value = "3";
-    byId("cart-edit-slot").dispatchEvent(new Event("change"));
+    await editCart(3);
     const until = byId("cart-not-after");
     byId("cart-not-before").value = "2026-12-26";
     until.value = "2026-11-27";
@@ -459,8 +491,7 @@ describe("cart editor", () => {
       }
       return JSON.parse(JSON.stringify(server));
     });
-    byId("cart-edit-slot").value = "3";
-    byId("cart-edit-slot").dispatchEvent(new Event("change"));
+    await editCart(3);
     byId("cart-not-after").value = "2026-12-26";
     byId("cart-save").click();
     const until = byId("cart-not-after");
@@ -503,23 +534,80 @@ describe("cart editor", () => {
 
   it("clears a cart", async () => {
     const { server } = await install();
-    byId("cart-edit-slot").value = "3";
-    byId("cart-edit-slot").dispatchEvent(new Event("change"));
+    await editCart(3);
     byId("cart-clear").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    expect(byId("confirm-title").textContent).toBe("Clear Cart 3?");
+    expect(byId("confirm-message").textContent).toContain("Unsaved changes in the editor will be discarded.");
+    byId("confirm-accept").click();
     await vi.waitFor(() => expect(byId("cart-status").textContent).toBe("Cart 3 cleared."));
+    expect(cartEditorDialog().open).toBe(false);
+    expect(document.activeElement).toBe(cart(3));
     expect(server.wall.pages[0].slots[2]).toBeNull();
     expect(cart(3).textContent).toBe("Cart 3, empty");
   });
 
-  it("keeps what is being typed when another page changes the wall", async () => {
+  it("keeps the editor focused while the post-clear refresh is pending", async () => {
+    const { server } = await install();
+    await editCart(3);
+    const request = api.requestJson.getMockImplementation();
+    let finishRefresh;
+    api.requestJson.mockImplementation((url, options = {}) => {
+      if (url === "/api/carts" && !options.method) {
+        return new Promise((resolve, reject) => {
+          finishRefresh = () => request(url, options).then(resolve, reject);
+        });
+      }
+      return request(url, options);
+    });
+
+    byId("cart-clear").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(finishRefresh).toBeTypeOf("function"));
+    expect(byId("confirm-dialog").open).toBe(false);
+    expect(cartEditorDialog().open).toBe(true);
+    expect(cartEditorDialog().contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(byId("cart-clear"));
+
+    finishRefresh();
+    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe("Cart 3 cleared."));
+    expect(cartEditorDialog().open).toBe(false);
+    expect(document.activeElement).toBe(cart(3));
+    expect(server.wall.pages[0].slots[2]).toBeNull();
+  });
+
+  it("asks before discarding a changed draft and keeps it when editing continues", async () => {
+    await install();
+    await editCart(3);
+    byId("cart-name").value = "Draft name";
+    byId("cart-cancel").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    expect(byId("confirm-title").textContent).toBe("Discard changes?");
+    byId("confirm-cancel").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
+    expect(cartEditorDialog().open).toBe(true);
+    expect(byId("cart-name").value).toBe("Draft name");
+  });
+
+  it("preserves a modal draft and its captured page when the active page changes remotely", async () => {
     const { server, controls } = await install();
     cart(4).click();
     byId("cart-name").value = "Half typed";
-    server.wall.pages[0].slots[5] = { name: "Promo", source: "liner", clip: "news.wav", mode: "duck", duration: 30 };
+    server.wall.pages[1].slots[5] = { name: "Promo", source: "liner", clip: "news.wav", mode: "duck", duration: 30 };
+    server.wall.active_page = 2;
     controls.event({ type: "cart_changed" });
     await vi.waitFor(() => expect(cart(6).textContent).toBe("Cart 6, Promo, 0:30"));
     expect(byId("cart-name").value).toBe("Half typed");
+    expect(cartEditorDialog().open).toBe(true);
+    expect(byId("cart-editor-heading").textContent).toBe("Edit Cart 4 on Page 1");
+    expect(byId("cart-page").value).toBe("2");
     expect(byId("cart-edit-slot").value).toBe("4");
+    byId("cart-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT"
+      && call.url === "/api/carts/pages/1/slots/4")).toBe(true));
+    await vi.waitFor(() => expect(document.activeElement).toBe(byId("cart-page")));
+    expect(byId("cart-status").textContent).toBe("Saved Cart 4 on Page 1. The wall is showing Page 2.");
   });
 
   it("renames the page shown", async () => {
@@ -536,39 +624,40 @@ describe("cart editor", () => {
 });
 
 describe("uploaded clips", () => {
-  it("uploads a clip and chooses it for the cart being edited", async () => {
+  it("uploads a clip in the modal, selects it, then saves the cart", async () => {
     const { server } = await install();
+    await editCart(1);
     const input = byId("cart-upload-file");
-    // The Uploaded clips card is closed by default; Upload with no file
-    // opens it before focus moves to the file field.
-    const card = input.closest("details");
-    expect(card.open).toBe(false);
     byId("cart-upload").click();
     expect(input.getAttribute("aria-invalid")).toBe("true");
-    expect(card.open).toBe(true);
     expect(document.activeElement).toBe(input);
     Object.defineProperty(input, "files", { value: [new globalThis.File(["RIFF"], "bed.wav")], configurable: true });
     byId("cart-upload").click();
-    await vi.waitFor(() => expect(byId("cart-status").textContent).toMatch(/^Uploaded bed.wav/));
+    await vi.waitFor(() => expect(byId("cart-edit-form-status").textContent).toMatch(/^Uploaded bed.wav/));
     expect(server.calls.find((call) => call.url === "/api/carts/upload").body).toBeInstanceOf(globalThis.FormData);
     expect(byId("cart-source").value).toBe("upload");
     expect(byId("cart-clip").value).toBe("bed.wav");
     expect(byId("cart-delete-upload").disabled).toBe(false);
+    byId("cart-name").value = "New clip";
+    byId("cart-save").click();
+    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe("Saved. Cart 1, New clip, 0:03."));
+    expect(server.wall.pages[0].slots[0]).toMatchObject({ name: "New clip", source: "upload", clip: "bed.wav" });
   });
 
-  it("deletes an uploaded clip after confirming, then focuses the clip list", async () => {
+  it("deletes an uploaded clip after confirming, then focuses the clip list in the modal", async () => {
     const { server } = await install();
-    expect(byId("cart-delete-upload").disabled).toBe(true);
-    const source = byId("cart-source");
-    source.value = "upload";
-    source.dispatchEvent(new Event("change"));
+    byId("cart-page").value = "2";
+    byId("cart-page").dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(server.wall.active_page).toBe(2));
+    await editCart(1);
+    expect(byId("cart-delete-upload").disabled).toBe(false);
     expect(byId("cart-clip").value).toBe("sweep.wav");
     byId("cart-delete-upload").click();
     const dialog = byId("confirm-dialog");
     await vi.waitFor(() => expect(dialog.open).toBe(true));
     expect(byId("confirm-title").textContent).toBe("Delete uploaded clip sweep.wav?");
     byId("confirm-accept").click();
-    await vi.waitFor(() => expect(byId("cart-status").textContent).toBe("Deleted sweep.wav."));
+    await vi.waitFor(() => expect(byId("cart-edit-form-status").textContent).toBe("Deleted sweep.wav."));
     expect(server.uploads).toEqual([]);
     expect(document.activeElement).toBe(byId("cart-clip"));
     expect(byId("cart-clip").options[0].textContent).toBe("No uploaded clips yet");

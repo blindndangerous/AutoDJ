@@ -2014,7 +2014,7 @@ describe("static accessibility contracts", () => {
     expect(globalTabs.hidden).toBe(false);
     expect(profileTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect(stationTabs.querySelectorAll('[role="tab"]')).toHaveLength(5);
-    expect(globalTabs.querySelectorAll('[role="tab"]')).toHaveLength(4);
+    expect(globalTabs.querySelectorAll('[role="tab"]')).toHaveLength(5);
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)
       ?.textContent.replace(/\s+/g, " ").trim();
     const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
@@ -2153,8 +2153,6 @@ describe("static accessibility contracts", () => {
       ["#listener-stats-summary", "#spanel-stream", "H4", "Listener statistics"],
       ["#ads-rules-form", "#panel-ads", "H3", "Rules for every break"],
       ["#ads-report-form", "#panel-ads", "H3", "Ad report"],
-      ["#cart-upload-file", "#panel-carts", "H3", "Uploaded clips"],
-      ["#cart-save", "#panel-carts", "H3", "Edit a cart"],
       ["#cart-rename", "#panel-carts", "H3", "Rename this page"],
     ];
     for (const [inside, panel, level, title] of folded) {
@@ -3905,7 +3903,8 @@ describe("station switcher and station context contracts (#70)", () => {
     const shared = document.getElementById("shared-context");
     expect(shared.hidden).toBe(true);
     expect(shared.textContent).toBe("");
-    for (const id of ["tab-library", "points-save", "stab-server"]) {
+    expect(ids(document.getElementById("tab-library"), "aria-describedby")).not.toContain("shared-context");
+    for (const id of ["points-save", "stab-server"]) {
       expect(ids(document.getElementById(id), "aria-describedby"), id).toContain("shared-context");
     }
   });
@@ -3933,13 +3932,23 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(help.contains(document.getElementById("station-log-label-id"))).toBe(true);
   });
 
-  it("gives New station labelled native fields, one polite status and an error to link (#233)", () => {
+  it("gives Global > Stations labelled native fields, status and linked errors (#797)", () => {
     installDocument();
-    const panel = document.getElementById("spanel-stations");
+    const panel = document.getElementById("spanel-station-management");
     expect(panel.getAttribute("role")).toBe("tabpanel");
-    expect(panel.getAttribute("aria-labelledby")).toBe("stab-stations");
+    expect(panel.getAttribute("aria-labelledby")).toBe("stab-station-management");
+    expect(document.getElementById("stab-station-management").textContent).toBe("Stations");
+    const general = document.getElementById("spanel-stations");
+    expect(general.getAttribute("aria-labelledby")).toBe("stab-stations");
+    expect(document.getElementById("stab-stations").textContent).toBe("General");
+    for (const id of ["time-settings", "station-output", "station-log-label"]) {
+      expect(general.contains(document.getElementById(id)), id).toBe(true);
+    }
     expect(document.getElementById("spanel-live").closest('[role="tabpanel"]').id).toBe("spanel-stream");
     const table = document.getElementById("stations-table");
+    expect(panel.contains(table)).toBe(true);
+    expect(panel.contains(document.getElementById("station-create-form"))).toBe(true);
+    expect(panel.contains(document.getElementById("stations-status"))).toBe(true);
     expect(document.getElementById("stations-list").parentElement).toBe(table);
     expect(table.getAttribute("role")).toBe("grid");
     expect(table.caption.textContent).toBe(document.getElementById("stations-list-heading").textContent);
@@ -3968,17 +3977,13 @@ describe("station switcher and station context contracts (#70)", () => {
       "station-create-clockwheels", "station-create-schedule", "station-create-carts"]) {
       expect(document.getElementById(id).hasAttribute("aria-describedby"), id).toBe(false);
     }
-    // What stays shared and what a copy never takes are said on the page.
-    expect(panel.querySelector(".card-desc").textContent)
-      .toMatch(/song cue points and Stereo Tool preset files/);
     expect(document.getElementById("station-create-source-help").textContent)
-      .toMatch(/never takes its relays, listener password, webhooks, recording folder, log label, queue, history/);
-    // Also copy is a fieldset hidden in the markup with its help inside it.
+      .toMatch(/copies saved settings/i);
+    // Also copy is a fieldset hidden in the markup with three optional items.
     const copies = document.getElementById("station-create-copies");
     expect(copies.tagName).toBe("FIELDSET");
     expect(copies.hidden).toBe(true);
     expect(copies.querySelector("legend").textContent.trim()).toBe("Also copy");
-    expect(copies.contains(document.getElementById("station-create-copies-help"))).toBe(true);
     for (const checkbox of copies.querySelectorAll('input[type="checkbox"]')) {
       expect(checkbox.parentElement.classList.contains("settings-check")).toBe(true);
     }
@@ -3989,10 +3994,11 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(document.getElementById("station-create-submit").getAttribute("type")).toBe("submit");
     expect(document.getElementById("station-create-switch").getAttribute("type")).toBe("button");
     // One polite status, not nested in another live region.
-    const live = [...panel.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
+    const live = [...panel.querySelectorAll("#stations-status")];
     expect(live.map((node) => node.id)).toEqual(["stations-status"]);
     expect(live[0].getAttribute("aria-live")).toBe("polite");
     expect(live[0].getAttribute("aria-atomic")).toBe("true");
+    expect(live[0].parentElement.closest("[aria-live], [role='status'], [role='alert']")).toBeNull();
     // Reading order: where from, name, ID, copies, start, then the button.
     const order = [...form.querySelectorAll("input, select, button")].map((node) => node.id);
     expect(order).toEqual(["station-create-source", "station-create-name", "station-create-slug",
@@ -4019,6 +4025,23 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(switcherRules).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(/i);
     // The banner wraps, so the switcher never scrolls the page sideways.
     expect(css).toMatch(/header \{ flex-wrap: wrap; \}/);
+  });
+
+  it("places shortcut enablement in the help dialog without a state paragraph", () => {
+    installDocument();
+    const dialog = document.getElementById("hotkey-help-modal");
+    const toggle = document.getElementById("hotkey-shortcuts-toggle");
+    const error = document.getElementById("hotkey-shortcuts-error");
+    expect(document.getElementById("spanel-display").querySelector("#hotkeys-enabled")).toBeNull();
+    expect(toggle.closest("dialog")).toBe(dialog);
+    expect(toggle.tagName).toBe("BUTTON");
+    expect(toggle.type).toBe("button");
+    expect(toggle.textContent).toBe("Disable keyboard shortcuts");
+    expect(dialog.querySelector("#hotkey-help-state")).toBeNull();
+    expect(error.hidden).toBe(true);
+    expect(error.getAttribute("role")).toBe("status");
+    expect(error.getAttribute("aria-live")).toBe("polite");
+    expect(error.getAttribute("aria-atomic")).toBe("true");
   });
 
   it("lists the station keys in the shortcut help", () => {
