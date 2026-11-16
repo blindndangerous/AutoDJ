@@ -154,8 +154,8 @@ def test_backup_and_deletion_serialize_station_audio_snapshot(
     )
     cfg.stations = (spec,)
     paths = StationPaths.for_station(spec.cfg, "nightowl")
-    paths.liners.mkdir(parents=True)
-    asset = paths.liners / "welcome.wav"
+    paths.announcements.mkdir(parents=True)
+    asset = paths.announcements / "welcome.wav"
     asset.write_bytes(b"complete spoken audio")
     cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
     with LibraryCatalog(cfg.index.library_dir / "library.db"):
@@ -200,10 +200,12 @@ def test_backup_and_deletion_serialize_station_audio_snapshot(
         deletion = delete_future.result(timeout=15)
 
     with zipfile.ZipFile(archive_path) as archive:
-        assert archive.read("stations/nightowl/liners/welcome.wav") == b"complete spoken audio"
+        assert (
+            archive.read("stations/nightowl/announcements/welcome.wav") == b"complete spoken audio"
+        )
         assert not any(name.startswith("retained-station-audio/") for name in archive.namelist())
     retained = Path(deletion["retained_audio"])
-    assert (retained / "liners" / "welcome.wav").read_bytes() == b"complete spoken audio"
+    assert (retained / "announcements" / "welcome.wav").read_bytes() == b"complete spoken audio"
 
 
 async def test_archive_restore_preserves_autostart_without_starting(tmp_path: Path) -> None:

@@ -210,29 +210,44 @@ export function installStationCreator({
     await onChanged();
   }
 
-  async function archiveStation(station) {
+  async function archiveStation(row) {
+    const station = row.station;
+    const epoch = captureAuthenticatedRequestEpoch();
     if (!await confirmAction(doc, {
       title: `Archive ${station.name}?`,
       message: "This stops the station and removes it from the station selector. Its settings, history and assets remain available to restore.",
       confirmLabel: "Archive station",
     })) return;
-    try {
-      await request(`/api/stations/${encodeURIComponent(station.slug)}/archive`, { method: "POST" });
-      say(`Archived ${station.name}.`);
-      await onChanged(station, "archive");
-    } catch (errorValue) {
-      say(failureText(`archive ${station.name}.`, errorValue, ""), "error");
-    }
+    if (!isAuthenticatedRequestCurrent(epoch) || !row.isConnected || row.station.slug !== station.slug) return;
+    await withDisabled(row.archiveButton, async () => {
+      try {
+        await request(`/api/stations/${encodeURIComponent(station.slug)}/archive`, { method: "POST" });
+        if (!isAuthenticatedRequestCurrent(epoch) || !row.isConnected || row.station.slug !== station.slug) return;
+        say(`Archived ${station.name}.`);
+        await onChanged(station, "archive");
+      } catch (errorValue) {
+        if (isAuthenticatedRequestCurrent(epoch) && row.isConnected && row.station.slug === station.slug) {
+          say(failureText(`archive ${station.name}.`, errorValue, ""), "error");
+        }
+      }
+    }, { keepEnabled: true });
   }
 
-  async function restoreStation(station) {
-    try {
-      await request(`/api/stations/${encodeURIComponent(station.slug)}/restore`, { method: "POST" });
-      say(`Restored ${station.name}. It remains off air until you start it.`);
-      await onChanged(station, "restore");
-    } catch (errorValue) {
-      say(failureText(`restore ${station.name}.`, errorValue, ""), "error");
-    }
+  async function restoreStation(row) {
+    const station = row.station;
+    const epoch = captureAuthenticatedRequestEpoch();
+    await withDisabled(row.restoreButton, async () => {
+      try {
+        await request(`/api/stations/${encodeURIComponent(station.slug)}/restore`, { method: "POST" });
+        if (!isAuthenticatedRequestCurrent(epoch) || !row.isConnected || row.station.slug !== station.slug) return;
+        say(`Restored ${station.name}. It remains off air until you start it.`);
+        await onChanged(station, "restore");
+      } catch (errorValue) {
+        if (isAuthenticatedRequestCurrent(epoch) && row.isConnected && row.station.slug === station.slug) {
+          say(failureText(`restore ${station.name}.`, errorValue, ""), "error");
+        }
+      }
+    }, { keepEnabled: true });
   }
 
   async function deleteStation(row) {
@@ -243,19 +258,25 @@ export function installStationCreator({
       say("Type DELETE exactly to confirm permanent deletion.", "error");
       return;
     }
-    row.deleteButton.disabled = true;
-    try {
-      await request(`/api/stations/${encodeURIComponent(station.slug)}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ confirmation: row.deleteText.value, delete_voice_recordings: row.deleteVoice.checked }),
-      });
-      say(`Permanently deleted ${station.name}.`);
-      await onChanged(station, "delete");
-    } catch (errorValue) {
-      row.deleteButton.disabled = false;
-      say(failureText(`permanently delete ${station.name}.`, errorValue, ""), "error");
-    }
+    const epoch = captureAuthenticatedRequestEpoch();
+    await withDisabled(row.deleteButton, async () => {
+      try {
+        const result = await request(`/api/stations/${encodeURIComponent(station.slug)}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirmation: row.deleteText.value, delete_voice_recordings: row.deleteVoice.checked }),
+        });
+        if (!isAuthenticatedRequestCurrent(epoch) || !row.isConnected || row.station.slug !== station.slug) return;
+        say(result?.cleanup_pending
+          ? `Permanently deleted ${station.name}. Cleanup is pending.`
+          : `Permanently deleted ${station.name}.`);
+        await onChanged(station, "delete");
+      } catch (errorValue) {
+        if (isAuthenticatedRequestCurrent(epoch) && row.isConnected && row.station.slug === station.slug) {
+          say(failureText(`permanently delete ${station.name}.`, errorValue, ""), "error");
+        }
+      }
+    }, { keepEnabled: true });
   }
 
   function stationRow(station) {
@@ -284,21 +305,22 @@ export function installStationCreator({
     archive.type = "button";
     archive.textContent = "Archive";
     archive.addEventListener("click", async () => {
-      await archiveStation(row.station);
-      if (row.station.archived) row.restoreButton.focus();
+      await archiveStation(row);
     });
     const restore = doc.createElement("button");
     restore.type = "button";
     restore.textContent = "Restore";
     restore.addEventListener("click", async () => {
-      await restoreStation(row.station);
-      if (!row.station.archived) row.archiveButton.focus();
+      await restoreStation(row);
     });
     const deleteToggle = doc.createElement("button");
     deleteToggle.type = "button";
     deleteToggle.textContent = "Delete permanently";
     const deletePanel = doc.createElement("div");
+    deletePanel.id = `station-delete-panel-${station.slug}`;
     deletePanel.hidden = true;
+    deleteToggle.setAttribute("aria-controls", deletePanel.id);
+    deleteToggle.setAttribute("aria-expanded", "false");
     const deleteSummary = doc.createElement("p");
     deleteSummary.textContent = "Removes this station's configuration and history. Shared music and external recording folders are not deleted. Voice recordings are retained outside this folder unless selected below.";
     const deleteLabel = doc.createElement("label");
@@ -316,6 +338,7 @@ export function installStationCreator({
     deleteButton.addEventListener("click", () => void deleteStation(row));
     deleteToggle.addEventListener("click", () => {
       deletePanel.hidden = !deletePanel.hidden;
+      deleteToggle.setAttribute("aria-expanded", String(!deletePanel.hidden));
       if (!deletePanel.hidden) {
         deleteText.value = "";
         deleteText.removeAttribute("aria-invalid");
@@ -366,13 +389,20 @@ export function installStationCreator({
     const action = isOnAir(station) ? "Stop" : "Start";
     if (button.textContent !== action) button.textContent = action;
     button.setAttribute("aria-label", `${action} ${station.name}`);
+    const wasFocusedLifecycleButton = doc.activeElement === row.archiveButton || doc.activeElement === row.restoreButton;
     row.archiveButton.hidden = Boolean(station.archived);
     row.restoreButton.hidden = !station.archived;
     row.deleteToggle.hidden = !station.archived || station.slug === "default";
     row.archiveButton.setAttribute("aria-label", `Archive ${station.name}`);
     row.restoreButton.setAttribute("aria-label", `Restore ${station.name}`);
     row.deleteToggle.setAttribute("aria-label", `Delete ${station.name} permanently`);
-    row.deletePanel.hidden = !station.archived || station.slug === "default" || row.deletePanel.hidden;
+    const shouldHideDeletePanel = !station.archived || station.slug === "default";
+    if (shouldHideDeletePanel && !row.deletePanel.hidden && row.deletePanel.contains(doc.activeElement)) {
+      (station.archived ? row.restoreButton : row.archiveButton).focus();
+    }
+    row.deletePanel.hidden = shouldHideDeletePanel || row.deletePanel.hidden;
+    row.deleteToggle.setAttribute("aria-expanded", String(!row.deletePanel.hidden));
+    if (wasFocusedLifecycleButton) (station.archived ? row.restoreButton : row.archiveButton).focus();
   }
 
   function renderList(all) {
@@ -389,7 +419,8 @@ export function installStationCreator({
     if (focusedIndex >= 0 && !rows.includes(focusedRow) && rows.length) {
       const replacement = rows[Math.min(focusedIndex, rows.length - 1)];
       const cell = replacement.children[Math.min(Math.max(focusedColumn, 0), replacement.children.length - 1)];
-      const control = [...cell.querySelectorAll("input, select")].find((item) => !item.disabled);
+      const control = [...cell.querySelectorAll("input, select")]
+        .find((item) => !item.disabled && !item.closest("[hidden], [inert]"));
       (control || cell).focus();
     } else if (focusedIndex >= 0 && !rows.length) {
       const heading = get("stations-list-heading");

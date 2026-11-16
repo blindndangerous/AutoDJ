@@ -66,6 +66,14 @@ def test_station_archive_marker_and_retained_audio_round_trip(tmp_path: Path) ->
     default.mkdir(parents=True, exist_ok=True)
     marker = default / "lifecycle.json"
     marker.write_text('{"version":1,"archived":true}', encoding="utf-8")
+    (cfg.index.stations_dir / "default" / "announcements").mkdir()
+    (cfg.index.stations_dir / "default" / "announcements" / "welcome.wav").write_bytes(
+        b"announcement"
+    )
+    (cfg.index.stations_dir / "default" / "time_checks_cache").mkdir()
+    (cfg.index.stations_dir / "default" / "time_checks_cache" / "hour.wav").write_bytes(
+        b"time check"
+    )
     operation_root = cfg.index.index_dir / "retained-station-audio" / f"nightowl-{'a' * 32}"
     operation_root.mkdir(parents=True)
     (operation_root / "announcements").mkdir()
@@ -99,14 +107,24 @@ def test_station_archive_marker_and_retained_audio_round_trip(tmp_path: Path) ->
     with zipfile.ZipFile(archive) as backup:
         members = set(backup.namelist())
         assert "index/lifecycle.json" in members
+        assert "announcements/welcome.wav" in members
+        assert "time_checks_cache/hour.wav" in members
         assert f"retained-station-audio/{operation_root.name}/announcements/welcome.wav" in members
         assert f"retained-station-audio/{operation_root.name}/retention.json" in members
         assert not any("broadcast.wav" in name for name in members)
 
     marker.unlink()
+    (cfg.index.stations_dir / "default" / "announcements" / "welcome.wav").unlink()
+    (cfg.index.stations_dir / "default" / "time_checks_cache" / "hour.wav").unlink()
     operation_root.rename(tmp_path / "retained-saved")
     restore_backup(cfg, archive, force=True)
     assert json.loads(marker.read_text(encoding="utf-8"))["archived"] is True
+    assert (
+        cfg.index.stations_dir / "default" / "announcements" / "welcome.wav"
+    ).read_bytes() == b"announcement"
+    assert (
+        cfg.index.stations_dir / "default" / "time_checks_cache" / "hour.wav"
+    ).read_bytes() == b"time check"
     assert (operation_root / "announcements" / "welcome.wav").read_bytes() == b"spoken"
 
 

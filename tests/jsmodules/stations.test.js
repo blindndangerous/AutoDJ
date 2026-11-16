@@ -352,6 +352,12 @@ describe("the station switcher (a disclosure, #576)", () => {
     expect(document.querySelector('[role="menu"], [role="menuitemradio"], [aria-haspopup]')).toBeNull();
   });
 
+  // ADR-0005-06.
+  it("omits archived stations from the normal station switcher", () => {
+    setUp([AUTODJ, { ...OWL, archived: true }, OLDIES]);
+    expect(items().map((item) => item.dataset.station)).toEqual(["default", "oldies"]);
+  });
+
   it("puts no click listener on the list, so it is not read as clickable", () => {
     const types = list().addEventListener.mock.calls.map(([type]) => type);
     expect(types).not.toContain("click");

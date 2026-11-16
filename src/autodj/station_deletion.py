@@ -420,7 +420,7 @@ def _delete_archived_station_locked(
     try:
         _finish(cfg, journal_path, journal)
     except BaseException:
-        # Committed deletion is completed forward by startup/Doctor recovery.
+        # Committed deletion is completed forward during serve startup recovery.
         raise StationDeletionError(
             f"Deletion of {slug} is committed and will finish during recovery.", committed=True
         ) from None

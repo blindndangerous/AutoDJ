@@ -103,11 +103,13 @@ _LEGACY_INDEX_FILES = frozenset({im.MANIFEST_NAME})
 #: Relay source passwords stay on the machine, including when restoring older archives.
 SECRET_STATE_FILES = frozenset({"relays.json", "secrets.json", "speech_providers.json"})
 _FOLDERS = (
+    "announcements",
     "speech",
     "edition_audio",
     "liners",
     "carts",
     "time_checks",
+    "time_checks_cache",
     "profiles",
     "clockwheels",
     "intros",
@@ -154,11 +156,13 @@ _STATE_FILES = (
 # Another station's state files, in ``stations/<slug>/``.
 STATION_FILES = _STATE_FILES
 STATION_FOLDERS = (
+    "announcements",
     "speech",
     "edition_audio",
     "liners",
     "carts",
     "time_checks",
+    "time_checks_cache",
     "profiles",
     "clockwheels",
     "intros",
@@ -191,11 +195,13 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
     roots = {
         "index": station.state_dir,
         "library": cfg.index.library_dir,
+        "announcements": station.announcements,
         "liners": station.liners,
         "speech": station.speech,
         "edition_audio": station.edition_audio,
         "carts": station.cart_uploads,
         "time_checks": station.time_check_clips,
+        "time_checks_cache": station.time_checks_cache,
         "profiles": station.profiles,
         "clockwheels": station.clockwheels,
         "intros": station.intros,
@@ -207,11 +213,13 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         paths = StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug)
         prefix = f"stations/{spec.slug}"
         roots[f"{prefix}/index"] = paths.state_dir
+        roots[f"{prefix}/announcements"] = paths.announcements
         roots[f"{prefix}/liners"] = paths.liners
         roots[f"{prefix}/speech"] = paths.speech
         roots[f"{prefix}/edition_audio"] = paths.edition_audio
         roots[f"{prefix}/carts"] = paths.cart_uploads
         roots[f"{prefix}/time_checks"] = paths.time_check_clips
+        roots[f"{prefix}/time_checks_cache"] = paths.time_checks_cache
         roots[f"{prefix}/profiles"] = paths.profiles
         roots[f"{prefix}/clockwheels"] = paths.clockwheels
         roots[f"{prefix}/intros"] = paths.intros

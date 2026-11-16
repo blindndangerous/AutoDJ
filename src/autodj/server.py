@@ -1212,7 +1212,7 @@ def create_app(
         station_suffix = parts[3:] if station_api else []
         lifecycle_request = station_api and (
             (request.method == "DELETE" and not station_suffix)
-            or station_suffix in (["archive"], ["restore"])
+            or (request.method == "POST" and station_suffix in (["archive"], ["restore"]))
         )
         if lifecycle_request:
             return await call_next(request)

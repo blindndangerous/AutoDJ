@@ -235,6 +235,117 @@ describe("Settings > Global > Stations management", () => {
     expect(onChanged).toHaveBeenCalledTimes(2);
   });
 
+  // ADR-0005-06 and ADR-0010-09.
+  it("archives and restores from the same row, preserving focus and the stopped state", async () => {
+    const request = vi.fn(async () => ({}));
+    const { onChanged, refresh } = setup({ request, stations: [AUTODJ, OWL] });
+    onChanged.mockImplementation(async (station, action) => {
+      refresh([AUTODJ, { ...station, archived: action === "archive" }]);
+    });
+    const row = byId("stations-list").children[1];
+    const archive = row.querySelector('button[aria-label="Archive Night Owl Radio"]');
+    archive.focus();
+    archive.click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    expect(byId("confirm-title").textContent).toBe("Archive Night Owl Radio?");
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/stations/nightowl/archive", { method: "POST" }));
+    await vi.waitFor(() => expect(row.station.archived).toBe(true));
+    expect(document.activeElement).toBe(row.children[5]);
+    expect(row.children[4].querySelector("button").hidden).toBe(true);
+
+    const restore = row.querySelector('button[aria-label="Restore Night Owl Radio"]');
+    restore.focus();
+    restore.click();
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/stations/nightowl/restore", { method: "POST" }));
+    await vi.waitFor(() => expect(row.station.archived).toBe(false));
+    expect(document.activeElement).toBe(row.children[5]);
+    await vi.waitFor(() => expect(byId("stations-status").textContent)
+      .toContain("It remains off air until you start it."));
+    expect(onChanged).toHaveBeenCalledTimes(2);
+  });
+
+  // ADR-0005-06.
+  it("cancels archive cleanly and does not send a confirmation from an old login", async () => {
+    const request = vi.fn(async () => ({}));
+    setup({ request, stations: [AUTODJ, OWL] });
+    const archive = byId("stations-list").children[1]
+      .querySelector('button[aria-label="Archive Night Owl Radio"]');
+    archive.focus();
+    archive.click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-cancel").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
+    expect(request).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(archive.closest("td"));
+
+    archive.click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    invalidateAuthenticatedRequestEpoch();
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  // ADR-0005-06 and ADR-0010-10.
+  it("requires exact deletion confirmation, defaults voice removal off, and returns focus after removal", async () => {
+    const archived = { ...OWL, archived: true };
+    const request = vi.fn(async () => ({ cleanup_pending: true }));
+    const { onChanged, refresh } = setup({ request, stations: [AUTODJ, archived] });
+    onChanged.mockImplementation(async () => refresh([AUTODJ]));
+    const row = byId("stations-list").children[1];
+    expect(byId("stations-list").children[0]
+      .querySelector('[aria-label="Delete AutoDJ permanently"]')?.hidden).toBe(true);
+    const toggle = row.querySelector('[aria-label="Delete Night Owl Radio permanently"]');
+    expect(toggle.getAttribute("aria-controls")).toBe(`station-delete-panel-${OWL.slug}`);
+    toggle.click();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const confirmation = row.querySelector("input[type=text]");
+    const voice = row.querySelector('input[type="checkbox"]:not([aria-label])');
+    const deleteButton = row.deletePanel.querySelector("button");
+    expect(voice.checked).toBe(false);
+    confirmation.value = "delete";
+    deleteButton.click();
+    expect(confirmation.getAttribute("aria-invalid")).toBe("true");
+    expect(request).not.toHaveBeenCalled();
+    confirmation.value = "DELETE";
+    deleteButton.focus();
+    deleteButton.click();
+    await vi.waitFor(() => expect(onChanged).toHaveBeenCalledWith(archived, "delete"));
+    expect(request).toHaveBeenCalledWith("/api/stations/nightowl", expect.objectContaining({
+      method: "DELETE",
+      body: JSON.stringify({ confirmation: "DELETE", delete_voice_recordings: false }),
+    }));
+    expect(byId("stations-status").textContent)
+      .toContain("Cleanup is pending.");
+    expect(document.activeElement).toBe(byId("stations-list").children[0].children[5]);
+  });
+
+  // ADR-0010-10.
+  it("ignores a lifecycle reply from an old login without losing the active control", async () => {
+    let finish;
+    const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const { onChanged } = setup({ request, stations: [AUTODJ, { ...OWL, archived: true }] });
+    const row = byId("stations-list").children[1];
+    row.querySelector('[aria-label="Delete Night Owl Radio permanently"]').click();
+    const confirmation = row.querySelector("input[type=text]");
+    confirmation.value = "DELETE";
+    const deleteButton = row.deletePanel.querySelector("button");
+    deleteButton.focus();
+    deleteButton.click();
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    expect(document.activeElement).toBe(row.children[5]);
+    expect(deleteButton.disabled).toBe(false);
+    invalidateAuthenticatedRequestEpoch();
+    finish({});
+    await settle();
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(byId("stations-status").textContent.trim()).toBe("");
+    expect(deleteButton.classList.contains("is-pending")).toBe(false);
+    expect(row.isConnected).toBe(true);
+    expect(document.activeElement).toBe(row.children[5]);
+  });
+
   it("shows Also copy only for a copy, and sends the copies only then", async () => {
     const request = vi.fn(async (_url, options) => ({
       ...OWL, slug: "owl2", name: "Owl 2", copied: ["saved settings", "carts"],
