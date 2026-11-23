@@ -291,7 +291,7 @@ describe("the Ads tab", () => {
     expect(byId("ads-panel").contains(byId("ads-spot-form"))).toBe(false);
     const file = byId("ads-spot-file");
     expect(file.getAttribute("aria-invalid")).toBe("true");
-    expect(file.getAttribute("aria-describedby").split(" ")).toEqual(["ads-spot-error", "ads-spot-file-desc"]);
+    expect(file.getAttribute("aria-describedby").split(" ")).toEqual(["ads-spot-error"]);
     expect(document.activeElement).toBe(file);
     await vi.waitFor(() => expect(status()).toBe("Choose the spot's audio file"));
     await flush();

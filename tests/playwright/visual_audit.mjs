@@ -110,7 +110,7 @@
 //         Dismiss button works by mouse and by keyboard, putting focus
 //         back where it was.
 //
-//   - Settings > Stations (#233): New station refused by a stood-in
+//   - Settings > Global > Stations (#797): New station refused by a stood-in
 //     server, its error on the page, linked to Station ID and focused, is
 //     measured like a view in every theme mode and at 320 px and 200 %
 //     text; in the System light mode a refused create keeps nothing said
@@ -1737,15 +1737,16 @@ const CREATE_REFUSAL = {
   field: "slug",
 };
 
-// Settings > Stations: New station, a copy, refused on its Station ID.
+// Settings > Global > Stations: New station, a copy, refused on its Station ID.
 async function openStationCreateError(page, visit) {
+  await clickSubtabUnprompted(page, "stab-station-management");
   await page.locator("#station-create-source").selectOption("default");
   await page.locator("#station-create-copies").waitFor({ state: "visible" });
   await page.locator("#station-create-name").fill("Audit Refused Station With A Long Name");
   await page.locator("#station-create-slug").fill("audit-refused");
   await page.locator("#station-create-submit").click();
   await page.locator("#station-create-error").waitFor({ state: "visible" });
-  await visit("settings/stations/refused");
+  await visit("settings/stations/station-create/refused");
 }
 
 function realStations(page) {
@@ -1805,6 +1806,107 @@ async function newPage(context) {
 // button's change from pressed (black on light blue in Dark) to hover
 // (white on blue) most times the error was found, and axe-core now and then
 // failed its text contrast on a colour read part way through.
+async function auditHistoryFilterExport(page) {
+  const shape = await page.evaluate(() => {
+    const panel = document.querySelector("#panel-history");
+    const form = panel?.querySelector("#hist-export");
+    const filters = panel?.querySelector(".history-filters");
+    const ids = ["hist-export-from", "hist-export-to", "hist-filter-q", "hist-show-liners",
+      "history-table", "history-pagination", "hist-export-format", "hist-export-button"];
+    const nodes = ids.map((id) => document.getElementById(id));
+    const pagePagination = panel?.querySelector("#history-pagination");
+    return {
+      formCount: document.querySelectorAll("#hist-export").length,
+      nodesOnce: nodes.every((node, index) => node && document.querySelectorAll(`#${ids[index]}`).length === 1),
+      inPanel: nodes.every((node) => node && panel?.contains(node)),
+      filtersOutsideForm: Boolean(filters && ["hist-export-from", "hist-export-to", "hist-filter-q", "hist-show-liners"]
+        .every((id) => filters.querySelector(`#${id}`)?.closest("form") !== form)),
+      exportOnlyForm: Boolean(form && form.getAttribute("aria-label") === "Export play log"
+        && form.querySelector("#hist-export-format") && form.querySelector("#hist-export-button")
+        && !form.querySelector("#history-table, #history-pagination, #hist-export-from, #hist-export-to, #hist-filter-q, #hist-show-liners")),
+      exportAfterResults: Boolean(form && pagePagination
+        && (pagePagination.compareDocumentPosition(form) & window.Node.DOCUMENT_POSITION_FOLLOWING)),
+      obsoleteCard: Boolean(document.getElementById("history-export-card")),
+    };
+  });
+  if (shape.formCount !== 1 || !shape.nodesOnce || !shape.inPanel || !shape.filtersOutsideForm
+    || !shape.exportOnlyForm || !shape.exportAfterResults || shape.obsoleteCard) {
+    throw new Error(`History filters/display/export are not consolidated in order: ${JSON.stringify(shape)}`);
+  }
+}
+
+async function historyFilterProblems(page) {
+  const problems = [];
+  const displayQueries = [];
+  const exports = [];
+  const pattern = "**/api/history**";
+  const handler = async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/export")) {
+      exports.push(Object.fromEntries(url.searchParams));
+      await route.fulfill({ status: 200, contentType: "text/csv", headers: {
+        "Content-Disposition": 'attachment; filename="history.csv"', "X-Play-Count": "1",
+      }, body: "Title\nNeedle\n" });
+      return;
+    }
+    const query = Object.fromEntries(url.searchParams);
+    displayQueries.push(query);
+    const filtered = query.q === "Needle Artist";
+    await route.fulfill({ json: { total: 1, page: 1, pages: 1, per_page: 50,
+      items: [{ event_id: filtered ? "filter-check" : "initial-check",
+        path: filtered ? "needle.mp3" : "initial.mp3",
+        title: filtered ? "Needle" : "Initial", artist: filtered ? "Artist" : "Track",
+        duration: 120, played_at: new Date().toISOString(), kind: "song" }] } });
+  };
+  await page.route(pattern, handler);
+  try {
+    await page.locator("#tab-history").click();
+    const query = page.locator("#hist-filter-q");
+    await query.fill("Needle Artist");
+    await query.press("Enter");
+    try {
+      await page.waitForFunction(() => document.querySelector("#history-tbody")?.textContent.includes("Needle")
+        && !document.querySelector("#history-tbody")?.textContent.includes("Initial"));
+      await page.waitForFunction(() => document.querySelector("#sr-status")?.textContent === "1 play.");
+    } catch {
+      const state = await page.evaluate(() => ({
+        hash: location.hash,
+        visibility: document.visibilityState,
+        activeId: document.activeElement?.id || "",
+        rows: document.querySelector("#history-tbody")?.textContent || "",
+        status: document.querySelector("#sr-status")?.textContent || "",
+      }));
+      problems.push(`filtered result or announcement did not arrive: ${JSON.stringify({ state, displayQueries })}`);
+    }
+    if (!await query.evaluate((input) => input === document.activeElement)) problems.push("filter moved focus");
+    if (exports.length) problems.push("Enter in filter started an export");
+    const download = page.waitForEvent("download");
+    await page.locator("#hist-export-button").click();
+    await download;
+    const display = displayQueries.at(-1);
+    const exported = exports.at(-1);
+    for (const key of ["from", "to", "q", "nonmusic"]) {
+      if (!display || !exported || display[key] !== exported[key]) problems.push(`export differs for ${key}`);
+    }
+    if (exported?.q !== "Needle Artist") problems.push("text filter missing from export");
+  } finally {
+    await page.unroute(pattern, handler);
+    await page.locator("#hist-filter-q").fill("");
+    await page.locator("#hist-refresh").click();
+  }
+  if (!displayQueries.some((query) => query.q === "Needle Artist")) {
+    const state = await page.evaluate(() => ({
+      hash: location.hash,
+      visibility: document.visibilityState,
+      activeId: document.activeElement?.id || "",
+      rows: document.querySelector("#history-tbody")?.textContent || "",
+      status: document.querySelector("#sr-status")?.textContent || "",
+    }));
+    problems.push(`filtered History request was not observed: ${JSON.stringify({ state, displayQueries })}`);
+  }
+  return problems;
+}
+
 async function eachTarget(page, measure) {
   const visit = async (target) => {
     await settle(page);
@@ -1830,6 +1932,7 @@ async function eachTarget(page, measure) {
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
     await page.locator(`#panel-${view}`).waitFor({ state: "visible" });
+    if (view === "history") await auditHistoryFilterExport(page);
     // Under reduced motion every change still runs a 0.01 ms transition,
     // which takes a frame; let it end before colours are measured.
     await page.waitForTimeout(100);
@@ -1885,7 +1988,7 @@ async function eachTarget(page, measure) {
         }
         if (id === "stab-schedule") await openScheduleWaitError(page, visit);
         if (id === "stab-announcements") await openPackDatesError(page, visit);
-        if (id === "stab-stations") await openStationCreateError(page, visit);
+        if (id === "stab-station-management") await openStationCreateError(page, visit);
         if (id === "stab-stream") await openLiveDjError(page, visit);
         if (id === "stab-workers") await openWorkerStates(page, visit);
         if (id === "stab-updates") await openRestartConfirm(page, visit);
@@ -2623,9 +2726,21 @@ async function toastBehaviourProblems(page) {
 async function stationCreateProblems(page) {
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
-  await clickSubtabUnprompted(page, "stab-stations");
-  await page.locator("#station-create-name").waitFor({ state: "visible" });
   const problems = [];
+  await clickSubtabUnprompted(page, "stab-stations");
+  if (await page.locator("#stab-stations").textContent() !== "General") problems.push("Station tab is not named General");
+  await expect(page.locator("#time-settings")).toBeVisible();
+  for (const id of ["station-output", "station-log-label"]) {
+    if (!await page.locator(`#${id}`).isVisible()) problems.push(`${id} is not in Station > General`);
+  }
+  if (await page.locator("#station-create-form").isVisible()) problems.push("station creation is visible in General");
+  await clickSubtabUnprompted(page, "stab-station-management");
+  if (await page.locator("#stab-station-management").textContent() !== "Stations") problems.push("Global tab is not named Stations");
+  await expect(page.locator("#station-create-name")).toBeVisible();
+  if (await page.locator("#time-settings").isVisible()) problems.push("station-specific settings are visible in Global > Stations");
+  if (await page.locator("#station-create-form").evaluate((form) => form.closest("#spanel-server") !== null)) {
+    problems.push("station creation is still in Server");
+  }
   await page.evaluate(() => {
     window.__stationCreateSaid = [];
     const region = document.getElementById("stations-status");
@@ -3513,7 +3628,7 @@ async function selectedTabEntryProblems(page) {
   for (const [group, selected, first, other] of [
     ["Profile", "stab-sound", "stab-mixing", "stab-stations"],
     ["Station", "stab-schedule", "stab-stations", "stab-sound"],
-    ["Global", "stab-display", "stab-server", "stab-sound"],
+    ["Global", "stab-display", "stab-server", "stab-stations"],
   ]) {
     await page.locator(`#${selected}`).click();
     await page.locator(".skip-link").focus();
@@ -3653,6 +3768,8 @@ export async function audit(name, launcher) {
     if (speech.length) out.behaviour.speechStudio = speech;
     const stationCreate = await stationCreateProblems(page);
     if (stationCreate.length) out.behaviour.stationCreate = stationCreate;
+    const historyFilters = await historyFilterProblems(page);
+    if (historyFilters.length) out.behaviour.historyFilters = historyFilters;
     const switcher = await stationSwitcherProblems(page);
     if (switcher.length) out.behaviour.stationSwitcher = switcher;
     // 200 % text at the same window width.

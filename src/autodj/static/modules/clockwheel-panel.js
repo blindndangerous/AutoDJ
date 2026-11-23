@@ -716,7 +716,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       const source = el("clock-step-source")?.value || "";
       if (!source) {
         if (interactive) el("clock-step-source")?.focus();
-        throw Object.assign(new Error(`Add a ${type === "liner" ? "voice liner" : "music"} folder under Music folders and Voice liner folders first.`), { control: el("clock-step-source") });
+        throw Object.assign(new Error(`Add a ${type === "liner" ? "voice liner" : "music"} folder under Folders first.`), { control: el("clock-step-source") });
       }
       return { type, source, path: relative("clock-step-path", "The track", false, interactive) };
     }

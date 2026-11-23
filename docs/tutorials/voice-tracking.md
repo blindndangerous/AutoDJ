@@ -36,16 +36,16 @@ it airs, is dropped or expires.
 Press **Record** again, or **Alt+R** while Voice tracks is open, to stop recording.
 Leaving the tab or hiding the page also stops capture and releases the microphone,
 keeping the take. **Listen back** toggles preview playback. For a complete stop,
-use the Practice row's **Stop** in **Settings**, **Station**, **Stations**. Stopping the station
+use the Practice row's **Stop** in **Settings**, **Global**, **Stations**. Stopping the station
 is different from muting your listening device. Use the
 [keyboard guide](../guides/keyboard-and-screen-reader.md) for tab and grid navigation.
 
 ## Move Practice playback to the server sound card
 
-1. Confirm Practice is the selected station. Open **Settings**, **Station**, **Stations**.
+1. Confirm Practice is the selected station. Open **Settings**, **Station**, **General**.
 2. Under **Output for the selected station**, set **Playback output** to
-   **Server sound card** and press **Save changes** in the Stations tab.
-3. In **Stations on this server**, find the Practice row, using its actual
+   **Server sound card** and press **Save changes** in the General tab.
+3. In **Settings**, **Global**, **Stations**, find the Practice row, using its actual
    displayed name. Press **Stop**, then confirm with **Stop station**. If its
    row already offers **Start**, it is stopped; skip the stop action.
 4. Wait until the row offers **Start**, then press it. Check the status reports
@@ -164,7 +164,7 @@ the Voice tracks heading before deciding what to do next.
 ## Stop and retain the station settings
 
 Stop any active recording with **Record** and any preview with **Listen back**.
-Discard any remaining local take. In **Settings**, **Station**, **Stations**, use **Stop** on
+Discard any remaining local take. In **Settings**, **Global**, **Stations**, use **Stop** on
 the Practice row, confirm with **Stop station**, and wait for its button to
 change to **Start**. Closing the browser alone does not stop server playback.
 
@@ -174,9 +174,10 @@ saved liner. To reuse the earlier Browser lessons:
 
 1. In **Settings**, **Transitions**, set **Transition mode** to **Full intro and
    outro**, then press **Save changes** in the Transitions tab.
-2. In **Settings**, **Station**, **Stations**, set **Playback output** to **Browser** and
-   press **Save changes** in the Stations tab.
-3. In the Practice row, press **Start**. Check for a successful start, then use
+2. In **Settings**, **Station**, **General**, set **Playback output** to **Browser** and
+   press **Save changes** in the General tab.
+3. In **Settings**, **Global**, **Stations**, press **Start** in the Practice row.
+   Check for a successful start, then use
    **Play or Pause** in **Now Playing** if needed to leave browser playback paused.
 
 For a reusable spoken asset, follow [the recorded liner lesson](recorded-liners.md).

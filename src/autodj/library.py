@@ -55,6 +55,7 @@ from autodj.station_store import (
 )
 from autodj.stations import DEFAULT_SLUG, StationPaths
 from autodj.stereo import SAMPLE_RATE, DecodeReport
+from autodj.text_search import matches_search_text, search_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -564,12 +565,12 @@ class LibraryManager:
             if source["kind"] != kind:
                 raise ValueError("source kind does not match requested kind")
             roots = [(_prefix(source["path"]), bool(source["recursive"]))]
-        tokens = q.casefold().split()
+        tokens = search_tokens(q)
         matches = [
             entry
             for entry, text in self._text_index("browse", kind, _browse_order)
             if (roots is None or _covered_by(entry.path, roots))
-            and all(token in text for token in tokens)
+            and matches_search_text(tokens, text)
         ]
         added_at = self.catalog.added_at_times() if sort == "recently_added" else {}
         counts = play_counts or {}

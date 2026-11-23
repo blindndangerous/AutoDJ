@@ -87,7 +87,7 @@ describe("Time checks panel markup", () => {
       const help = byId(`${id}-desc`);
       expect(help?.textContent.trim(), id).toBeTruthy();
       expect(help.hidden, id).toBe(false);
-      expect(byId(id).getAttribute("aria-describedby")).toBe(id === "tc-test" ? help.id : null);
+      expect(byId(id).getAttribute("aria-describedby")).toBe(null);
     }
     const status = byId("tc-status");
     expect(status.getAttribute("role")).toBe("status");

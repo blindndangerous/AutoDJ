@@ -49,6 +49,7 @@ from autodj._bridge import (
     SeekTrackChanged,
     StreamSeekUnavailable,
 )
+from autodj.catalog import history_start
 from autodj.clockwheel import parse_pal
 from autodj.clockwheel_store import (
     OLD_CLOCK_MESSAGE,
@@ -69,7 +70,7 @@ from autodj.config import (
     _relay_target,
 )
 from autodj.errors import FieldError, first_issue
-from autodj.history_kinds import INSERT_KINDS
+from autodj.history_kinds import INSERT_KINDS, history_kind
 from autodj.history_pages import history_page
 from autodj.live_queue import VoiceQueueConflict
 from autodj.playlog import (
@@ -104,6 +105,7 @@ from autodj.station_name import listener_name
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
 from autodj.stream_formats import FORMATS
+from autodj.text_search import matches_search_fields
 
 if TYPE_CHECKING:
     from autodj.listener_access import ListenerAccess
@@ -1985,6 +1987,10 @@ def install_station_routes(router: StationRouter) -> None:
         per_page: int = Query(50, ge=1, le=500),
         liners: bool = False,
         anchor: Annotated[str | None, Query(max_length=64)] = None,
+        from_text: Annotated[str | None, Query(alias="from", max_length=64)] = None,
+        to_text: Annotated[str | None, Query(alias="to", max_length=64)] = None,
+        query: Annotated[str, Query(alias="q", max_length=500)] = "",
+        nonmusic: bool | None = None,
     ) -> JSONResponse:
         """Return recent play history across restarts (newest first), one page.
 
@@ -1994,7 +2000,101 @@ def install_station_routes(router: StationRouter) -> None:
         that row, or the next older row this view shows; switching views
         keeps the listener near the same place.
         """
-        if station.player is not None:
+        if nonmusic is not None:
+            if from_text is None or to_text is None:
+                raise HTTPException(status_code=422, detail="Both from and to dates are required.")
+            try:
+                start = parse_bound(from_text)
+                end = parse_bound(to_text, end=True)
+                if end <= start:
+                    raise ValueError("The end of the range must be after its start.")
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            pending, interrupted = station.ledger.history_overlay()
+            durable = await asyncio.to_thread(
+                station.ledger.store.filtered_history,
+                start,
+                end,
+                nonmusic=nonmusic,
+                query=query,
+            )
+            merged = {row.get("event_id"): row for row in durable if row.get("event_id")}
+            if station.player is not None:
+                for row in station.bridge.history_rows():
+                    event_id = row.get("event_id")
+                    if event_id and event_id not in interrupted:
+                        merged[event_id] = {**merged.get(event_id, {}), **row}
+            for row in pending:
+                event_id = row.get("event_id")
+                if event_id:
+                    merged[event_id] = {**merged.get(event_id, {}), **row}
+            for event_id in interrupted:
+                merged.pop(event_id, None)
+
+            def matches(row: dict) -> bool:
+                moment = history_start(row.get("played_at"))
+                if moment is None or not start <= moment < end:
+                    return False
+                kind = history_kind(row)
+                if kind == "ad":
+                    return False  # canonical ad log is added below
+                if not nonmusic and (
+                    kind != "song" or row.get("track_kind") not in {None, "", "music"}
+                ):
+                    return False
+                return matches_search_fields(
+                    query, row.get("title"), row.get("artist"), row.get("album")
+                )
+
+            selected = []
+            for row in merged.values():
+                if not matches(row):
+                    continue
+                moment = history_start(row.get("played_at"))
+                assert moment is not None  # matches() already validated the timestamp.
+                selected.append((moment, row))
+            if nonmusic:
+                from autodj.ads import aired_plays
+
+                ads = await asyncio.to_thread(aired_plays, station.paths.ad_plays, start, end)
+                for ad in ads:
+                    if not matches_search_fields(query, ad.title, ad.artist, ad.album):
+                        continue
+                    identity = f"{ad.start.isoformat()}\0{ad.title}\0{ad.artist}\0{ad.album}"
+                    event_id = (
+                        "ad-" + hashlib.blake2b(identity.encode(), digest_size=16).hexdigest()
+                    )
+                    selected.append(
+                        (
+                            ad.start,
+                            {
+                                "event_id": event_id,
+                                "path": None,
+                                "title": ad.title,
+                                "artist": ad.artist,
+                                "duration": max(0, (ad.end - ad.start).total_seconds()),
+                                "played_at": ad.start.isoformat(),
+                                "kind": "ad",
+                                "album": ad.album,
+                            },
+                        )
+                    )
+            selected.sort(key=lambda pair: pair[0])
+            songs: list[dict] = []
+            aired: list[dict] = []
+            for order, (_moment, row) in enumerate(selected):
+                item = {**row, "_seq": order}
+                (aired if history_kind(item) in INSERT_KINDS else songs).append(item)
+            result = history_page(
+                songs,
+                aired,
+                page=page,
+                per_page=per_page,
+                liners=True,
+                anchor=anchor,
+                max_rows=None,
+            )
+        elif station.player is not None:
             result = station.bridge.history_page(page, per_page, liners=liners, anchor=anchor)
         else:
             rows = station.ledger.recent_history(HISTORY_VIEW_ROWS, inserts=HISTORY_AIRED_ROWS)
@@ -2019,6 +2119,8 @@ def install_station_routes(router: StationRouter) -> None:
         service: Annotated[str, Query(max_length=200)] = "",
         category: Annotated[str, Query(max_length=1)] = "A",
         liners: bool = False,
+        nonmusic: bool | None = None,
+        query: Annotated[str, Query(alias="q", max_length=500)] = "",
     ) -> Response:
         """Download the play log between two dates (see :mod:`autodj.playlog`).
 
@@ -2035,19 +2137,41 @@ def install_station_routes(router: StationRouter) -> None:
         try:
             start = parse_bound(from_text)
             end = parse_bound(to_text, end=True)
+            if end <= start:
+                raise ValueError("The end of the range must be after its start.")
+            if nonmusic and report_format == "soundexchange":
+                raise ValueError(
+                    "SoundExchange reports contain songs only; turn off nonmusic rows."
+                )
             inserts = liners and report_format == "csv"
+            pending_rows: list[dict] = []
+            interrupted_ids: set[str] = set()
+            if nonmusic is not None:
+                pending_rows, interrupted_ids = station.ledger.history_overlay()
             plays = await asyncio.to_thread(
                 functools.partial(
                     plays_between,
                     station=station.slug,
                     station_store=station.ledger.store,
-                    include_inserts=inserts,
+                    include_inserts=(nonmusic if nonmusic is not None else inserts),
+                    pending_rows=pending_rows,
+                    interrupted_ids=interrupted_ids,
                 ),
                 library.catalog,
                 start,
                 end,
             )
-            if inserts:
+            if nonmusic is not None:
+                if nonmusic:
+                    plays = [play for play in plays if play.kind != "ad"]
+                else:
+                    plays = [play for play in plays if play.kind == "song"]
+                plays = [
+                    play
+                    for play in plays
+                    if matches_search_fields(query, play.title, play.artist, play.album)
+                ]
+            elif inserts:
                 # The ad play log below is the record of the spots that aired.
                 plays = [play for play in plays if play.kind != "ad"]
             last_day = end - timedelta(microseconds=1)
@@ -2059,7 +2183,17 @@ def install_station_routes(router: StationRouter) -> None:
             else:
                 from autodj.ads import aired_plays
 
-                ads = await asyncio.to_thread(aired_plays, station.paths.ad_plays, start, end)
+                ads = (
+                    await asyncio.to_thread(aired_plays, station.paths.ad_plays, start, end)
+                    if nonmusic is None or nonmusic
+                    else []
+                )
+                if nonmusic is not None:
+                    ads = [
+                        ad
+                        for ad in ads
+                        if matches_search_fields(query, ad.title, ad.artist, ad.album)
+                    ]
                 rows = sorted([*plays, *ads], key=lambda play: play.start)
                 body = plays_csv(rows)
                 count = len(rows)
@@ -2627,14 +2761,9 @@ def install_station_routes(router: StationRouter) -> None:
 
     @router.post("/play-next", response_model=None)
     async def api_play_next(station: StationDep, body: PlayNextBody) -> dict[str, Any]:
-        """Make a track the one that plays next, after the song playing.
-
-        There is one "play next" song (#519): another Play next takes its
-        place.  The answer names a song it replaced, so the page can say so.
-        """
+        """Prepend for Play next, or use the existing Play now behavior when requested."""
         # Off the event loop: the check reads the renders and the library (#217).
         await asyncio.to_thread(_dmca_refusal, station, body, append=False)
-        earlier = station.bridge.player._state.queued_next
         try:
             queued = station.bridge.play_next(
                 body.path,
@@ -2647,24 +2776,7 @@ def install_station_routes(router: StationRouter) -> None:
         if not queued:
             raise HTTPException(status_code=404, detail=TRACK_GONE_DETAIL)
         station.nowplaying.refresh()
-        replaced = (
-            earlier
-            if not body.now
-            and earlier is not None
-            and station.bridge.player._state.queued_next is not earlier
-            and getattr(earlier, "path", None) != body.path
-            else None
-        )
-        if replaced is None:
-            return {"ok": True}
-        return {
-            "ok": True,
-            "replaced": {
-                "path": replaced.path,
-                "artist": replaced.artist or "",
-                "title": replaced.title or "",
-            },
-        }
+        return {"ok": True}
 
     @router.post("/queue/add", response_model=None)
     async def api_queue_add(station: StationDep, body: PlayNextBody) -> dict[str, bool]:

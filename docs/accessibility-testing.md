@@ -122,7 +122,7 @@ as Browse… in an editor or the discard question over an editor, sits above it,
 and only the top one keeps the keys. Check each with NVDA in browse mode, in
 Chrome and Firefox:
 
-- **Browse…**: in **Library tools**, **Music folders and Voice liner folders**,
+- **Browse…**: in **Library tools**, **Folders**,
   press Browse… after **Folder path**. Select this folder comes before Cancel.
   Enter straight after NVDA reads the dialog must not choose a folder or change
   the field. Escape and Cancel return to Browse…. Also try Browse… on a
@@ -644,7 +644,7 @@ The visual audit (`npm run audit:visual`, part of `audit:ci`) loads every view a
 
 Checkboxes and radio buttons are a deliberate exception to the authored control-boundary rule. In the default color mode they keep the browser and operating system's native appearance; AutoDJ does not replace that appearance or draw a custom border. The forced-colors rules may apply system colors such as `CanvasText` and `Highlight`, but they do not disable the native appearance. Test both checked and unchecked states during release sampling when a sampled flow contains these controls.
 
-Settings > Station > Stations is audited again with a refused New station request from a stood-in server.
+Settings > Global > Stations is audited again with a refused New station request from a stood-in server.
 The error must appear beside Station ID and link to that field. Submitting from the Create
 button must move focus to Station ID without repeating the error in the status region.
 Submitting with Enter while Station ID already has focus must keep focus there and announce
@@ -727,7 +727,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   between tabs says the tab's name and "selected" once, not "selected selected".
 - Settings subtabs: the arrow keys, Home and End move between them and skip Stream outside
   stream mode; clicking one moves focus to its panel's heading; the page reopens on the last
-  one used; and Station, Profiles and Global, Server load their collection tables when shown.  Settings that have no
+  one used; and Station, Profiles, Global, Server and Global, Stations load their collection tables when shown.  Settings that have no
   effect stay hidden, for example the DJ-mix options with saved segue points.
 - Playback controls, seeking, volume, and the spoken hotkeys.
 - Search, queue additions, reordering, removal, and empty states.
@@ -797,7 +797,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   or Pause and the queue buttons read by their names alone, without the station; `c` and
   Shift+C; Listen here still playing the station it started on, with its "Playing ..." line;
   and a stopped station's "Off air" said once, with Start reachable on Now Playing.
-- Settings, Station, Stations (#233): browse the station list and read New station fields with their short
+- Settings, Global, Stations (#797): browse the station list and read New station fields with their short
   labels. Station ID includes its format hint. Choosing a copy reveals Also copy as a group of
   three checkboxes; choosing AutoDJ defaults hides that group and its help. A refused ID or name
   is read once with focus on its field. Check both submission from Create station and Enter
@@ -910,8 +910,12 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   If refresh removes a booking while cancellation fails, retain the visible error
   and associate it with the focused Voice tracks heading.
 - EQ: each band's slider, its spoken value, and resetting the bands.
-- History: the History tab's table read with table navigation, its pagination, the empty state,
-  and a new song added to the top of page 1 without the reading position moving or anything said.
+- History: one set of date, text and nonmusic filters updates the table and export.
+  Check delayed result counts, rapid changes with slow replies, retained filter focus,
+  table navigation, pagination and the empty state. Export includes all matches,
+  not just the current page. A refused date range or SoundExchange/nonmusic choice
+  keeps the filters and exposes its error. Passive updates do not move the reading
+  position or speak. Returning from Track info preserves the filters and page.
 - Why this track: reading the reasons for the current pick, and confirming they are not read
   again on their own when the track changes.
 - Now Playing, Hour preview: the table read with table navigation (column headers Starts, What,

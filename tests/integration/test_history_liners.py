@@ -17,7 +17,7 @@ from autodj.indexer import IndexEntry
 from autodj.server import PlayerBridge
 from autodj.station_store import StationStore
 from tests._server import create_app
-from tests.integration.test_multi_station import rig  # noqa: F401
+from tests.integration.test_multi_station import rig as rig
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
@@ -56,6 +56,104 @@ def _mixed(songs: int) -> list[dict]:
         if index % 3 == 0:
             rows.append(_row(index * 3 + 2, "matched_intro", path=None))
     return rows
+
+
+def test_filtered_history_pages_full_store_and_pending_rows_without_tag_reads(
+    rig, monkeypatch
+) -> None:
+    """ADR-0006-10. Filtered display includes pending rows and avoids reporting tags."""
+    client, _library, _cfg, _song, _closes = rig
+    station = client.app.state.stations.get("default")
+    rows = [_row(index) for index in range(501)]
+    station.ledger.store.write_history(rows, [])
+    pending = _row(502, title="Blue Harbor", artist="The Example")
+    station.ledger.remember_history(pending)
+    station.ledger.interrupt_history("song-3")
+
+    def fail_tag_read(_path):
+        raise AssertionError("filtered History must not read reporting tags")
+
+    monkeypatch.setattr("autodj.playlog.read_reporting_tags", fail_tag_read)
+    response = client.get("/api/history?from=2026-09-01&to=2026-09-01&nonmusic=false&per_page=50")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 501  # 501 durable rows plus pending, minus one interrupted row.
+    assert data["pages"] == 11
+    selected = client.get(
+        "/api/history?from=2026-09-01&to=2026-09-01&nonmusic=false&q=blue+example"
+    ).json()
+    assert [item["event_id"] for item in selected["items"]] == ["song-502"]
+
+
+def test_filtered_export_matches_pending_and_interrupted_history_rows(rig) -> None:
+    """ADR-0006-10. Filtered export shares display's pending and interruption rules."""
+    client, _library, _cfg, _song, _closes = rig
+    station = client.app.state.stations.get("default")
+    interrupted = _row(600, title="Blue Interrupted", path="/music/interrupted.flac")
+    station.ledger.store.write_history([interrupted], [])
+    station.ledger.interrupt_history(interrupted["event_id"])
+    pending = _row(601, title="Blue Pending", path=None)
+    station.ledger.remember_history(pending)
+
+    response = client.get("/api/history/export?from=2026-09-01&to=2026-09-01&nonmusic=false&q=Blue")
+
+    assert response.status_code == 200
+    assert response.headers["X-Play-Count"] == "1"
+    assert "Blue Pending" in response.text
+    assert "Blue Interrupted" not in response.text
+
+
+def test_filtered_history_and_export_use_canonical_ads_once(rig) -> None:
+    """ADR-0006-10. Canonical ad log rows replace station database ad rows."""
+    from autodj.ads import AdLog, PlayRecord
+
+    client, _library, _cfg, _song, _closes = rig
+    station = client.app.state.stations.get("default")
+    aired = T0
+    station.ledger.store.write_history(
+        [
+            _row(
+                700,
+                title="Fall sale",
+                artist="Example Motors",
+                album="Autumn",
+                kind="ad",
+                path=None,
+            )
+        ],
+        [],
+    )
+    common = {
+        "run": "d" * 32,
+        "scheduled": aired,
+        "spot_id": "a" * 32,
+        "title": "Fall sale",
+        "advertiser": "Example Motors",
+        "campaign": "Autumn",
+        "seconds": 30.0,
+        "logged": aired,
+    }
+    AdLog(station.paths.ad_plays).append(
+        [
+            PlayRecord.model_validate(
+                {**common, "id": "c" * 32, "status": "aired", "aired_at": aired}
+            )
+        ]
+    )
+    filtered_url = "/api/history?from=2026-09-01&to=2026-09-01&nonmusic=true&q=Fall+sale"
+
+    display = client.get(filtered_url)
+    export = client.get(
+        "/api/history/export?from=2026-09-01&to=2026-09-01&nonmusic=true&q=Fall+sale"
+    )
+
+    assert display.status_code == export.status_code == 200
+    assert display.json()["total"] == 1
+    assert display.json()["items"][0]["kind"] == "ad"
+    assert display.json()["items"][0]["event_id"].startswith("ad-")
+    assert export.headers["X-Play-Count"] == "1"
+    assert export.text.count("Fall sale") == 1
 
 
 def test_history_shows_what_it_always_did_by_default() -> None:
@@ -151,7 +249,7 @@ def test_each_view_keeps_the_latest_500_rows() -> None:
     assert everything["items"][0]["event_id"] == "matched_intro-1199"
 
 
-def test_each_station_reports_what_it_airs_to_its_own_history(rig) -> None:  # noqa: F811
+def test_each_station_reports_what_it_airs_to_its_own_history(rig) -> None:
     client, *_rest = rig
     stations = client.app.state.stations
     for station in (stations.default, stations.get("nightowl")):
@@ -166,7 +264,7 @@ def test_each_station_reports_what_it_airs_to_its_own_history(rig) -> None:  # n
 
 
 @pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
-def test_a_stopped_station_reads_liners_from_its_database(rig) -> None:  # noqa: F811
+def test_a_stopped_station_reads_liners_from_its_database(rig) -> None:
     client, library, _cfg, song, _closes = rig
     library.station_ledger("nightowl").store.write_history(
         [

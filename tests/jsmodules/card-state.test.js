@@ -191,12 +191,33 @@ it("gives every collapsible card a unique stable ID and puts Requests below Brow
   const browse = root.querySelector("#search-library-heading").closest(".card");
   expect(browse.nextElementSibling.id).toBe("requests-card");
   expect(browse.nextElementSibling.tagName).toBe("DETAILS");
-  for (const id of ["history-export-card", "cart-page-card"]) {
+  for (const id of ["cart-page-card"]) {
     const card = root.getElementById(id);
     expect(card.tagName).toBe("DETAILS");
     expect(card.open).toBe(false);
     expect(card.querySelector(":scope > summary > h3")).not.toBeNull();
   }
+  const history = root.getElementById("panel-history");
+  const historyForm = root.getElementById("hist-export");
+  expect(root.getElementById("history-export-card")).toBeNull();
+  expect(history.contains(historyForm)).toBe(true);
+  const historyFilters = history.querySelector(".history-filters");
+  for (const id of ["hist-export-from", "hist-export-to", "hist-filter-q", "hist-show-liners",
+    "history-table", "history-pagination", "hist-export-format", "hist-export-button"]) {
+    expect(history.querySelectorAll(`#${id}`)).toHaveLength(1);
+  }
+  for (const id of ["hist-export-from", "hist-export-to", "hist-filter-q", "hist-show-liners"]) {
+    expect(historyFilters.querySelector(`#${id}`)).not.toBeNull();
+    expect(historyForm.querySelector(`#${id}`)).toBeNull();
+  }
+  expect(historyForm.querySelector("#hist-export-format")).not.toBeNull();
+  expect(historyForm.querySelector("#hist-export-button")).not.toBeNull();
+  expect(historyForm.querySelector("#history-table")).toBeNull();
+  expect(historyForm.querySelector("#history-pagination")).toBeNull();
+  expect(historyForm.querySelector("#hist-export-liners")).toBeNull();
+  expect(historyForm.querySelector("#hist-export-csv")).toBeNull();
+  expect(history.querySelector("#history-pagination").compareDocumentPosition(historyForm)
+    & window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(browse.tagName).toBe("DETAILS");
   expect(browse.open).toBe(true);
   expect(browse.querySelector(":scope > summary > h2")).not.toBeNull();

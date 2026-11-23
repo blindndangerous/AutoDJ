@@ -8,8 +8,8 @@ for procedures.
 
 ## Station outputs
 
-Choose **Browser**, **Server sound card** or **Radio stream** in **Settings,
-Stations**. Every station supports these choices. Startup flags
+Choose **Browser**, **Server sound card** or **Radio stream** in **Settings**,
+**Station > General**. Every station supports these choices. Startup flags
 `serve --server-audio` and `serve --stream` override the default station for that run.
 
 | Capability | Browser | Server sound card | Radio stream |
