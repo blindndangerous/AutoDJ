@@ -7,7 +7,7 @@
 // Keys: with focus on the wall (a cart button, Stop carts or another
 // button in it), 1 to 9, 0, minus and equals play carts 1 to 12, and
 // Page Up and Page Down change the page.  Text fields and dropdowns keep
-// their keys, and the Enable keyboard shortcuts checkbox turns these keys
+// their keys, and the Keyboard shortcuts dialog button turns these keys
 // off with the other single-key shortcuts (modules/hotkeys.js, which
 // reserves them for the wall).
 //

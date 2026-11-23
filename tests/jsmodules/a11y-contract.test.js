@@ -4028,10 +4028,27 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(css).toMatch(/header \{ flex-wrap: wrap; \}/);
   });
 
+  it("places shortcut enablement in the help dialog without a state paragraph", () => {
+    installDocument();
+    const dialog = document.getElementById("hotkey-help-modal");
+    const toggle = document.getElementById("hotkey-shortcuts-toggle");
+    const error = document.getElementById("hotkey-shortcuts-error");
+    expect(document.getElementById("spanel-display").querySelector("#hotkeys-enabled")).toBeNull();
+    expect(toggle.closest("dialog")).toBe(dialog);
+    expect(toggle.tagName).toBe("BUTTON");
+    expect(toggle.type).toBe("button");
+    expect(toggle.textContent).toBe("Disable keyboard shortcuts");
+    expect(dialog.querySelector("#hotkey-help-state")).toBeNull();
+    expect(error.hidden).toBe(true);
+    expect(error.getAttribute("role")).toBe("status");
+    expect(error.getAttribute("aria-live")).toBe("polite");
+    expect(error.getAttribute("aria-atomic")).toBe("true");
+  });
+
   it("lists the station keys in the shortcut help", () => {
     installDocument();
     const help = document.getElementById("hotkey-help-modal").textContent.replace(/\s+/g, " ");
-    expect(help).toMatch(/\bc ?Move to the station switcher\. Only when the server has several stations\./);
+    expect(help).toMatch(/\bc ?Open the station picker\./);
     expect(help).toMatch(/Shift\+C ?Speak which station this page controls/);
   });
 });
