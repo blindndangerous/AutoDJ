@@ -22,6 +22,10 @@ SCHEMA_VERSION = 1
 DEFINITION_NAME = "library.json"
 _LIBRARY_ID = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\Z", re.ASCII)
 _STAGING_PREFIX = ".library-create-"
+_RESTORE_STAGE = re.compile(
+    r"\.[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\.restore-[0-9a-f]{32}\Z",
+    re.ASCII,
+)
 
 
 class LibraryRegistryError(ValueError):
@@ -190,7 +194,11 @@ class LibraryRegistry:
         except OSError as exc:
             raise LibraryRegistryError(f"cannot list library registry {self.root}: {exc}") from exc
         for child in children:
-            if child.name == ".library-registry.lock" or child.name.startswith(_STAGING_PREFIX):
+            if (
+                child.name == ".library-registry.lock"
+                or child.name.startswith(_STAGING_PREFIX)
+                or _RESTORE_STAGE.fullmatch(child.name)
+            ):
                 continue
             if self._is_link(child):
                 raise LibraryRegistryError(f"refusing linked library registry entry: {child}")

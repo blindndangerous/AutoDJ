@@ -168,6 +168,20 @@ def test_list_ignores_only_private_staging_directories(tmp_path: Path) -> None:
     assert [item.id for item in registry.list()] == ["main"]
 
 
+def test_list_ignores_restore_stage_but_rejects_other_dot_directories(tmp_path: Path) -> None:
+    root = tmp_path / "libraries"
+    registry = LibraryRegistry(root)
+    registry.ensure_main()
+    restore_stage = root / f".main.restore-{'a' * 32}"
+    restore_stage.mkdir()
+
+    assert [item.id for item in registry.list()] == ["main"]
+
+    (root / ".unknown-transaction").mkdir()
+    with pytest.raises(LibraryRegistryError, match="library ID must be"):
+        registry.list()
+
+
 def test_list_refuses_linked_root_library_directory_and_definition(tmp_path: Path) -> None:
     root = tmp_path / "libraries"
     target = tmp_path / "target"
