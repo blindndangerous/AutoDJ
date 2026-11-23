@@ -642,39 +642,53 @@
        ============================================================ -->
   <section data-view="history" id="panel-history" role="tabpanel" hidden aria-labelledby="tab-history">
     <h2>History</h2>
-    <!-- History does not refresh by itself while the tab is open; this
-         reloads the page being shown. -->
-    <button type="button" id="hist-refresh">Refresh history</button>
-    <!-- Off by default and remembered in this browser (#601).  A change
-         is said once through #sr-status; focus stays on the checkbox. -->
-    <div class="settings-check">
-      <input type="checkbox" id="hist-show-liners">
-      <label for="hist-show-liners">Show nonmusic items</label>
+    <div class="history-filters">
+      <label for="hist-date-preset">Date range</label>
+      <select id="hist-date-preset">
+        <option value="last-day">Last day</option>
+        <option value="last-7-days">Last 7 days</option>
+        <option value="last-30-days">Last 30 days</option>
+        <option value="last-90-days">Last 90 days</option>
+        <option value="custom">Custom date range</option>
+      </select>
+      <div id="hist-custom-date-range" hidden>
+        <label for="hist-export-from">From</label>
+        <input type="date" id="hist-export-from" aria-required="true">
+        <label for="hist-export-to">To</label>
+        <input type="date" id="hist-export-to" aria-required="true">
+      </div>
+      <label for="hist-filter-q">Text filter</label>
+      <input type="search" id="hist-filter-q" autocomplete="off" maxlength="500">
+      <div class="settings-check">
+        <input type="checkbox" id="hist-show-liners">
+        <label for="hist-show-liners">Show nonmusic items</label>
+      </div>
+      <button type="button" id="hist-refresh">Refresh history</button>
     </div>
     <p id="history-empty">No playback history yet.</p>
     <div class="data-table-scroll">
-    <table id="history-table" role="grid" hidden>
-      <caption class="visually-hidden">History</caption>
-      <!-- Proportional widths keep columns stable when the table scrolls
-           inside its wrapper on narrow screens. -->
-      <colgroup>
-        <col class="hist-time">
-        <col class="hist-title">
-        <col class="hist-artist">
-        <col class="hist-duration">
-        <col class="hist-info">
-      </colgroup>
-      <thead>
-        <tr>
-          <th scope="col">Played</th>
-          <th scope="col">Title</th>
-          <th scope="col">Artist</th>
-          <th scope="col">Duration</th>
-          <th scope="col">Track info</th>
-        </tr>
-      </thead>
-      <tbody id="history-tbody"></tbody>
-    </table>
+      <table id="history-table" role="grid" hidden>
+        <caption class="visually-hidden">History</caption>
+        <!-- Proportional widths keep columns stable when the table scrolls
+             inside its wrapper on narrow screens. -->
+        <colgroup>
+          <col class="hist-time">
+          <col class="hist-title">
+          <col class="hist-artist">
+          <col class="hist-duration">
+          <col class="hist-info">
+        </colgroup>
+        <thead>
+          <tr>
+            <th scope="col">Played</th>
+            <th scope="col">Title</th>
+            <th scope="col">Artist</th>
+            <th scope="col">Duration</th>
+            <th scope="col">Track info</th>
+          </tr>
+        </thead>
+        <tbody id="history-tbody"></tbody>
+      </table>
     </div>
     <nav id="history-pagination" aria-label="History pagination" hidden>
       <button type="button" id="hist-prev">Previous page</button>
@@ -684,44 +698,27 @@
       <input type="number" id="hist-goto" min="1" value="1">
       <button type="button" id="hist-go">Go to page</button>
     </nav>
-    <!-- Saves the whole play log between two dates, not just the 500 rows
-         above.  The outcome is announced through #sr-status. -->
-    <details class="card" id="history-export-card">
-      <summary><h3 id="hist-export-heading">Export play log</h3></summary>
-    <form id="hist-export" aria-labelledby="hist-export-heading" novalidate>
-      <p id="hist-export-help">Saves the tracks played between two dates.</p>
-      <label for="hist-export-from">From</label>
-      <input type="date" id="hist-export-from" aria-required="true" aria-describedby="hist-export-help">
-      <label for="hist-export-to">To</label>
-      <input type="date" id="hist-export-to" aria-required="true">
-      <label for="hist-export-format">Format</label>
-      <select id="hist-export-format">
-        <option value="csv">Play log (CSV)</option>
-        <option value="soundexchange">SoundExchange Report of Use</option>
-      </select>
-      <!-- For the CSV only, so hidden while SoundExchange is chosen: a
-           Report of Use lists songs only. -->
-      <div id="hist-export-csv">
-        <div class="settings-check">
-          <input type="checkbox" id="hist-export-liners" aria-describedby="hist-export-liners-help">
-          <label for="hist-export-liners">Include liners</label>
-        </div>
-        <span class="setting-desc" id="hist-export-liners-help">Adds matched intros, time checks and other non-music items to the play log.</span>
-      </div>
-      <fieldset id="hist-export-soundexchange" hidden>
-        <legend>SoundExchange report</legend>
-        <label for="hist-export-service">Name of service</label>
-        <input type="text" id="hist-export-service" maxlength="200" autocomplete="organization">
-        <label for="hist-export-category">Transmission category</label>
-        <select id="hist-export-category">
-          <option value="A">A: webcast that is not a broadcast simulcast</option>
-          <option value="B">B: simulcast of a broadcast station</option>
-          <option value="C">C: news, talk, sports or business programming</option>
+    <form id="hist-export" aria-label="Export play log" novalidate>
+      <div class="history-export-options">
+        <label for="hist-export-format">Format</label>
+        <select id="hist-export-format">
+          <option value="csv">Play log (CSV)</option>
+          <option value="soundexchange">SoundExchange Report of Use</option>
         </select>
-      </fieldset>
-      <button type="submit" id="hist-export-button">Export</button>
+        <fieldset id="hist-export-soundexchange" hidden>
+          <legend>SoundExchange report</legend>
+          <label for="hist-export-service">Name of service</label>
+          <input type="text" id="hist-export-service" maxlength="200" autocomplete="organization">
+          <label for="hist-export-category">Transmission category</label>
+          <select id="hist-export-category">
+            <option value="A">A: webcast that is not a broadcast simulcast</option>
+            <option value="B">B: simulcast of a broadcast station</option>
+            <option value="C">C: news, talk, sports or business programming</option>
+          </select>
+        </fieldset>
+        <button type="submit" id="hist-export-button">Export</button>
+      </div>
     </form>
-    </details>
   </section>
 
   <!-- ============================================================

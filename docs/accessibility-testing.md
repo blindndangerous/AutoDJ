@@ -910,8 +910,12 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   If refresh removes a booking while cancellation fails, retain the visible error
   and associate it with the focused Voice tracks heading.
 - EQ: each band's slider, its spoken value, and resetting the bands.
-- History: the History tab's table read with table navigation, its pagination, the empty state,
-  and a new song added to the top of page 1 without the reading position moving or anything said.
+- History: one set of date, text and nonmusic filters updates the table and export.
+  Check delayed result counts, rapid changes with slow replies, retained filter focus,
+  table navigation, pagination and the empty state. Export includes all matches,
+  not just the current page. A refused date range or SoundExchange/nonmusic choice
+  keeps the filters and exposes its error. Passive updates do not move the reading
+  position or speak. Returning from Track info preserves the filters and page.
 - Why this track: reading the reasons for the current pick, and confirming they are not read
   again on their own when the track changes.
 - Now Playing, Hour preview: the table read with table navigation (column headers Starts, What,

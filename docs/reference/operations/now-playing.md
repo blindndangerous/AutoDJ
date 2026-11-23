@@ -44,7 +44,7 @@ Each station has its own feed, with its own name, songs, listeners and stream pa
 
 `current_track` and `next_track` are `null` when unavailable. History is newest first and
 lists songs, liner files played as tracks and live DJ sets; it never lists the liners, ads and
-other items History shows with **Show liners**, or a show's speech segments.
+other items History shows with **Show nonmusic items**, or a show's speech segments.
 The feed never contains local file paths, internal IDs, credentials or pairing state.
 `next_track` is `null` unless `[nowplaying] show_next = true` or **Show the next song
 publicly** is ticked in Settings, Stream. It is off by default because some webcasting
