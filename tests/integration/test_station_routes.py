@@ -69,6 +69,7 @@ SHARED = frozenset(
         "/api/server/certificates/{certificate_id}/activate",
         "/api/server/certificates/{certificate_id}/download",
         "/api/libraries",
+        "/api/libraries/{source_id}/duplicate",
         "/api/libraries/{library_id}",
         "/api/libraries/{library_id}/check",
         "/api/library/tracks",
