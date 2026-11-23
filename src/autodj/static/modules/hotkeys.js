@@ -1,4 +1,5 @@
 import { failureText } from "./api-client.js";
+import { announceStatus, clearAnnouncedStatus } from "./live-region.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
 // Hotkeys module — global keydown listener wiring.
 //
@@ -14,9 +15,8 @@ import { registerSettingsGroup } from "./settings-drafts.js";
 // second keydown for the same key is suppressed regardless of the
 // repeat flag.
 //
-// Scope: every shortcut works from any tab except Space and the Up and
-// Down arrows, which scroll the page on the other tabs and so only act
-// while Now Playing is showing.  Text fields and dropdowns keep all keys.
+// Every shortcut works from any tab. Text fields and dropdowns keep their
+// typing keys.
 //
 // Key conflicts: lowercase k = pause, lowercase t = open current Track info,
 // uppercase K (Shift+K) = speak key.
@@ -24,7 +24,7 @@ import { registerSettingsGroup } from "./settings-drafts.js";
 // Shift+L speaks the current lyric line; lowercase l is unused.
 // s/S and m/M are shuffle and mute in either case, so no status key may
 // use them.  Status keys: T N R B K L E V Q J H U.
-// Stations (#70): lowercase c moves focus to the station switcher while
+// Stations (#70): lowercase c opens the station switcher while
 // the server has several stations; Shift+C says which station the page
 // controls.  With several stations the status keys about the station
 // (T N R B K L E Q) start with its name.
@@ -82,29 +82,6 @@ import {
 } from "./dom-helpers.js";
 import { defaultStorage, readStorage } from "./safe-storage.js";
 
-const NATIVE_KEYBOARD_SELECTOR = [
-  "button",
-  "input",
-  "select",
-  "textarea",
-  "a[href]",
-  "summary",
-  '[contenteditable="true"]',
-  '[role="button"]',
-  '[role="slider"]',
-  '[role="spinbutton"]',
-  '[role="combobox"]',
-  '[role="listbox"]',
-  '[role="menuitem"]',
-  '[role="option"]',
-  '[role="switch"]',
-  '[role="tab"]',
-  // Table cells: arrows move between rows and cells (table-navigation.js).
-  "td",
-  '[role="gridcell"]',
-  '[role="rowheader"]',
-].join(",");
-
 const TYPEAHEAD_SELECTOR = [
   "select",
   '[role="combobox"]',
@@ -115,12 +92,10 @@ const TYPEAHEAD_SELECTOR = [
 ].join(",");
 
 // Whether the element a key was pressed on keeps that key.  Select-like
-// widgets own printable-key typeahead as well as their navigation keys;
-// other controls own Space and the arrows.
-function _shouldDeferToNativeKeyboard(el, key) {
+// widgets own printable-key typeahead.
+function _shouldDeferToNativeKeyboard(el) {
   if (!el) return false;
-  if (el.closest(TYPEAHEAD_SELECTOR)) return true;
-  return (key === " " || key.startsWith("Arrow")) && el.closest(NATIVE_KEYBOARD_SELECTOR) !== null;
+  return el.closest(TYPEAHEAD_SELECTOR) !== null;
 }
 
 // "Artist, Title": a comma, because NVDA with punctuation off says
@@ -166,6 +141,7 @@ export function toggleShortcutsModal() {
   const modal = document.getElementById("hotkey-help-modal");
   if (!modal) return false;
   _wireShortcutsModal(modal);
+  updateShortcutHints();
   if (modal.open) {
     _closeShortcuts(modal);
   } else {
@@ -194,6 +170,28 @@ export function shortcutsEnabled() {
   return _shortcutsOn;
 }
 
+const shortcutNames = new WeakMap();
+
+export function updateShortcutHints() {
+  const enabled = shortcutsEnabled();
+  for (const button of document.querySelectorAll("button[data-shortcut]")) {
+    const key = enabled ? button.dataset.shortcut : "";
+    if (key) {
+      if (button.dataset.shortcutVisible !== key) button.dataset.shortcutVisible = key;
+    } else if (button.hasAttribute("data-shortcut-visible")) {
+      button.removeAttribute("data-shortcut-visible");
+    }
+    if (button.hasAttribute("aria-label")) {
+      if (!shortcutNames.has(button)) shortcutNames.set(button, button.getAttribute("aria-label"));
+      const name = shortcutNames.get(button) + (key ? ` (${key})` : "");
+      if (button.getAttribute("aria-label") !== name) button.setAttribute("aria-label", name);
+    }
+  }
+  const toggle = document.getElementById("hotkey-shortcuts-toggle");
+  const label = enabled ? "Disable keyboard shortcuts" : "Enable keyboard shortcuts";
+  if (toggle && toggle.textContent !== label) toggle.textContent = label;
+}
+
 function writePreference(key, value) {
   const storage = defaultStorage();
   if (!storage) throw new Error("Browser storage is unavailable.");
@@ -203,15 +201,33 @@ function writePreference(key, value) {
 function setShortcutsEnabled(on) {
   writePreference(SHORTCUTS_STORAGE_KEY, on ? "on" : "off");
   _shortcutsOn = Boolean(on);
+  updateShortcutHints();
 }
 
-function installShortcutToggle(checkbox) {
-  if (!checkbox) return;
-  checkbox.checked = shortcutsEnabled();
-  registerSettingsGroup({ panel: checkbox.closest('[id^="spanel-"]'), controls: [checkbox],
-    read: () => ({ enabled: checkbox.checked }), write: (value) => { checkbox.checked = value.enabled; },
-    persisted: () => ({ enabled: readStorage(defaultStorage(), SHORTCUTS_STORAGE_KEY) !== "off" }),
-    commit: (value) => setShortcutsEnabled(value.enabled),
+function installShortcutControl() {
+  const button = document.getElementById("hotkey-shortcuts-toggle");
+  if (!button || button.dataset.shortcutToggleInstalled) return;
+  button.dataset.shortcutToggleInstalled = "true";
+  button.addEventListener("click", () => {
+    const error = document.getElementById("hotkey-shortcuts-error");
+    if (error) {
+      clearAnnouncedStatus(error);
+      error.hidden = true;
+    }
+    try {
+      setShortcutsEnabled(!shortcutsEnabled());
+    } catch (errorValue) {
+      // Keep the previous in-memory preference, hints and button label when
+      // the browser refuses the write; tell the user in the open dialog.
+      updateShortcutHints();
+      const message = failureText("save keyboard shortcuts", errorValue, "Browser storage is unavailable.");
+      if (error) {
+        error.hidden = false;
+        announceStatus(error, message, { force: true, mirror: false, tone: "error" });
+      } else {
+        srSpeak(message);
+      }
+    }
   });
 }
 
@@ -244,20 +260,19 @@ const _pressed = new Set();
 
 export function installHotkeys({
   btnSkip, btnShuffle, btnMute, btnTrackInfo, volSlider,
-  seekDelta, getBpm,
+  getBpm,
   getTrack, getNextTrack, getRemaining, getLyricLine,
   getPosition, getQueue, getJobStatus,
   // Shift+H: says how the hour lands, from the hour preview (#126).
   speakHour = null,
   isEnabled = () => true,
-  shortcutToggle = null,
   // Stations (#70): focus the switcher (false when there is none), the
   // sentence Shift+C says, and the "Night Owl Radio: " the status keys
   // start with while there are several stations.
   focusStationSwitcher = () => false,
   getStationText = null,
   stepStation = () => false,
-  // What Space / k do: Play / Pause, or in stream mode start or stop
+  // What k does: Play / Pause, or in stream mode start or stop
   // listening on this page.
   togglePlay,
   // Landmarks (#60): the brackets move by one (+1 or -1) and say it;
@@ -267,7 +282,8 @@ export function installHotkeys({
   // Settings, Keyboard: "Bracket keys seek the song on air".
   bracketSeekToggle = null,
 }) {
-  installShortcutToggle(shortcutToggle);
+  updateShortcutHints();
+  installShortcutControl();
   installBracketSeekToggle(bracketSeekToggle);
   const active = () => isEnabled() && shortcutsEnabled();
   // The latch only has to stop a held key from firing again before it
@@ -306,21 +322,16 @@ export function installHotkeys({
       return;
     }
 
-    if (_shouldDeferToNativeKeyboard(el, e.key || "")) return;
+    if (_shouldDeferToNativeKeyboard(el)) return;
     if (_pressed.has(e.key)) return;
     _pressed.add(e.key);
     if (!active()) return;
 
-    const nowPanel = document.getElementById("panel-now");
-    const nowVisible = nowPanel && !nowPanel.hasAttribute("hidden");
     const key = e.key;
     const altGraphBracket = (key === "[" || key === "]")
       && typeof e.getModifierState === "function" && e.getModifierState("AltGraph")
       && e.code !== "BracketLeft" && e.code !== "BracketRight";
     if (e.metaKey || ((e.ctrlKey || e.altKey) && !altGraphBracket)) return;
-
-    const scrollsPage = key === " " || key === "ArrowUp" || key === "ArrowDown";
-    if (!nowVisible && scrollsPage) return;
 
     let bumpVol = 0;
     // Shift+[ and Shift+] switch to the previous and next station, by the
@@ -331,7 +342,6 @@ export function installHotkeys({
       return;
     }
     switch (key) {
-      case " ":
       case "k":
         togglePlay();
         break;
@@ -355,26 +365,12 @@ export function installHotkeys({
       case "M":
         if (btnMute) btnMute.click();
         break;
-      case "ArrowUp":
+      case ".":
         bumpVol = +5;
         break;
-      case "ArrowDown":
+      case ",":
         bumpVol = -5;
         break;
-      case ",": {
-        if (!seekDelta) return;
-        const bpm = getBpm ? getBpm() : 0;
-        const measureSec = bpm > 0 ? (4 * 60) / bpm : 5.0;
-        seekDelta(-measureSec);
-        break;
-      }
-      case ".": {
-        if (!seekDelta) return;
-        const bpm2 = getBpm ? getBpm() : 0;
-        const measureSec2 = bpm2 > 0 ? (4 * 60) / bpm2 : 5.0;
-        seekDelta(measureSec2);
-        break;
-      }
       // Status keys -- Shift+letter, speak via aria live region.
       case "T": {
         const t = getTrack && getTrack();

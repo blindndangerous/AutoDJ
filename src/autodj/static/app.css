@@ -2282,3 +2282,8 @@ dialog h1 { font-size: 1.5em; }
 .secure-steps { display: flex; gap: 1.5rem; padding-inline-start: 1.5rem; }
 .secure-steps [aria-current="step"] { font-weight: 700; }
 #secure-connections small { display: block; }
+
+/* Keep key hints separate from button state markup. */
+button[data-shortcut-visible]::after {
+  content: " (" attr(data-shortcut-visible) ")";
+}

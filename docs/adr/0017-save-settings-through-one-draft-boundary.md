@@ -61,12 +61,13 @@ behavior, screen-reader speech or filesystem power-loss durability.
 
 | ID | Constraint | Method | Evidence |
 | --- | --- | --- | --- |
-| `ADR-0017-01` | Editing stages a draft; Save submits only changed fields. | automated | `tests/jsmodules/settings-drafts.test.js::does not write on edit and submits changed fields once on Save` |
+| `ADR-0017-01` | Editing controls in Settings stages a draft; Save submits only changed fields. | automated | `tests/jsmodules/settings-drafts.test.js::does not write on edit and submits changed fields once on Save` |
 | `ADR-0017-02` | A save reply cannot erase edits made while the request is pending. | automated | `tests/jsmodules/settings-drafts.test.js::blocks duplicate submits and preserves edits made during a request` |
 | `ADR-0017-03` | Stopped stations validate batches and reject stale revisions. | automated | `tests/integration/test_stopped_station_editing.py::test_stopped_station_settings_batch_validates_and_detects_conflicts` |
 | `ADR-0017-04` | Real keyboard, screen-reader and device behavior requires platform evidence. | manual | Exercise Save, Discard, invalid fields, conflicts and station switching per docs/accessibility-testing.md; report engine/device and speech limitations. |
 | `ADR-0017-05` | Standalone settings saves release stale busy state without allowing an old reply to unlock or overwrite a newer save. | automated | `tests/jsmodules/standalone-settings.test.js::clears an old save immediately without letting its reply unlock or overwrite a newer save` |
 | `ADR-0017-07` | Library settings keep drafts bound to the selected library; switching offers Save, Discard or Cancel, and stale loads cannot overwrite the new selection. | automated | `tests/jsmodules/library-settings.test.js::cancels a library change when the settings draft should be kept`; `tests/jsmodules/library-settings.test.js::discards a library draft before loading the next library`; `tests/jsmodules/library-settings.test.js::saves the old library draft before loading the next library`; `tests/jsmodules/library-settings.test.js::discards a stale library response and keeps the new library values` |
+| `ADR-0017-06` | The shortcut dialog saves its browser preference immediately; failed writes preserve the choice, label and focus. | automated | `tests/jsmodules/hotkeys.test.js::updates key hints and stable names when the dialog button changes the saved preference`; `tests/jsmodules/hotkeys.test.js::keeps the current label and preference when browser storage rejects the activation` |
 
 ## Amendment 2026-10-31: shared browser-page helpers
 
@@ -83,6 +84,7 @@ presses instead (#331). A refused setting is placed on its control by the
 setting's name: a part's `fields` map, a control named for the setting, or the
 only control of a one-setting part. A refusal no control matches is said in
 the panel status with "Unsaved changes remain."
+
 ## Amendment 2026-11-15: library settings drafts
 
 [Issues #801](https://github.com/blindndangerous/AutoDJ/issues/801)
@@ -98,3 +100,12 @@ The station's Music library choice belongs to its General draft. A running
 station keeps its active library until restart, as described in
 [ADR 23](0023-named-libraries-with-station-bindings.md). This amendment does not
 change this record's Proposed status.
+
+## Amendment 2026-11-15: keyboard shortcut switch
+
+The operator requested the shortcut switch in the Keyboard shortcuts dialog
+([#795](https://github.com/blindndangerous/AutoDJ/issues/795)). Its Enable/Disable
+button saves the browser preference immediately and keeps focus. A failed write
+leaves the saved choice and button label unchanged and reports the error in the
+dialog. This is a specific exception to staged preference edits; bracket seeking
+and announcement preferences remain in Settings.

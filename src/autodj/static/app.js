@@ -616,6 +616,12 @@ function setButtonContent(button, html) {
 // The visible words are the name itself, so a speech-input user who says
 // what they see ("click Play or Pause") reaches it (WCAG 2.5.3).
 function renderPlayPause(playing) {
+  const listen = _lastStreamMode && !localOwner.owned;
+  const pauseKey = listen ? "" : "k";
+  const listenKey = listen ? "k" : "";
+  if (btnPause.dataset.shortcut !== pauseKey) btnPause.dataset.shortcut = pauseKey;
+  if (btnListen.dataset.shortcut !== listenKey) btnListen.dataset.shortcut = listenKey;
+  updateShortcutHints();
   setButtonContent(btnPause,
     `<span aria-hidden="true">${playing ? "\u23F8" : "\u25B6"} Play or Pause</span>`);
 }
@@ -2780,6 +2786,7 @@ import {
   bracketSeekEnabled,
   installHotkeys,
   toggleShortcutsModal,
+  updateShortcutHints,
 } from "./modules/hotkeys.js";
 import { installLandmarks } from "./modules/landmarks.js";
 
@@ -2808,7 +2815,6 @@ installHotkeys({
   btnMute,
   btnTrackInfo: document.getElementById("edit-current-points"),
   volSlider,
-  seekDelta:   _seekByDelta,
   // The deck caches exist only in browser mode; elsewhere the server's
   // track carries the tempo and the (stream-delayed) clock.
   getBpm:      () => (_lastBrowserPlayback
@@ -2833,11 +2839,10 @@ installHotkeys({
   jumpLandmark: (direction) => landmarkControls.jump(direction),
   getUpcomingLandmark: () => landmarkControls.upcoming(),
   isEnabled: authenticatedInteractionEnabled,
-  shortcutToggle: document.getElementById("hotkeys-enabled"),
   bracketSeekToggle: document.getElementById("hotkeys-bracket-seek"),
   focusStationSwitcher: () => {
     if (!severalStations()) return false;
-    stationSwitcher?.focus();
+    stationSwitcher?.open();
     return true;
   },
   getStationText: () => (severalStations()
@@ -2852,7 +2857,7 @@ installHotkeys({
     return true;
   },
   // In stream mode Play / Pause stops the station for every listener, so
-  // Space and k toggle Listen here (this page only) instead.
+  // k toggles Listen here (this page only) instead.
   togglePlay:  () => {
     if (localOwner.owned || !_lastStreamMode) {
       btnPause.click();
@@ -2875,7 +2880,7 @@ import {
 // The OS media keys (and the system's media overlay) can reach any tab,
 // including one where the listener never played, so they never start
 // sound on a page that has not opted in with its own Play or Listen here.
-// In stream mode they start and stop Listen here, like Space.  Pause only
+// In stream mode they start and stop Listen here.  Pause only
 // ever stops: a page that is not playing ignores it, where the server's
 // pause toggle would have unpaused the station.  Each returns true when
 // the key is dealt with here, ignored included; false lets the server's

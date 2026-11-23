@@ -691,6 +691,7 @@ describe("app startup integration", () => {
       bracketSeekEnabled: vi.fn(() => false),
       installHotkeys,
       toggleShortcutsModal: vi.fn(),
+      updateShortcutHints: vi.fn(),
     }));
     vi.doMock("../../src/autodj/static/modules/media-session.js", () => ({
       installMediaActionHandlers,
@@ -809,6 +810,7 @@ describe("app startup integration", () => {
       bracketSeekEnabled: vi.fn(() => false),
       installHotkeys: vi.fn(),
       toggleShortcutsModal: vi.fn(),
+      updateShortcutHints: vi.fn(),
     }));
     vi.doMock("../../src/autodj/static/modules/media-session.js", () => ({
       installMediaActionHandlers: vi.fn(),

@@ -24,6 +24,9 @@ The bar identifies station, browser and shared scope. Theme changes preview
 immediately; Discard restores the saved theme. Record forms and operational
 controls keep their own actions. Transport, volume, mute, private audition and
 test buttons remain immediate actions.
+The **Enable keyboard shortcuts** or **Disable keyboard shortcuts** button in
+the **Keyboard shortcuts** dialog saves immediately for this browser; shortcuts
+are enabled by default.
 
 Leaving Settings, changing its tab or switching stations with edits offers Save,
 Discard or Stay. Failed saves keep the edits. If another browser changed server
@@ -524,7 +527,6 @@ These values are saved for the selected station or browser rather than in the co
 - **Time format** in **Settings**, **Global**, **Server**: 24 hour or 12 hour; default 24 hour. Changes time display for every station.
 - **Theme** in **Settings**, **Global**, **Browser preferences**: System, Light, or Dark; default System. Changes this browser's colors.
 - **Announce track changes**: On every tab, Only on Now Playing, or Off; default Only on Now Playing. Controls spoken song changes in this browser.
-- **Enable keyboard shortcuts**: on or off; default on. Lets keys control playback outside text fields.
 - **Bracket keys seek the song on air**: on or off; default off. Lets bracket shortcuts move the live song.
 - **Anchor to seed** in **Song picking**: on or off; default off. Keeps similarity near the session's first song.
 - **BPM range** in **Song picking**: optional minimum and maximum BPM; default blank. Restricts automatic picks.

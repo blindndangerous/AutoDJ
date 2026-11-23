@@ -2849,6 +2849,82 @@ async function stationCreateProblems(page) {
   return problems;
 }
 
+async function shortcutHintProblems(browser) {
+  const problems = [];
+  async function pageForMode(streamMode) {
+    const context = await browser.newContext({ reducedMotion: "reduce" });
+    const page = await context.newPage();
+    page.routeWebSocket(/\/(ws|api\/stations\/[^/]+\/ws)$/, (socket) => {
+      const server = socket.connectToServer();
+      server.onMessage((message) => {
+        let forwarded = message;
+        try {
+          const state = JSON.parse(message);
+          if (state && typeof state === "object" && !Array.isArray(state) && !state.type) {
+            state.stream_mode = streamMode;
+            forwarded = JSON.stringify(state);
+          }
+        } catch { /* pass non-JSON frames through */ }
+        socket.send(forwarded);
+      });
+      socket.onMessage((message) => server.send(message));
+    });
+    await page.goto(BASE, { waitUntil: "networkidle" });
+    return { context, page };
+  }
+
+  const local = await pageForMode(false);
+  try {
+    const pause = local.page.locator("#btn-pause");
+    await expect(pause).toHaveAttribute("data-shortcut-visible", "k");
+    await expect(pause).toHaveAccessibleName("Play or Pause (k)");
+    const visibleHint = await pause.evaluate((button) => window.getComputedStyle(button, "::after").content);
+    if (!visibleHint.includes("k")) problems.push(`local Play hint is not visible: ${visibleHint}`);
+    const helpButton = local.page.locator("#btn-shortcuts");
+    await expect(helpButton).toHaveAttribute("data-shortcut-visible", "?");
+    if (!(await helpButton.evaluate((button) => window.getComputedStyle(button, "::after").content)).includes("?")) {
+      problems.push("Keyboard shortcuts key hint is not visible while enabled");
+    }
+    const dialog = local.page.locator("#hotkey-help-modal");
+    const toggle = local.page.locator("#hotkey-shortcuts-toggle");
+    await expect(helpButton).toBeVisible();
+    await expect(helpButton).toHaveAccessibleName("Keyboard shortcuts (?)");
+    await helpButton.click();
+    await expect(dialog).toBeVisible();
+    await expect(toggle).toHaveAccessibleName("Disable keyboard shortcuts");
+    await toggle.focus();
+    await toggle.press("Enter");
+    await expect(toggle).toHaveAccessibleName("Enable keyboard shortcuts");
+    await expect(toggle).toBeFocused();
+    await expect(pause).not.toHaveAttribute("data-shortcut-visible", /.+/);
+    await expect(pause).toHaveAccessibleName("Play or Pause");
+    const hiddenHint = await pause.evaluate((button) => window.getComputedStyle(button, "::after").content);
+    if (hiddenHint !== "none") problems.push(`off setting left a visible Play hint: ${hiddenHint}`);
+    await expect(helpButton).not.toHaveAttribute("data-shortcut-visible", /.+/);
+    await local.page.locator("#btn-shortcuts-close").click();
+    await expect(dialog).toBeHidden();
+    await expect(helpButton).toBeVisible();
+    await helpButton.click();
+    await expect(dialog).toBeVisible();
+    await expect(toggle).toHaveAccessibleName("Enable keyboard shortcuts");
+  } finally {
+    await local.context.close();
+  }
+
+  const stream = await pageForMode(true);
+  try {
+    await expect(stream.page.locator("#btn-listen")).toBeVisible();
+    await expect(stream.page.locator("#btn-listen")).toHaveAttribute("data-shortcut-visible", "k");
+    await expect(stream.page.locator("#btn-pause")).not.toHaveAttribute("data-shortcut-visible", /.+/);
+    const listenHint = await stream.page.locator("#btn-listen")
+      .evaluate((button) => window.getComputedStyle(button, "::after").content);
+    if (!listenHint.includes("k")) problems.push(`stream Listen here hint is not visible: ${listenHint}`);
+  } finally {
+    await stream.context.close();
+  }
+  return problems;
+}
+
 async function chooseAnnouncer(page, announcer = true) {
   await page.locator("#token-scope").selectOption(announcer ? "announcer" : "analysis-worker");
   await page.locator("#token-station-row").waitFor({ state: announcer ? "visible" : "hidden" });
@@ -3706,6 +3782,8 @@ export async function audit(name, launcher) {
     if (ads.length) out.behaviour.ads = ads;
     const speech = await speechStudioProblems(page);
     if (speech.length) out.behaviour.speechStudio = speech;
+    const shortcuts = await shortcutHintProblems(browser);
+    if (shortcuts.length) out.behaviour.shortcutHints = shortcuts;
     const stationCreate = await stationCreateProblems(page);
     if (stationCreate.length) out.behaviour.stationCreate = stationCreate;
     const historyFilters = await historyFilterProblems(page);
