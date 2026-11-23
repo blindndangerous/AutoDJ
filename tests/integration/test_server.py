@@ -2463,6 +2463,7 @@ class TestServeFunction:
             name="Night Owl Radio",
             autostart=False,
             defined_in="config",
+            archived=False,
             cfg=SimpleNamespace(
                 index=layout_index(tmp_path / "main"),
                 playback=SimpleNamespace(stereotool_preset="included"),

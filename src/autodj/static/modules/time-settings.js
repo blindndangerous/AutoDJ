@@ -17,6 +17,7 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
   const zonePanel = zone.closest('[role="tabpanel"]') || stationsPanel;
   const formatPanel = format.closest('[role="tabpanel"]') || stationsPanel;
   const output = doc.getElementById("station-output");
+  const stationDisplayName = doc.getElementById("stream-station-name");
   const monitor = doc.getElementById("station-monitor");
   const cap = doc.getElementById("station-upload-cap");
   // Optional, so a page without the field still saves the other options.
@@ -88,6 +89,12 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
       ...(logLabel ? { log_label: logLabel.value.trim() } : {}) }),
     write: showOptions,
   }) : null;
+  if (stationDisplayName) registerSettingsGroup({
+    panel: stationsPanel, group: "stream", controls: [stationDisplayName],
+    fields: { station_name: stationDisplayName },
+    read: () => ({ station_name: stationDisplayName.value }),
+    write: (value) => { if (value.station_name != null) stationDisplayName.value = value.station_name; },
+  });
 
   async function loadPanel(panel) {
     if (panel === zonePanel || panel === formatPanel) {

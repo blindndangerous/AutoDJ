@@ -217,6 +217,7 @@ class LibraryManager:
         self._analysis_model_commit = CachedModelCommit(lambda: (cfg.model, cfg.index))
         self.sim = sim
         self._lock = threading.RLock()
+        self._ledger_management_lock = threading.RLock()
         self._refresh_lock = threading.Lock()
         self._scan_lock = threading.Lock()
         self._cleanup_active = False
@@ -632,12 +633,13 @@ class LibraryManager:
 
     def add_ledger(self, station: str) -> StationLedger:
         """Keep another station's plays; :meth:`tick` writes them with the rest."""
-        store = self._station_store(station)
-        ledger = StationLedger(store, self.entry_for_path, self.kind_for_path)
-        ledger.loaded(ledger.store.last_played())
-        with self._lock:
-            self._station_ids.add(station)
-            self._ledgers.append(ledger)
+        with self._ledger_management_lock:
+            store = self._station_store(station)
+            ledger = StationLedger(store, self.entry_for_path, self.kind_for_path)
+            ledger.loaded(ledger.store.last_played())
+            with self._lock:
+                self._station_ids.add(station)
+                self._ledgers.append(ledger)
         return ledger
 
     def _station_store(self, station: str) -> StationStore:
@@ -674,10 +676,26 @@ class LibraryManager:
 
     def flush_ledgers(self) -> None:
         """Write every station's buffered plays; the tick does it every two seconds."""
-        with self._lock:
-            ledgers = list(self._ledgers)
-        for ledger in ledgers:
+        with self._ledger_management_lock:
+            with self._lock:
+                ledgers = list(self._ledgers)
+            for ledger in ledgers:
+                ledger.flush()
+
+    def drop_station_ledger(self, station: str) -> None:
+        """Flush and close one stopped station database before its directory is removed."""
+        if station == DEFAULT_SLUG:
+            raise ValueError("the default station ledger cannot be removed")
+        with self._ledger_management_lock:
+            with self._lock:
+                ledger = next((item for item in self._ledgers if item.station == station), None)
+            if ledger is None:
+                return
             ledger.flush()
+            with self._lock:
+                self._ledgers = [item for item in self._ledgers if item is not ledger]
+                self._station_ids.discard(station)
+            ledger.store.close()
 
     def auto_rescan_minutes(self) -> int:
         return self._auto_rescan_minutes

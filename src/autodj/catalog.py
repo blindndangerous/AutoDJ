@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -1008,6 +1009,34 @@ class LibraryCatalog:
             cur = self._db().execute("DELETE FROM catalog_sources WHERE id=?", (source_id,))
             self._db().commit()
             return cur.rowcount > 0
+
+    def remove_station_lifecycle_state(self, station: str, liner_root: str | Path) -> None:
+        """Remove only one deleted station's ledger rows and its exact owned liner source."""
+        if (
+            not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?", station)
+            or station == DEFAULT_STATION
+        ):
+            raise ValueError("invalid station ID")
+        source_path = _path(liner_root)
+        with self._lock:
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                source = db.execute(
+                    "SELECT id FROM catalog_sources WHERE kind='liner' AND path=?", (source_path,)
+                ).fetchone()
+                if source is not None:
+                    db.execute("DELETE FROM catalog_sources WHERE id=?", (source["id"],))
+                db.execute("DELETE FROM station_plays WHERE station=?", (station,))
+                db.execute("DELETE FROM play_history WHERE station=?", (station,))
+                db.execute(
+                    "DELETE FROM catalog_settings WHERE key=?",
+                    (f"sources_seeded:{station}",),
+                )
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
 
     def remove_entries(
         self, paths: list[str], *, expected_versions: dict[str, int] | None = None

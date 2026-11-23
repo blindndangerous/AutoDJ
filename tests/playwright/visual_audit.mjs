@@ -1709,6 +1709,9 @@ const STAND_IN_STATION = {
   nowplaying_path: "/api/stations/audit-stand-in/nowplaying", stream_path: null, m3u_path: null,
 };
 const stationPages = new WeakMap();
+const ARCHIVED_STAND_IN = {
+  ...STAND_IN_STATION, slug: "audit-archived", name: "Archived Audit Station", archived: true,
+};
 
 async function standInForStations(page) {
   if (stationPages.has(page)) return;
@@ -1720,8 +1723,8 @@ async function standInForStations(page) {
     const response = await route.fetch();
     const body = await response.json().catch(() => null);
     seen.real = Array.isArray(body?.stations) ? body.stations : [];
-    if (seen.real.length >= 2) return route.fulfill({ response });
-    return route.fulfill({ response, json: { stations: [...seen.real, STAND_IN_STATION] } });
+    const stations = seen.real.length >= 2 ? seen.real : [...seen.real, STAND_IN_STATION];
+    return route.fulfill({ response, json: { stations: [...stations, ARCHIVED_STAND_IN] } });
   });
 }
 
@@ -1745,6 +1748,25 @@ async function openStationCreateError(page, visit) {
   await page.locator("#station-create-submit").click();
   await page.locator("#station-create-error").waitFor({ state: "visible" });
   await visit("settings/stations/station-create/refused");
+}
+
+async function openStationDeleteDialog(page, visit) {
+  const row = page.locator('#stations-list [data-station="audit-archived"]');
+  const opener = row.getByRole("button", { name: "Delete permanently: Archived Audit Station", exact: true });
+  await opener.click();
+  const dialog = page.locator("#station-delete-dialog");
+  await dialog.waitFor({ state: "visible" });
+  if (await dialog.getByRole("checkbox", { name: "Delete voice recordings" }).isChecked()) {
+    throw new Error("Station deletion selected voice recordings by default");
+  }
+  await dialog.getByRole("button", { name: "Confirm permanent deletion" }).click();
+  await dialog.locator('input[type="text"][aria-invalid="true"]').waitFor();
+  await visit("settings/station-management/delete");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  if (!await opener.evaluate((button) => button === document.activeElement || button.closest("td") === document.activeElement)) {
+    throw new Error("Cancel station deletion did not restore its row focus");
+  }
 }
 
 function realStations(page) {
@@ -1986,7 +2008,10 @@ async function eachTarget(page, measure) {
         }
         if (id === "stab-schedule") await openScheduleWaitError(page, visit);
         if (id === "stab-announcements") await openPackDatesError(page, visit);
-        if (id === "stab-station-management") await openStationCreateError(page, visit);
+        if (id === "stab-station-management") {
+          await openStationCreateError(page, visit);
+          await openStationDeleteDialog(page, visit);
+        }
         if (id === "stab-stream") await openLiveDjError(page, visit);
         if (id === "stab-workers") await openWorkerStates(page, visit);
         if (id === "stab-updates") await openRestartConfirm(page, visit);
@@ -2370,6 +2395,7 @@ async function footerLinkProblems(page) {
 }
 
 function startOf(target) {
+  if (target === "settings/station-management/delete") return '#station-delete-dialog input[type="text"]';
   const [view, sub] = target.split("/");
   // Only Settings targets name a subtab; "track-info/tags" is a state.
   const owner = {

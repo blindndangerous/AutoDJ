@@ -1936,6 +1936,13 @@
     </fieldset>
     <fieldset>
       <legend>Station display</legend>
+      <div class="settings-row">
+        <label for="stream-station-name">Station display name</label>
+        <input type="text" id="stream-station-name" maxlength="100" autocomplete="off">
+      </div>
+      <span class="setting-desc" id="stream-station-name-desc">
+        The name players such as Sonos and VLC show for this station. A clockwheel or show can set another name while it is on the air.
+      </span>
       <div class="settings-check">
         <input type="checkbox" id="pb-show-lyrics">
         <label for="pb-show-lyrics">Show lyrics</label>
@@ -2010,14 +2017,6 @@
       <div id="stream-relays" hidden>
         <ul class="stream-detail" id="stream-relays-list" aria-label="Relays to other servers"></ul>
       </div>
-      <div class="settings-row">
-        <label for="stream-station-name">Station name</label>
-        <input type="text" id="stream-station-name" maxlength="100" autocomplete="off"
-              >
-      </div>
-      <span class="setting-desc" id="stream-station-name-desc">
-        The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.  A clockwheel or show can set another name while it is on the air.
-      </span>
       <div class="settings-row"><label for="stream-station-genre">Genre</label><input id="stream-station-genre" maxlength="255" autocomplete="off"></div>
       <div class="settings-row"><label for="stream-station-description">Description</label><input id="stream-station-description" maxlength="255" autocomplete="off"></div>
       <div class="settings-row"><label for="stream-station-url">Website URL</label><input id="stream-station-url" type="url" maxlength="2048" autocomplete="url"></div>
@@ -2687,6 +2686,7 @@
             <th scope="col">Listeners</th>
             <th scope="col">Start with the server</th>
             <th scope="col">Start or stop</th>
+            <th scope="col">Archive and delete</th>
           </tr>
         </thead>
         <tbody id="stations-list"></tbody>

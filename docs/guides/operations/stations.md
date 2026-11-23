@@ -59,8 +59,26 @@ webhooks, and its own Stereo Tool licence key) never go in `station.json`. They 
 station sections and `[stations.<slug>]` tables from `config.toml` and `config.local.toml`, and writes
 the canonical station files. The
 legacy sections remain in the TOML file but normal loading ignores them; remove them after
-migration to avoid confusion. A later edit to legacy TOML is not applied. To remove a web-created
-station, stop AutoDJ and move its station folder away. There is no delete button yet.
+migration to avoid confusion. A later edit to legacy TOML is not applied.
+
+## Archive, restore and permanently delete a station
+
+Use the station management table to archive a station that should no longer appear in the
+station switcher. AutoDJ stops it first and refuses to archive it if it cannot confirm a full
+stop. Archiving preserves its settings and saved autostart choice; an archived station does not
+start automatically and cannot be started manually.
+
+Restore makes the station available in the switcher again, but does not start it. Its saved
+autostart choice applies at a later server start.
+
+Only archived stations can be permanently deleted, and the default station is protected.
+Choose **Delete permanently**, then type `DELETE` in the dialog and confirm. Cancel or Escape
+closes the dialog without deleting the station. By default, station-owned spoken audio is moved to
+`<index_dir>/retained-station-audio/` with a recovery manifest before the station folder is
+removed. The checkbox to delete those recordings is off by default. Deletion removes the
+station's settings, history and other state; it does not delete shared music or configured
+external recording and time-check folders. Whole-installation backups include retained station
+audio. The Doctor reports retained audio and any deletion recovery that still needs attention.
 
 ## The station switcher
 
