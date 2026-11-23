@@ -228,7 +228,7 @@ export function installLibraries({ document: doc = document, request = requestJs
       const targetCell = collection.target(target?.id || idInput.value);
       const focus = targetCell || addButton;
       focusAfterDialog(focus);
-      say(target ? `Renamed ${target.name} to ${name}.` : `Created ${name}.`);
+      if (!target) say(`Created ${name}.`);
     } catch (errorValue) {
       if (!current() || !isAuthenticatedRequestCurrent(epoch)) return;
       const message = errorValue.status === 409 ? errorValue.message : failureText(target ? `rename ${target.name}` : "create library", errorValue);
