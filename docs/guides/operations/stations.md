@@ -71,8 +71,9 @@ start automatically and cannot be started manually.
 Restore makes the station available in the switcher again, but does not start it. Its saved
 autostart choice applies at a later server start.
 
-Only archived stations can be permanently deleted, and the default station is protected. The
-delete action requires typing `DELETE`. By default, station-owned spoken audio is moved to
+Only archived stations can be permanently deleted, and the default station is protected.
+Choose **Delete permanently**, then type `DELETE` in the dialog and confirm. Cancel or Escape
+closes the dialog without deleting the station. By default, station-owned spoken audio is moved to
 `<index_dir>/retained-station-audio/` with a recovery manifest before the station folder is
 removed. The checkbox to delete those recordings is off by default. Deletion removes the
 station's settings, history and other state; it does not delete shared music or configured
