@@ -101,6 +101,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0006-07` | Station history keeps audio aired over or between the songs, and a show's standalone speech segments, with its kind in the existing `play_history.kind` column, with no schema change; existing station databases read as before. The repeat rules, pending repeat rows, the default play-log export and SoundExchange reports count songs and live sets only, and audio mixed over a song never shortens its reported duration, while a standalone speech segment ends it as the next song would. Inserted rows have their own room, so the songs-only History view keeps its 500 rows live and after a restart. | automated | `tests/unit/test_history_inserts.py::test_repeat_rules_count_songs_only`; `tests/unit/test_history_inserts.py::test_the_play_log_leaves_inserted_items_out_and_keeps_song_lengths`; `tests/unit/test_history_inserts.py::test_a_database_written_before_inserted_items_keeps_working`; `tests/unit/test_history_inserts.py::test_pending_rows_for_the_repeat_rules_leave_inserted_items_out`; `tests/unit/test_history_inserts.py::test_the_export_counts_songs_unless_asked_for_everything`; `tests/unit/test_history_inserts.py::test_a_show_speech_segment_is_speech_not_a_song`; `tests/unit/test_history_inserts.py::test_inserted_items_never_push_songs_out_of_history`; `tests/unit/test_history_inserts.py::test_a_standalone_speech_segment_ends_the_song_before_it` |
 | `ADR-0006-08` | Inserted audio is recorded as it actually airs on a station's playout, from in-memory buffers that touch no disk on the mix-bus thread; it never changes last-played times. The mix bus says when a liner, cart or time check starts: at once, at its cue, or when a live DJ hands back; one it drops is never recorded. Scheduler snapshots used for forecasts never record. | automated | `tests/unit/test_history_inserts.py::test_the_bridge_records_an_inserted_item_without_disturbing_song_history`; `tests/unit/test_history_inserts.py::test_the_player_reports_each_handoff_item_once_as_it_airs`; `tests/unit/test_history_inserts.py::test_a_scheduler_snapshot_never_reports`; `tests/unit/test_history_inserts.py::test_a_liner_held_for_a_live_dj_is_recorded_when_it_airs`; `tests/unit/test_history_inserts.py::test_the_bus_says_when_a_cued_liner_really_starts`; `tests/unit/test_live.py::test_a_liner_due_under_a_dj_plays_once_after_and_a_time_check_never` |
 | `ADR-0006-09` | Serve checks library compatibility read-only before startup writes, locks or station construction. Doctor uses the same check: legacy data offers migration; a newer manifest or catalog schema requires a compatible AutoDJ version. | automated | `tests/unit/test_serve_refusal.py::test_library_refusal_is_read_only_and_matches_doctor`; `tests/unit/test_serve_refusal.py::test_catalog_refusal_never_writes_sqlite_sidecars`; `tests/unit/test_serve_refusal.py::test_large_checkpointed_catalog_is_inspected_without_copying`; `tests/unit/test_serve_refusal.py::test_cli_passes_successful_library_preflight_to_server_and_manager` |
+| `ADR-0006-10` | Opt-in filtered History applies the same date, AND-text and nonmusic selection to display and export; display reads only the selected station's rows and pending overlay without reporting tags, ads come from the canonical ad log once, and pending/interrupted plays preserve export duration boundaries. Calls without the new filter keep legacy behavior. | automated | `tests/unit/test_history_filters.py::test_filtered_history_reads_full_station_range_and_applies_and_search`; `tests/unit/test_history_filters.py::test_filtered_history_songs_only_excludes_live_and_liner_tracks`; `tests/unit/test_history_filters.py::test_filtered_history_is_station_local`; `tests/unit/test_history_filters.py::test_pending_play_duration_uses_next_durable_boundary_outside_range`; `tests/unit/test_history_filters.py::test_unflushed_interruption_does_not_cut_previous_exported_play`; `tests/integration/test_history_liners.py::test_filtered_history_pages_full_store_and_pending_rows_without_tag_reads`; `tests/integration/test_history_liners.py::test_filtered_export_matches_pending_and_interrupted_history_rows`; `tests/integration/test_history_liners.py::test_filtered_history_and_export_use_canonical_ads_once`; `tests/unit/test_library.py::test_browse_and_search_answer_from_memory` |
 
 ## Clarification, 2026-10-22: analysis follows file identity
 
@@ -231,3 +232,27 @@ libraries and a saved library choice per station.
 ownership extension, migration and verification. Station history remains
 station-owned; the earlier single-library description is retained as history.
 This amendment does not change this record's acceptance status.
+
+## Amendment 2026-11-15: shared History filters (#792)
+
+[Issue #792](https://github.com/blindndangerous/AutoDJ/issues/792) gives History
+one set of dates, text and nonmusic filters for its table and export. The table
+pages through the selected date range, including plays outside the recent
+500-row window. Export includes every match, not just the current page.
+
+Filtered reads use the selected station's stored history and pending plays.
+They do not read reporting tags from audio files. CSV export still reads the
+reporting fields it needs. The text filter matches every word against the
+historical title, artist and album, ignoring case. Dates keep the existing
+server-time-zone interpretation.
+
+With the shared nonmusic filter off, both views contain songs only. With it on,
+CSV and the table include the other aired items. Ad records come from the ad
+play log once, without repeating the matching station-history entry.
+SoundExchange still contains songs only; a conflicting nonmusic selection is
+refused rather than silently ignored.
+
+The existing recent-history and export API behavior remains available to callers
+that do not opt into the shared filters. There is no database migration, change
+to history retention or change to station ownership. This extends the proposed
+record without changing its status.

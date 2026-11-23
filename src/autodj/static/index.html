@@ -103,7 +103,7 @@
     <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
     <button type="button" role="tab" id="tab-voice"    data-view="voice"    aria-selected="false" tabindex="-1">Voice tracks</button>
     <button type="button" role="tab" id="tab-ads"      data-view="ads"      aria-selected="false" tabindex="-1">Ads</button>
-    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1" aria-describedby="shared-context">Library tools</button>
+    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1">Library tools</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
   </div>
   <button type="button" id="collapse-all-cards">Collapse all cards</button>
@@ -269,13 +269,13 @@
         <p id="local-programme-status">Automation</p>
       </div>
       <!-- Browser talkover (#48), shown while the station can go live.
-           Hold to talk; a quick press latches it on until the next press.
            A fixed name: aria-pressed says whether this page is talking.
-           The help, the note (busy, unavailable) and the error are plain
-           text, linked by live-talk.js only while they have words. -->
+           The time limit and sign-in warning stay readable without being
+           repeated on focus; live-talk.js links current notes and errors. -->
       <div id="talk-desk" class="talk-desk" hidden>
-        <button type="button" id="btn-talk" aria-pressed="false" aria-describedby="talk-help">Talk</button>
-        <p id="talk-help" class="stream-detail">Press and hold to talk over the music, or press and hold Alt+M. 2 minutes max. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air.</p>
+        <button type="button" id="btn-talk" aria-pressed="false">Talk</button>
+        <p id="talk-help" class="stream-detail">Talk turns off by itself after 2 minutes.</p>
+        <p id="talk-sign-in-warning" class="stream-detail">Without server sign-in (pairing off), anyone who can open this page can talk on the air.</p>
         <!-- Shown while talk is latched on.  Plain text: the latch is said once. -->
         <p id="talk-latched" class="talk-latched" hidden></p>
         <p id="talk-note" class="stream-detail" hidden></p>
@@ -642,39 +642,53 @@
        ============================================================ -->
   <section data-view="history" id="panel-history" role="tabpanel" hidden aria-labelledby="tab-history">
     <h2>History</h2>
-    <!-- History does not refresh by itself while the tab is open; this
-         reloads the page being shown. -->
-    <button type="button" id="hist-refresh">Refresh history</button>
-    <!-- Off by default and remembered in this browser (#601).  A change
-         is said once through #sr-status; focus stays on the checkbox. -->
-    <div class="settings-check">
-      <input type="checkbox" id="hist-show-liners">
-      <label for="hist-show-liners">Show nonmusic items</label>
+    <div class="history-filters">
+      <label for="hist-date-preset">Date range</label>
+      <select id="hist-date-preset">
+        <option value="last-day">Last day</option>
+        <option value="last-7-days">Last 7 days</option>
+        <option value="last-30-days">Last 30 days</option>
+        <option value="last-90-days">Last 90 days</option>
+        <option value="custom">Custom date range</option>
+      </select>
+      <div id="hist-custom-date-range" hidden>
+        <label for="hist-export-from">From</label>
+        <input type="date" id="hist-export-from" aria-required="true">
+        <label for="hist-export-to">To</label>
+        <input type="date" id="hist-export-to" aria-required="true">
+      </div>
+      <label for="hist-filter-q">Text filter</label>
+      <input type="search" id="hist-filter-q" autocomplete="off" maxlength="500">
+      <div class="settings-check">
+        <input type="checkbox" id="hist-show-liners">
+        <label for="hist-show-liners">Show nonmusic items</label>
+      </div>
+      <button type="button" id="hist-refresh">Refresh history</button>
     </div>
     <p id="history-empty">No playback history yet.</p>
     <div class="data-table-scroll">
-    <table id="history-table" role="grid" hidden>
-      <caption class="visually-hidden">History</caption>
-      <!-- Proportional widths keep columns stable when the table scrolls
-           inside its wrapper on narrow screens. -->
-      <colgroup>
-        <col class="hist-time">
-        <col class="hist-title">
-        <col class="hist-artist">
-        <col class="hist-duration">
-        <col class="hist-info">
-      </colgroup>
-      <thead>
-        <tr>
-          <th scope="col">Played</th>
-          <th scope="col">Title</th>
-          <th scope="col">Artist</th>
-          <th scope="col">Duration</th>
-          <th scope="col">Track info</th>
-        </tr>
-      </thead>
-      <tbody id="history-tbody"></tbody>
-    </table>
+      <table id="history-table" role="grid" hidden>
+        <caption class="visually-hidden">History</caption>
+        <!-- Proportional widths keep columns stable when the table scrolls
+             inside its wrapper on narrow screens. -->
+        <colgroup>
+          <col class="hist-time">
+          <col class="hist-title">
+          <col class="hist-artist">
+          <col class="hist-duration">
+          <col class="hist-info">
+        </colgroup>
+        <thead>
+          <tr>
+            <th scope="col">Played</th>
+            <th scope="col">Title</th>
+            <th scope="col">Artist</th>
+            <th scope="col">Duration</th>
+            <th scope="col">Track info</th>
+          </tr>
+        </thead>
+        <tbody id="history-tbody"></tbody>
+      </table>
     </div>
     <nav id="history-pagination" aria-label="History pagination" hidden>
       <button type="button" id="hist-prev">Previous page</button>
@@ -684,44 +698,27 @@
       <input type="number" id="hist-goto" min="1" value="1">
       <button type="button" id="hist-go">Go to page</button>
     </nav>
-    <!-- Saves the whole play log between two dates, not just the 500 rows
-         above.  The outcome is announced through #sr-status. -->
-    <details class="card" id="history-export-card">
-      <summary><h3 id="hist-export-heading">Export play log</h3></summary>
-    <form id="hist-export" aria-labelledby="hist-export-heading" novalidate>
-      <p id="hist-export-help">Saves the tracks played between two dates.</p>
-      <label for="hist-export-from">From</label>
-      <input type="date" id="hist-export-from" aria-required="true" aria-describedby="hist-export-help">
-      <label for="hist-export-to">To</label>
-      <input type="date" id="hist-export-to" aria-required="true">
-      <label for="hist-export-format">Format</label>
-      <select id="hist-export-format">
-        <option value="csv">Play log (CSV)</option>
-        <option value="soundexchange">SoundExchange Report of Use</option>
-      </select>
-      <!-- For the CSV only, so hidden while SoundExchange is chosen: a
-           Report of Use lists songs only. -->
-      <div id="hist-export-csv">
-        <div class="settings-check">
-          <input type="checkbox" id="hist-export-liners" aria-describedby="hist-export-liners-help">
-          <label for="hist-export-liners">Include liners</label>
-        </div>
-        <span class="setting-desc" id="hist-export-liners-help">Adds matched intros, time checks and other non-music items to the play log.</span>
-      </div>
-      <fieldset id="hist-export-soundexchange" hidden>
-        <legend>SoundExchange report</legend>
-        <label for="hist-export-service">Name of service</label>
-        <input type="text" id="hist-export-service" maxlength="200" autocomplete="organization">
-        <label for="hist-export-category">Transmission category</label>
-        <select id="hist-export-category">
-          <option value="A">A: webcast that is not a broadcast simulcast</option>
-          <option value="B">B: simulcast of a broadcast station</option>
-          <option value="C">C: news, talk, sports or business programming</option>
+    <form id="hist-export" aria-label="Export play log" novalidate>
+      <div class="history-export-options">
+        <label for="hist-export-format">Format</label>
+        <select id="hist-export-format">
+          <option value="csv">Play log (CSV)</option>
+          <option value="soundexchange">SoundExchange Report of Use</option>
         </select>
-      </fieldset>
-      <button type="submit" id="hist-export-button">Export</button>
+        <fieldset id="hist-export-soundexchange" hidden>
+          <legend>SoundExchange report</legend>
+          <label for="hist-export-service">Name of service</label>
+          <input type="text" id="hist-export-service" maxlength="200" autocomplete="organization">
+          <label for="hist-export-category">Transmission category</label>
+          <select id="hist-export-category">
+            <option value="A">A: webcast that is not a broadcast simulcast</option>
+            <option value="B">B: simulcast of a broadcast station</option>
+            <option value="C">C: news, talk, sports or business programming</option>
+          </select>
+        </fieldset>
+        <button type="submit" id="hist-export-button">Export</button>
+      </div>
     </form>
-    </details>
   </section>
 
   <!-- ============================================================
@@ -806,7 +803,7 @@
         <input type="number" id="pb-fade-in" min="0" max="20" step="0.5" value="3" data-help="pb-fade-in-desc">
       </div>
       <span class="setting-desc" id="pb-fade-in-desc">
-        How long the incoming track takes to reach full volume.  0 <span aria-hidden="true">=</span><span class="visually-hidden">means</span> incoming track starts at full volume immediately when the crossfade begins (no ramp-up).  Capped at crossfade length.
+        0 starts at full volume; capped at the crossfade length.
       </span>
       <div class="settings-check">
         <input type="checkbox" id="pb-eq-duck" data-help="pb-eq-duck-desc">
@@ -1765,18 +1762,17 @@
     <span class="setting-desc" id="tc-recorded-folder-desc">
       Where the clips named 00_00 to 23_59 are, such as 15_05.wav for 3:05 in the afternoon. A folder chosen here is not a voice pack.
     </span>
-    <!-- Each clip has its own help; the shared note on where the choices
-         come from is read by browsing, not on each focus. -->
+    <!-- Clip help stays available when browsing, without repeating on focus. -->
     <div class="settings-row">
       <label for="tc-intro">Intro clip</label>
-      <select id="tc-intro" aria-describedby="tc-intro-desc">
+      <select id="tc-intro">
         <option value="">None</option>
       </select>
     </div>
     <span class="setting-desc" id="tc-intro-desc">Played before every time check.</span>
     <div class="settings-row">
       <label for="tc-outro">Outro clip</label>
-      <select id="tc-outro" aria-describedby="tc-outro-desc">
+      <select id="tc-outro">
         <option value="">None</option>
       </select>
     </div>
@@ -1805,7 +1801,7 @@
     <span class="setting-desc" id="tc-test-voice-desc">
       Choose one voice pack to hear it even when it is not ticked. When it has no files for this minute, the next source plays; when the server plays it, the result names the source.
     </span>
-    <button type="button" id="tc-test" aria-describedby="tc-test-desc">Play a time check now</button>
+    <button type="button" id="tc-test">Play a time check now</button>
     <span class="setting-desc" id="tc-test-desc">
       Plays the current time on the stream or server audio when the server mixes the music; otherwise in this browser.
     </span>
@@ -1837,7 +1833,7 @@
         <label for="brk-enabled">Accept announcer uploads</label>
       </div>
       <span class="setting-desc" id="brk-enabled-help">
-        Off, new announcer uploads are refused. Voice tracks can still be booked with server playback and saved-point transitions. Turning breaks off drops waiting announcer uploads; manual voice tracks and ad spots stay booked. Off by default.
+        Turning breaks off drops waiting announcer uploads.
       </span>
       <fieldset id="brk-placement">
         <legend>Where a DJ break goes</legend>
@@ -1845,31 +1841,28 @@
           For a DJ break that leaves its placement to the station.  News, weather and music news always play between the songs.
         </p>
         <div class="settings-check">
-          <input type="radio" name="brk-placement" id="brk-placement-auto" value="auto" checked aria-describedby="brk-placement-auto-help brk-placement-help">
+          <input type="radio" name="brk-placement" id="brk-placement-auto" value="auto" checked aria-describedby="brk-placement-auto-help">
           <label for="brk-placement-auto">Automatic</label>
         </div>
         <span class="setting-desc" id="brk-placement-auto-help">
           Talks up the next song when its intro is at least as long as the shortest intro below, and otherwise plays the break between the songs.
         </span>
         <div class="settings-check">
-          <input type="radio" name="brk-placement" id="brk-placement-talk-up" value="talk_up" aria-describedby="brk-placement-talk-up-help brk-placement-help">
+          <input type="radio" name="brk-placement" id="brk-placement-talk-up" value="talk_up" aria-describedby="brk-placement-talk-up-help">
           <label for="brk-placement-talk-up">Talk up the next song</label>
         </div>
         <span class="setting-desc" id="brk-placement-talk-up-help">
           Talks up any intro.  With no intro point the break still plays between the songs.
         </span>
         <div class="settings-check">
-          <input type="radio" name="brk-placement" id="brk-placement-standalone" value="standalone" aria-describedby="brk-placement-standalone-help brk-placement-help">
+          <input type="radio" name="brk-placement" id="brk-placement-standalone" value="standalone">
           <label for="brk-placement-standalone">Between the songs</label>
         </div>
-        <span class="setting-desc" id="brk-placement-standalone-help">
-          Always plays the break between the songs.
-        </span>
       </fieldset>
       <div class="settings-row tag-field">
         <label for="brk-min-intro">Shortest intro to talk up (seconds)</label>
         <input type="text" id="brk-min-intro" inputmode="decimal" autocomplete="off" spellcheck="false" aria-describedby="brk-min-intro-help">
-        <span class="setting-desc" id="brk-min-intro-help">From 0 to 60, 2 by default.  Automatic placement talks up an intro at least this long, from the song's Start to its Intro point.</span>
+        <span class="setting-desc" id="brk-min-intro-help">0 to 60 seconds; default 2.</span>
         <p id="brk-min-intro-error" class="field-error" hidden></p>
       </div>
       <div class="settings-row tag-field">
@@ -1911,10 +1904,10 @@
       <legend>Time for the selected station</legend>
       <div class="settings-row">
         <label for="time-zone">Time zone</label>
-        <select id="time-zone" aria-describedby="time-zone-help"></select>
+        <select id="time-zone"></select>
       </div>
       <span class="setting-desc" id="time-zone-help">
-        Changing it moves when scheduled events, ad breaks and clockwheel restarts happen, from the next time this station starts.
+        Takes effect when the station restarts.
       </span>
 
     </fieldset>
@@ -2517,11 +2510,11 @@
           </div>
           <div class="settings-row">
             <label for="schedule-window-start">Active from</label>
-            <input type="time" id="schedule-window-start" aria-describedby="schedule-window-desc">
+            <input type="time" id="schedule-window-start">
           </div>
           <div class="settings-row">
             <label for="schedule-window-end">Active until</label>
-            <input type="time" id="schedule-window-end" aria-describedby="schedule-window-desc">
+            <input type="time" id="schedule-window-end">
           </div>
           <span class="setting-desc" id="schedule-window-desc">
             Optional.  Leave both empty to run all day.  The window may cross midnight, such as 22:00 until 02:00.
@@ -2531,7 +2524,7 @@
           <legend>Days</legend>
           <!-- Named by the fieldset's aria-describedby only while shown (scheduler-panel.js). -->
           <p class="setting-desc" id="schedule-days-desc" data-repeat="interval">
-            Optional.  Leave every day unchecked to run every day.  A window that crosses midnight belongs to the day it starts.
+            Optional.  No days selected means every day.  A window that crosses midnight belongs to the day it starts.
           </p>
           <div class="settings-check"><input type="checkbox" id="schedule-day-0" value="0"><label for="schedule-day-0">Monday</label></div>
           <div class="settings-check"><input type="checkbox" id="schedule-day-1" value="1"><label for="schedule-day-1">Tuesday</label></div>
@@ -2545,15 +2538,15 @@
           <legend>Date range</legend>
           <div class="settings-row">
             <label for="schedule-start-date">Start date</label>
-            <input type="date" id="schedule-start-date" aria-describedby="schedule-dates-repeat-desc">
+            <input type="date" id="schedule-start-date">
           </div>
           <div class="settings-row">
             <label for="schedule-end-date">End date</label>
-            <input type="date" id="schedule-end-date" aria-describedby="schedule-dates-repeat-desc">
+            <input type="date" id="schedule-end-date">
           </div>
           <div class="settings-row">
             <label for="schedule-dates-repeat">Repeat dates</label>
-            <select id="schedule-dates-repeat" aria-describedby="schedule-dates-repeat-desc">
+            <select id="schedule-dates-repeat">
               <option value="none">Don't repeat</option>
               <option value="yearly">Every year</option>
             </select>
@@ -2563,7 +2556,7 @@
         </fieldset>
         <div class="settings-row">
           <label for="schedule-timing">Timing</label>
-          <select id="schedule-timing" aria-describedby="schedule-timing-desc">
+          <select id="schedule-timing">
             <option value="soft">Soft</option>
             <option value="hard">Hard</option>
           </select>
@@ -2571,7 +2564,6 @@
         <span class="setting-desc" id="schedule-timing-desc">
           Soft waits for the current song to end. Hard runs on time and, except for stream events, fades the current song out, unless the song ends within Wait up to seconds.
         </span>
-        <p class="setting-desc">Hard starts the show at once. Soft waits for the next song change.</p>
         <div class="settings-row" data-show-when="schedule-timing=hard">
           <label for="schedule-wait">Wait up to seconds</label>
           <input type="number" id="schedule-wait" min="0" max="300" step="1" value="0"
@@ -3292,10 +3284,7 @@
     <h2 id="ads-heading">Ads</h2>
     <div id="ads-panel">
       <p id="ads-help">
-        Spots are the ads. An ad break plays some of them between two songs, at the minutes past
-        the hour you choose or from a Schedule event, and never cuts a song: it joins the next song
-        change it can, about a song later. Every spot that aired or was missed goes into the ad report.
-        Times are in the station time zone: <span id="ads-timezone"></span>.
+        Ad breaks play at a song change. Time zone: <span id="ads-timezone"></span>.
       </p>
       <!-- Why this station does not air ads, or a problem with ads.json: words on the page. -->
       <p id="ads-reason" class="ads-notice" hidden></p>
@@ -3314,11 +3303,11 @@
             <p id="ads-spot-error" class="field-error" hidden></p>
             <div class="settings-row" id="ads-spot-file-row">
               <label for="ads-spot-file">Audio file</label>
-              <input type="file" id="ads-spot-file" aria-describedby="ads-spot-file-desc"
+              <input type="file" id="ads-spot-file"
                      accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,audio/*">
             </div>
             <span class="setting-desc" id="ads-spot-file-desc">
-              MP3, WAV, OGG, M4A, FLAC or AAC. AutoDJ trims the silence before and after the sound.
+              MP3, WAV, OGG, M4A, FLAC or AAC. Silence is trimmed.
             </span>
             <div class="settings-row">
               <label for="ads-spot-title">Spot title</label>
@@ -3336,33 +3325,32 @@
             </div>
             <div class="settings-row">
               <label for="ads-spot-category">Competing category</label>
-              <input type="text" id="ads-spot-category" maxlength="100" autocomplete="off" aria-describedby="ads-spot-category-desc">
+              <input type="text" id="ads-spot-category" maxlength="100" autocomplete="off">
             </div>
             <span class="setting-desc" id="ads-spot-category-desc">
-              Optional, such as Car dealers. Spots with the same category compete: they never share a break
-              and keep the separation time apart, as spots from one advertiser do.
+              Same-category spots cannot share a break and follow the separation rule.
             </span>
             <div class="settings-row">
               <label for="ads-spot-start">First day</label>
-              <input type="date" id="ads-spot-start" aria-describedby="ads-spot-dates-desc">
+              <input type="date" id="ads-spot-start">
             </div>
             <div class="settings-row">
               <label for="ads-spot-end">Last day</label>
-              <input type="date" id="ads-spot-end" aria-describedby="ads-spot-dates-desc">
+              <input type="date" id="ads-spot-end">
             </div>
             <span class="setting-desc" id="ads-spot-dates-desc">
-              The flight: the spot airs only from its first day to its last day, both included. Leave either empty for no limit on that side.
+              Optional; both days included.
             </span>
             <div class="settings-row">
               <label for="ads-spot-day">Plays a day</label>
-              <input type="number" id="ads-spot-day" min="0" max="500" step="1" aria-describedby="ads-spot-limits-desc">
+              <input type="number" id="ads-spot-day" min="0" max="500" step="1">
             </div>
             <div class="settings-row">
               <label for="ads-spot-hour">Plays an hour</label>
-              <input type="number" id="ads-spot-hour" min="0" max="60" step="1" aria-describedby="ads-spot-limits-desc">
+              <input type="number" id="ads-spot-hour" min="0" max="60" step="1">
             </div>
             <span class="setting-desc" id="ads-spot-limits-desc">
-              The most times the spot airs in one day and in one clock hour. 0 is no limit.
+              0 means no limit.
             </span>
             <div class="settings-check">
               <input type="checkbox" id="ads-spot-enabled">
@@ -3390,25 +3378,25 @@
             </div>
             <div class="settings-row">
               <label for="ads-break-minutes">Minutes past the hour</label>
-              <input type="text" id="ads-break-minutes" inputmode="numeric" maxlength="60" autocomplete="off" aria-describedby="ads-break-minutes-desc">
+              <input type="text" id="ads-break-minutes" inputmode="numeric" maxlength="60" autocomplete="off">
             </div>
             <span class="setting-desc" id="ads-break-minutes-desc">
-              Numbers from 0 to 59, separated by commas, such as 15, 45. Leave empty to run the break only from a Schedule event or Run now.
+              0–59, separated by commas. Blank means Schedule or Run now only.
             </span>
             <div class="settings-row">
               <label for="ads-break-from">From hour</label>
-              <select id="ads-break-from" aria-describedby="ads-break-hours-desc"></select>
+              <select id="ads-break-from"></select>
             </div>
             <div class="settings-row">
               <label for="ads-break-until">Until hour</label>
-              <select id="ads-break-until" aria-describedby="ads-break-hours-desc"></select>
+              <select id="ads-break-until"></select>
             </div>
             <span class="setting-desc" id="ads-break-hours-desc">
-              The break runs at its minutes from the start of From hour to the start of Until hour.
+              Until hour is excluded.
             </span>
-            <fieldset id="ads-break-days" aria-describedby="ads-break-days-desc">
+            <fieldset id="ads-break-days">
               <legend>Days</legend>
-              <p class="setting-desc" id="ads-break-days-desc">Leave every day unchecked to run every day.</p>
+              <p class="setting-desc" id="ads-break-days-desc">No days selected means every day.</p>
               <div class="settings-check"><input type="checkbox" id="ads-break-day-0" value="0"><label for="ads-break-day-0">Monday</label></div>
               <div class="settings-check"><input type="checkbox" id="ads-break-day-1" value="1"><label for="ads-break-day-1">Tuesday</label></div>
               <div class="settings-check"><input type="checkbox" id="ads-break-day-2" value="2"><label for="ads-break-day-2">Wednesday</label></div>
@@ -3419,14 +3407,14 @@
             </fieldset>
             <div class="settings-row">
               <label for="ads-break-start">First day</label>
-              <input type="date" id="ads-break-start" aria-describedby="ads-break-dates-desc">
+              <input type="date" id="ads-break-start">
             </div>
             <div class="settings-row">
               <label for="ads-break-end">Last day</label>
-              <input type="date" id="ads-break-end" aria-describedby="ads-break-dates-desc">
+              <input type="date" id="ads-break-end">
             </div>
             <span class="setting-desc" id="ads-break-dates-desc">
-              Optional. The break runs by itself only from its first day to its last day, both included.
+              Optional; applies to scheduled runs. Both days included.
             </span>
             <div class="settings-row">
               <label for="ads-break-spots">Spots in the break</label>
@@ -3434,9 +3422,9 @@
             </div>
             <div class="settings-row">
               <label for="ads-break-seconds">Longest break in seconds</label>
-              <input type="number" id="ads-break-seconds" min="0" max="900" step="1" aria-describedby="ads-break-seconds-desc">
+              <input type="number" id="ads-break-seconds" min="0" max="900" step="1">
             </div>
-            <span class="setting-desc" id="ads-break-seconds-desc">0 is no limit. Otherwise from 10 to 900 seconds.</span>
+            <span class="setting-desc" id="ads-break-seconds-desc">10–900 seconds. 0 means no limit.</span>
             <div class="settings-check">
               <input type="checkbox" id="ads-break-enabled">
               <label for="ads-break-enabled">Runs</label>
@@ -3461,21 +3449,21 @@
           <p id="ads-rules-error" class="field-error" hidden></p>
           <div class="settings-row">
             <label for="ads-rules-separation">Separation in minutes</label>
-            <input type="number" id="ads-rules-separation" min="0" max="1440" step="1" aria-describedby="ads-rules-separation-desc">
+            <input type="number" id="ads-rules-separation" min="0" max="1440" step="1">
           </div>
           <span class="setting-desc" id="ads-rules-separation-desc">
-            Spots from one advertiser, or with one competing category, keep at least this far apart. 0 lets them follow each other in the next break.
+            Minimum gap between spots from the same advertiser or category. 0 allows consecutive breaks.
           </span>
           <div class="settings-row">
             <label for="ads-rules-late">Late after, in minutes</label>
-            <input type="number" id="ads-rules-late" min="1" max="240" step="1" aria-describedby="ads-rules-late-desc">
+            <input type="number" id="ads-rules-late" min="1" max="240" step="1">
           </div>
-          <span class="setting-desc" id="ads-rules-late-desc">A spot that airs more than this long after its break's time is reported as aired late.</span>
+          <span class="setting-desc" id="ads-rules-late-desc">Spots aired after this delay are marked late.</span>
           <div class="settings-row">
             <label for="ads-rules-missed">Missed after, in minutes</label>
-            <input type="number" id="ads-rules-missed" min="5" max="720" step="1" aria-describedby="ads-rules-missed-desc">
+            <input type="number" id="ads-rules-missed" min="5" max="720" step="1">
           </div>
-          <span class="setting-desc" id="ads-rules-missed-desc">A break that cannot air this long after its time is dropped and reported as missed.</span>
+          <span class="setting-desc" id="ads-rules-missed-desc">Overdue breaks are dropped and reported as missed.</span>
           <button type="submit" id="ads-rules-save">Save rules</button>
         </form>
       </details>
@@ -3554,14 +3542,13 @@
     <details class="card" id="library-tools-card">
       <summary><h2>Library tools</h2></summary>
 
-      <p>Songs are available to play before similarity analysis finishes.</p>
       <div class="settings-row">
         <label for="library-tools-library">Music library</label>
         <select id="library-tools-library"><option value="main">Main</option></select>
       </div>
 
       <section class="flow-form">
-        <h3 id="source-folders-heading">Music folders and Voice liner folders</h3>
+        <h3 id="source-folders-heading">Folders</h3>
         <p>Use a folder on the machine running AutoDJ.</p>
         <label for="source-folder-path">Folder path</label>
         <input id="source-folder-path" type="text" autocomplete="off">
@@ -3743,15 +3730,15 @@
             </div>
             <div class="settings-row">
               <label for="categories-not-before">Not before</label>
-              <input type="date" id="categories-not-before" aria-describedby="categories-dates-repeat-help">
+              <input type="date" id="categories-not-before">
             </div>
             <div class="settings-row">
               <label for="categories-not-after">Do not play after</label>
-              <input type="date" id="categories-not-after" aria-describedby="categories-dates-repeat-help">
+              <input type="date" id="categories-not-after">
             </div>
             <div class="settings-row">
               <label for="categories-dates-repeat">Repeat dates</label>
-              <select id="categories-dates-repeat" aria-describedby="categories-dates-repeat-help">
+              <select id="categories-dates-repeat">
                 <option value="none">Don't repeat</option>
                 <option value="weekly">Every week</option>
                 <option value="yearly">Every year</option>
@@ -3996,7 +3983,7 @@
               <select id="intro-rules-selection-mode"><option value="specific">Specific liners</option><option value="pattern">Match filenames</option></select>
             </div>
             <div id="intro-rules-specific-liners">
-              <p id="intro-rules-liners-empty">This station has no registered voice liners. Add a Voice liner folder under Music folders and Voice liner folders.</p>
+              <p id="intro-rules-liners-empty">This station has no registered voice liners. Add a Voice liner folder under Folders.</p>
               <div id="intro-rules-liners" class="intro-rule-liners"></div>
               <p id="intro-rules-clips-error" class="field-error" hidden></p>
               <div class="settings-row tag-field">
@@ -4294,7 +4281,7 @@
      while showModal() still made the rest of the page inert. -->
 <dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
   <h1 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h1>
-  <p>Space and the Up and Down Arrow keys work on the Now Playing tab only, because on other tabs they scroll the page. Every other shortcut works from any tab.</p>
+  <p>Space and Up/Down: Now Playing only.</p>
   <p>You can toggle keyboard shortcuts under Settings.</p>
   <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
     <dt><kbd>Space</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>k</kbd></dt><dd>Play or pause. In stream mode, start or stop listening on this page.</dd>
@@ -4329,7 +4316,7 @@
     <dt><kbd>Shift+[</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Shift+]</kbd></dt><dd>Switch to the previous or next station</dd>
   </dl>
   <p style="margin-top:1rem;color:var(--text-dim);font-size:0.9em">
-    NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first, or press NVDA+F2 and then the shortcut to pass that one key through.
+    NVDA: NVDA+Space switches focus mode; NVDA+F2 passes one key.
   </p>
   <div style="margin-top:1rem;text-align:right">
     <button id="btn-shortcuts-close" type="button">Close</button>

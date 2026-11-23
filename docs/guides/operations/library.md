@@ -30,8 +30,7 @@ counts from the end of the last startup, manual or automatic scan; if a scan or 
 the next tick tries again. **Queue & Search** uses one paginated list: choose Music or Voice liners,
 choose all folders or one folder, and optionally
 search by artist or title. Each result has Play now, Play next, Add to queue and Track info.
-One song plays next: a second Play next takes the place of the first, and the page names the song
-it replaced.
+Play next adds the song to the front of the queue. Songs already queued keep their order behind it.
 Manage liner files under **Settings > Voice liners**: use a liner's **Options** menu for **Play dates**, **Track info** and **Delete** (see
 [Liner and cart play dates](carts-and-liners.md#liner-and-cart-play-dates)). Track info's Return button puts focus
 back on the result that opened it. **Settings > Sound > Music duck (dB)** sets the music drop under overlays and

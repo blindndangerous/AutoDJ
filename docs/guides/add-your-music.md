@@ -19,7 +19,7 @@ A new installation starts with an empty library. Importing does not move your fi
 ## Add a music folder
 
 1. Open the **Library tools** tab.
-2. Under **Music folders and Voice liner folders**, type the folder's full path in **Folder
+2. Under **Folders**, type the folder's full path in **Folder
    path**, such as `D:\Music` or `/srv/music`.
    Or press **Browse…** beside it to choose a folder on the AutoDJ machine. In the dialog,
    press Enter on a folder to open it, use **Up one folder** to go back, and press **Select

@@ -807,6 +807,15 @@ class PlayerBridge(LibraryAccess):
                 for row in self._play_history
             ]
 
+    def history_rows(self) -> list[dict]:
+        """Copy the bounded live History buffers for read-only overlays."""
+        with self._history_lock:
+            rows = sorted(
+                (*self._play_history, *self._aired_history),
+                key=lambda row: row.get("_seq", 0),
+            )
+            return [dict(row) for row in rows]
+
     def history_page(
         self, page: int, per_page: int, *, liners: bool = False, anchor: str | None = None
     ) -> dict:
@@ -1870,10 +1879,13 @@ class PlayerBridge(LibraryAccess):
             if new_placement or not getattr(entry, "occurrence_id", None):
                 entry = proposed_occurrence(self.player, entry, "play_next")
             state = self.player._state
+            waiting = list(state.queue)
+            if not now and state.queued_next is not None:
+                waiting.insert(0, state.queued_next)
             decision = (
                 self._plan_live_queue_edit(
                     entry,
-                    list(state.queue),
+                    waiting,
                     voice_action=voice_action,
                     voice_revision=voice_revision,
                 )
@@ -1882,6 +1894,7 @@ class PlayerBridge(LibraryAccess):
             )
             self._capture_pre_queue_seed()
             state.queued_next = entry
+            state.queue[:] = waiting
             self._refresh_bus_queue()
             self._sync_next_for_prefetch()
             self._accept_live_queue_edit(decision)

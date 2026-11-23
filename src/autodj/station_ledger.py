@@ -198,6 +198,20 @@ class StationLedger:
             )
         return rows
 
+    def history_overlay(self) -> tuple[list[dict], set[str]]:
+        """Snapshot pending rows and interrupted IDs for read-only views."""
+        with self._lock:
+            rows = [dict(row) for row in self._pending_history.values()]
+            interrupted = set(self._interrupted_plays)
+        rows = [row for row in rows if row.get("event_id") not in interrupted]
+        for row in rows:
+            path = row.get("path") or ""
+            entry = self._entry_for_path(path) if self._entry_for_path else None
+            row.setdefault("album", entry.album if entry is not None else "")
+            if "track_kind" not in row and self._kind_for_path:
+                row["track_kind"] = self._kind_for_path(path)
+        return rows, interrupted
+
     def get_setting(self, name: str, default: Any = None) -> Any:
         """The station's setting *name*, including an update not yet written."""
         key = self.setting_key(name)

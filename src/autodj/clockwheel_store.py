@@ -240,7 +240,7 @@ def resolve_conditions(
             raise ValueError(
                 f"Step {number}: {source['path']} is registered without subfolders, so "
                 f"its subfolder {condition['folder']} is never scanned. Turn on Add "
-                "subfolders for it under Music folders and Voice liner folders"
+                "subfolders for it under Folders"
             )
         result.append(
             {
@@ -465,7 +465,7 @@ def locate_folder(folder: str, sources: Sequence[Mapping[str, Any]]) -> tuple[di
     if best is None:
         raise ValueError(
             f"The folder {folder} is not inside a registered library folder. Add it, or a "
-            "folder that holds it, under Music folders and Voice liner folders, then import again"
+            "folder that holds it, under Folders, then import again"
         )
     source, inside = best
     if inside and not source["recursive"]:

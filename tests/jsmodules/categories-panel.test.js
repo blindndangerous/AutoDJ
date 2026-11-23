@@ -417,7 +417,7 @@ describe("categories form", () => {
     const until = byId("categories-not-after");
     expect(document.activeElement).toBe(until);
     expect(until.getAttribute("aria-invalid")).toBe("true");
-    expect(until.getAttribute("aria-describedby")).toBe("categories-form-error categories-dates-repeat-help");
+    expect(until.getAttribute("aria-describedby")).toBe("categories-form-error");
     expect(byId("categories-form-error").textContent).toBe(
       "Do not play after must be on or after the Not before date.");
     until.value = "2026-12-31";
@@ -427,7 +427,7 @@ describe("categories form", () => {
   });
 
   // ADR-0009-09
-  it("repeats a season every week or every year, with help the date fields read too", async () => {
+  it("repeats a season every week or every year, with help available below the fields", async () => {
     const server = await open();
     byId("categories-add").click();
     const repeat = byId("categories-dates-repeat");
@@ -436,7 +436,7 @@ describe("categories form", () => {
     expect(repeat.labels[0].textContent).toBe("Repeat dates");
     expect([...repeat.options].map((item) => item.textContent)).toEqual(["Don't repeat", "Every week", "Every year"]);
     for (const id of ["categories-dates-repeat", "categories-not-before", "categories-not-after"]) {
-      expect(byId(id).getAttribute("aria-describedby")).toBe("categories-dates-repeat-help");
+      expect(byId(id).getAttribute("aria-describedby")).toBe(null);
     }
     expect(help.textContent).toBe("The songs play only between these dates, both included.");
     repeat.value = "yearly";
@@ -491,7 +491,7 @@ describe("categories form", () => {
     const from = byId("categories-not-before");
     expect(document.activeElement).toBe(from);
     expect(from.getAttribute("aria-invalid")).toBe("true");
-    expect(from.getAttribute("aria-describedby")).toBe("categories-form-error categories-dates-repeat-help");
+    expect(from.getAttribute("aria-describedby")).toBe("categories-form-error");
     expect(byId("categories-form-error").textContent).toBe("Enter a Not before date to repeat the dates.");
     expect(server.calls.some((call) => call.method === "POST")).toBe(false);
     // Don't repeat is never sent, as the server never saves it.

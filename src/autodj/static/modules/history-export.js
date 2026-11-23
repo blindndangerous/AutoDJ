@@ -1,14 +1,14 @@
 // History tab: save the play log between two dates for royalty reports,
 // as a CSV with one row per play or as a SoundExchange Report of Use.
-// "Include liners" adds the liners and other non-music items to the CSV
-// (#601).  A Report of Use lists songs only, so the choice is hidden while
-// SoundExchange is chosen and never sent with it.
+// Export uses the same date, text and nonmusic filters as the displayed log.
 // The server builds the file (GET /api/history/export); the page fetches
 // it rather than following a link, so a failure can be said out loud,
 // then hands the browser the file to save.
 
 import { failureText, requestFile, withDisabled } from "./api-client.js";
 import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
+import { stationEpoch } from "./stations.js";
+import { historyDateRange } from "./history-range.js";
 
 const FALLBACK_NAME = "autodj-plays.csv";
 const SERVICE_KEY = "autodj.historyExport.service";
@@ -28,7 +28,7 @@ export function exportMessage(plays, missing, what = "Play log", unmatchable = 0
   const count = Number(plays) || 0;
   let text = count
     ? `${what} saved: ${count} ${count === 1 ? "play" : "plays"}.`
-    : `${what} saved.  No plays in those dates, so the file is empty apart from any column names.`;
+    : `${what} saved.  No plays matched those filters, so the file is empty apart from any column names.`;
   const lacking = Number(missing) || 0;
   if (lacking) {
     text += `  ${lacking} ${lacking === 1 ? "song lacks" : "songs lack"} ISRC, label, listener count or other reporting fields.`;
@@ -79,8 +79,8 @@ export function installHistoryExport({
   const soundexchange = doc.getElementById("hist-export-soundexchange");
   const service = doc.getElementById("hist-export-service");
   const category = doc.getElementById("hist-export-category");
-  const liners = doc.getElementById("hist-export-liners");
-  const csvOptions = doc.getElementById("hist-export-csv");
+  const nonmusic = doc.getElementById("hist-show-liners");
+  const textFilter = doc.getElementById("hist-filter-q");
   const button = doc.getElementById("hist-export-button");
   // Default to this month so far.
   const today = now();
@@ -88,13 +88,11 @@ export function installHistoryExport({
   if (!to.value) to.value = localDate(today);
   if (service && !service.value) service.value = rememberedService(storage);
   const isSoundExchange = () => format?.value === "soundexchange";
-  // Each format's own fields come next after Format in reading order: the
-  // CSV's Include liners, or the SoundExchange fields, the other hidden.
+  // The SoundExchange fields follow Format in reading order.
   // Neither is announced: a select's change can fire while its options are
   // still being read, and an announcement then spoke over the option (#601).
   const showFormatFields = () => {
     if (soundexchange) soundexchange.hidden = !isSoundExchange();
-    if (csvOptions) csvOptions.hidden = isSoundExchange();
   };
   format?.addEventListener("change", showFormatFields);
   showFormatFields();
@@ -103,19 +101,27 @@ export function installHistoryExport({
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (busy) return;
-    if (!from.value || !to.value) {
+    const range = historyDateRange(from.value, to.value);
+    if (!range.from || !range.to) {
       announce("Choose both a From date and a To date.", "error");
-      (from.value ? to : from).focus();
+      (range.from ? to : from).focus();
       return;
     }
-    if (from.value > to.value) {
+    if (range.from > range.to) {
       announce("The From date is after the To date.", "error");
       from.focus();
       return;
     }
-    const query = new URLSearchParams({ from: from.value, to: to.value });
+    const query = new URLSearchParams({ from: range.from, to: range.to });
+    if (textFilter?.value.trim()) query.set("q", textFilter.value.trim());
+    query.set("nonmusic", String(Boolean(nonmusic?.checked)));
     let what = "Play log";
     if (isSoundExchange()) {
+      if (nonmusic?.checked) {
+        announce("Turn off Show nonmusic items for a SoundExchange report.", "error");
+        nonmusic.focus();
+        return;
+      }
       const name = service.value.trim();
       if (!name) {
         announce("Enter the name of the service for the SoundExchange report.", "error");
@@ -127,15 +133,16 @@ export function installHistoryExport({
       query.set("service", name);
       query.set("category", category.value);
       what = "SoundExchange report";
-    } else if (liners?.checked) {
-      query.set("liners", "true");
     }
     busy = true;
+    const exportStationEpoch = stationEpoch();
     announce("Exporting play log", "info");
     try {
-      await withDisabled(button, () => withDisabled(form, async () => {
+      await withDisabled(button, async () => {
         const response = await request(`/api/history/export?${query}`, ["text/csv", "text/plain"]);
+        if (stationEpoch() !== exportStationEpoch) return;
         const blob = await response.blob();
+        if (stationEpoch() !== exportStationEpoch) return;
         save(doc, blob, exportFilename(response.headers.get("Content-Disposition")));
         announce(exportMessage(
           response.headers.get("X-Play-Count"),
@@ -143,9 +150,9 @@ export function installHistoryExport({
           what,
           response.headers.get("X-Songs-Unmatchable"),
         ), "info");
-      }));
+      });
     } catch (err) {
-      announce(failureText("export the play log", err), "error");
+      if (stationEpoch() === exportStationEpoch) announce(failureText("export the play log", err), "error");
     } finally {
       busy = false;
     }

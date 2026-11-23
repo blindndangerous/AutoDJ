@@ -167,6 +167,8 @@ def plays_between(
     station: str = DEFAULT_STATION,
     station_store: StationStore | None = None,
     include_inserts: bool = False,
+    pending_rows: Iterable[dict] = (),
+    interrupted_ids: Iterable[str] = (),
 ) -> list[Play]:
     """Return *station*'s plays that started at or after *start* and before *end*.
 
@@ -178,34 +180,43 @@ def plays_between(
     """
     if end <= start:
         raise ValueError("The end of the range must be after its start.")
+    interrupted = set(interrupted_ids)
     sources = catalog.sources()
     liner_sources = [source for source in sources if source["kind"] == "liner"]
     rows = (
-        station_store.play_log(start, end, include_inserts=include_inserts)
+        station_store.play_log(
+            start,
+            end,
+            include_inserts=include_inserts,
+            pending_rows=pending_rows,
+            excluded_event_ids=interrupted,
+        )
         if station_store is not None
         else catalog.play_log(station, start=start, end=end)
     )
     files: dict[str, tuple[str, str, str]] = {}
     plays = []
     for row in rows:
+        if row.get("event_id") in interrupted:
+            continue
         started = history_start(row["played_at"])
         if started is None or not start <= started < end:
             continue
         length = float(row["duration"])
         following = (
-            history_start(row["ended_at"])
-            if row["kind"] == "live"
-            else history_start(row["following_at"])
+            history_start(row.get("ended_at"))
+            if row.get("kind") == "live"
+            else history_start(row.get("following_at"))
         )
         if following is not None and following >= started:
             length = min(length, (following - started).total_seconds())
         path = row["path"] or ""
-        if path and row["kind"] != "live" and path not in files:
+        if path and row.get("kind") != "live" and path not in files:
             isrc, label = read_tags(path)
             files[path] = (_relative(path, sources), isrc, label)
         relative, isrc, label = files.get(path, ("", "", ""))
         # A play with no catalog record is a liner when a liner folder holds it.
-        kind = row["kind"] or (
+        kind = row.get("kind") or (
             "liner"
             if any(_under(path, s["path"], s["recursive"]) for s in liner_sources)
             else "music"
@@ -221,7 +232,7 @@ def plays_between(
                 label=label,
                 kind=kind if kind in {"live", *INSERT_KINDS} else "song",
                 path=relative,
-                performances=row["performances"],
+                performances=row.get("performances"),
             )
         )
     return plays
