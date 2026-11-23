@@ -78,17 +78,19 @@ describe("Time checks panel text and controls", () => {
     expect(byId("tc-pack-file").type).toBe("file");
     expect(byId("tc-pack-file").accept).toContain(".zip");
     expect(byId("tc-clip-file").accept).toContain(".wav");
-    // Each new control says its help when it takes focus.
+    // File requirements stay attached; clip explanations remain below their controls.
     for (const [id, help] of [
       ["tc-pack-name", "tc-pack-name-desc"], ["tc-pack-file", "tc-add-pack-desc"],
       ["tc-clip-file", "tc-clip-file-desc"], ["tc-recorded-folder", "tc-recorded-folder-desc"],
-      ["tc-intro", "tc-intro-desc"], ["tc-outro", "tc-outro-desc"],
       ["tc-rescan", "tc-rescan-desc"],
     ]) {
       expect(byId(id).getAttribute("aria-describedby"), id).toBe(help);
       expect(byId(help)?.textContent.trim(), id).toBeTruthy();
     }
-    // Intro clip and Outro clip each say what they do, not one shared sentence.
+    for (const id of ["tc-intro", "tc-outro", "tc-test"]) {
+      expect(byId(id).hasAttribute("aria-describedby"), id).toBe(false);
+    }
+    // Intro and outro help remains available while browsing.
     expect(byId("tc-intro-desc").textContent).toContain("before");
     expect(byId("tc-outro-desc").textContent).toContain("after");
     expect(byId("tc-intro-desc").textContent).not.toBe(byId("tc-outro-desc").textContent);
