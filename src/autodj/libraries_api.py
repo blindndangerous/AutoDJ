@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from autodj.backup import BackupError
 from autodj.library_registry import LibraryConflict
 from autodj.stations import DEFAULT_SLUG
 
@@ -47,6 +49,25 @@ def install_libraries(app: FastAPI, libraries: Any, stations: Any) -> None:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if libraries._stations is not None:
+            await libraries.start()
+        return await asyncio.to_thread(inventory)
+
+    @app.post("/api/libraries/{source_id}/duplicate")
+    async def duplicate_library(source_id: str, body: CreateLibraryBody) -> dict:
+        available()
+        try:
+            await asyncio.to_thread(libraries.duplicate, source_id, body.id, body.name)
+            await asyncio.to_thread(libraries.get, body.id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Library not found") from exc
+        except LibraryConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (BackupError, OSError, sqlite3.Error) as exc:
+            # Do not expose local paths or SQLite details from a failed snapshot.
+            raise HTTPException(status_code=500, detail="Could not duplicate library") from exc
         if libraries._stations is not None:
             await libraries.start()
         return await asyncio.to_thread(inventory)

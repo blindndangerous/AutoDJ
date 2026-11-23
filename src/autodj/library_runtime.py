@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import replace
+from dataclasses import asdict, replace
+from pathlib import Path
 from typing import Any
 
+from autodj import index_manifest as im
 from autodj._bridge import LibraryServices
 from autodj.config import AutoDJConfig, LibraryConfig
-from autodj.library_registry import LibraryRegistry, validate_library_id
+from autodj.library_duplicate import snapshot_library
+from autodj.library_registry import LibraryDefinition, LibraryRegistry, validate_library_id
 
 
 class Libraries:
@@ -60,6 +63,33 @@ class Libraries:
             manager = LibraryManager(cfg, sim)
             self._services[library_id] = LibraryServices(cfg, sim, manager)
             return self._services[library_id]
+
+    def duplicate(self, source_id: str, library_id: str, name: str) -> LibraryDefinition:
+        """Create a complete independent catalog copy from an existing library."""
+        source_id = validate_library_id(source_id)
+        source = self.get(source_id)
+        library = source.library
+        library_root = Path(library.cfg.index.library_dir)
+        settings = {
+            key: str(value) if isinstance(value, Path) else value
+            for key, value in asdict(library.cfg.library).items()
+        }
+
+        def initialize(stage: Path) -> None:
+            cache = library._dj_cache()
+            if cache is not None:
+                cache.flush(force=True)
+            snapshot_library(library_root, stage)
+
+        # Match backup's lock order. The source manager lock is intentionally
+        # not held while SQLite snapshots the catalog and DJ metadata.
+        with im.publication_lock(self.root.index.index_dir), im.publication_lock(library_root):
+            return self.registry.create(
+                library_id,
+                name,
+                settings,
+                initializer=initialize,
+            )
 
     def all(self) -> list[LibraryServices]:
         with self._lock:

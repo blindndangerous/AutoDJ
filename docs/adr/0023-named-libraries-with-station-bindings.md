@@ -76,6 +76,19 @@ edits use the existing Save, Discard or Cancel dialog. The old editor and Browse
 results are cleared when the owner changes so they cannot be saved into the
 next library.
 
+## Amendment, 2026-11-23: duplicate a library
+
+[Issue #831](https://github.com/blindndangerous/AutoDJ/issues/831) adds a full
+library copy with a new name and ID. It copies catalog metadata, sources,
+library settings, cues and completed analysis while retaining the original
+audio paths. The catalogs and their analysis stores remain independent;
+this does not introduce a shared analysis cache across libraries.
+
+SQLite snapshots include committed WAL data. The copy removes worker leases,
+pending scans and legacy station history/settings before publishing the new
+directory. Failed copies leave the source intact and do not register a partial
+library. Station assignments and station-owned files remain unchanged.
+
 ## Implementation and operation
 
 - [Definitions](../../src/autodj/library_registry.py), [runtime ownership](../../src/autodj/library_runtime.py),
@@ -93,10 +106,11 @@ next library.
 | ADR-0023-02 | Overlapping music folders do not merge catalog metadata or cues. | automated | `tests/unit/test_library_runtime.py::test_shared_physical_folder_has_independent_catalogs` |
 | ADR-0023-03 | A library switch preserves the station ledger and leaves the previous runtime configuration intact. | automated | `tests/unit/test_library_runtime.py::test_library_change_transfers_buffered_history_and_station_settings` |
 | ADR-0023-04 | Unknown library IDs do not fall back to main. | automated | `tests/unit/test_library_runtime.py::test_unknown_library_never_falls_back` |
-| ADR-0023-05 | Selecting and changing libraries remains usable with keyboard and screen-reader navigation. | manual | On Windows with NVDA, create and rename a library, change a station's saved choice, cancel a warning, save for next start, and save with restart. Check focus, names and announcements; record browser and screen-reader versions. |
+| ADR-0023-05 | Selecting and changing libraries remains usable with keyboard and screen-reader navigation. | manual | On Windows with NVDA, create, rename and duplicate a library, cancel Duplicate, change a station's saved choice, cancel a warning, save for next start, and save with restart. Check focus, names and announcements; record browser and screen-reader versions. |
 | ADR-0023-06 | Station library preflight presents running-station choices and stopped-station warnings, and ignores a stale reply. | automated | `tests/jsmodules/time-settings.test.js::offers all three running station choices and their warning text`; `tests/jsmodules/time-settings.test.js::asks before saving a stopped station's library when programming warnings exist`; `tests/jsmodules/time-settings.test.js::drops a library preflight reply after the station context changes` |
 | ADR-0023-07 | Catalog tag edits affect one library; shared file rewrites reach other libraries on rescan with existing file-identity invalidation. | automated | `tests/integration/test_named_libraries.py::test_tag_edits_target_one_catalog_and_shared_file_changes_arrive_on_rescan` |
 | ADR-0023-08 | Browse and Track info keep their station's catalog context across library and station changes. | automated | `tests/jsmodules/library-folders.test.js::keeps Browse folders separate from the library being managed`; `tests/jsmodules/library-folders.test.js::reads the same path from the newly selected station after clearing Track info`; `tests/jsmodules/time-settings.test.js::keeps the library selection unsaved when Track info editing is canceled` |
+| ADR-0023-09 | Duplicate preserves independent catalog data and completed analysis, excludes station history and worker state, and publishes no partial library on failure. | automated | `tests/unit/test_library_duplicate.py::test_duplicate_copies_persistent_analysis_and_settings_but_not_runtime_state`; `tests/unit/test_library_duplicate.py::test_duplicate_failure_removes_stage_and_preserves_source` |
 
 Automated test links identify checks to run; they are not a claim that the
 checks or the manual procedure have passed. The PR records that evidence.

@@ -61,13 +61,17 @@ export function installLibraries({ document: doc = document, request = requestJs
   let records = [];
   let generation = 0;
   let editing = null;
+  let editorMode = "create";
   let idTouched = false;
   let lastToolLibrary = toolSelect?.value || "main";
   const collection = createCollectionTable({
     host, label: "music libraries", hideCaption: true,
     columns: [{ key: "name", label: "Name", value: (item) => item.name }],
     keyOf: (item) => item.id, nameOf: (item) => item.name,
-    actions: (item) => [{ id: "rename", label: "Rename", run: (button) => openEditor(item, button) }],
+    actions: (item) => [
+      { id: "rename", label: "Rename", run: (button) => openEditor(item, button, "rename") },
+      { id: "duplicate", label: "Duplicate", run: (button) => openEditor(item, button, "duplicate") },
+    ],
     fallback: addButton, status, emptyText: "No libraries yet.",
   });
 
@@ -174,18 +178,35 @@ export function installLibraries({ document: doc = document, request = requestJs
     }
   }
 
-  function openEditor(item, opener = doc.activeElement) {
+  function copyNameAndId(item) {
+    const baseName = `Copy of ${item.name}`;
+    const baseId = `copy-of-${idFromName(item.name) || item.id}`;
+    for (let suffixNumber = 1; ; suffixNumber += 1) {
+      const nameSuffix = suffixNumber === 1 ? "" : ` ${suffixNumber}`;
+      const name = `${baseName.slice(0, 80 - nameSuffix.length).trimEnd()}${nameSuffix}`;
+      const idSuffix = suffixNumber === 1 ? "" : `-${suffixNumber}`;
+      const idPrefix = baseId.slice(0, 32 - idSuffix.length).replace(/-+$/, "") || "copy";
+      const id = `${idPrefix}${idSuffix}`;
+      if (!records.some((record) => record.id.toLowerCase() === id || record.name.toLowerCase() === name.toLowerCase())) {
+        return { name, id };
+      }
+    }
+  }
+
+  function openEditor(item, opener = doc.activeElement, mode = "create") {
     if (editor.dialog.open) return;
     editing = item || null;
+    editorMode = mode;
     idTouched = false;
-    heading.textContent = editing ? `Rename ${editing.name}` : "Add library";
+    heading.textContent = mode === "rename" ? `Rename ${editing.name}` : mode === "duplicate" ? `Duplicate ${editing.name}` : "Add library";
     nameLabel.textContent = "Name";
-    nameInput.value = editing?.name || "";
-    idInput.value = editing?.id || "";
-    idRow.hidden = Boolean(editing);
-    idInput.required = !editing;
-    idInput.readOnly = Boolean(editing);
-    save.textContent = editing ? "Save name" : "Create library";
+    const copy = mode === "duplicate" ? copyNameAndId(editing) : null;
+    nameInput.value = copy?.name || (mode === "rename" ? editing.name : "");
+    idInput.value = copy?.id || (mode === "rename" ? editing.id : "");
+    idRow.hidden = mode === "rename";
+    idInput.required = mode !== "rename";
+    idInput.readOnly = mode === "rename";
+    save.textContent = mode === "rename" ? "Save name" : mode === "duplicate" ? "Duplicate library" : "Create library";
     clearFieldError(nameInput, error);
     clearFieldError(idInput, error);
     editor.open(nameInput, opener);
@@ -194,7 +215,7 @@ export function installLibraries({ document: doc = document, request = requestJs
 
   nameInput.addEventListener("input", () => {
     clearFieldError(nameInput, error);
-    if (!editing && !idTouched) idInput.value = idFromName(nameInput.value);
+    if (editorMode !== "rename" && !idTouched) idInput.value = idFromName(nameInput.value);
   });
   idInput.addEventListener("input", () => {
     idTouched = true;
@@ -209,29 +230,34 @@ export function installLibraries({ document: doc = document, request = requestJs
       showFieldError(nameInput, "Enter a name.", error, editor.status);
       return;
     }
-    if (!editing && !ID_PATTERN.test(idInput.value)) {
+    if (editorMode !== "rename" && !ID_PATTERN.test(idInput.value)) {
       showFieldError(idInput, "Use 1 to 32 lowercase letters, digits or interior hyphens.", error, editor.status);
       return;
     }
-    const target = editing;
+    const target = editorMode === "rename" ? editing : null;
+    const mode = editorMode;
+    const id = idInput.value;
     const epoch = captureAuthenticatedRequestEpoch();
     try {
-      await request(target ? `/api/libraries/${encodeURIComponent(target.id)}` : "/api/libraries", {
+      const url = target ? `/api/libraries/${encodeURIComponent(target.id)}`
+        : mode === "duplicate" ? `/api/libraries/${encodeURIComponent(editing.id)}/duplicate` : "/api/libraries";
+      await request(url, {
         method: target ? "PATCH" : "POST",
         headers: JSON_HEADERS,
-        body: JSON.stringify(target ? { name } : { id: idInput.value, name }),
+        body: JSON.stringify(target ? { name } : { id, name }),
       });
       if (!current() || !isAuthenticatedRequestCurrent(epoch)) return;
       await refresh();
       if (!current() || !isAuthenticatedRequestCurrent(epoch)) return;
       editor.close({ restore: false });
-      const targetCell = collection.target(target?.id || idInput.value);
+      const targetCell = collection.target(target?.id || id);
       const focus = targetCell || addButton;
       focusAfterDialog(focus);
-      if (!target) say(`Created ${name}.`);
+      if (mode === "create") say(`Created ${name}.`);
     } catch (errorValue) {
       if (!current() || !isAuthenticatedRequestCurrent(epoch)) return;
-      const message = errorValue.status === 409 ? errorValue.message : failureText(target ? `rename ${target.name}` : "create library", errorValue);
+      const message = errorValue.status === 409 ? errorValue.message
+        : failureText(target ? `rename ${target.name}` : mode === "duplicate" ? `duplicate ${editing.name}` : "create library", errorValue);
       showFieldError(target ? nameInput : idInput, message, error, editor.status);
     }
   }

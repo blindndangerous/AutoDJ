@@ -10,6 +10,7 @@ import re
 import shutil
 import stat
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -129,9 +130,14 @@ class LibraryRegistry:
         return self.get(library_id).path
 
     def create(
-        self, library_id: str, name: str, settings: dict[str, Any] | None = None
+        self,
+        library_id: str,
+        name: str,
+        settings: dict[str, Any] | None = None,
+        *,
+        initializer: Callable[[Path], None] | None = None,
     ) -> LibraryDefinition:
-        """Create an empty library directory and atomically publish its definition."""
+        """Initialize a private library directory, then atomically publish it."""
         library_id = self._validate_id(library_id)
         name = self._validate_name(name)
         settings = self._validate_settings(settings)
@@ -146,6 +152,8 @@ class LibraryRegistry:
             stage = self.root / f"{_STAGING_PREFIX}{uuid.uuid4().hex}"
             stage.mkdir()
             try:
+                if initializer is not None:
+                    initializer(stage)
                 self._write_definition(stage, library_id, name, settings)
                 # The rename publishes a complete, nonempty directory so
                 # readers never observe a partially written definition.

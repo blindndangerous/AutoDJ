@@ -599,9 +599,15 @@ See [Compare speech and prepare generated time checks — Evidence for workflow 
 
 ## Named music libraries
 
-Open Settings, Global, Libraries to create or rename a music library. Its ID
+Open Settings, Global, Libraries to create, rename or duplicate a music library. Its ID
 stays fixed when its name changes. The existing collection is Main; adopting
 it does not move or reanalyse its tracks.
+
+To copy a library, open its Options menu and choose Duplicate. Enter a new
+name and ID, then save. The copy includes tracks, folders, settings, cue edits
+and completed analysis. It uses the same audio files and has its own catalog;
+station assignments, history and programming stay unchanged. Copying analysis
+avoids processing the tracks again but uses additional storage.
 
 Select the library in Library tools before managing its folders or running a
 job. To change Segue detection or the similarity analysis length, open
