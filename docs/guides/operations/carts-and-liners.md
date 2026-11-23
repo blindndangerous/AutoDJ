@@ -8,19 +8,22 @@ Configure and fire carts, edit liner overlap cues, and restrict cart or liner pl
 
 The **Carts** tab, after Queue & Search, holds four pages of twelve numbered carts for station
 IDs, jingles and sound effects. Each button is named for its cart, for example "Cart 3, Station
-ID, 0:07", or "Cart 4, empty". Press a cart to play it; an empty cart opens in the editor.
+ID, 0:07", or "Cart 4, empty". Press a filled cart to play it; an empty cart opens the editor.
 
-In the editor, choose the cart, its name, its clip and what happens to the music while it plays:
+To edit a filled cart, choose it under **Cart to edit** and select **Edit cart**. In the editor,
+set its name, clip and what happens to the music while it plays:
 
 - Duck lowers the music by the voice liner duck depth.
 - Over leaves the music at full volume.
 - Replace fades the music out. The song keeps playing silently under the cart and fades back in
   when the cart ends, so it resumes at its later position.
 
-A clip is a voice liner from the library or the liner folder, or an audio file uploaded under
-**Uploaded clips**. Uploads use the voice liner extensions and the selected station's
+A clip is a voice liner from the library or the liner folder, or an audio file uploaded in the
+editor. Uploads use the voice liner extensions and the selected station's
 `station.liner_upload_max_mib` limit, must decode as audio, and never replace a clip with the same name. A
-clip still on a cart cannot be deleted. **Rename this page** names the page shown.
+clip still on a cart cannot be deleted. **Save cart** saves the changes; **Cancel** or Escape closes
+the editor, asking before discarding a changed draft. **Clear cart** removes the clip after
+confirmation. **Rename this page** names the page shown.
 
 One cart plays at a time: a new one cuts off the last, and **Stop carts** fades it out. Each
 open paired page says "Cart 3, Station ID, playing" when a cart starts and "... ended" or
