@@ -3804,6 +3804,7 @@ def test_idle_analysis_check_runs_once_until_the_catalog_changes(manager_factory
 
 
 def test_browse_and_search_answer_from_memory(manager_factory, tmp_path, monkeypatch):
+    """ADR-0006-10. Browse and History use the same in-memory AND matcher."""
     from types import SimpleNamespace
 
     from autodj._bridge import PlayerBridge

@@ -807,6 +807,15 @@ class PlayerBridge(LibraryAccess):
                 for row in self._play_history
             ]
 
+    def history_rows(self) -> list[dict]:
+        """Copy the bounded live History buffers for read-only overlays."""
+        with self._history_lock:
+            rows = sorted(
+                (*self._play_history, *self._aired_history),
+                key=lambda row: row.get("_seq", 0),
+            )
+            return [dict(row) for row in rows]
+
     def history_page(
         self, page: int, per_page: int, *, liners: bool = False, anchor: str | None = None
     ) -> dict:

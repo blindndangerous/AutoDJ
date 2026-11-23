@@ -1785,6 +1785,7 @@ describe("static accessibility contracts", () => {
       ["stereo-preset-file", "file", null],
       ["stream-relay-password", "password", "stream-relay-password-help"],
       ["stream-station-name", "text", "stream-station-name-desc"],
+      ["time-zone", "select", "time-zone-help"],
     ];
     for (const [id, type, helpId] of fields) {
       const control = document.getElementById(id);
@@ -1793,7 +1794,7 @@ describe("static accessibility contracts", () => {
       expect(label || control.closest("label"), id).not.toBeNull();
       if (helpId) expect(document.getElementById(helpId).hidden, helpId).toBe(false);
     }
-    for (const [id, helpId] of fields.slice(0, 6).concat([fields[8]])) {
+    for (const [id, helpId] of fields.slice(0, 6).concat(fields.slice(8))) {
       const refs = (document.getElementById(id).getAttribute("aria-describedby") || "").split(/\s+/);
       expect(refs, id).not.toContain(helpId);
     }
@@ -2715,17 +2716,15 @@ describe("static accessibility contracts", () => {
       const input = document.getElementById(id);
       expect(input.getAttribute("type")).toBe("date");
       expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
-      // Optional: no required attribute.  The help under Repeat dates says
-      // how the dates are read (the year is ignored for Every year), so the
-      // date fields read it too.
+      // Optional dates keep their help below the fields, without reading it on focus.
       expect(input.hasAttribute("required")).toBe(false);
-      expect(input.getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc");
+      expect(input.getAttribute("aria-describedby")).toBe(null);
     }
     const repeat = document.getElementById("schedule-dates-repeat");
     expect(repeat.tagName).toBe("SELECT");
     expect(group.contains(repeat)).toBe(true);
     expect(document.querySelector('label[for="schedule-dates-repeat"]').textContent.trim()).toBe("Repeat dates");
-    expect(repeat.getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc");
+    expect(repeat.getAttribute("aria-describedby")).toBe(null);
     expect(document.getElementById("schedule-dates-repeat-desc").classList.contains("setting-desc")).toBe(true);
     // The form's error text has an ID to be linked from the field it names.
     expect(document.querySelector("#schedule-form-error").classList.contains("field-error")).toBe(true);
@@ -3435,8 +3434,8 @@ describe("static accessibility contracts", () => {
     expect(talk.textContent).toBe("Talk");
     expect(talk.hasAttribute("aria-label")).toBe(false);
     expect(talk.getAttribute("aria-pressed")).toBe("false");
-    expect(idsOf(talk)).toEqual(["talk-help"]);
-    expect(document.getElementById("talk-help").textContent).toMatch(/press and hold Alt\+M/);
+    expect(idsOf(talk)).toEqual([]);
+    expect(document.getElementById("talk-help").textContent).toMatch(/2 minutes/);
     for (const id of ["talk-help", "talk-latched", "talk-note", "talk-error"]) {
       expect(quiet(document.getElementById(id)), id).toBe(true);
     }
@@ -3445,9 +3444,10 @@ describe("static accessibility contracts", () => {
     expect(latched.tagName).toBe("P");
     expect(latched.hidden).toBe(true);
     expect(latched.classList.contains("talk-latched")).toBe(true);
-    // Without sign-in anyone who can open the page can talk: said plainly.
-    expect(document.getElementById("talk-help").textContent)
-      .toMatch(/no sign-in \(pairing is off\), anyone who can open this page can talk on the air/);
+    // The security warning stays readable, but is not repeated whenever Talk is focused.
+    expect(document.getElementById("talk-sign-in-warning").textContent)
+      .toMatch(/without server sign-in.*anyone who can open this page can talk on the air/i);
+    expect(idsOf(talk)).not.toContain("talk-sign-in-warning");
     expect(document.getElementById("live-intro").textContent)
       .toContain("Without server sign-in, anyone with page access can broadcast and change settings.");
     expect(document.getElementById("talk-error").classList.contains("field-error")).toBe(true);
@@ -3905,7 +3905,8 @@ describe("station switcher and station context contracts (#70)", () => {
     const shared = document.getElementById("shared-context");
     expect(shared.hidden).toBe(true);
     expect(shared.textContent).toBe("");
-    for (const id of ["tab-library", "points-save", "stab-server"]) {
+    expect(ids(document.getElementById("tab-library"), "aria-describedby")).not.toContain("shared-context");
+    for (const id of ["points-save", "stab-server"]) {
       expect(ids(document.getElementById(id), "aria-describedby"), id).toContain("shared-context");
     }
   });

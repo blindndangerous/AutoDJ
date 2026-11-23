@@ -166,9 +166,8 @@ export function installLiveDesk({
   const button = doc.getElementById("btn-talk");
   const note = doc.getElementById("talk-note");
   const error = doc.getElementById("talk-error");
-  const help = doc.getElementById("talk-help");
   const latchedNote = doc.getElementById("talk-latched");
-  if (!line || !desk || !button || !note || !error || !help || !latchedNote) return null;
+  if (!line || !desk || !button || !note || !error || !latchedNote) return null;
   const win = doc.defaultView || globalThis;
 
   let available = false;
@@ -191,11 +190,11 @@ export function installLiveDesk({
   const say = makeSay(srStatus, { dwellMs: 5000, errorDwellMs: 6000 });
 
   function describe() {
-    const ids = [help.id];
-    if (!latchedNote.hidden && latchedNote.textContent) ids.push(latchedNote.id);
+    const ids = [];
     if (!note.hidden && note.textContent) ids.push(note.id);
     if (!error.hidden && error.textContent) ids.push(error.id);
-    button.setAttribute("aria-describedby", ids.join(" "));
+    if (ids.length) button.setAttribute("aria-describedby", ids.join(" "));
+    else button.removeAttribute("aria-describedby");
   }
 
   function setText(node, text) {
