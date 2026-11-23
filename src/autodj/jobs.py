@@ -79,6 +79,8 @@ class JobManager:
     def __init__(self) -> None:
         self._config_path: str | None = None
         self._index_dir: str | None = None
+        self._library_id = "main"
+        self.shared_admission = False
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
@@ -97,6 +99,7 @@ class JobManager:
         *,
         config_path: object = None,
         index_dir: object = None,
+        library_id: str = "main",
     ) -> None:
         """Point future jobs at the configuration the server is running on.
 
@@ -109,6 +112,9 @@ class JobManager:
             config_path: TOML file the server loaded, or None if it had none.
             index_dir: The index folder.
         """
+        from autodj.library_registry import validate_library_id
+
+        self._library_id = validate_library_id(library_id)
         self._config_path = str(config_path) if config_path else None
         self._index_dir = str(index_dir) if index_dir else None
 
@@ -117,6 +123,8 @@ class JobManager:
         argv = [sys.executable, "-m", "autodj"]
         if self._config_path:
             argv += ["--config", self._config_path]
+        if self._library_id != "main":
+            argv += ["--library", self._library_id]
         argv.append(name)
         return argv + args
 
@@ -190,6 +198,19 @@ class JobManager:
         return self._proc
 
     def start(self, name: str, args: list[str] | None = None) -> bool:
+        """Keep one local maintenance process across all server libraries."""
+        global _ACTIVE_MANAGER
+        if not self.shared_admission:
+            return self._start(name, args)
+        with _ADMISSION_LOCK:
+            if _ACTIVE_MANAGER is not None and _ACTIVE_MANAGER.running:
+                return False
+            started = self._start(name, args)
+            if started:
+                _ACTIVE_MANAGER = self
+            return started
+
+    def _start(self, name: str, args: list[str] | None = None) -> bool:
         """Spawn ``autodj <name> [args]`` as a subprocess."""
         if not self._validate_request(name, args):
             return False
@@ -313,12 +334,32 @@ class JobManager:
 # Process-wide singleton — the web server configures it before each run.
 _MANAGER: JobManager | None = None
 _MANAGER_LOCK = threading.Lock()
+_ADMISSION_LOCK = threading.Lock()
+_ACTIVE_MANAGER: JobManager | None = None
+_MANAGERS: dict[str, JobManager] = {}
 
 
-def get_manager() -> JobManager:
-    """Return the process-wide :class:`JobManager` singleton."""
+def get_manager(library_dir: object = None) -> JobManager:
+    """Return the job manager for this catalog, or the legacy default manager."""
     global _MANAGER
     with _MANAGER_LOCK:
+        if library_dir is not None:
+            key = os.path.normcase(os.path.realpath(str(library_dir)))
+            manager = _MANAGERS.get(key)
+            if manager is None:
+                manager = JobManager()
+                manager.shared_admission = True
+                _MANAGERS[key] = manager
+            return manager
         if _MANAGER is None:
             _MANAGER = JobManager()
+            _MANAGER.shared_admission = True
         return _MANAGER
+
+
+def shutdown_all(timeout: float) -> bool:
+    """Stop jobs for every library when the server shuts down."""
+    with _MANAGER_LOCK:
+        managers = list(_MANAGERS.values()) + ([_MANAGER] if _MANAGER is not None else [])
+    stopped = [manager.shutdown(timeout) for manager in managers]
+    return any(stopped)

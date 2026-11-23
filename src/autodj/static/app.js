@@ -31,6 +31,8 @@ import { installSeekController } from "./modules/seek-controller.js";
 import { tableRow } from "./modules/table-row.js";
 import { installTableNavigation } from "./modules/table-navigation.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
+import { installLibraries } from "./modules/libraries.js";
+import { installLibrarySettings } from "./modules/library-settings.js";
 import { showStaticText } from "./modules/beets-paths.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
 import { installIntroRulesPanel } from "./modules/intro-rules-panel.js";
@@ -67,6 +69,7 @@ import {
   installStationSwitcher,
   isOnAir,
   knownStations,
+  onStationChange,
   rememberStationInAddress,
   selectStation,
   setKnownStations,
@@ -315,6 +318,9 @@ const liveSettings = installLiveSettings({
 const auth = initAuthDialog({ document });
 let authExpiryHandled = false;
 let libraryFoldersControls = null;
+let libraryJobControls = null;
+let librariesControls = null;
+let librarySettingsControls = null;
 let librarySearchControls = null;
 let clockwheelPanelControls = null;
 let categoriesPanelControls = null;
@@ -1475,7 +1481,17 @@ import { setTimeFormat } from "./modules/time-format.js";
 installAnalysisWorkers();
 // Settings > Updates -- ./modules/updates.js loads when its subtab is shown.
 const updateControls = installUpdates();
-const timeSettings = installTimeSettings();
+const timeSettings = installTimeSettings({
+  confirmLibraryChange: async () => (await libraryFoldersControls?.confirmStationChange?.()) !== false,
+  onLibraryChanged: refreshLibraryViews,
+});
+librariesControls = installLibraries({
+  onLibraryChange: () => {
+    void libraryFoldersControls?.refreshForLibrary?.();
+    void libraryJobControls?.refresh?.();
+  },
+});
+librarySettingsControls = installLibrarySettings();
 
 // ----------------------------------------------------------------
 // WebSocket
@@ -2093,6 +2109,7 @@ async function switchStation(slug) {
   const entry = knownStations().find((item) => item.slug === slug);
   if (!entry || entry.archived) return;
   if (!await confirmSettingsNavigation()) return;
+  if ((await libraryFoldersControls?.confirmStationChange?.()) === false) return;
   if (!await confirmLeavingStation(entry.name)) return;
   if (slug === currentStation()) return;
   resetSettingsDrafts();
@@ -2120,9 +2137,11 @@ btnStationStart?.addEventListener("click", () => void withDisabled(btnStationSta
   const station = currentStation();
   const name = stationName();
   try {
+    if ((await libraryFoldersControls?.confirmStationChange?.()) === false) return;
     const entry = await requestJson(`/api/stations/${encodeURIComponent(station)}/start`,
       { method: "POST" });
     if (station !== currentStation()) return;
+    refreshLibraryViews();
     setKnownStations(knownStations().map((item) => (item.slug === station ? entry : item)));
     announceStatus(document.getElementById("sr-status"), `${name} started.`,
       { dwellMs: 4000, force: true });
@@ -3485,6 +3504,7 @@ import { initViewRouter, isReturningToView } from "./modules/tabs.js";
 initViewRouter();
 
 libraryFoldersControls = installLibraryFolders({
+  request: librariesControls?.request,
   landmarks: landmarkControls,
   getStation: currentStation,
   onBackgroundError: reportBackgroundRequestError,
@@ -3497,6 +3517,15 @@ libraryFoldersControls = installLibraryFolders({
     updateLibraryFolderOptions();
   },
 });
+function refreshLibraryViews(refreshSearch = true) {
+  libraryFoldersControls?.clearTrackInfo();
+  registeredLibraryFolders = [];
+  updateLibraryFolderOptions();
+  librarySearchControls?.clear();
+  void libraryFoldersControls?.refresh();
+  if (refreshSearch) void librarySearchControls?.refresh();
+}
+onStationChange(() => refreshLibraryViews(false));
 
 const createCategory = (options) => categoriesPanelControls?.create(options);
 clockwheelPanelControls = installClockwheelPanel({ createCategory });
@@ -3615,6 +3644,8 @@ function startAuthenticatedApp(initialState) {
   authenticatedAppStarted = true;
   authExpiryHandled = false;
   authenticatedActivityActive = true;
+  void librariesControls?.refresh();
+  void librarySettingsControls?.load();
   void librarySearchControls?.refresh();
   libraryFoldersControls?.resume();
   clockwheelPanelControls?.resume();
@@ -3624,7 +3655,7 @@ function startAuthenticatedApp(initialState) {
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();
-  installLibraryJobs(_libEls);
+  libraryJobControls = installLibraryJobs(_libEls, { request: librariesControls?.request });
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.
   // Whenever the server mixes the audio (stream mode or --server-audio),

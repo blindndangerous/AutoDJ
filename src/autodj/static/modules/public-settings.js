@@ -97,6 +97,11 @@ export function installPublicSettings({ doc = document, request = requestJson } 
   }
 
   dmca.addEventListener("change", clearError);
+  // Native textarea focus may reveal only the caret, leaving its lower edge
+  // outside the viewport. Keep the whole field visible when focus enters.
+  origins.addEventListener("focus", () => {
+    origins.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  });
   pageForm.addEventListener("input", clearError);
   pageForm.addEventListener("submit", (event) => event.preventDefault());
   return { refresh, clear };

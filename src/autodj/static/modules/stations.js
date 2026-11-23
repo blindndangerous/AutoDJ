@@ -181,6 +181,7 @@ export const STATION_ROUTES = Object.freeze([
 const ROUTE_PATTERNS = STATION_ROUTES.map(
   (route) => new RegExp(`^${route.replace(/\{[^}]+\}/g, "[^/]+")}$`),
 );
+const LIBRARY_CONTEXT_ROUTES = new Set(["/search", "/art", "/lyrics", "/audio"]);
 
 let current = DEFAULT_STATION;
 // Bumped by every switch: a reply to a request sent before it is for the
@@ -206,6 +207,27 @@ export function isStationRoute(relative) {
   return ROUTE_PATTERNS.some((pattern) => pattern.test(relative));
 }
 
+function hasContextQuery(url, name) {
+  const queryStart = url.indexOf("?");
+  if (queryStart < 0) return false;
+  const hashStart = url.indexOf("#", queryStart);
+  const query = url.slice(queryStart + 1, hashStart < 0 ? undefined : hashStart);
+  return new URLSearchParams(query).has(name);
+}
+
+function isLibraryContextRoute(relative) {
+  return LIBRARY_CONTEXT_ROUTES.has(relative)
+    || (relative.startsWith("/library/") && !isStationRoute(relative));
+}
+
+function withStationContext(url, slug) {
+  if (hasContextQuery(url, "station") || hasContextQuery(url, "library")) return url;
+  const hashAt = url.indexOf("#");
+  const base = hashAt < 0 ? url : url.slice(0, hashAt);
+  const hash = hashAt < 0 ? "" : url.slice(hashAt);
+  return `${base}${base.includes("?") ? "&" : "?"}station=${encodeURIComponent(slug)}${hash}`;
+}
+
 // *url* for station *slug*: a station route under /api/stations/<slug>/,
 // and anything else unchanged.  The default station keeps its /api/...
 // address, which every script and test already uses.
@@ -217,23 +239,43 @@ export function stationApi(url, slug = current) {
   const path = cut < 0 ? url : url.slice(0, cut);
   const rest = cut < 0 ? "" : url.slice(cut);
   const relative = path.slice("/api".length);
-  if (slug === DEFAULT_STATION || !isStationRoute(relative)) return url;
-  return `/api/stations/${encodeURIComponent(slug)}${relative}${rest}`;
+  if (isStationRoute(relative)) {
+    return slug === DEFAULT_STATION ? url : `/api/stations/${encodeURIComponent(slug)}${relative}${rest}`;
+  }
+  if (isLibraryContextRoute(relative)) return withStationContext(url, slug);
+  return url;
 }
 
 // *url* for station *slug*, the default one included, even while the page
 // controls another (Listen here's reconnect).  While *slug* is the station
 // the page controls, its usual address.
 export function pinnedStationApi(url, slug) {
-  if (slug !== DEFAULT_STATION || slug === current) return stationApi(url, slug);
-  const routed = stationApi(url, "x");
-  return routed === url ? url : routed.replace("/api/stations/x/", "/api/stations/default/");
+  if (slug === current) return stationApi(url, slug);
+  if (!url.startsWith("/api/") || url.startsWith("/api/stations/")) return url;
+  const cut = url.search(/[?#]/);
+  const path = cut < 0 ? url : url.slice(0, cut);
+  const relative = path.slice("/api".length);
+  if (isStationRoute(relative)) {
+    return slug === DEFAULT_STATION ? `/api/stations/default${relative}${url.slice(path.length)}`
+      : stationApi(url, slug);
+  }
+  if (isLibraryContextRoute(relative)) return withStationContext(url, slug);
+  return url;
 }
 
 // Whether a request to *url* acts on one station (so its reply belongs to
 // the station that was current when it was sent).
 export function isStationUrl(url) {
-  return stationApi(url, "x") !== url;
+  if (stationApi(url, "x") !== url) return true;
+  if (typeof url !== "string" || !url.startsWith("/api/")) return false;
+  const cut = url.search(/[?#]/);
+  const path = cut < 0 ? url : url.slice(0, cut);
+  const relative = path.slice("/api".length);
+  if (!isLibraryContextRoute(relative) || !hasContextQuery(url, "station")) return false;
+  const queryAt = url.indexOf("?");
+  const hashAt = url.indexOf("#", queryAt);
+  const query = url.slice(queryAt + 1, hashAt < 0 ? undefined : hashAt);
+  return new URLSearchParams(query).get("station") === current;
 }
 
 export function stationWsPath(slug = current) {

@@ -3,18 +3,21 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installMusicFadeDrop, musicFadeDropProblem } from "../../src/autodj/static/modules/music-fade-drop.js";
+import { resetSettingsDrafts } from "../../src/autodj/static/modules/settings-drafts.js";
 
 const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
 function mount() {
   const page = document.createElement("template");
   page.innerHTML = html;
-  document.body.replaceChildren(page.content.querySelector("#music-fade-drop-group").cloneNode(true));
+  document.body.replaceChildren(page.content.querySelector("#spanel-libraries").cloneNode(true));
 }
 const field = (id) => document.getElementById(id);
+const saveButton = () => document.querySelector("#spanel-libraries [data-settings-save]");
+const saveStatus = () => document.querySelector("#spanel-libraries .settings-save-status");
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("music fade drop setting", () => {
-  beforeEach(mount);
+describe("per-library music fade threshold", () => {
+  beforeEach(() => { mount(); resetSettingsDrafts(document); });
   afterEach(() => vi.useRealTimers());
 
   it("uses a labelled whole-number field with browsable help", () => {
@@ -30,80 +33,70 @@ describe("music fade drop setting", () => {
     for (const value of ["", "0", "31", "2.5", "-1", "ten"]) expect(musicFadeDropProblem(value)).toBe("Enter a whole number from 1 to 30 dB.");
   });
 
-  it("loads and saves drop_db through the shared library endpoint", async () => {
-    const request = vi.fn(async (url, options) => options ? JSON.parse(options.body) : { drop_db: 14 });
-    const say = vi.fn();
-    const controls = installMusicFadeDrop({ document, request, say });
+  it("loads and saves the threshold for the selected library", async () => {
+    const request = vi.fn(async (_url, options) => options ? JSON.parse(options.body) : { drop_db: 14 });
+    const controls = installMusicFadeDrop({ document, request });
     await controls.load();
     expect(field("music-fade-drop").value).toBe("14");
     field("music-fade-drop").value = "20";
-    field("music-fade-drop-save").click();
-    await flush();
-    expect(request).toHaveBeenLastCalledWith("/api/library/music-fade", expect.objectContaining({
+    field("music-fade-drop").dispatchEvent(new Event("input", { bubbles: true }));
+    saveButton().click();
+    await vi.waitFor(() => expect(saveStatus().textContent).toContain("Settings saved for Library: main."));
+    expect(request).toHaveBeenLastCalledWith("/api/library/music-fade?library=main", expect.objectContaining({
       method: "PUT", body: JSON.stringify({ drop_db: 20 }),
     }));
-    expect(say).toHaveBeenLastCalledWith("Saved. Fade detection threshold is 20 dB.");
     expect(field("music-fade-drop").value).toBe("20");
   });
 
   it("links and focuses validation errors, then clears them on valid input", () => {
     const request = vi.fn();
-    installMusicFadeDrop({ document, request, say: vi.fn() });
+    installMusicFadeDrop({ document, request });
     const input = field("music-fade-drop");
     input.value = "31";
-    field("music-fade-drop-save").click();
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    saveButton().click();
+    const error = field("music-fade-drop-error");
     expect(request).not.toHaveBeenCalled();
-    expect(field("music-fade-drop-error").hidden).toBe(false);
+    expect(error.hidden).toBe(false);
     expect(input.getAttribute("aria-invalid")).toBe("true");
     expect(input.getAttribute("aria-describedby")).toBe("music-fade-drop-error");
     expect(document.activeElement).toBe(input);
     input.value = "10";
-    input.dispatchEvent(new Event("input"));
-    expect(field("music-fade-drop-error").hidden).toBe(true);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(error.hidden).toBe(true);
     expect(input.getAttribute("aria-describedby")).toBeNull();
   });
 
-  it("clears auth-scoped values and ignores a late load", async () => {
+  it("ignores a late library response after the selector changes", async () => {
+    let selected = "main";
     let finish;
-    const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
-    const controls = installMusicFadeDrop({ document, request, say: vi.fn() });
-    field("music-fade-drop").value = "23";
-    const load = controls.load();
-    controls.clear();
+    const request = vi.fn((url) => url.includes("main")
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ drop_db: 18 }));
+    const controls = installMusicFadeDrop({ document, request, getLibrary: () => selected });
+    const loading = controls.load();
+    selected = "oldies";
+    const next = controls.load();
+    await next;
     finish({ drop_db: 5 });
-    await load;
-    expect(field("music-fade-drop").value).toBe("10");
-  });
-
-  it("ignores a pre-sign-out save without unlocking a later session save", async () => {
-    const finish = [];
-    const request = vi.fn(() => new Promise((resolve) => finish.push(resolve)));
-    const say = vi.fn();
-    const controls = installMusicFadeDrop({ document, request, say });
-    field("music-fade-drop").value = "12";
-    field("music-fade-drop-save").click();
-    controls.clear();
-    field("music-fade-drop").value = "16";
-    field("music-fade-drop-save").click();
-    finish[0]({ drop_db: 4 });
-    await flush();
-    expect(field("music-fade-drop").value).toBe("16");
-    expect(field("music-fade-drop-save").getAttribute("aria-busy")).toBe("true");
-    expect(say).not.toHaveBeenCalled();
-    finish[1]({ drop_db: 16 });
-    await flush();
-    expect(field("music-fade-drop").value).toBe("16");
-    expect(field("music-fade-drop-save").hasAttribute("aria-busy")).toBe(false);
+    await loading;
+    expect(field("music-fade-drop").value).toBe("18");
+    expect(request).toHaveBeenNthCalledWith(1, "/api/library/music-fade?library=main");
+    expect(request).toHaveBeenNthCalledWith(2, "/api/library/music-fade?library=oldies");
   });
 
   it("reports failed saves and keeps the requested value", async () => {
-    const request = vi.fn(async () => { throw Object.assign(new Error("Offline"), { status: 503 }); });
-    const say = vi.fn();
-    installMusicFadeDrop({ document, request, say });
-    field("music-fade-drop").value = "12";
-    field("music-fade-drop-save").click();
+    const request = vi.fn(async (_url, options) => {
+      if (options) throw Object.assign(new Error("Offline"), { status: 503 });
+      return { drop_db: 14 };
+    });
+    installMusicFadeDrop({ document, request });
     await flush();
+    field("music-fade-drop").value = "12";
+    field("music-fade-drop").dispatchEvent(new Event("input", { bubbles: true }));
+    saveButton().click();
+    await vi.waitFor(() => expect(saveStatus().textContent).toContain("Could not save all settings: Offline"));
     expect(field("music-fade-drop").value).toBe("12");
-    expect(say).toHaveBeenLastCalledWith("Could not save the fade detection threshold: Offline", "error");
+    expect(saveStatus().textContent).toContain("Unsaved changes remain");
   });
 });

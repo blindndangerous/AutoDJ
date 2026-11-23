@@ -121,6 +121,66 @@ def make_worker(server, *, analyse=None, **kwargs):
     return worker, transport, model
 
 
+def test_server_api_scopes_every_worker_request_to_its_library(tmp_path):
+    class Transport:
+        def __init__(self):
+            self.paths = []
+
+        def request(self, method, path, body=None, sink=None):
+            self.paths.append((method, path))
+            if sink is not None:
+                sink.write(b"audio")
+            reply = {
+                "worker_manage_v1": True,
+                "settings": {"paused": False, "batch": 1, "idle_release_minutes": 0},
+                "lease_tracking": True,
+                "songs": [],
+                "stored": True,
+            }
+            return 200, {}, json.dumps(reply).encode()
+
+    transport = Transport()
+    api = ServerApi(transport, library_id="other")
+    api.heartbeat()
+    api.claim(1)
+    downloaded = tmp_path / "download.wav"
+    api.download("lease-1", downloaded, 10)
+    assert api.submit({"lease": "lease-1"}) is True
+    api.fail("lease-2", "decode failed")
+    api.release(["lease-3"])
+
+    prefix = "/api/worker/libraries/other/"
+    assert transport.paths == [
+        ("POST", prefix + "heartbeat"),
+        ("POST", prefix + "claim"),
+        ("GET", prefix + "audio?lease=lease-1"),
+        ("POST", prefix + "result"),
+        ("POST", prefix + "failed"),
+        ("POST", prefix + "release"),
+    ]
+    assert downloaded.read_bytes() == b"audio"
+
+
+def test_secondary_worker_does_not_fall_back_to_legacy_routes():
+    class OldServerTransport:
+        def __init__(self):
+            self.paths = []
+
+        def request(self, method, path, body=None, sink=None):
+            self.paths.append((method, path))
+            return 404, {}, b'{"detail":"Not Found"}'
+
+    transport = OldServerTransport()
+    api = ServerApi(transport, library_id="other")
+    with pytest.raises(ApiError) as error:
+        api.claim(1)
+
+    assert error.value.status == 404
+    assert transport.paths == [
+        ("POST", "/api/worker/libraries/other/claim"),
+    ]
+
+
 def stored_vectors(manager: LibraryManager) -> dict[str, np.ndarray]:
     entries, vectors = vectors_snapshot(manager.catalog)
     return {Path(e.path).name: v for e, v in zip(entries, vectors, strict=True)}

@@ -11,6 +11,7 @@ def point_index(index: Any, folder: Path | str | None) -> None:
 
     ``None`` is no index folder at all.
     """
+    index.library_id = "main"
     if folder is None:
         index.index_dir = index.library_dir = index.shared_dir = index.stations_dir = None
         return

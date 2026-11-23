@@ -339,7 +339,7 @@ describe("repeat settings", () => {
     expect(els.artistTracks.value).toBe("8");
     expect(els.artistTracks.hasAttribute("aria-invalid")).toBe(false);
     expect(els.useRelatedArtists.checked).toBe(false);
-    expect(els.defaultFile.textContent).toBe("index/libraries/main/related-artists.toml");
+    expect(els.defaultFile.textContent).toBe("related-artists.toml");
     expect(els.fileStatus.hidden).toBe(true);
   });
 });

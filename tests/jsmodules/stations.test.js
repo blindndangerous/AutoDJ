@@ -15,6 +15,7 @@ import {
   currentStation,
   installStationSwitcher,
   isStationRoute,
+  isStationUrl,
   onStationChange,
   pinnedStationApi,
   rememberStationInAddress,
@@ -79,23 +80,46 @@ describe("where a request goes", () => {
   it("leaves shared routes and named-station routes alone", () => {
     selectStation("nightowl");
     for (const url of [
-      "/api/search?q=x", "/api/audio?path=a.mp3", "/api/art?path=a", "/api/library/tracks",
-      "/api/library/folders", "/api/library/points", "/api/stations",
-      "/api/stations/oldies/start", "/api/stereo-tool-presets/upload", "/api/devices", "/api/version",
-      "/stream.mp3", "/api/library/clockwork",
+      "/api/stations", "/api/stations/oldies/start", "/api/stereo-tool-presets/upload", "/api/devices", "/api/version",
+      "/stream.mp3",
     ]) {
       expect(stationApi(url)).toBe(url);
     }
+    expect(stationApi("/api/library/clockwork"))
+      .toBe("/api/library/clockwork?station=nightowl");
+    expect(stationApi("/api/search?q=x")).toBe("/api/search?q=x&station=nightowl");
+    expect(stationApi("/api/lyrics?path=a.mp3")).toBe("/api/lyrics?path=a.mp3&station=nightowl");
+    expect(stationApi("/api/audio?path=a.mp3")).toBe("/api/audio?path=a.mp3&station=nightowl");
+    expect(stationApi("/api/art?path=a")).toBe("/api/art?path=a&station=nightowl");
+    expect(stationApi("/api/library/tracks?page=1")).toBe("/api/library/tracks?page=1&station=nightowl");
+    expect(stationApi("/api/library/folders")).toBe("/api/library/folders?station=nightowl");
+    expect(stationApi("/api/library/points?path=x&library=other"))
+      .toBe("/api/library/points?path=x&library=other");
+    expect(stationApi("/api/search?q=x&library=other")).toBe("/api/search?q=x&library=other");
+    expect(stationApi("/api/lyrics?path=a.mp3&library=other")).toBe("/api/lyrics?path=a.mp3&library=other");
+    expect(stationApi("/api/library/clock/Morning%20drive/rename?library=other"))
+      .toBe("/api/stations/nightowl/library/clock/Morning%20drive/rename?library=other");
     // A path that only starts like a station route is not one.
     expect(isStationRoute("/skip/extra")).toBe(false);
     expect(isStationRoute("/library/clock/a/b/c")).toBe(false);
+  });
+
+  it("uses station context for catalog calls, including the default station", () => {
+    expect(stationApi("/api/search?q=a", DEFAULT_STATION)).toBe("/api/search?q=a&station=default");
+    expect(stationApi("/api/lyrics?path=a.mp3", DEFAULT_STATION)).toBe("/api/lyrics?path=a.mp3&station=default");
+    expect(stationApi("/api/library/folders", DEFAULT_STATION)).toBe("/api/library/folders?station=default");
+    expect(stationApi("/api/search?q=a&station=oldies", DEFAULT_STATION))
+      .toBe("/api/search?q=a&station=oldies");
+    expect(isStationUrl("/api/search?q=a&station=default")).toBe(true);
+    expect(isStationUrl("/api/search?q=a&station=oldies")).toBe(false);
+    expect(isStationUrl("/api/library/folders?library=oldies")).toBe(false);
   });
 
   it("pins a request to a station, the default one too, whatever is current", () => {
     selectStation("nightowl");
     expect(pinnedStationApi("/api/stream", DEFAULT_STATION)).toBe("/api/stations/default/stream");
     expect(pinnedStationApi("/api/stream", "nightowl")).toBe("/api/stations/nightowl/stream");
-    expect(pinnedStationApi("/api/search?q=a", DEFAULT_STATION)).toBe("/api/search?q=a");
+    expect(pinnedStationApi("/api/search?q=a", DEFAULT_STATION)).toBe("/api/search?q=a&station=default");
   });
 
   it("can name a station other than the current one", () => {
@@ -175,7 +199,7 @@ describe("requests while switching", () => {
     await requestJson("/api/skip", { method: "POST" });
     await requestJson("/api/search?q=a");
     expect(fetchMock.mock.calls.map(([url]) => url))
-      .toEqual(["/api/stations/nightowl/skip", "/api/search?q=a"]);
+      .toEqual(["/api/stations/nightowl/skip", "/api/search?q=a&station=nightowl"]);
   });
 
   it("drops a station reply that comes back after a switch, but not a shared one", async () => {
@@ -189,10 +213,10 @@ describe("requests while switching", () => {
     expect(isStaleStationReply(failure)).toBe(true);
     expect(failure.message).toMatch(/station this page has just left/);
 
-    const shared = requestJson("/api/search?q=a");
+    const shared = requestJson("/api/version");
     selectStation(DEFAULT_STATION);
-    answer(jsonResponse({ results: [] }));
-    await expect(shared).resolves.toEqual({ results: [] });
+    answer(jsonResponse({ version: "test" }));
+    await expect(shared).resolves.toEqual({ version: "test" });
   });
 
   it("says what an action answered after a switch did on the station left", async () => {

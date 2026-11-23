@@ -1280,7 +1280,7 @@ class TestLibraryJobRunSnapshot:
             offloaded.append(function)
             return function(*args, **kwargs)
 
-        monkeypatch.setattr("autodj.jobs.get_manager", lambda: mgr)
+        monkeypatch.setattr("autodj.jobs.get_manager", lambda _library_dir=None: mgr)
         monkeypatch.setattr("autodj.server.asyncio.to_thread", recording_to_thread)
 
         resp = client.post("/api/library/run", json={"name": "stats", "args": []})

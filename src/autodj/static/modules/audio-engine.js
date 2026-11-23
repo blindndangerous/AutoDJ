@@ -26,7 +26,7 @@ import {
   requestJson,
   requestJsonBestEffort,
 } from "./api-client.js";
-import { currentStation } from "./stations.js";
+import { currentStation, stationApi } from "./stations.js";
 
 // DOM refs are looked up here so app.js doesn't have to inject them.
 const eqLow      = document.getElementById("eq-low");
@@ -407,7 +407,7 @@ export function setSrcOnDeck(deck, path, kind = "music") {
   deck.liftDb = 0;
   _writeDeckRate(deck);
   updateIntroGain(deck);
-  deck.audio.src = "/api/audio?path=" + encodeURIComponent(path);
+  deck.audio.src = stationApi("/api/audio?path=" + encodeURIComponent(path));
 }
 
 function updateIntroGain(deck) {
@@ -772,7 +772,7 @@ let _bufferGeneration = 0;
 async function _decodeFor(path) {
   if (_bufferCache.has(path)) return _bufferCache.get(path);
   if (_bufferPending.has(path)) return _bufferPending.get(path);
-  const url = "/api/audio?path=" + encodeURIComponent(path);
+  const url = stationApi("/api/audio?path=" + encodeURIComponent(path));
   const generation = _bufferGeneration;
   const pending = requestBinary(url)
     .then((arr) => _ctx.decodeAudioData(arr))
@@ -3035,7 +3035,7 @@ export function loadCoverArt(trackPath) {
     return;
   }
   const request = coverRequest = new AbortController();
-  const url = `/api/art?path=${encodeURIComponent(trackPath)}`;
+  const url = stationApi(`/api/art?path=${encodeURIComponent(trackPath)}`);
   void probeResource(url, { method: "GET", signal: request.signal }).then((exists) => {
     if (request.signal.aborted) return;
     if (!exists) {

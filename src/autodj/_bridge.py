@@ -111,11 +111,11 @@ def _library_problem(cfg: Any) -> str | None:
     return check.problem
 
 
-def _library_job_snapshot() -> dict:
+def _library_job_snapshot(library_dir: Any = None) -> dict:
     """Return current library-job state (``name`` is None before any job has run)."""
     from autodj.jobs import get_manager
 
-    snap = get_manager().snapshot()
+    snap = get_manager(library_dir).snapshot()
     # Only the most recent few lines fly through the WS payload — the
     # full log is fetchable via GET /api/library/job.
     snap = dict(snap)
@@ -1596,7 +1596,7 @@ class PlayerBridge(LibraryAccess):
             "clock_step": getattr(self.player, "_last_clock_step", None)
             if getattr(self.player, "_last_pick_mode", "") in {"clock", "seed"}
             else None,
-            "library_job": _library_job_snapshot(),
+            "library_job": _library_job_snapshot(self.player._cfg.index.library_dir),
             # A library problem that changes what plays (#386), or None.
             "library_problem": _library_problem(self.player._cfg),
             # Browser-side audio drives playback only when the server is

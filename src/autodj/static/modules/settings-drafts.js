@@ -55,8 +55,14 @@ function refresh(panel) {
   panel.note.textContent = panel.saving ? "Saving changes…" : changed ? "Unsaved changes" : "No unsaved changes";
   const scopes = [];
   if (panel.parts.some((part) => part.group && part.scope !== "server")) scopes.push(`Station: ${stationName()}`);
-  if (panel.parts.some((part) => !part.group && part.scope !== "server")) scopes.push("this browser");
+  if (panel.parts.some((part) => !part.group && part.scope !== "server" && part.scope !== "library")) scopes.push("this browser");
   if (panel.parts.some((part) => part.scope === "server")) scopes.push("shared server settings");
+  for (const part of panel.parts) {
+    if (part.scope === "library") {
+      const label = typeof part.scopeName === "function" ? part.scopeName() : "current library";
+      if (!scopes.includes(label)) scopes.push(label);
+    }
+  }
   panel.scope.textContent = scopes.join(" · ");
   for (const part of panel.parts) {
     for (const control of controls(part)) control.classList.toggle("settings-dirty", dirty(part));
@@ -288,6 +294,7 @@ export async function saveSettingsPanel(element) {
   const epoch = captureAuthenticatedRequestEpoch();
   const generation = editor.generation;
   const current = () => generation === editor.generation && station === currentStation() && isAuthenticatedRequestCurrent(epoch);
+  const decisions = new Map();
   panel.saving = true;
   refresh(panel);
   panel.busyController = new AbortController();
@@ -296,6 +303,13 @@ export async function saveSettingsPanel(element) {
   // the leave-page dialog), and a disabled one is reported unavailable (#331).
   return withDisabled(panel.save, () => withDisabled(panel.discard, async () => {
     try {
+      for (const part of parts) {
+        if (!part.beforeSave) continue;
+        const decision = await part.beforeSave(submitted.get(part), part.baseline, { station, current });
+        if (!current()) return false;
+        if (decision === false || decision == null) return false;
+        decisions.set(part, decision);
+      }
       let result = { applied: [], failed: {} };
       if (Object.keys(changes).length) {
         if (!editor.revision) throw new Error("Reload settings before saving.");
@@ -327,16 +341,34 @@ export async function saveSettingsPanel(element) {
         panel.say(`${saved ? "Some settings were saved." : "No settings were saved."} ${Object.values(result.failed).join(" ")} Unsaved changes remain.`, "error");
         return false;
       }
+      const afterMessages = [];
+      for (const part of parts) {
+        if (!part.afterSave) continue;
+        try {
+          const message = await part.afterSave(submitted.get(part), {
+            station, current, decision: decisions.get(part),
+          });
+          if (!current()) return false;
+          if (message) afterMessages.push(message);
+        } catch (error) {
+          if (!current()) return false;
+          panel.say(`Settings saved, but ${failureText("complete the requested action", error)}.`, "error");
+          return false;
+        }
+      }
       for (const other of editor.panels.values()) {
         for (const part of other.parts) if (part.group && !submitted.has(part)) accept(part, editor.values[part.group]);
         refresh(other);
       }
-      const scope = parts.every((part) => part.scope === "server") ? "for this server"
+      const libraryScopes = [...new Set(parts.filter((part) => part.scope === "library")
+        .map((part) => typeof part.scopeName === "function" ? part.scopeName() : "this library"))];
+      const scope = libraryScopes.length && parts.every((part) => part.scope === "library") ? `for ${libraryScopes.join(", ")}`
+        : parts.every((part) => part.scope === "server") ? "for this server"
         : parts.some((part) => part.scope === "server") ? ""
           : parts.some((part) => part.group) ? `for ${stationName()}` : "in this browser";
       const done = [...described].filter(([part]) => !part.group || result.applied.includes(part.group))
         .map(([, words]) => words);
-      panel.say([`Settings saved${scope ? ` ${scope}` : ""}.`, ...done, result.message || ""].join(" ").trim());
+      panel.say([`Settings saved${scope ? ` ${scope}` : ""}.`, ...done, ...afterMessages, result.message || ""].join(" ").trim());
       return true;
     } catch (error) {
       if (current()) {
@@ -375,6 +407,12 @@ export function dirtySettingsParts(doc = document) {
 
 export function settingsHaveChanges(doc = document) {
   return [...editorFor(doc).panels.values()].some(dirtyPanel);
+}
+
+export function settingsPanelHasChanges(element) {
+  if (!element) return false;
+  const panel = editorFor(element.ownerDocument).panels.get(element);
+  return Boolean(panel && dirtyPanel(panel));
 }
 
 export async function confirmSettingsNavigation(doc = document) {

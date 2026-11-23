@@ -94,6 +94,7 @@ class CueRescan:
                 raise RuntimeError("Recording or saved cues changed during scan")
             token = secrets.token_urlsafe(24)
             self._tokens[token] = {
+                "catalog": catalog.path.resolve(),
                 "path": record["path"],
                 "station": station,
                 "identity": identity,
@@ -126,6 +127,7 @@ class CueRescan:
             if (
                 proposal is None
                 or record is None
+                or proposal["catalog"] != catalog.path.resolve()
                 or proposal["path"] != record["path"]
                 or proposal["station"] != station
             ):

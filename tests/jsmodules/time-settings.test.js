@@ -3,12 +3,16 @@ import { clockText, setTimeFormat } from "../../src/autodj/static/modules/time-f
 import { installTimeSettings } from "../../src/autodj/static/modules/time-settings.js";
 import { selectStation } from "../../src/autodj/static/modules/stations.js";
 
-const { groups } = vi.hoisted(() => ({ groups: [] }));
+const { groups, choose, confirm } = vi.hoisted(() => ({ groups: [], choose: vi.fn(), confirm: vi.fn() }));
 vi.mock("../../src/autodj/static/modules/settings-drafts.js", () => ({
   registerSettingsGroup: (spec) => {
     groups.push(spec);
     return { accept: (body) => spec.write(body), dirty: () => false };
   },
+}));
+vi.mock("../../src/autodj/static/modules/confirm-dialog.js", () => ({
+  chooseAction: choose,
+  confirmAction: confirm,
 }));
 
 const when = new Date(2026, 9, 14, 15, 4, 30);
@@ -119,4 +123,143 @@ it("edits the log label with the station options and names the station ID it rep
   selectStation("nightowl");
   expect(id.textContent).toBe("nightowl");
   selectStation("default");
+});
+
+it("stages a station library choice and restarts only after a successful save", async () => {
+  groups.length = 0;
+  selectStation("default");
+  document.body.innerHTML = `
+    <div id="spanel-stations"><div id="stations-status"></div>
+    <select id="time-zone"></select><select id="time-format"></select>
+    <select id="station-output"><option value="browser">Browser</option><option value="stream">Stream</option></select>
+    <input id="station-monitor" type="checkbox"><input id="station-upload-cap" type="number">
+    <select id="station-library"><option value="main">Main</option><option value="oldies">Oldies</option></select>
+    </div>`;
+  const request = vi.fn(async (url) => {
+    if (url === "/api/time-settings") return { timezone: "UTC", timezones: ["UTC"], time_format: "24" };
+    if (url.includes("/check?")) return { running: false, warnings: [] };
+    return {};
+  });
+  await installTimeSettings({ request }).load();
+  const library = document.getElementById("station-library");
+  const draft = groups.find((group) => group.group === "station" && group.controls?.includes(library));
+  expect(draft.read()).toEqual({ library_id: "main" });
+  library.value = "oldies";
+  expect(draft.read()).toEqual({ library_id: "oldies" });
+  expect(await draft.beforeSave(draft.read(), { library_id: "main" }, {
+    station: "default", current: () => true,
+  })).toBe("next");
+  expect(request).toHaveBeenCalledWith("/api/libraries/oldies/check?station=default");
+
+  await draft.afterSave(draft.read(), {
+    station: "default", current: () => true, decision: "restart",
+  });
+  expect(request.mock.calls.map(([url, options]) => [url, options?.method])).toEqual(expect.arrayContaining([
+    ["/api/stations/default/stop", "POST"],
+    ["/api/stations/default/start", "POST"],
+  ]));
+});
+
+async function stationLibraryDraft({ check = { running: true, warnings: [] }, requestOverride, ...options } = {}) {
+  groups.length = 0;
+  selectStation("default");
+  document.body.innerHTML = `
+    <div id="spanel-stations"><div id="stations-status"></div>
+    <select id="time-zone"></select><select id="time-format"></select>
+    <select id="station-output"><option value="browser">Browser</option><option value="stream">Stream</option></select>
+    <input id="station-monitor" type="checkbox"><input id="station-upload-cap" type="number">
+    <select id="station-library"><option value="main">Main</option><option value="oldies">Oldies</option></select>
+    </div>`;
+  const request = requestOverride || vi.fn(async (url) => {
+    if (url === "/api/time-settings") return { timezone: "UTC", timezones: ["UTC"], time_format: "24" };
+    if (url.includes("/check?")) return check;
+    return {};
+  });
+  await installTimeSettings({ request, ...options }).load();
+  const library = document.getElementById("station-library");
+  const draft = groups.find((group) => group.group === "station" && group.controls?.includes(library));
+  library.value = "oldies";
+  return { draft, library, request };
+}
+
+// ADR-0023-06
+it("offers all three running station choices and their warning text", async () => {
+  for (const [answer, result] of [["accept", "restart"], ["alternate", "next"], ["cancel", false]]) {
+    choose.mockReset().mockResolvedValue(answer);
+    confirm.mockReset();
+    const { draft, request } = await stationLibraryDraft({ check: {
+      running: true, warnings: ["Clockwheel: Morning uses a missing category."],
+    } });
+    expect(await draft.beforeSave(draft.read(), { library_id: "main" }, {
+      station: "default", current: () => true,
+    })).toBe(result);
+    expect(request).toHaveBeenCalledWith("/api/libraries/oldies/check?station=default");
+    expect(choose).toHaveBeenCalledWith(document, expect.objectContaining({
+      choices: ["Save and restart now", "Save for next start", "Cancel"],
+    }));
+    expect(choose.mock.calls[0][1].message).toContain("Clockwheel: Morning uses a missing category.");
+    expect(confirm).not.toHaveBeenCalled();
+  }
+});
+
+// ADR-0023-06
+it("asks before saving a stopped station's library when programming warnings exist", async () => {
+  choose.mockReset();
+  confirm.mockReset().mockResolvedValue(false);
+  const { draft } = await stationLibraryDraft({ check: {
+    running: false, warnings: ["Schedule: Thursday show is unavailable."],
+  } });
+  expect(await draft.beforeSave(draft.read(), { library_id: "main" }, {
+    station: "default", current: () => true,
+  })).toBe(false);
+  expect(confirm).toHaveBeenCalledWith(document, expect.objectContaining({
+    title: "Save music library",
+    message: expect.stringContaining("Schedule: Thursday show is unavailable."),
+  }));
+  confirm.mockResolvedValue(true);
+  expect(await draft.beforeSave(draft.read(), { library_id: "main" }, {
+    station: "default", current: () => true,
+  })).toBe("next");
+});
+
+// ADR-0023-06
+it("drops a library preflight reply after the station context changes", async () => {
+  let finishCheck;
+  choose.mockReset();
+  confirm.mockReset();
+  const request = vi.fn((url) => url.includes("/check?")
+    ? new Promise((resolve) => { finishCheck = resolve; })
+    : Promise.resolve({ timezone: "UTC", timezones: ["UTC"], time_format: "24" }));
+  const { draft } = await stationLibraryDraft({ requestOverride: request });
+  const current = vi.fn(() => true);
+  const pending = draft.beforeSave(draft.read(), { library_id: "main" }, { station: "default", current });
+  await vi.waitFor(() => expect(finishCheck).toBeTypeOf("function"));
+  current.mockReturnValue(false);
+  finishCheck({ running: true, warnings: [] });
+  expect(await pending).toBe(false);
+  expect(choose).not.toHaveBeenCalled();
+});
+
+// ADR-0023-08
+it("keeps the library selection unsaved when Track info editing is canceled", async () => {
+  const confirmLibraryChange = vi.fn(async () => false);
+  const { draft, request } = await stationLibraryDraft({ confirmLibraryChange });
+  request.mockClear();
+  expect(await draft.beforeSave(draft.read(), { library_id: "main" }, {
+    station: "default", current: () => true,
+  })).toBe(false);
+  expect(confirmLibraryChange).toHaveBeenCalledOnce();
+  expect(request).not.toHaveBeenCalled();
+});
+
+it("invalidates old library views after saving for next start or a failed restart", async () => {
+  const onLibraryChanged = vi.fn();
+  const { draft, request } = await stationLibraryDraft({ onLibraryChanged });
+  await draft.afterSave({}, { station: "default", current: () => true, decision: "next" });
+  expect(onLibraryChanged).toHaveBeenCalledOnce();
+  request.mockRejectedValueOnce(new Error("Could not stop station"));
+  await expect(draft.afterSave({}, {
+    station: "default", current: () => true, decision: "restart",
+  })).rejects.toThrow("Could not stop station");
+  expect(onLibraryChanged).toHaveBeenCalledTimes(2);
 });

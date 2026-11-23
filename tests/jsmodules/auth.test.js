@@ -910,6 +910,13 @@ describe("app startup integration", () => {
       if (url === "/api/status") {
         return Promise.resolve(response({ ok: true, status: 200, json: initialState }));
       }
+      if (url === "/api/libraries") {
+        return Promise.resolve(response({
+          ok: true,
+          status: 200,
+          json: { libraries: [{ id: "main", name: "Main" }] },
+        }));
+      }
       if (url === "/api/version") {
         return Promise.resolve(response({ ok: false, status: 503 }));
       }

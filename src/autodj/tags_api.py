@@ -8,7 +8,8 @@ playing or up next on any station, writes the file safely
 Neither analyses the audio again; both reload the library.  A refused field answers 400 with
 ``detail`` and the ``field`` at fault, so the page can focus it.
 
-The library is shared by every station, so this is a shared route.
+The route resolves the station or explicit library before editing its catalog.
+A file rewrite affects every library that uses that physical file on its next scan.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr
 
 from autodj.catalog import normalize_path
@@ -243,7 +244,11 @@ def _save(
 
 
 def install_tag_editor(
-    app: FastAPI, bridge: Any, describe: Callable[[Any, str, str], Awaitable[dict[str, Any]]]
+    app: FastAPI,
+    bridge: Any,
+    describe: Callable[[Any, str, str], Awaitable[dict[str, Any]]],
+    *,
+    resolve_library: Callable[[Request, str], Any] | None = None,
 ) -> None:
     """Register ``POST /api/library/tags``; the stations come from ``app.state``.
 
@@ -252,8 +257,12 @@ def install_tag_editor(
     """
 
     @app.post("/api/library/tags")
-    async def api_library_save_tags(body: TagEditBody) -> Any:
-        library = bridge.library
+    async def api_library_save_tags(body: TagEditBody, request: Request) -> Any:
+        library = (
+            resolve_library(request, body.station)
+            if resolve_library is not None
+            else bridge.library
+        )
         if library is None:
             raise HTTPException(status_code=503, detail="Folder library is not attached")
         if body.station not in app.state.stations.slugs():

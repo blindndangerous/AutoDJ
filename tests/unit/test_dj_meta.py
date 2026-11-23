@@ -303,7 +303,7 @@ class TestDjMetaCache:
         cache = get_cache(tmp_path)
         assert cache is not None
         cache.set("pending.flac", DjMeta(analysed=True))
-        close_cache()
+        close_cache(tmp_path)
         assert cache._conn is None
         assert get_cache() is None
 
@@ -793,17 +793,53 @@ class TestGetCacheAndAnalyse:
     def test_get_cache_initialises_once(self, tmp_path) -> None:
         from autodj import dj_meta as _dm
 
-        _dm._CACHE = None
+        _dm.close_cache()
         c1 = _dm.get_cache(tmp_path)
         c2 = _dm.get_cache(tmp_path)
         assert c1 is c2
         assert _dm.get_cache(None) is c1
+        _dm.close_cache()
 
     def test_get_cache_none_when_uninitialised(self) -> None:
         from autodj import dj_meta as _dm
 
-        _dm._CACHE = None
+        _dm.close_cache()
         assert _dm.get_cache(None) is None
+
+    def test_cache_instances_are_keyed_by_canonical_library_directory(self, tmp_path) -> None:
+        from autodj import dj_meta as _dm
+
+        _dm.close_cache()
+        library = tmp_path / "library"
+        library.mkdir()
+        first = _dm.get_cache(library)
+        same = _dm.get_cache(library / ".")
+        assert first is same
+
+    def test_libraries_have_independent_caches_and_close_independently(self, tmp_path) -> None:
+        from autodj import dj_meta as _dm
+
+        _dm.close_cache()
+        shared_music = tmp_path / "Music"
+        shared_music.mkdir()
+        library_a = tmp_path / "library-a"
+        library_b = tmp_path / "library-b"
+        cache_a = _dm.get_cache(library_a, music_dir=shared_music)
+        cache_b = _dm.get_cache(library_b, music_dir=shared_music)
+        assert cache_a is not None and cache_b is not None
+        assert cache_a is not cache_b
+        cache_a.set("song.flac", DjMeta(analysed=True, intro_end_s=3.0))
+        cache_b.set("song.flac", DjMeta(analysed=True, intro_end_s=7.0))
+
+        _dm.close_cache(library_a)
+
+        assert cache_a._conn is None
+        assert cache_b._conn is not None
+        assert cache_b.get("song.flac").intro_end_s == 7.0
+        assert _dm.get_cache() is cache_b
+        _dm.close_cache()
+        assert cache_b._conn is None
+        assert _dm.get_cache() is None
 
     def test_analyse_audio_returns_populated_djmeta(self) -> None:
         from autodj.dj_meta import analyse_audio

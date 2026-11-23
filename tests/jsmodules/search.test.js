@@ -364,7 +364,7 @@ describe("library browsing", () => {
     els.folderSelect.value = "folder:9";
     els.btnSearch.click();
     await vi.waitFor(() => expect(els.searchResults.textContent).toContain("Liner"));
-    expect(fetchImpl.mock.calls[0][0]).toBe("/api/library/tracks?kind=liner&offset=0&limit=100&source_id=9");
+    expect(fetchImpl.mock.calls[0][0]).toBe("/api/library/tracks?kind=liner&offset=0&limit=100&source_id=9&station=default");
     expect(els.nextPage.disabled).toBe(false);
     let editDetail;
     els.searchResults.addEventListener("autodj:edit-points", (event) => { editDetail = event.detail; }, { once: true });

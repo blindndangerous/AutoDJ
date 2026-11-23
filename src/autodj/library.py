@@ -107,7 +107,7 @@ def require_configured_library(cfg: AutoDJConfig) -> None:
             "A restore of the previous layout did not finish. Run `autodj doctor --fix` "
             "with the AutoDJ release that made the restore before starting this version."
         )
-    if pending_restore_state(cfg.index.library_dir) not in (None, "installed"):
+    if pending_restore_state(cfg.index.index_dir / "libraries" / "main") not in (None, "installed"):
         raise IndexConsistencyError(
             "A restore of this index folder did not finish, so some files are new and some old. "
             "Run `autodj doctor --fix` to put the old files back, then start AutoDJ again."
@@ -298,35 +298,41 @@ class LibraryManager:
                         StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
                         for spec in cfg.stations
                     ),
-                ],
+                ]
+                if cfg.index.library_id == "main"
+                else [],
             )
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)
-        default_store = self._station_store(DEFAULT_SLUG)
-        stores = [default_store]
-        try:
-            # The global marker avoids consulting legacy station tables after one complete import.
-            if default_store.migration_complete("catalog-stations-v1"):
-                station_ids = discover_station_folders(cfg.index.stations_dir) | {DEFAULT_SLUG}
-            else:
-                station_ids = discover_stations(self.catalog) | {DEFAULT_SLUG}
-            station_ids.update(spec.slug for spec in cfg.stations)
-            self._station_ids = station_ids
-            for station_id in sorted(station_ids):
-                store = (
-                    default_store if station_id == DEFAULT_SLUG else self._station_store(station_id)
-                )
-                if store is not default_store:
-                    stores.append(store)
-                migrate_legacy(self.catalog, store)
-            default_store.mark_migration("catalog-stations-v1")
-        except BaseException:
+        self._station_ids: set[str] = set()
+        if cfg.index.library_id == "main":
+            default_store = self._station_store(DEFAULT_SLUG)
+            stores = [default_store]
+            try:
+                # The global marker avoids consulting legacy station tables after one complete import.
+                if default_store.migration_complete("catalog-stations-v1"):
+                    station_ids = discover_station_folders(cfg.index.stations_dir) | {DEFAULT_SLUG}
+                else:
+                    station_ids = discover_stations(self.catalog) | {DEFAULT_SLUG}
+                station_ids.update(spec.slug for spec in cfg.stations)
+                self._station_ids = station_ids
+                for station_id in sorted(station_ids):
+                    store = (
+                        default_store
+                        if station_id == DEFAULT_SLUG
+                        else self._station_store(station_id)
+                    )
+                    if store is not default_store:
+                        stores.append(store)
+                    migrate_legacy(self.catalog, store)
+                default_store.mark_migration("catalog-stations-v1")
+            except BaseException:
+                for store in stores:
+                    store.close()
+                self.catalog.close()
+                raise
             for store in stores:
                 store.close()
-            self.catalog.close()
-            raise
-        for store in stores:
-            store.close()
         self._clock = clock
         self._auto_rescan_minutes = self.catalog.get_setting("auto_rescan_minutes", 0)
         self._last_scan_end = self._clock()
@@ -334,10 +340,14 @@ class LibraryManager:
         self._last_full_pass = self._clock()
         # What each station played, and its settings; the default station's
         # first.  tick() writes them all.
-        self.ledger = StationLedger(
-            self._station_store(DEFAULT_SLUG), self.entry_for_path, self.kind_for_path
+        self.ledger = (
+            StationLedger(
+                self._station_store(DEFAULT_SLUG), self.entry_for_path, self.kind_for_path
+            )
+            if cfg.index.library_id == "main"
+            else None
         )
-        self._ledgers: list[StationLedger] = [self.ledger]
+        self._ledgers: list[StationLedger] = [self.ledger] if self.ledger is not None else []
         # Set while a remote analysis worker is connected, so the CPU job,
         # which waited for it, runs again once it has gone.
         self._yielded_to_worker = False
@@ -346,18 +356,20 @@ class LibraryManager:
         try:
             self.analysis_queue = AnalysisQueue(catalog_path)
         except BaseException:
-            self.ledger.store.close()
+            if self.ledger is not None:
+                self.ledger.store.close()
             self.catalog.close()
             raise
         try:
-            if not existing_catalog:
+            if not existing_catalog and cfg.index.library_id == "main":
                 self.catalog.seed_sources(None, liner_root)
             # Songs a scan found gone before a restart stay out (#589).
             self._missing = self.catalog.gone_paths()
             self.refresh()
         except BaseException:
             self.analysis_queue.close()
-            self.ledger.store.close()
+            if self.ledger is not None:
+                self.ledger.store.close()
             self.catalog.close()
             raise
 
@@ -641,6 +653,33 @@ class LibraryManager:
                 self._station_ids.add(station)
                 self._ledgers.append(ledger)
         return ledger
+
+    def set_station_ids(self, stations: set[str]) -> None:
+        """Limit scan migration of history paths to this library's stations."""
+        with self._lock:
+            self._station_ids = set(stations)
+
+    def detach_station(self, station: str) -> StationLedger | None:
+        """Transfer a stopped station's ledger without closing its database."""
+        with self._lock:
+            self._station_ids.discard(station)
+            for ledger in self._ledgers:
+                if ledger.station == station:
+                    self._ledgers.remove(ledger)
+                    return ledger
+        return None
+
+    def attached_ledger(self, station: str) -> StationLedger | None:
+        """Find a ledger without creating a second owner."""
+        with self._lock:
+            return next((ledger for ledger in self._ledgers if ledger.station == station), None)
+
+    def attach_station(self, ledger: StationLedger) -> None:
+        """Keep a transferred ledger and its buffered history on this library's tick."""
+        ledger.bind_library(self.entry_for_path, self.kind_for_path)
+        with self._lock:
+            self._station_ids.add(ledger.station)
+            self._ledgers.append(ledger)
 
     def _station_store(self, station: str) -> StationStore:
         from autodj.stations import StationPaths
@@ -2244,10 +2283,11 @@ class LibraryManager:
             return False
         from autodj.jobs import get_manager
 
-        manager = get_manager()
+        manager = get_manager(self.cfg.index.library_dir)
         manager.configure(
             config_path=self.cfg.config_path,
             index_dir=self.cfg.index.index_dir,
+            library_id=self.cfg.index.library_id,
         )
         if not manager.start("analyse-library"):
             return False

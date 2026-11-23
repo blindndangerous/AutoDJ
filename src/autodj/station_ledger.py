@@ -75,6 +75,17 @@ class StationLedger:
         self._selected_clock: Any = _UNSELECTED
         self._last_played: dict[str, float] = {}
 
+    def bind_library(
+        self,
+        entry_for_path: Callable[[str], Any | None],
+        kind_for_path: Callable[[str], str | None],
+    ) -> None:
+        """Change metadata lookups after the station's previous engine has stopped."""
+        self.flush()
+        with self._lock:
+            self._entry_for_path = entry_for_path
+            self._kind_for_path = kind_for_path
+
     def setting_key(self, name: str) -> str:
         """The ``catalog_settings`` key of this station's setting *name*."""
         return setting_key(self.station, name)

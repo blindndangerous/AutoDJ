@@ -2171,7 +2171,8 @@ class TestLifespan:
                 return True
 
         jobs = Worker()
-        monkeypatch.setattr(autodj.jobs, "get_manager", lambda: jobs)
+        monkeypatch.setattr(autodj.jobs, "_MANAGER", jobs)
+        monkeypatch.setattr(autodj.jobs, "_MANAGERS", {})
         bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
         app = create_app(bridge)
         names = (
@@ -2223,6 +2224,9 @@ class TestServeFunction:
         ):
             manager.return_value.catalog.get_setting.return_value = None
             manager.return_value.entries_snapshot.return_value = ()
+            manager.return_value.entry_for_path.side_effect = lambda path: (
+                _make_entry(0) if str(path) == _make_entry(0).path else None
+            )
             yield
 
     @pytest.mark.parametrize(
@@ -3116,6 +3120,7 @@ class TestLibraryEndpoints:
         from autodj import jobs as _jobs
 
         _jobs._MANAGER = None
+        _jobs._MANAGERS.clear()
         resp = client.get("/api/library/job")
         assert resp.status_code == 200
         data = resp.json()
@@ -3132,6 +3137,7 @@ class TestLibraryEndpoints:
         from autodj import jobs as _jobs
 
         _jobs._MANAGER = None
+        _jobs._MANAGERS.clear()
         resp = client.post("/api/library/stop")
         assert resp.status_code == 200
         assert resp.json() == {"stopped": False}
@@ -3140,6 +3146,7 @@ class TestLibraryEndpoints:
         from autodj import jobs as _jobs
 
         _jobs._MANAGER = None
+        _jobs._MANAGERS.clear()
         data = client.get("/api/status").json()
         assert "library_job" in data
         assert data["library_job"]["running"] is False
@@ -3183,7 +3190,7 @@ class TestLibraryEndpoints:
 
         bridge.player._cfg.config_path = Path(tmp_path / "autodj.toml")
         bridge.player._cfg.index.index_dir = Path(tmp_path / "indexes")
-        manager = get_manager()
+        manager = get_manager(bridge.player._cfg.index.library_dir)
         captured = {}
 
         def _fake_popen(cmd, **kwargs):

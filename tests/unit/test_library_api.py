@@ -14,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from starlette.requests import Request
 
 from autodj.indexer import FEATURE_DIM
 from autodj.library import LibraryManager
@@ -48,7 +49,25 @@ def library_api(tmp_path):
     }
 
     def call(method, path, *args, **kwargs):
-        return asyncio.run(routes[(method, path)](*args, **kwargs))
+        endpoint = routes[(method, path)]
+        request = Request(
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": method,
+                "scheme": "http",
+                "path": path,
+                "raw_path": path.encode(),
+                "query_string": b"",
+                "headers": [],
+                "client": ("testclient", 50000),
+                "server": ("testserver", 80),
+                "root_path": "",
+                "app": app,
+            }
+        )
+        return asyncio.run(endpoint(request, *args, **kwargs))
 
     yield manager, call, app
     manager.close()

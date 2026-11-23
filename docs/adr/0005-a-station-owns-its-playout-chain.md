@@ -200,3 +200,13 @@ or evidence limits. Narrative above retains rationale and scope.
 ## Related proposal — 2026-10-17
 
 Prepared edition manifests and immutable source recordings are station-owned through StationPaths. Their source-asset and lifecycle proposal is [ADR 15](0015-prepare-speech-for-specific-show-editions.md). This cross-reference does not accept that proposal or change this record's status.
+
+## Amendment, 2026-11-15: named library ownership
+
+Issues [#801](https://github.com/blindndangerous/AutoDJ/issues/801) and
+[#802](https://github.com/blindndangerous/AutoDJ/issues/802) introduce named
+libraries and a saved library choice per station.
+[ADR 23](0023-named-libraries-with-station-bindings.md) records the proposed
+ownership extension, migration and verification. Station history remains
+station-owned; the earlier single-library description is retained as history.
+This amendment does not change this record's acceptance status.

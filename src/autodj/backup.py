@@ -3,7 +3,8 @@
 An archive is a plain ZIP file holding ``manifest.json`` (the AutoDJ version
 that wrote it and the list of files) and these members:
 
-- ``index/library.db``: the current catalog.
+- ``index/library.json`` and ``index/library.db``: the stable identity and catalog of the
+  main library.
 - ``index/dj_meta.db``, ``index/web_state.json``,
   ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
   ``index/carts.json``,
@@ -14,6 +15,8 @@ that wrote it and the list of files) and these members:
   The live DJ accounts are kept without password hashes, so each DJ's password
   must be set again after a restore.  ``relays.json`` and ``secrets.json``, which
   hold a station's passwords, are never backed up (:data:`SECRET_STATE_FILES`).
+- ``libraries/<id>/library.json`` and each other registered library's catalog, cues and
+  related-data files. Physical music folders remain external and are not copied.
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``,
   ``intros/...`` (the matched intros' audio), ``ads/...`` (the ad spots' audio) and
   ``ad_plays/...`` (the ad play log, #51): every file in those folders and their
@@ -56,7 +59,7 @@ import tempfile
 import uuid
 import zipfile
 from collections.abc import Callable, Iterable
-from contextlib import closing, suppress
+from contextlib import ExitStack, closing, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -76,6 +79,7 @@ INDEX_FILES = (
     "station.json",
     "lifecycle.json",
     "station.db",
+    "library.json",
     "dj_meta.db",
     "library.db",
     "web_state.json",
@@ -184,17 +188,25 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
 
     The default station's prefixes are the top-level names (``index``,
     ``liners``...); another station's are ``stations/<slug>/index`` and
-    ``stations/<slug>/<folder>``.  An ``index/`` member is the default
-    station's, or the library's by its name
-    (:func:`_split`), so archives keep the names they always had.
+    ``stations/<slug>/<folder>``. The main library retains its historical
+    ``index/`` archive members; other libraries use ``libraries/<id>/``.
     """
     from autodj.config import station_config
+    from autodj.library_registry import LibraryRegistry, LibraryRegistryError
     from autodj.stations import SLUG_PATTERN, StationPaths
 
     station = StationPaths.default(cfg)
+    registry = LibraryRegistry(cfg.index.index_dir / "libraries")
+    try:
+        libraries = registry.list(allow_legacy_main=True)
+    except LibraryRegistryError as exc:
+        raise BackupError(f"cannot read the library registry: {exc}") from exc
+    main_library = cfg.index.index_dir / "libraries" / "main"
     roots = {
         "index": station.state_dir,
-        "library": cfg.index.library_dir,
+        # The deployment-wide serve and restore locks stay anchored on main,
+        # even when the server currently uses another library.
+        "library": main_library,
         "announcements": station.announcements,
         "liners": station.liners,
         "speech": station.speech,
@@ -209,6 +221,13 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         "ad_plays": station.ad_plays,
         "stereo-tool-presets": cfg.index.shared_dir / "stereo-tool-presets",
     }
+    roots.update(
+        {
+            f"libraries/{definition.id}": definition.path
+            for definition in libraries
+            if definition.id != "main"
+        }
+    )
     for spec in cfg.stations:
         paths = StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug)
         prefix = f"stations/{spec.slug}"
@@ -261,12 +280,19 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
 
 def _is_files(key: str) -> bool:
     """Whether archive prefix *key* holds single state files, not a whole folder."""
-    return key in {"index", "library"} or key.endswith("/index")
+    return key in {"index", "library"} or key.endswith("/index") or key.startswith("libraries/")
 
 
 #: ``index/`` members kept in the library folder.
 _LIBRARY_MEMBERS = frozenset(
-    {"dj_meta.db", "library.db", "related-artists.toml", "related-tracks.toml", im.MANIFEST_NAME}
+    {
+        "dj_meta.db",
+        "library.db",
+        "library.json",
+        "related-artists.toml",
+        "related-tracks.toml",
+        im.MANIFEST_NAME,
+    }
 )
 
 
@@ -275,6 +301,14 @@ def _split(name: str) -> tuple[str, tuple[str, ...]]:
     parts = PurePosixPath(name).parts
     if parts[0] == "stations" and len(parts) > 3:
         return "/".join(parts[:3]), parts[3:]
+    if parts[0] == "libraries" and len(parts) > 2:
+        from autodj.library_registry import LibraryRegistryError, validate_library_id
+
+        try:
+            library_id = validate_library_id(parts[1])
+        except LibraryRegistryError as exc:
+            raise BackupError(f"invalid library ID in archive member {name!r}: {exc}") from exc
+        return f"libraries/{library_id}", parts[2:]
     if (
         parts[0] == "index"
         and len(parts) == 2
@@ -287,6 +321,18 @@ def _split(name: str) -> tuple[str, tuple[str, ...]]:
 def _index_root(roots: dict[str, Path], name: str) -> Path:
     """The folder an ``index/`` member *name* lives in."""
     return roots[_split(f"index/{name}")[0]]
+
+
+def _library_roots(roots: dict[str, Path]) -> list[tuple[str, Path]]:
+    """Return the main and named library roots in stable path order."""
+    return sorted(
+        (
+            (key, root)
+            for key, root in roots.items()
+            if key == "library" or key.startswith("libraries/")
+        ),
+        key=lambda item: str(item[1].resolve()).casefold(),
+    )
 
 
 def _swallows(folder: Path, other: Path) -> bool:
@@ -546,7 +592,9 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
             f"there is no catalog database at {active / 'library.db'}; "
             "run `autodj migrate-index --apply` for an older library, or `autodj index` for a new one"
         )
-    with im.publication_lock(active):
+    with ExitStack() as locks:
+        for _key, root in _library_roots(roots):
+            locks.enter_context(im.publication_lock(root))
         for member, original in _state_sources(cfg, roots):
             copy = snapshot / member
             copy.parent.mkdir(parents=True, exist_ok=True)
@@ -563,32 +611,59 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
             else:
                 shutil.copy(original, copy)
             members[member] = copy
-    for name in ("dj_meta.db", "library.db", "related-artists.toml", "related-tracks.toml"):
-        root = _index_root(roots, name)
-        if (root / name).exists():
-            _within_root(root / name, root)
-            _single_link(root / name)
-    for name in ("dj_meta.db", "library.db"):
-        database = active / name
-        if database.is_file():
-            _snapshot_database(database, index / name)
-            if name == "library.db":
-                _check_catalog(index / name)
-    for key, root in roots.items():
-        if key == "library" or not _is_files(key):
-            continue
-        database = root / "station.db"
-        if database.is_file():
-            member = f"{key}/station.db"
-            target = snapshot / member
-            target.parent.mkdir(parents=True, exist_ok=True)
-            _snapshot_database(database, target)
-            members[member] = target
-    for name in ("related-artists.toml", "related-tracks.toml"):
-        related = roots["library"] / name
-        if related.is_file():
-            _single_link(related)
-            shutil.copyfile(related, index / name)
+        for key, root in _library_roots(roots):
+            archive_prefix = "index" if key == "library" else key
+            for name in ("library.json", "related-artists.toml", "related-tracks.toml"):
+                source = root / name
+                if source.is_file() and (name != "library.json" or source.read_bytes().strip()):
+                    _within_root(source, root)
+                    _single_link(source)
+                    member = f"{archive_prefix}/{name}"
+                    target = snapshot / member
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source, target)
+                    members[member] = target
+                elif key == "library" and name == "library.json":
+                    member = "index/library.json"
+                    target = snapshot / member
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(
+                        json.dumps(
+                            {
+                                "schema_version": 1,
+                                "id": "main",
+                                "name": "Main",
+                                "settings": {},
+                            },
+                            indent=2,
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    members[member] = target
+            for name in ("dj_meta.db", "library.db"):
+                database = root / name
+                if not database.is_file():
+                    continue
+                member = f"{archive_prefix}/{name}"
+                target = snapshot / member
+                target.parent.mkdir(parents=True, exist_ok=True)
+                _snapshot_database(database, target)
+                if name == "library.db":
+                    _check_catalog(target)
+                members[member] = target
+        for key, root in roots.items():
+            if _is_files(key) and (key == "library" or key.startswith("libraries/")):
+                continue
+            if not _is_files(key):
+                continue
+            database = root / "station.db"
+            if database.is_file():
+                member = f"{key}/station.db"
+                target = snapshot / member
+                target.parent.mkdir(parents=True, exist_ok=True)
+                _snapshot_database(database, target)
+                members[member] = target
     for path in sorted(index.iterdir()):
         members.setdefault(f"index/{path.name}", path)
     return dict(
@@ -663,15 +738,23 @@ def _check_backup_space(
     files; the archive at most everything, uncompressed.
     """
     snapshot = sum(_file_size(_index_root(roots, name) / name) for name in INDEX_FILES)
-    snapshot += sum(
-        _file_size(roots["library"] / f"{database}{suffix}")
-        for database in ("dj_meta.db", "library.db")
-        for suffix in _SQLITE_SIDECARS
-    )
+    for _key, root in _library_roots(roots):
+        snapshot += sum(
+            _file_size(root / f"{database}{suffix}")
+            for database in ("dj_meta.db", "library.db")
+            for suffix in _SQLITE_SIDECARS
+        )
     for key, root in roots.items():
-        if key not in {"index", "library"} and _is_files(key) and root.is_dir():
+        if key.startswith("libraries/") and _is_files(key):
+            snapshot += sum(_file_size(root / name) for name in _LIBRARY_MEMBERS)
+        if (
+            key not in {"index", "library"}
+            and not key.startswith("libraries/")
+            and _is_files(key)
+            and root.is_dir()
+        ):
             snapshot += sum(_file_size(root / name) for name in (*STATION_FILES, "station.db"))
-        if key != "library" and _is_files(key):
+        if key != "library" and not key.startswith("libraries/") and _is_files(key):
             snapshot += sum(_file_size(root / f"station.db{suffix}") for suffix in _SQLITE_SIDECARS)
     total = snapshot + sum(_file_size(path) for path in folder_files)
     for place, size, what in (
@@ -885,6 +968,9 @@ def _target(roots: dict[str, Path], name: str) -> Path:
             or im.GENERATION_FILE_RE.match(rest[0])
         ):
             return roots[key] / rest[0]
+    elif key.startswith("libraries/") and key in roots:
+        if len(rest) == 1 and (rest[0] in _LIBRARY_MEMBERS or im.GENERATION_FILE_RE.match(rest[0])):
+            return roots[key] / rest[0]
     elif _is_files(key):
         if len(rest) == 1 and rest[0] in (*STATION_FILES, "station.db"):
             return roots[key] / rest[0]
@@ -931,10 +1017,103 @@ def _is_legacy_index_member(name: str) -> bool:
     """Whether a validated archive member is an obsolete index generation file."""
     key, rest = _split(name)
     return (
-        key == "library"
+        (key == "library" or key.startswith("libraries/"))
         and len(rest) == 1
         and (rest[0] in _LEGACY_INDEX_FILES or im.GENERATION_FILE_RE.match(rest[0]) is not None)
     )
+
+
+def _archived_library_definition(archive: zipfile.ZipFile, member: str, expected_id: str) -> str:
+    """Validate a library definition from an archive and return its display name."""
+    from autodj.library_registry import LibraryRegistry, LibraryRegistryError, validate_library_id
+
+    try:
+        document = json.loads(
+            archive.read(member),
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"non-finite number {value}")
+            ),
+        )
+        if not isinstance(document, dict) or set(document) - {
+            "schema_version",
+            "id",
+            "name",
+            "settings",
+        }:
+            raise ValueError("unexpected fields")
+        if type(document.get("schema_version")) is not int or document["schema_version"] != 1:
+            raise ValueError("unsupported schema version")
+        library_id = validate_library_id(document.get("id"))
+        if library_id != expected_id:
+            raise ValueError(f"definition ID {library_id!r} does not match {expected_id!r}")
+        name = LibraryRegistry._validate_name(document.get("name"))
+        LibraryRegistry._validate_settings(document.get("settings", {}))
+        return name
+    except (
+        KeyError,
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        LibraryRegistryError,
+        ValueError,
+    ) as exc:
+        raise BackupError(f"invalid library definition {member}: {exc}") from exc
+
+
+def _prepare_library_restore(
+    archive: zipfile.ZipFile, files: list[str], roots: dict[str, Path]
+) -> None:
+    """Validate archived library identities and add safe roots for missing IDs."""
+    from autodj.library_registry import LibraryRegistry, LibraryRegistryError, validate_library_id
+
+    archived_ids: set[str] = set()
+    for member in files:
+        parts = PurePosixPath(member).parts
+        if parts and parts[0] == "libraries" and len(parts) >= 3:
+            try:
+                library_id = validate_library_id(parts[1])
+            except LibraryRegistryError as exc:
+                raise BackupError(f"invalid named-library archive path {member!r}: {exc}") from exc
+            if library_id == "main":
+                raise BackupError("the main library must use the legacy index/ archive prefix")
+            archived_ids.add(library_id)
+    names: dict[str, str] = {}
+    current_names: dict[str, str] = {}
+    try:
+        current_definitions = LibraryRegistry(roots["library"].parent).list(allow_legacy_main=True)
+    except LibraryRegistryError as exc:
+        raise BackupError(f"cannot read the current library registry: {exc}") from exc
+    current_names.update({definition.id: definition.name for definition in current_definitions})
+    # Older installations may not yet have a libraries/main directory. Its
+    # effective name is still Main, and must participate in conflict checks.
+    current_names.setdefault("main", "Main")
+    archived_names: dict[str, str] = {}
+    main_member = "index/library.json"
+    if main_member in files:
+        archived_names["main"] = _archived_library_definition(archive, main_member, "main")
+    for library_id in sorted(archived_ids):
+        member = f"libraries/{library_id}/library.json"
+        if member not in files:
+            raise BackupError(f"the named library {library_id!r} has no definition in the backup")
+        archived_names[library_id] = _archived_library_definition(archive, member, library_id)
+        key = f"libraries/{library_id}"
+        root = roots.get(key, roots["library"].parent / library_id)
+        if _is_link(root):
+            raise BackupError(f"refusing linked library folder {root}")
+        roots.setdefault(key, root)
+    final_names = {
+        library_id: name
+        for library_id, name in current_names.items()
+        if library_id not in archived_names
+    }
+    final_names.update(archived_names)
+    for library_id, name in final_names.items():
+        folded = name.casefold()
+        if folded in names:
+            raise BackupError(
+                f"library names in the backup conflict: {names[folded]!r} and {library_id!r}"
+            )
+        names[folded] = library_id
 
 
 def _nearest_existing(path: Path) -> Path:
@@ -1224,6 +1403,7 @@ def _restore(
     for slug in manifest.stations:
         if f"stations/{slug}/index" not in roots:
             raise _unknown_station(slug)
+    _prepare_library_restore(archive, archive_files, roots)
     archive_targets = {name: _target(roots, name) for name in archive_files}
     if sorted(manifest.files) != sorted(
         name for name in archive.namelist() if name != "manifest.json"
@@ -1296,16 +1476,23 @@ def _restore(
         key: roots[key].with_name(f".{roots[key].name}.restore-{uuid.uuid4().hex}") for key in keys
     }
     keep_stages = False
-    with im.publication_lock(roots["library"]):
+    library_lock_roots = [
+        (key, roots[key]) for key in stages if key == "library" or key.startswith("libraries/")
+    ]
+    with ExitStack() as locks:
+        for _key, root in sorted(
+            library_lock_roots, key=lambda item: str(item[1].resolve()).casefold()
+        ):
+            locks.enter_context(im.publication_lock(root))
         try:
             for stage in stages.values():
                 stage.mkdir(parents=True, exist_ok=True)
             for name in files:
                 key, rest = _split(name)
                 _stage_member(archive, name, stages[key].joinpath(*rest))
-            if "library" in stages:
+            for library_key, _root in library_lock_roots:
                 for name in ("dj_meta.db", "library.db"):
-                    database = stages["library"] / name
+                    database = stages[library_key] / name
                     if database.is_file():
                         _check_sqlite(database)
                         if name == "library.db":
@@ -1341,7 +1528,12 @@ def _restore(
                             "Saved speech could not be validated for restore"
                         ) from exc
                 database = stage / "station.db"
-                if key != "library" and _is_files(key) and database.is_file():
+                if (
+                    key != "library"
+                    and not key.startswith("libraries/")
+                    and _is_files(key)
+                    and database.is_file()
+                ):
                     _check_sqlite(database)
             _check_layout(roots, list(stages))
             swap = _Swap(roots["library"] / JOURNAL_NAME, stages.values())

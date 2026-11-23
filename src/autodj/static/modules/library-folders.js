@@ -11,13 +11,12 @@ import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
 import { makeSay, clearAnnouncedStatus, announceStatus } from "./live-region.js";
 import { installAutoRescan } from "./auto-rescan.js";
-import { installAdvancedLength } from "./advanced-length.js";
-import { installMusicFadeDrop } from "./music-fade-drop.js";
 import { showBeetsPaths } from "./beets-paths.js";
 import { installMatchedIntros } from "./matched-intros.js";
 import { installTagEditor } from "./tag-editor.js";
 import { returnToView } from "./tabs.js";
 import { addBrowseButton, serverFolderSource } from "./path-picker.js";
+import { stationApi } from "./stations.js";
 
 const POINTS = ["start", "intro", "outro", "segue", "end", "overlap_start"];
 
@@ -95,11 +94,10 @@ export function importSummary(data) {
 
 // landmarks: Track info's Song structure (modules/landmarks.js, #60).
 export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, getStation = () => "default", onBackgroundError = () => {}, onFolders, landmarks = NO_LANDMARKS }) {
+  const previewAudioUrl = (path) => stationApi(`/api/audio?path=${encodeURIComponent(path)}`, getStation());
   const panel = doc.getElementById("panel-library");
-  const settingsPanel = doc.getElementById("panel-settings");
   const searchPanel = doc.getElementById("library-kind")?.closest("section[data-view]") || null;
   let searchShown = false;
-  let settingsShown = false;
   const list = doc.getElementById("source-folders");
   const tableNavigation = installTableNavigation(list);
   const pendingFolderEdits = new Set();
@@ -161,6 +159,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
   let opening = false;
   let saving = false;
   let folderSignature = null;
+  let browseFolderSignature = null;
+  let folderRefreshGeneration = 0;
   let protectedGeneration = 0;
   let busyController = new AbortController();
   let rescanResult = null;
@@ -311,7 +311,6 @@ export function installLibraryFolders({ document: doc = document, request = requ
       else list.replaceChildren(tableRow(doc, ["No folders added yet."], { colspan: [5] }));
       folderSignature = signature;
       tableNavigation.refresh();
-      onFolders?.(folders);
       if (focused && !list.contains(doc.activeElement)) {
         const cell = [...list.querySelectorAll("tr")].find((row) => row.dataset.id === focused.id)?.cells[focused.column];
         const replacement = cell?.querySelector("button:not(:disabled), input:not(:disabled), select:not(:disabled)") || cell;
@@ -349,28 +348,38 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (suspended || ((!panel || panel.closest("[hidden]")) && (!searchPanel || searchPanel.closest("[hidden]")))) return;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
+    const refreshGeneration = ++folderRefreshGeneration;
+    const browsing = !!searchPanel && !searchPanel.closest("[hidden]");
+    const station = getStation();
     try {
-      const data = await request("/api/library/folders");
-      if (requestCurrent(epoch, generation)) renderFolders(data);
+      const data = await request(browsing
+        ? `/api/library/folders?station=${encodeURIComponent(station)}`
+        : "/api/library/folders");
+      if (!requestCurrent(epoch, generation) || refreshGeneration !== folderRefreshGeneration
+        || (browsing && station !== getStation())) return;
+      if (browsing) {
+        const folders = data.folders || [];
+        const signature = JSON.stringify([station, folders]);
+        if (signature !== browseFolderSignature) {
+          browseFolderSignature = signature;
+          onFolders?.(folders);
+        }
+      } else renderFolders(data);
     } catch (error) {
-      if (requestCurrent(epoch, generation)) progress.textContent = failureText("load folders", error);
+      if (requestCurrent(epoch, generation) && refreshGeneration === folderRefreshGeneration) {
+        if (browsing) onBackgroundError(error);
+        else progress.textContent = failureText("load folders", error);
+      }
     }
   }
   function visible() { return !suspended && !!panel && !panel.closest("[hidden]") && !doc.hidden; }
   function updatePolling() {
     const searching = !suspended && !!searchPanel && !searchPanel.closest("[hidden]") && !doc.hidden;
-    const showSettings = !suspended && !!settingsPanel && !settingsPanel.closest("[hidden]") && !doc.hidden;
     if (searching && !searchShown && !visible()) void refresh();
-    if (showSettings && !settingsShown) {
-      void advancedLength?.load();
-      void musicFadeDrop?.load();
-    }
     searchShown = searching;
-    settingsShown = showSettings;
     if (visible() && timer == null) {
       void refresh();
       void autoRescan?.load();
-      void advancedLength?.load();
       timer = setInterval(refresh, 3000);
     } else if (!visible() && timer != null) {
       clearInterval(timer);
@@ -455,18 +464,6 @@ export function installLibraryFolders({ document: doc = document, request = requ
     document: doc,
     request,
     say: announceAction,
-    isCurrent: () => !suspended,
-  });
-  const advancedLength = installAdvancedLength({
-    document: doc,
-    request,
-    say: makeSay(doc.getElementById("sr-status"), { dwellMs: 4000, errorDwellMs: 6000 }),
-    isCurrent: () => !suspended,
-  });
-  const musicFadeDrop = installMusicFadeDrop({
-    document: doc,
-    request,
-    say: makeSay(doc.getElementById("sr-status"), { dwellMs: 4000, errorDwellMs: 6000 }),
     isCurrent: () => !suspended,
   });
   doc.getElementById("source-folder-rescan").addEventListener("click", async () => {
@@ -580,7 +577,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     rescanBusy = true;
 
     const identity = { path: currentPath, station: currentStation, epoch: captureAuthenticatedRequestEpoch(), generation: protectedGeneration, scan: rescanGeneration };
-    const body = { path: identity.path, ...(identity.station === "default" ? {} : { station: identity.station }) };
+      const body = { path: identity.path, station: identity.station };
     let focusAfter = null;
     try {
       const data = await withDisabled(doc.getElementById("points-rescan"), () => request("/api/library/points/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }), { signal: rescanController.signal });
@@ -619,7 +616,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     let focusAfter = null;
     doc.getElementById("points-rescan-status").textContent = "Applying cue points…";
     try {
-      const body = { path: result.path, ...(result.station === "default" ? {} : { station: result.station }), token: result.token, fields };
+      const body = { path: result.path, station: result.station, token: result.token, fields };
       const data = await withDisabled(button, () => request("/api/library/points/rescan/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }), { signal: busyController.signal });
       if (!requestCurrent(result.epoch, result.generation) || currentPath !== result.path || getStation() !== result.station) return;
       currentRecord = { ...(currentRecord || {}), ...data };
@@ -706,8 +703,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
           }
         }
       }
-      const body = { path: currentPath, points };
-      if (station !== "default") body.station = station;
+      const body = { path: currentPath, points, station };
       if (currentKind === "liner" && allowOutro) body.allow_outro = allowOutro.checked;
       const data = await request("/api/library/points", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!requestCurrent(epoch, generation) || currentStation !== station) return false;
@@ -841,7 +837,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       if (!requestCurrent(epoch, generation)) return;
       editor.inert = true;
       const station = getStation();
-      const stationQuery = station === "default" ? "" : `&station=${encodeURIComponent(station)}`;
+      const stationQuery = `&station=${encodeURIComponent(station)}`;
       const data = await request(`/api/library/points?path=${encodeURIComponent(path)}${stationQuery}`);
       if (!requestCurrent(epoch, generation) || getStation() !== station) return;
       currentStation = station;
@@ -859,7 +855,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       const preview = doc.getElementById("points-preview");
       if (preview) {
         preview.pause();
-        preview.src = `/api/audio?path=${encodeURIComponent(currentPath)}`;
+        preview.src = previewAudioUrl(currentPath);
       }
       rememberReturn(opener);
       showTrackInfo();
@@ -942,7 +938,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const setButton = event.target.closest("button[data-set-current]");
     if (setButton) {
       const preview = doc.getElementById("points-preview");
-      const time = preview?.getAttribute("src") === `/api/audio?path=${encodeURIComponent(currentPath)}`
+      const time = preview?.getAttribute("src") === previewAudioUrl(currentPath)
         ? preview.currentTime
         : (getCurrentTrack()?.path === currentPath ? getCurrentPosition() : null);
       if (!Number.isFinite(time)) { pointSay("This track is not playing in the preview or on the station.", "error"); return; }
@@ -983,19 +979,13 @@ export function installLibraryFolders({ document: doc = document, request = requ
   window.addEventListener("hashchange", updatePolling);
   doc.addEventListener("visibilitychange", updatePolling);
   updatePolling();
-  function clearProtectedData() {
-    pendingFolderEdits.clear();
-    suspended = true;
+  function clearTrackInfo() {
+    browseFolderSignature = null;
     clearRescan();
     protectedGeneration += 1;
     busyController.abort();
     busyController = new AbortController();
-    clearAnnouncedStatus(status);
     clearAnnouncedStatus(pointStatus);
-    if (timer != null) clearInterval(timer);
-    timer = null;
-    searchShown = false;
-    settingsShown = false;
     opening = saving = false;
     const dialog = doc.getElementById("track-info-dialog");
     if (dialog?.open) dialog.close();
@@ -1010,24 +1000,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
     landmarks.clear();
     currentPath = null;
     currentRecord = null;
+    currentStation = getStation();
     currentKind = "music";
     currentName = "this track";
     if (allowOutro) allowOutro.checked = false;
     savedFields = "";
-    list.replaceChildren();
-    folderSignature = null;
-    pathInput.value = "";
-    clearAddError();
-    autoRescan?.clear();
-    advancedLength?.clear();
-    musicFadeDrop?.clear();
-    errorSignature = "";
-    importRunning = false;
-    errorList.hidden = true;
-    errorList.open = false;
-    errorList.querySelector("ul").replaceChildren();
-    status.textContent = "";
-    progress.textContent = "";
+    savedBeforeSwitch = "";
     pointStatus.textContent = "";
     returnTarget = null;
     returnView = null;
@@ -1050,23 +1028,51 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const preview = doc.getElementById("points-preview");
     if (preview) { preview.pause(); preview.removeAttribute("src"); preview.load(); }
   }
+  function confirmStationChange() {
+    return !currentPath || !unsaved() ? Promise.resolve(true) : confirmTrackChange();
+  }
+  function clearProtectedData() {
+    pendingFolderEdits.clear();
+    suspended = true;
+    clearTrackInfo();
+    if (timer != null) clearInterval(timer);
+    timer = null;
+    searchShown = false;
+    clearAnnouncedStatus(status);
+    list.replaceChildren();
+    folderSignature = null;
+    browseFolderSignature = null;
+    pathInput.value = "";
+    clearAddError();
+    autoRescan?.clear();
+    errorSignature = "";
+    importRunning = false;
+    errorList.hidden = true;
+    errorList.open = false;
+    errorList.querySelector("ul").replaceChildren();
+    status.textContent = "";
+    progress.textContent = "";
+    pointStatus.textContent = "";
+  }
   function resume() { suspended = false; updatePolling(); }
-  // Refresh station-owned details without discarding shared cue or tag edits.
+  function refreshForLibrary() {
+    folderRefreshGeneration += 1;
+    void refresh();
+    void autoRescan?.load();
+  }
+  // Track info belongs to the selected library, so never carry its editor
+  // draft or metadata across a station's library binding.
   const refreshIntros = () => {
-    landmarks.refresh();
     const station = getStation();
     const changedStation = station !== currentStation;
-    if (changedStation) clearRescan();
+    if (changedStation) clearTrackInfo();
+    else landmarks.refresh();
     currentStation = station;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
     const path = currentPath;
-    if (changedStation && currentRecord) {
-      currentRecord.last_played = null;
-      renderDetails(currentRecord);
-    }
     const timestamp = path
-      ? request(`/api/library/points?path=${encodeURIComponent(path)}${station === "default" ? "" : `&station=${encodeURIComponent(station)}`}`)
+      ? request(`/api/library/points?path=${encodeURIComponent(path)}&station=${encodeURIComponent(station)}`)
         .then((data) => {
           if (!requestCurrent(epoch, generation) || currentStation !== station || currentPath !== path || data.path !== path) return;
           if (currentRecord) currentRecord.last_played = data.last_played;
@@ -1079,5 +1085,5 @@ export function installLibraryFolders({ document: doc = document, request = requ
       : Promise.resolve();
     return Promise.all([intros.refresh?.(), timestamp]);
   };
-  return { refresh, openEditor, clearProtectedData, resume, refreshIntros, destroy() { clearProtectedData(); tags.destroy(); intros.destroy(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
+  return { refresh, refreshForLibrary, openEditor, clearTrackInfo, confirmStationChange, clearProtectedData, resume, refreshIntros, destroy() { clearProtectedData(); tags.destroy(); intros.destroy(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
 }

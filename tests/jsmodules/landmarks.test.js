@@ -14,7 +14,7 @@ import {
   upcomingSpeech,
 } from "../../src/autodj/static/modules/landmarks.js";
 import { AuthenticationRequiredError } from "../../src/autodj/static/modules/api-client.js";
-import { selectStation } from "../../src/autodj/static/modules/stations.js";
+import { selectStation, stationApi } from "../../src/autodj/static/modules/stations.js";
 
 const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
 // Template contents stay inert, so stylesheets and scripts are not loaded.
@@ -126,7 +126,7 @@ describe("landmark keys and Track info", () => {
 
   function openTrackInfo(path = ANSWER.path) {
     el("panel-track-info").hidden = false;
-    el("points-preview").setAttribute("src", `/api/audio?path=${encodeURIComponent(path)}`);
+    el("points-preview").setAttribute("src", stationApi(`/api/audio?path=${encodeURIComponent(path)}`));
   }
   const seeks = () => request.mock.calls.filter(([url]) => url === "/api/seek");
   const landmarkCalls = () => request.mock.calls.filter(([url]) => url.startsWith("/api/landmarks"));

@@ -42,7 +42,7 @@ import threading
 import time
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -413,7 +413,21 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
             )
         cfg = station_config(spec.cfg, root)
         paths = StationPaths.for_station(cfg, station)
-    active = Path(root.index.library_dir)
+    library_id = cfg.station.library_id
+    if library_id != "main":
+        from autodj.config import LibraryConfig
+        from autodj.library_registry import LibraryRegistry
+
+        try:
+            definition = LibraryRegistry(root.index.index_dir / "libraries").get(library_id)
+            cfg = replace(
+                cfg,
+                index=replace(cfg.index, library_id=library_id),
+                library=LibraryConfig.from_dict(definition.settings),
+            )
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            raise SimulationError(f"Cannot open library {library_id!r}: {exc}") from exc
+    active = Path(cfg.index.library_dir)
     if not (active / "library.db").is_file():
         raise SimulationError(
             f"No music library in {active}. Start autodj serve or run autodj index first."

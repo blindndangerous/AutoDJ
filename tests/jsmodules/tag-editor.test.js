@@ -150,7 +150,7 @@ describe("Track info tag editor", () => {
     expect(request).toHaveBeenCalledTimes(1);
     const [url, options] = request.mock.calls[0];
     expect(url).toBe("/api/library/tags");
-    expect(JSON.parse(options.body)).toEqual({ path: RECORD.path, tags: { title: "New Title", key: "8A" }, beets: false, write_file: false });
+    expect(JSON.parse(options.body)).toEqual({ path: RECORD.path, tags: { title: "New Title", key: "8A" }, beets: false, write_file: false, station: "default" });
     expect(onSaved).toHaveBeenCalledWith(saved);
     expect(document.getElementById("tags-status").textContent).toBe("Saved the tags of New Title in AutoDJ.");
     expect(document.activeElement).toBe(button);
