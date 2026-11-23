@@ -288,7 +288,7 @@ describe("Settings > Global > Stations management", () => {
   });
 
   // ADR-0005-06 and ADR-0010-10.
-  it("requires exact deletion confirmation, defaults voice removal off, and returns focus after removal", async () => {
+  it("confirms permanent deletion in a modal, defaults voice removal off, and returns focus after removal", async () => {
     const archived = { ...OWL, archived: true };
     const request = vi.fn(async () => ({ cleanup_pending: true }));
     const { onChanged, refresh } = setup({ request, stations: [AUTODJ, archived] });
@@ -297,18 +297,24 @@ describe("Settings > Global > Stations management", () => {
     expect(byId("stations-list").children[0]
       .querySelector('[aria-label="Delete AutoDJ permanently"]')?.hidden).toBe(true);
     const toggle = row.querySelector('[aria-label="Delete Night Owl Radio permanently"]');
-    expect(toggle.getAttribute("aria-controls")).toBe(`station-delete-panel-${OWL.slug}`);
+    toggle.focus();
     toggle.click();
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    const confirmation = row.querySelector("input[type=text]");
-    const voice = row.querySelector('input[type="checkbox"]:not([aria-label])');
-    const deleteButton = row.deletePanel.querySelector("button");
+    const dialog = byId("station-delete-dialog");
+    expect(dialog.open).toBe(true);
+    expect(dialog.querySelector("h1").textContent).toBe("Delete Night Owl Radio permanently?");
+    expect(dialog.querySelector("h1").id).toBe("station-delete-title");
+    expect(dialog.textContent).not.toContain("Voice recordings are retained outside this folder");
+    const confirmation = dialog.querySelector('input[type="text"]');
+    const voice = [...dialog.querySelectorAll('input[type="checkbox"]')].at(-1);
+    const deleteButton = dialog.querySelector('button[type="submit"]');
     expect(voice.checked).toBe(false);
     confirmation.value = "delete";
     deleteButton.click();
     expect(confirmation.getAttribute("aria-invalid")).toBe("true");
+    expect(confirmation.getAttribute("aria-describedby")).toContain("station-delete-error");
     expect(request).not.toHaveBeenCalled();
     confirmation.value = "DELETE";
+    confirmation.dispatchEvent(new window.Event("input", { bubbles: true }));
     deleteButton.focus();
     deleteButton.click();
     await vi.waitFor(() => expect(onChanged).toHaveBeenCalledWith(archived, "delete"));
@@ -318,32 +324,120 @@ describe("Settings > Global > Stations management", () => {
     }));
     expect(byId("stations-status").textContent)
       .toContain("Cleanup is pending.");
+    expect(dialog.open).toBe(false);
     expect(document.activeElement).toBe(byId("stations-list").children[0].children[5]);
   });
 
+  // ADR-0011-03.
+  it("Cancel and Escape close deletion without a request and return focus to the owning cell", async () => {
+    const request = vi.fn();
+    setup({ request, stations: [AUTODJ, { ...OWL, archived: true }] });
+    const row = byId("stations-list").children[1];
+    const toggle = row.querySelector('[aria-label="Delete Night Owl Radio permanently"]');
+    const dialog = byId("station-delete-dialog");
+
+    toggle.focus();
+    toggle.click();
+    dialog.querySelector('button[type="button"]').click();
+    await vi.waitFor(() => expect(dialog.open).toBe(false));
+    expect(document.activeElement).toBe(toggle.closest("td"));
+
+    toggle.click();
+    dialog.querySelector('input[type="text"]').dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(() => expect(dialog.open).toBe(false));
+    expect(request).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(toggle.closest("td"));
+  });
+
+  it("keeps deletion errors in the modal and allows retry", async () => {
+    const request = vi.fn()
+      .mockRejectedValueOnce(new Error("The station is busy."))
+      .mockResolvedValueOnce({});
+    const archived = { ...OWL, archived: true };
+    const { onChanged, refresh } = setup({ request, stations: [AUTODJ, archived] });
+    onChanged.mockImplementation(async () => refresh([AUTODJ]));
+    const row = byId("stations-list").children[1];
+    row.querySelector('[aria-label="Delete Night Owl Radio permanently"]').click();
+    const dialog = byId("station-delete-dialog");
+    dialog.querySelector('input[type="text"]').value = "DELETE";
+    dialog.querySelector('button[type="submit"]').click();
+    await vi.waitFor(() => expect(dialog.querySelector("#station-delete-status").textContent)
+      .toContain("Could not permanently delete Night Owl Radio."));
+    expect(dialog.open).toBe(true);
+    expect(dialog.querySelector("#station-delete-error").hidden).toBe(false);
+    expect(byId("stations-status").textContent.trim()).toBe("");
+
+    dialog.querySelector('button[type="submit"]').click();
+    await vi.waitFor(() => expect(onChanged).toHaveBeenCalledWith(archived, "delete"));
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
   // ADR-0010-10.
-  it("ignores a lifecycle reply from an old login without losing the active control", async () => {
+  it("holds the modal while deletion is pending and ignores an old-login reply", async () => {
     let finish;
     const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
     const { onChanged } = setup({ request, stations: [AUTODJ, { ...OWL, archived: true }] });
     const row = byId("stations-list").children[1];
     row.querySelector('[aria-label="Delete Night Owl Radio permanently"]').click();
-    const confirmation = row.querySelector("input[type=text]");
+    const dialog = byId("station-delete-dialog");
+    const confirmation = dialog.querySelector('input[type="text"]');
     confirmation.value = "DELETE";
-    const deleteButton = row.deletePanel.querySelector("button");
+    const deleteButton = dialog.querySelector('button[type="submit"]');
     deleteButton.focus();
     deleteButton.click();
     await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
-    expect(document.activeElement).toBe(row.children[5]);
-    expect(deleteButton.disabled).toBe(false);
+    expect(dialog.open).toBe(true);
+    expect(deleteButton.textContent).toBe("Deleting…");
+    dialog.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(dialog.open).toBe(true);
     invalidateAuthenticatedRequestEpoch();
     finish({});
     await settle();
     expect(onChanged).not.toHaveBeenCalled();
     expect(byId("stations-status").textContent.trim()).toBe("");
-    expect(deleteButton.classList.contains("is-pending")).toBe(false);
+    expect(dialog.open).toBe(true);
+    expect(deleteButton.hasAttribute("aria-disabled")).toBe(false);
     expect(row.isConnected).toBe(true);
+    dialog.querySelector('button[type="button"]').click();
+    await vi.waitFor(() => expect(dialog.open).toBe(false));
     expect(document.activeElement).toBe(row.children[5]);
+  });
+
+  it("does not submit a deletion after authentication changes while the modal is open", async () => {
+    const request = vi.fn();
+    setup({ request, stations: [AUTODJ, { ...OWL, archived: true }] });
+    const row = byId("stations-list").children[1];
+    row.querySelector('[aria-label="Delete Night Owl Radio permanently"]').click();
+    const dialog = byId("station-delete-dialog");
+    dialog.querySelector('input[type="text"]').value = "DELETE";
+    invalidateAuthenticatedRequestEpoch();
+    dialog.querySelector('button[type="submit"]').click();
+    expect(request).not.toHaveBeenCalled();
+    expect(dialog.open).toBe(true);
+    expect(dialog.querySelector("#station-delete-status").textContent)
+      .toContain("Your sign-in or this station changed.");
+  });
+
+  it("closes deletion safely if the row disappears during a pending request", async () => {
+    let finish;
+    const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const { onChanged, refresh } = setup({ request, stations: [AUTODJ, { ...OWL, archived: true }] });
+    const row = byId("stations-list").children[1];
+    row.querySelector('[aria-label="Delete Night Owl Radio permanently"]').click();
+    const dialog = byId("station-delete-dialog");
+    dialog.querySelector('input[type="text"]').value = "DELETE";
+    dialog.querySelector('button[type="submit"]').click();
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+
+    refresh([AUTODJ]);
+    expect(dialog.open).toBe(false);
+    expect(document.activeElement).toBe(byId("stations-list").children[0].children[5]);
+    finish({});
+    await settle();
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(byId("stations-status").textContent.trim()).toBe("");
   });
 
   it("shows Also copy only for a copy, and sends the copies only then", async () => {

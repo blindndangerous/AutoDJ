@@ -21,12 +21,15 @@ import {
   captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, withDisabled, failureText,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { makeSay } from "./live-region.js";
+import { closeDialog, openDialog } from "./dialog-guard.js";
+import { clearAnnouncedStatus, makeSay } from "./live-region.js";
 import { isOnAir, knownStations } from "./stations.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { onCardOpen } from "./card-state.js";
 import { tableRow } from "./table-row.js";
-import { applyServerFieldError, clearFieldError, placeRows, showFieldError } from "./dom-helpers.js";
+import {
+  applyServerFieldError, clearFieldError, dialogReturnPlace, dialogStatusLine, placeRows, showFieldError,
+} from "./dom-helpers.js";
 
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const NAME_MAX = 80;
@@ -126,6 +129,107 @@ export function installStationCreator({
   let createdSlug = null;
   const navigation = installTableNavigation(list);
   const say = makeSay(status, { dwellMs: 6000 });
+  const deleteDialog = doc.createElement("dialog");
+  deleteDialog.id = "station-delete-dialog";
+  deleteDialog.className = "editor-dialog";
+  const deleteTitle = doc.createElement("h1");
+  deleteTitle.id = "station-delete-title";
+  deleteDialog.setAttribute("aria-labelledby", deleteTitle.id);
+  const deleteSummary = doc.createElement("p");
+  deleteSummary.id = "station-delete-summary";
+  deleteSummary.textContent = "Removes this station's configuration and history. Shared music and external recording folders are not deleted.";
+  const deleteForm = doc.createElement("form");
+  deleteForm.noValidate = true;
+  deleteForm.setAttribute("role", "none");
+  const deleteLabel = doc.createElement("label");
+  const deleteText = doc.createElement("input");
+  deleteText.type = "text";
+  deleteText.autocomplete = "off";
+  deleteLabel.append("Type DELETE to confirm: ", deleteText);
+  const voiceLabel = doc.createElement("label");
+  const deleteVoice = doc.createElement("input");
+  deleteVoice.type = "checkbox";
+  voiceLabel.append(deleteVoice, " Delete voice recordings");
+  const deleteError = doc.createElement("p");
+  deleteError.id = "station-delete-error";
+  deleteError.className = "field-error";
+  deleteError.hidden = true;
+  const deleteActions = doc.createElement("div");
+  deleteActions.className = "dialog-actions";
+  const deleteButton = doc.createElement("button");
+  deleteButton.type = "submit";
+  deleteButton.textContent = "Confirm permanent deletion";
+  const deleteCancel = doc.createElement("button");
+  deleteCancel.type = "button";
+  deleteCancel.textContent = "Cancel";
+  deleteActions.append(deleteButton, deleteCancel);
+  deleteForm.append(deleteLabel, voiceLabel, deleteError, deleteActions);
+  deleteDialog.append(deleteTitle, deleteSummary, deleteForm);
+  const deleteStatus = dialogStatusLine(deleteDialog, "station-delete-status");
+  doc.body.append(deleteDialog);
+  let deleteRow = null;
+  let deleteOpener = null;
+  let deleteEpoch = null;
+  let deleteGeneration = 0;
+  let deletePending = false;
+
+  function finishDelete({ target = null } = {}) {
+    const opener = deleteOpener?.isConnected ? deleteOpener : null;
+    const place = dialogReturnPlace(deleteOpener);
+    deleteGeneration += 1;
+    deletePending = false;
+    deleteDialog.removeAttribute("aria-busy");
+    deleteButton.removeAttribute("aria-disabled");
+    deleteButton.textContent = "Confirm permanent deletion";
+    deleteCancel.removeAttribute("aria-disabled");
+    closeDialog(deleteDialog, target ? { opener, target } : { opener, place });
+    clearAnnouncedStatus(deleteStatus);
+    deleteRow = null;
+    deleteOpener = null;
+    deleteEpoch = null;
+  }
+
+  function clearDeleteError() {
+    clearFieldError(deleteText, deleteError);
+    clearAnnouncedStatus(deleteStatus);
+  }
+
+  function showDeleteMessage(message) {
+    deleteError.textContent = message;
+    deleteError.hidden = false;
+    deleteStatus.textContent = message;
+  }
+
+  function openDelete(row) {
+    deleteRow = row;
+    deleteOpener = row.deleteToggle;
+    deleteEpoch = captureAuthenticatedRequestEpoch();
+    deleteGeneration += 1;
+    deleteText.value = "";
+    deleteVoice.checked = false;
+    clearDeleteError();
+    deleteTitle.textContent = `Delete ${row.station.name} permanently?`;
+    deleteText.setAttribute("autofocus", "");
+    try {
+      openDialog(deleteDialog, { home: deleteText });
+    } finally {
+      deleteText.removeAttribute("autofocus");
+    }
+    if (doc.activeElement !== deleteText) deleteText.focus();
+  }
+
+  deleteCancel.addEventListener("click", () => {
+    if (!deletePending && deleteDialog.open) finishDelete();
+  });
+  deleteDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    if (!deletePending && deleteDialog.open) finishDelete();
+  });
+  deleteText.addEventListener("input", clearDeleteError);
+  deleteForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void deleteStation();
+  });
 
   function syncAutostart(row) {
     const box = row.children[3].querySelector("input");
@@ -250,33 +354,65 @@ export function installStationCreator({
     }, { keepEnabled: true });
   }
 
-  async function deleteStation(row) {
+  async function deleteStation() {
+    const row = deleteRow;
+    if (deletePending || !deleteDialog.open || !row) return;
     const station = row.station;
-    if (row.deleteText.value !== "DELETE") {
-      row.deleteText.setAttribute("aria-invalid", "true");
-      row.deleteText.focus();
-      say("Type DELETE exactly to confirm permanent deletion.", "error");
+    if (deleteText.value !== "DELETE") {
+      showFieldError(
+        deleteText,
+        "Type DELETE exactly to confirm permanent deletion.",
+        deleteError,
+        deleteStatus,
+      );
       return;
     }
-    const epoch = captureAuthenticatedRequestEpoch();
-    await withDisabled(row.deleteButton, async () => {
-      try {
-        const result = await request(`/api/stations/${encodeURIComponent(station.slug)}`, {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ confirmation: row.deleteText.value, delete_voice_recordings: row.deleteVoice.checked }),
-        });
-        if (!isAuthenticatedRequestCurrent(epoch) || !row.isConnected || row.station.slug !== station.slug) return;
-        say(result?.cleanup_pending
-          ? `Permanently deleted ${station.name}. Cleanup is pending.`
-          : `Permanently deleted ${station.name}.`);
-        await onChanged(station, "delete");
-      } catch (errorValue) {
-        if (isAuthenticatedRequestCurrent(epoch) && row.isConnected && row.station.slug === station.slug) {
-          say(failureText(`permanently delete ${station.name}.`, errorValue, ""), "error");
-        }
+    const epoch = deleteEpoch;
+    if (!isAuthenticatedRequestCurrent(epoch) || !row.isConnected || row.station.slug !== station.slug) {
+      showDeleteMessage("Your sign-in or this station changed. Close this dialog and try again.");
+      return;
+    }
+    const mine = deleteGeneration;
+    deletePending = true;
+    deleteDialog.setAttribute("aria-busy", "true");
+    deleteButton.setAttribute("aria-disabled", "true");
+    deleteButton.textContent = "Deleting…";
+    deleteCancel.setAttribute("aria-disabled", "true");
+    clearDeleteError();
+    try {
+      const result = await request(`/api/stations/${encodeURIComponent(station.slug)}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation: deleteText.value, delete_voice_recordings: deleteVoice.checked }),
+      });
+      if (mine !== deleteGeneration || !deleteDialog.open
+          || !isAuthenticatedRequestCurrent(epoch) || !row.isConnected
+          || row.station.slug !== station.slug) return;
+      const rows = [...list.children];
+      const index = rows.indexOf(row);
+      const fallback = rows[index + 1]?.children[5]
+        || rows[index - 1]?.children[5]
+        || get("stations-list-heading");
+      finishDelete({ target: fallback });
+      say(result?.cleanup_pending
+        ? `Permanently deleted ${station.name}. Cleanup is pending.`
+        : `Permanently deleted ${station.name}.`);
+      await onChanged(station, "delete");
+    } catch (errorValue) {
+      if (mine === deleteGeneration && deleteDialog.open
+          && isAuthenticatedRequestCurrent(epoch) && row.isConnected
+          && row.station.slug === station.slug) {
+        showDeleteMessage(failureText(`permanently delete ${station.name}.`, errorValue, ""));
       }
-    }, { keepEnabled: true });
+    } finally {
+      if (mine === deleteGeneration) {
+        deletePending = false;
+        deleteDialog.removeAttribute("aria-busy");
+        deleteButton.removeAttribute("aria-disabled");
+        deleteButton.textContent = "Confirm permanent deletion";
+        deleteCancel.removeAttribute("aria-disabled");
+      }
+    }
   }
 
   function stationRow(station) {
@@ -316,41 +452,10 @@ export function installStationCreator({
     const deleteToggle = doc.createElement("button");
     deleteToggle.type = "button";
     deleteToggle.textContent = "Delete permanently";
-    const deletePanel = doc.createElement("div");
-    deletePanel.id = `station-delete-panel-${station.slug}`;
-    deletePanel.hidden = true;
-    deleteToggle.setAttribute("aria-controls", deletePanel.id);
-    deleteToggle.setAttribute("aria-expanded", "false");
-    const deleteSummary = doc.createElement("p");
-    deleteSummary.textContent = "Removes this station's configuration and history. Shared music and external recording folders are not deleted. Voice recordings are retained outside this folder unless selected below.";
-    const deleteLabel = doc.createElement("label");
-    const deleteText = doc.createElement("input");
-    deleteText.type = "text";
-    deleteText.autocomplete = "off";
-    deleteLabel.append("Type DELETE to confirm: ", deleteText);
-    const voiceLabel = doc.createElement("label");
-    const deleteVoice = doc.createElement("input");
-    deleteVoice.type = "checkbox";
-    voiceLabel.append(deleteVoice, " Delete voice recordings");
-    const deleteButton = doc.createElement("button");
-    deleteButton.type = "button";
-    deleteButton.textContent = "Confirm permanent deletion";
-    deleteButton.addEventListener("click", () => void deleteStation(row));
-    deleteToggle.addEventListener("click", () => {
-      deletePanel.hidden = !deletePanel.hidden;
-      deleteToggle.setAttribute("aria-expanded", String(!deletePanel.hidden));
-      if (!deletePanel.hidden) {
-        deleteText.value = "";
-        deleteText.removeAttribute("aria-invalid");
-        deleteVoice.checked = false;
-        deleteText.focus();
-      }
-    });
-    deletePanel.append(deleteSummary, deleteLabel, voiceLabel, deleteButton);
-    lifecycle.append(archive, restore, deleteToggle, deletePanel);
+    deleteToggle.addEventListener("click", () => openDelete(row));
+    lifecycle.append(archive, restore, deleteToggle);
     const row = tableRow(doc, ["", "", "", [box, actions], button, lifecycle]);
-    Object.assign(row, { archiveButton: archive, restoreButton: restore, deleteToggle, deletePanel,
-      deleteText, deleteVoice, deleteButton });
+    Object.assign(row, { archiveButton: archive, restoreButton: restore, deleteToggle });
     row.dataset.station = station.slug;
     row.station = station;
     row.autostartBaseline = Boolean(station.autostart);
@@ -396,26 +501,29 @@ export function installStationCreator({
     row.archiveButton.setAttribute("aria-label", `Archive ${station.name}`);
     row.restoreButton.setAttribute("aria-label", `Restore ${station.name}`);
     row.deleteToggle.setAttribute("aria-label", `Delete ${station.name} permanently`);
-    const shouldHideDeletePanel = !station.archived || station.slug === "default";
-    if (shouldHideDeletePanel && !row.deletePanel.hidden && row.deletePanel.contains(doc.activeElement)) {
-      (station.archived ? row.restoreButton : row.archiveButton).focus();
+    if (deleteDialog.open && deleteRow === row && (!station.archived || station.slug === "default")) {
+      finishDelete({ target: station.archived ? row.restoreButton : row.archiveButton });
     }
-    row.deletePanel.hidden = shouldHideDeletePanel || row.deletePanel.hidden;
-    row.deleteToggle.setAttribute("aria-expanded", String(!row.deletePanel.hidden));
     if (wasFocusedLifecycleButton) (station.archived ? row.restoreButton : row.archiveButton).focus();
   }
 
   function renderList(all) {
     const previousRows = [...list.children];
-    const active = doc.activeElement;
-    const focusedRow = active.closest?.("tr");
-    const focusedIndex = previousRows.indexOf(focusedRow);
-    const focusedColumn = focusedRow ? [...focusedRow.children].indexOf(active.closest("td")) : -1;
     const rows = all.map((station) => {
       const row = previousRows.find((item) => item.dataset.station === station.slug) || stationRow(station);
       fillRow(row, station);
       return row;
     });
+    if (deleteDialog.open && deleteRow && !rows.includes(deleteRow)) {
+      const deletedIndex = previousRows.indexOf(deleteRow);
+      const fallback = rows[Math.min(Math.max(deletedIndex, 0), rows.length - 1)]?.children[5]
+        || get("stations-list-heading");
+      finishDelete({ target: fallback });
+    }
+    const active = doc.activeElement;
+    const focusedRow = active.closest?.("tr");
+    const focusedIndex = previousRows.indexOf(focusedRow);
+    const focusedColumn = focusedRow ? [...focusedRow.children].indexOf(active.closest("td")) : -1;
     if (focusedIndex >= 0 && !rows.includes(focusedRow) && rows.length) {
       const replacement = rows[Math.min(focusedIndex, rows.length - 1)];
       const cell = replacement.children[Math.min(Math.max(focusedColumn, 0), replacement.children.length - 1)];
