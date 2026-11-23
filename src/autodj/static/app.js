@@ -3134,7 +3134,7 @@ function focusRemainingHistoryRow(tbody, index, message, column = null) {
 
 // announce: "page" says where paging landed; "refresh" confirms a
 // Refresh press; "filters" says the result count after a selection change.
-async function fetchHistory(page, { announce = false, anchor = null, passive = false } = {}) {
+async function fetchHistory(page, { announce = false, anchor = null } = {}) {
   if (historyFilterTimer !== null) {
     clearTimeout(historyFilterTimer);
     historyFilterTimer = null;
@@ -3155,7 +3155,10 @@ async function fetchHistory(page, { announce = false, anchor = null, passive = f
     return;
   }
   _histPage = page;
-  if (!passive) historyFeedback.cancel();
+  // Silent refreshes can supersede a filter request while its count is still
+  // pending. Keep that feedback alive so the replacement response can finish
+  // it; actions with their own announcement still cancel stale filter speech.
+  if (announce && announce !== "filters") historyFeedback.cancel();
   if (announce === "filters") historyFeedback.start(historyFeedbackKey(filters));
   historyRequest?.abort();
   const request = historyRequest = new AbortController();
@@ -3280,7 +3283,7 @@ function historyViewShown() {
 async function addNewHistoryRows() {
   if (historyFilterTimer !== null) return;
   if (_histNewestAt === null) {
-    await fetchHistory(1, { passive: true });
+    await fetchHistory(1);
     return;
   }
   const rollingRange = refreshHistoryRange();
@@ -3293,7 +3296,7 @@ async function addNewHistoryRows() {
     // A rolling preset can age visible plays out even when no new row fills
     // their place. Reload the page so expired rows and its count are removed;
     // fetchHistory restores focus to the same row when it is still present.
-    await fetchHistory(1, { passive: true });
+    await fetchHistory(1);
     return;
   }
   const newestShown = _histNewestAt;
@@ -3356,7 +3359,7 @@ function noteTrackForHistory(s) {
   if (was === null || key === null || !historyViewShown() || _histPage !== 1) return;
   if (historyFilterTimer !== null) return;
   const liveChanged = !was.endsWith(`\u0000${liveSince}`);
-  if (liveChanged) void fetchHistory(1, { passive: true });
+  if (liveChanged) void fetchHistory(1);
   else void addNewHistoryRows();
 }
 

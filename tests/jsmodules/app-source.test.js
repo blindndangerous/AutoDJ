@@ -1976,6 +1976,45 @@ describe("app request behavior", () => {
     }
   });
 
+  it("finishes filter feedback after a same-context silent History refresh supersedes the request", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      const { fetchImpl } = await setupApp({
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse({ total: 1, page: 1, pages: 1, items: [{
+            event_id: "needle", path: "needle.mp3", played_at: "2026-11-16T00:00:00Z",
+            title: "Needle", artist: "Artist", duration: 60,
+          }] })
+          : jsonResponse({ ok: true }),
+      });
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+      const historyCalls = () => fetchImpl.mock.calls.filter(([url]) => url.startsWith("/api/history"));
+      await vi.waitFor(() => expect(historyCalls()).toHaveLength(1));
+      await vi.waitFor(() => expect(document.querySelectorAll("#history-tbody tr[data-played-at]")).toHaveLength(1));
+
+      const query = document.querySelector("#hist-filter-q");
+      query.value = "Needle Artist";
+      query.dispatchEvent(new Event("input", { bubbles: true }));
+      query.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      await vi.waitFor(() => expect(historyCalls()).toHaveLength(2));
+
+      // A same-context history navigation refreshes without its own announcement.
+      window.dispatchEvent(new window.HashChangeEvent("hashchange", {
+        oldURL: window.location.href, newURL: window.location.href,
+      }));
+      await vi.waitFor(() => expect(historyCalls()).toHaveLength(3));
+      expect(new URL(historyCalls().at(-1)[0], "http://x").searchParams.get("q")).toBe("Needle Artist");
+      await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent).toBe("1 play."), {
+        timeout: 1500,
+      });
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
   it("opens Track info from History and returns focus to its row button", async () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     window.location.hash = "#history";
