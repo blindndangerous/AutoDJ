@@ -909,7 +909,7 @@ async function openHourFit(page, visit) {
 // is saved; Cancel and Discard close the editor.  The editor opens with
 // show() and aria-modal, not showModal() (#631), with the backdrop over
 // the page.
-async function inspectEditorModal(page, formId, visit, target) {
+async function inspectEditorModal(page, formId, visit, target, { describe = true } = {}) {
   const dialog = page.locator(`#${formId}-dialog`);
   await dialog.waitFor({ state: "visible" });
   const name = await dialog.evaluate((element) => {
@@ -917,6 +917,7 @@ async function inspectEditorModal(page, formId, visit, target) {
     return {
       open: element.open, modal: element.matches(":modal"), ariaModal: element.getAttribute("aria-modal"),
       backdrop: document.getElementById("dialog-backdrop")?.hidden === false,
+      described: element.hasAttribute("aria-describedby"),
       labelled: Boolean(heading && element.contains(heading) && heading.textContent.trim()),
     };
   });
@@ -924,7 +925,8 @@ async function inspectEditorModal(page, formId, visit, target) {
     throw new Error(`${formId} is not an accessible dialog kept modal without showModal(): ${JSON.stringify(name)}`);
   }
   await expect(dialog).toHaveAccessibleName(await dialog.evaluate((element) => document.getElementById(element.getAttribute("aria-labelledby")).textContent.trim()));
-  await expect(dialog).toHaveAccessibleDescription("Use Tab to move between fields and actions.");
+  if (describe) await expect(dialog).toHaveAccessibleDescription("Use Tab to move between fields and actions.");
+  else if (name.described) throw new Error(`${formId} has a redundant dialog description`);
   const viewport = page.viewportSize() || { width: 1280, height: 800 };
   await page.setViewportSize({ width: 320, height: 640 });
   await settle(page);
@@ -2988,6 +2990,88 @@ async function voiceTrackerProblems(page) {
   return problems;
 }
 
+// Cart editor: an empty cart opens from the keyboard, the guarded editor
+// keeps focus inside, a dirty Escape offers Keep editing/Discard, and Save
+// returns focus to the cart button.
+async function cartEditorProblems(page) {
+  const state = {
+    wall: {
+      schema_version: 1, active_page: 1,
+      pages: [{ name: "Audit page", slots: Array(12).fill(null) }],
+    },
+    liners: [{ id: "audit-liner", name: "Audit liner" }], uploads: [],
+  };
+  await page.route("**/api/carts**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname === "/api/carts") {
+      return route.fulfill(jsonReply(state, 200));
+    }
+    const slot = url.pathname.match(/^\/api\/carts\/pages\/(\d+)\/slots\/(\d+)$/);
+    if (request.method() === "PUT" && slot) {
+      const body = request.postDataJSON();
+      state.wall.pages[Number(slot[1]) - 1].slots[Number(slot[2]) - 1] = { ...body, duration: 3 };
+      return route.fulfill(jsonReply({ slot: state.wall.pages[Number(slot[1]) - 1].slots[Number(slot[2]) - 1] }, 200));
+    }
+    return route.continue();
+  });
+  // A hash-only navigation reuses the previous page and its cached cart data.
+  await page.goto(`${BASE}/#carts`, { waitUntil: "networkidle", timeout: 20000 });
+  await page.reload({ waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#tab-carts").click();
+  const problems = [];
+  const cart = page.locator('#cart-slots [data-slot="1"]');
+  await expect(cart).toBeVisible();
+  await cart.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.locator("#cart-edit-form-dialog");
+  await dialog.waitFor({ state: "visible" });
+  await inspectEditorModal(page, "cart-edit-form", async () => {}, "carts/editor", { describe: false });
+  if (await page.evaluate(() => document.activeElement?.id) !== "cart-name") {
+    problems.push("opening an empty cart did not focus its name field");
+  }
+  await page.evaluate(() => document.getElementById("cart-stop").focus());
+  if (!(await dialog.evaluate((node) => node.contains(document.activeElement)))) {
+    problems.push("the open cart editor let focus escape to the page");
+  }
+
+  await page.locator("#cart-name").fill("Draft");
+  await page.keyboard.press("Escape");
+  const confirm = page.locator("#confirm-dialog");
+  await confirm.waitFor({ state: "visible" });
+  if (await page.locator("#confirm-title").textContent() !== "Discard changes?") {
+    problems.push("Escape did not ask before discarding the cart draft");
+  }
+  await page.keyboard.press("Enter"); // confirmation opens with Keep editing focused
+  await confirm.waitFor({ state: "hidden" });
+  if (!(await dialog.isVisible()) || await page.locator("#cart-name").inputValue() !== "Draft") {
+    problems.push("keeping the draft did not return to the open editor");
+  }
+  await page.keyboard.press("Escape");
+  await confirm.waitFor({ state: "visible" });
+  await page.locator("#confirm-accept").focus();
+  await page.keyboard.press("Enter");
+  await dialog.waitFor({ state: "hidden" });
+  if (!await cart.evaluate((node) => node === document.activeElement)) {
+    problems.push("discarding the draft did not restore focus to the empty cart");
+  }
+
+  await cart.focus();
+  await page.keyboard.press("Enter");
+  await dialog.waitFor({ state: "visible" });
+  await page.locator("#cart-name").fill("Audit cart");
+  await page.locator("#cart-save").focus();
+  await page.keyboard.press("Enter");
+  await dialog.waitFor({ state: "hidden" });
+  if (!await cart.evaluate((node) => node === document.activeElement)) {
+    problems.push("saving the cart did not return focus to its cart button");
+  }
+  if (state.wall.pages[0].slots[0]?.name !== "Audit cart") {
+    problems.push("keyboard Save did not assign the edited cart");
+  }
+  return problems;
+}
+
 // Live DJ (#48): Talk held with Space and with Alt+M, and the live line
 // said once as a DJ goes live and once as they leave.
 async function liveDjProblems(page) {
@@ -3700,6 +3784,8 @@ export async function audit(name, launcher) {
     if (tokenScope.length) out.behaviour.tokenScope = tokenScope;
     const voiceTracker = await voiceTrackerProblems(page);
     if (voiceTracker.length) out.behaviour.voiceTracker = voiceTracker;
+    const cartEditor = await cartEditorProblems(page);
+    if (cartEditor.length) out.behaviour.cartEditor = cartEditor;
     const liveDj = await liveDjProblems(page);
     if (liveDj.length) out.behaviour.liveDj = liveDj;
     const ads = await adsProblems(page);

@@ -2155,8 +2155,6 @@ describe("static accessibility contracts", () => {
       ["#listener-stats-summary", "#spanel-stream", "H4", "Listener statistics"],
       ["#ads-rules-form", "#panel-ads", "H3", "Rules for every break"],
       ["#ads-report-form", "#panel-ads", "H3", "Ad report"],
-      ["#cart-upload-file", "#panel-carts", "H3", "Uploaded clips"],
-      ["#cart-save", "#panel-carts", "H3", "Edit a cart"],
       ["#cart-rename", "#panel-carts", "H3", "Rename this page"],
     ];
     for (const [inside, panel, level, title] of folded) {
