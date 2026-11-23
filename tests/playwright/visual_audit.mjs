@@ -1752,7 +1752,7 @@ async function openStationCreateError(page, visit) {
 
 async function openStationDeleteDialog(page, visit) {
   const row = page.locator('#stations-list [data-station="audit-archived"]');
-  const opener = row.getByRole("button", { name: "Delete Archived Audit Station permanently", exact: true });
+  const opener = row.getByRole("button", { name: "Delete permanently: Archived Audit Station", exact: true });
   await opener.click();
   const dialog = page.locator("#station-delete-dialog");
   await dialog.waitFor({ state: "visible" });

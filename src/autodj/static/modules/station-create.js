@@ -500,7 +500,7 @@ export function installStationCreator({
     row.deleteToggle.hidden = !station.archived || station.slug === "default";
     row.archiveButton.setAttribute("aria-label", `Archive ${station.name}`);
     row.restoreButton.setAttribute("aria-label", `Restore ${station.name}`);
-    row.deleteToggle.setAttribute("aria-label", `Delete ${station.name} permanently`);
+    row.deleteToggle.setAttribute("aria-label", `Delete permanently: ${station.name}`);
     if (deleteDialog.open && deleteRow === row && (!station.archived || station.slug === "default")) {
       finishDelete({ target: station.archived ? row.restoreButton : row.archiveButton });
     }

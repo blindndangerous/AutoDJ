@@ -295,8 +295,8 @@ describe("Settings > Global > Stations management", () => {
     onChanged.mockImplementation(async () => refresh([AUTODJ]));
     const row = byId("stations-list").children[1];
     expect(byId("stations-list").children[0]
-      .querySelector('[aria-label="Delete AutoDJ permanently"]')?.hidden).toBe(true);
-    const toggle = row.querySelector('[aria-label="Delete Night Owl Radio permanently"]');
+      .querySelector('[aria-label="Delete permanently: AutoDJ"]')?.hidden).toBe(true);
+    const toggle = row.querySelector('[aria-label="Delete permanently: Night Owl Radio"]');
     toggle.focus();
     toggle.click();
     const dialog = byId("station-delete-dialog");
@@ -333,7 +333,7 @@ describe("Settings > Global > Stations management", () => {
     const request = vi.fn();
     setup({ request, stations: [AUTODJ, { ...OWL, archived: true }] });
     const row = byId("stations-list").children[1];
-    const toggle = row.querySelector('[aria-label="Delete Night Owl Radio permanently"]');
+    const toggle = row.querySelector('[aria-label="Delete permanently: Night Owl Radio"]');
     const dialog = byId("station-delete-dialog");
 
     toggle.focus();
@@ -359,7 +359,7 @@ describe("Settings > Global > Stations management", () => {
     const { onChanged, refresh } = setup({ request, stations: [AUTODJ, archived] });
     onChanged.mockImplementation(async () => refresh([AUTODJ]));
     const row = byId("stations-list").children[1];
-    row.querySelector('[aria-label="Delete Night Owl Radio permanently"]').click();
+    row.querySelector('[aria-label="Delete permanently: Night Owl Radio"]').click();
     const dialog = byId("station-delete-dialog");
     dialog.querySelector('input[type="text"]').value = "DELETE";
     dialog.querySelector('button[type="submit"]').click();
@@ -380,7 +380,7 @@ describe("Settings > Global > Stations management", () => {
     const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
     const { onChanged } = setup({ request, stations: [AUTODJ, { ...OWL, archived: true }] });
     const row = byId("stations-list").children[1];
-    row.querySelector('[aria-label="Delete Night Owl Radio permanently"]').click();
+    row.querySelector('[aria-label="Delete permanently: Night Owl Radio"]').click();
     const dialog = byId("station-delete-dialog");
     const confirmation = dialog.querySelector('input[type="text"]');
     confirmation.value = "DELETE";
@@ -409,7 +409,7 @@ describe("Settings > Global > Stations management", () => {
     const request = vi.fn();
     setup({ request, stations: [AUTODJ, { ...OWL, archived: true }] });
     const row = byId("stations-list").children[1];
-    row.querySelector('[aria-label="Delete Night Owl Radio permanently"]').click();
+    row.querySelector('[aria-label="Delete permanently: Night Owl Radio"]').click();
     const dialog = byId("station-delete-dialog");
     dialog.querySelector('input[type="text"]').value = "DELETE";
     invalidateAuthenticatedRequestEpoch();
@@ -425,7 +425,7 @@ describe("Settings > Global > Stations management", () => {
     const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
     const { onChanged, refresh } = setup({ request, stations: [AUTODJ, { ...OWL, archived: true }] });
     const row = byId("stations-list").children[1];
-    row.querySelector('[aria-label="Delete Night Owl Radio permanently"]').click();
+    row.querySelector('[aria-label="Delete permanently: Night Owl Radio"]').click();
     const dialog = byId("station-delete-dialog");
     dialog.querySelector('input[type="text"]').value = "DELETE";
     dialog.querySelector('button[type="submit"]').click();
