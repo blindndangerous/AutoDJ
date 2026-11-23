@@ -1759,7 +1759,7 @@ const stationSwitcher = installStationSwitcher({
   onChoose: (slug) => switchStation(slug),
 });
 
-// Settings > Station > Stations (#233): the list and New station.  A created station
+// Settings > Global > Stations (#797): the list and New station.  A created station
 // joins the list at once; Switch to it puts focus on the Station button.
 const stationCreator = installStationCreator({
   onCreated: () => refreshStationList(),

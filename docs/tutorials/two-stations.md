@@ -23,7 +23,7 @@ the existing AutoDJ address. A running stream station consumes extra CPU and
 memory even while idle; you will stop it after the exercise. This is a short
 workflow check, not a capacity test for your computer.
 
-Use the station ID `practice-two`. Open **Settings**, **Station**, **Stations** and confirm
+Use the station ID `practice-two`. Open **Settings**, **Global**, **Stations** and confirm
 that neither this ID nor the name Practice Two already exists. If either does,
 stop here and inspect that existing station before choosing a different
 practice exercise. Do not overwrite it, remove its folder, or stop it just to
@@ -60,7 +60,7 @@ marker waiting for your later comparison.
 
 ## Create Practice Two while it is off air
 
-1. Open **Settings**, **Station**, **Stations**, and find **New station**.
+1. Open **Settings**, **Global**, **Stations**, and find **New station**.
 2. Leave **Start from** set to **AutoDJ defaults**.
 3. Enter `Practice Two` in **Name** and `practice-two` in **Station ID**.
 4. Leave **Start with the server** unchecked.
@@ -120,9 +120,9 @@ production rotation. Saving or activating here must not replace Practice's wheel
 
 ## Start and compare the stations
 
-1. In **Settings**, **Station**, **Stations**, check **Playback output** is **Radio stream**
-   for Practice Two. Leave **Also play the radio stream on the server sound card**
-   unchecked. Press **Save changes** in the Stations tab if you changed either control.
+1. Select Practice Two with the **Station** button. In **Settings**, **Station**, **General**,
+   check **Playback output** is **Radio stream**. Leave **Also play the radio stream on the server sound card**
+   unchecked. Press **Save changes** in the General tab if you changed either control.
 2. In **Stations on this server**, press **Start Practice Two**. Its visible
    button text is **Start** in the Practice Two row.
 3. Open **Now Playing** and press **Listen here**. Allow the stream to prepare.
@@ -155,7 +155,7 @@ chooses what the page controls. It does not stop a running server stream;
 another connected network listener would keep hearing Practice Two. This
 lesson checks state separation without connecting an audience.
 
-Now predict what pressing **Stop Practice Two** will do. In **Settings**,
+Now predict what pressing **Stop Practice Two** will do. In **Settings**, **Global**,
 **Stations**, use that row's **Stop** button, read the warning, and confirm
 **Stop station**. It disconnects that station's listeners and takes it off air.
 Check its row says **Off air** and Practice retains its own state. Explain why

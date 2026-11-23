@@ -66,7 +66,7 @@ Choose **Run now** from **Options for Holiday music** to start the season at onc
 
 Times use `station.timezone in the station definition`, an IANA name such as `America/Denver`, or the system time
 zone when that is not set (UTC when the system has no IANA name). **Time for the selected station** in
-Settings > Station > Stations sets that station's time zone from the page; the saved choice applies
+Settings > Station > General sets that station's time zone from the page; the saved choice applies
 when that station next starts. The same fieldset sets **Time format**, 24 hour
 (the default) or 12 hour, for the times every page shows; it applies at once and changes nothing
 but how times look. The Schedule panel shows the

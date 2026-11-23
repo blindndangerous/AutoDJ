@@ -27,7 +27,7 @@ encodes its own audio, so each one adds to the work the computer does.
 
 ## Add a station
 
-1. Open Settings, Station, Stations.
+1. Open Settings, Global, Stations.
 2. Under **New station**, choose **Start from**:
    - **AutoDJ defaults** starts with AutoDJ's own settings.
    - A station's name copies that station's saved settings, including changes made in the page.
@@ -51,7 +51,7 @@ shows, intros, profiles and liners. Set those up again for the new station.
 
 ## Start and stop stations
 
-The **Stations on this server** table in Settings, Station, Stations lists every station with what it is
+The **Stations on this server** table in Settings, Global, Stations lists every station with what it is
 playing and how many people are listening. For each station:
 
 - **Start with the server** sets whether it starts when AutoDJ starts.
@@ -98,10 +98,10 @@ When AutoDJ starts, it prints each station's stream address and status page.
 
 ## Time zone, time format, and output
 
-In Settings, Station, Stations, **Time for the selected station** holds **Time zone**. It controls that
+In Settings, Station, General, **Time for the selected station** holds **Time zone**. It controls that
 station's schedule, ad breaks, and clockwheel restarts. A change takes effect when that station
 next starts. **Time format for all stations** changes the display between 24 hour and 12 hour
-time. Press **Save changes** in **Stations** after changing either.
+time. Press **Save changes** after changing either.
 
 **Output for the selected station** holds **Playback output**: Browser, Server sound card, or
 Radio stream. **Also play the radio stream on the server sound card** works with Radio stream.

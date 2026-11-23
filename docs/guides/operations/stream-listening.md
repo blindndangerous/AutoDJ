@@ -17,7 +17,7 @@ the network can reach it:
 uv run autodj serve --lan --stream
 ```
 
-Choose **Stream** as the station's output in Settings > Station > Stations. Existing installations
+Choose **Stream** as the station's output in Settings > Station > General. Existing installations
 migrate legacy `[stream] enabled` and `AUTODJ_STREAM_ENABLED` settings into the default station
 definition at startup; the old TOML key and environment variable are migration inputs only.
 For automation, use `AUTODJ_STATION_DEFAULT_STREAM_*` variables for supported stream settings.
