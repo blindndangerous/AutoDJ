@@ -210,7 +210,7 @@ jobs:
       # use up the job's time.
       - name: Install FFmpeg (Linux, cached)
         if: runner.os == 'Linux'
-        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        uses: awalsh128/cache-apt-pkgs-action@009d70260b0f2e115cfa77447f8bd04c8e797064 # v2.0.0
         timeout-minutes: 15
         with:
           packages: ffmpeg
@@ -288,7 +288,7 @@ jobs:
           printf 'packages=%s\n' "$packages" >>"$GITHUB_OUTPUT"
       - name: Install browser packages (cached)
         if: ${{ !matrix.webkit }}
-        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        uses: awalsh128/cache-apt-pkgs-action@009d70260b0f2e115cfa77447f8bd04c8e797064 # v2.0.0
         timeout-minutes: 15
         with:
           packages: ${{ steps.browser-packages.outputs.packages }}
@@ -408,7 +408,7 @@ jobs:
           packages=$(printf '%s\n' "$report" | sed -n 's/^  \([a-z0-9][a-z0-9.+-]*\)$/\1/p' | tr '\n' ' ')
           printf 'packages=%s\n' "${packages}ffmpeg" >>"$GITHUB_OUTPUT"
       - name: Install browser packages and ffmpeg (cached)
-        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        uses: awalsh128/cache-apt-pkgs-action@009d70260b0f2e115cfa77447f8bd04c8e797064 # v2.0.0
         timeout-minutes: 15
         with:
           packages: ${{ steps.browser-packages.outputs.packages }}
